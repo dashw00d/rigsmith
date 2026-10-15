@@ -16,7 +16,7 @@
 // An attack clip is cut so its blow (the hand's fastest moment, or `hitAt` seconds) lands at `hit` of its length.
 import { execSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
@@ -61,8 +61,12 @@ function embeddedImage (file: string): { bytes: Buffer, ext: string } | null {
   const jsonLength = b.readUInt32LE(12)
   const json = JSON.parse(b.subarray(20, 20 + jsonLength).toString('utf8')) as {
     images?: Array<{ bufferView?: number, mimeType?: string }>, bufferViews: Array<{ byteOffset?: number, byteLength: number }>
+    materials?: Array<{ pbrMetallicRoughness?: { baseColorTexture?: { index: number } } }>, textures?: Array<{ source?: number }>
   }
-  const image = json.images?.find(i => i.bufferView !== undefined)
+  // The base colour's image (a source with normal / roughness maps embeds those too).
+  const texture = json.materials?.find(m => m.pbrMetallicRoughness?.baseColorTexture !== undefined)?.pbrMetallicRoughness?.baseColorTexture?.index
+  const source = texture !== undefined ? json.textures?.[texture]?.source : undefined
+  const image = source !== undefined ? json.images?.[source] : json.images?.find(i => i.bufferView !== undefined)
   if (image === undefined) return null
   const view = json.bufferViews[image.bufferView!]
   const bin = 20 + jsonLength + 8
@@ -218,8 +222,35 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   for (const name of Object.keys(geometry.attributes)) if (!['position', 'normal', 'uv', 'skinIndex', 'skinWeight'].includes(name)) geometry.deleteAttribute(name)
 
   await MeshoptSimplifier.ready
+  // Parts built for this rig elsewhere (the game's weapons: <work dir>/<unit>/parts.glb, one mesh per bone, in game
+  // space) ride their bone rigidly; the body gives up their share of the budget.
+  const srcDir = path.join(workDir, unit)
+  const partsFile = path.join(srcDir, 'parts.glb')
+  const parts: Array<{ bone: string, geometry: THREE.BufferGeometry, material: THREE.Material, name: string }> = []
+  if (existsSync(partsFile)) {
+    const { scene: partScene } = await load(partsFile)
+    partScene.updateMatrixWorld(true)
+    partScene.traverse(o => {
+      const m = o as THREE.Mesh
+      if (m.isMesh !== true) return
+      const bone = String(m.userData.bone ?? m.name.replace(/^[^.]*\./, ''))
+      const index = bones.findIndex(b => b.name === bone)
+      if (index < 0) throw new Error(`${unit}: part ${m.name} wants bone ${bone}, not in the skeleton`)
+      const geo = m.geometry.clone().applyMatrix4(m.matrixWorld)
+      for (const name of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv'].includes(name)) geo.deleteAttribute(name)
+      const n = geo.attributes.position.count
+      const si = new Uint16Array(n * 4); const sw = new Float32Array(n * 4)
+      for (let i = 0; i < n; i++) { si[i * 4] = index; sw[i * 4] = 1 }
+      geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4))
+      geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4))
+      const material = Array.isArray(m.material) ? m.material[0] : m.material
+      parts.push({ bone, geometry: geo, material, name: String(m.userData.part ?? m.name.split('.')[0]) })
+    })
+  }
+  const partTris = parts.reduce((t, x) => t + triangles(x.geometry), 0)
+  const bodyBudget = spec.budget - partTris
   const tris0 = triangles(geometry)
-  const lod0 = tris0 > spec.budget ? simplify(geometry, spec.budget / tris0 * 0.99) : geometry
+  const lod0 = tris0 > bodyBudget ? simplify(geometry, bodyBudget / tris0 * 0.99) : geometry
   const levels = [lod0, ...(spec.lods ?? [0.45, 0.15]).map(r => simplify(lod0, r))]
   const lodReport: number[] = []
   const meshes: THREE.SkinnedMesh[] = []
@@ -231,8 +262,40 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     meshes.push(mesh)
     lodReport.push(triangles(geo))
   })
+  const partReport: Record<string, number[]> = {}
+  for (const part of parts) {
+    const base = `${part.name}_${part.bone}`
+    const tris = triangles(part.geometry)
+    const partLevels = tris <= 60 ? [part.geometry] : [part.geometry, ...(spec.lods ?? [0.45, 0.15]).map(r => simplify(part.geometry, r))]
+    partReport[base] = []
+    partLevels.forEach((geo, i) => {
+      if (geo.attributes.uv !== undefined && geo.index !== null) geo.computeTangents()
+      const mesh = new THREE.SkinnedMesh(geo, part.material)
+      mesh.name = i === 0 ? base : `${base}_LOD${i}`
+      out.add(mesh)
+      meshes.push(mesh)
+      partReport[base].push(triangles(geo))
+    })
+  }
   const exportSkeleton = new THREE.Skeleton(bones)
   for (const mesh of meshes) mesh.bind(exportSkeleton)
+
+  // The rest skeleton in game space, for builds that fit parts to this rig: every joint, and each hand's grip
+  // (the closed fist's centre: most of the way from the wrist to the middle knuckle).
+  const joint = (name: string): THREE.Vector3 | null => {
+    const b = bones.find(x => x.name === name)
+    return b === undefined ? null : new THREE.Vector3().setFromMatrixPosition(b.matrixWorld)
+  }
+  const skeletonOut: Record<string, number[]> = {}
+  for (const b of bones) skeletonOut[b.name] = new THREE.Vector3().setFromMatrixPosition(b.matrixWorld).toArray().map(x => +x.toFixed(5))
+  for (const side of ['Left', 'Right']) {
+    const hand = joint(`${side}Hand`); const knuckle = joint(`${side}HandMiddle1`); const fore = joint(`${side}ForeArm`)
+    if (hand === null || fore === null) continue
+    const grip = knuckle !== null ? hand.clone().lerp(knuckle, 0.75) : hand.clone().addScaledVector(hand.clone().sub(fore).normalize(), 0.08 * spec.height)
+    skeletonOut[`grip.${side === 'Left' ? 'L' : 'R'}`] = grip.toArray().map(x => +x.toFixed(5))
+  }
+  mkdirSync(srcDir, { recursive: true })
+  writeFileSync(path.join(srcDir, 'skeleton.json'), JSON.stringify({ space: 'glTF (Y up, facing +Z), metres', height: spec.height, joints: skeletonOut }, null, 1) + '\n')
 
   // Attack: the blow at `hit` of the clip. Stride from the walk.
   for (const [name, c] of Object.entries(spec.clips)) {
@@ -258,8 +321,6 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   mkdirSync(modelsDir, { recursive: true })
   writeFileSync(path.join(modelsDir, `${unit}.glb`), Buffer.from(result))
 
-  const srcDir = path.join(workDir, unit)
-  mkdirSync(srcDir, { recursive: true })
   const image = embeddedImage(riggedFile)
   if (image !== null) writeFileSync(path.join(srcDir, `base.${image.ext}`), image.bytes)
   let commit = 'unknown'
@@ -271,7 +332,7 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     height: spec.height,
     scale: +s.toFixed(5),
     bones: bones.length,
-    triangles: { source: tris0, budget: spec.budget, lods: lodReport },
+    triangles: { source: tris0, budget: spec.budget, lods: lodReport, parts: partReport },
     clips: clipReport,
     walkStride: walkStride === null ? null : +walkStride.toFixed(3),
     texture: image === null ? null : { file: `base.${image.ext}`, sha256: createHash('sha256').update(image.bytes).digest('hex') },
