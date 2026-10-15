@@ -48,6 +48,8 @@ interface UnitSpec {
   character: string, height: number, budget: number, lods?: number[], clips: Record<string, ClipSpec>
   /** Split the body's own head off as its own mesh (a swappable head: the game picks one Head* per unit). */
   head?: { name: string, above?: number }
+  /** Where this one's .glb goes instead of <models dir> (relative to the spec's repo: a source, not a unit). */
+  models_dir?: string
 }
 
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
@@ -388,6 +390,7 @@ const spec = JSON.parse(readFileSync(specFile, 'utf8')) as { defaults?: Partial<
 for (const [unit, unitSpec] of Object.entries(spec.units)) {
   if (only.length > 0 && !only.includes(unit)) continue
   const merged = { ...spec.defaults, ...unitSpec } as UnitSpec
-  const report = await exportUnit(unit, merged, modelsDir, workDir)
+  const repo = path.resolve(path.dirname(specFile), '..', '..')
+  const report = await exportUnit(unit, merged, merged.models_dir !== undefined ? path.join(repo, merged.models_dir) : modelsDir, workDir)
   console.log(JSON.stringify({ unit, triangles: report.triangles, walkStride: report.walkStride, clips: report.clips }))
 }
