@@ -43,7 +43,10 @@ console.warn = (...a: unknown[]) => { if (!String(a[0]).includes('THREE.GLTFLoad
 const ROOT = path.resolve(import.meta.dirname, '..')
 const WORKSPACE = path.join(ROOT, 'workspace')
 
-interface ClipSpec { clip: string, loop?: boolean, inPlace?: boolean, speed?: number, attack?: boolean, hit?: number, hitAt?: number, hand?: string, trim?: [number, number], window?: number }
+interface ClipSpec { clip: string, loop?: boolean, inPlace?: boolean, speed?: number, attack?: boolean, hit?: number, hitAt?: number, hand?: string, trim?: [number, number], window?: number
+  /** Retime to cover ground at that clip's pace (the game plays Carry at the Walk's stride). */
+  matchStride?: string
+}
 interface UnitSpec {
   character: string, height: number, budget: number, lods?: number[], clips: Record<string, ClipSpec>
   /** Split the body's own head off as its own mesh (a swappable head: the game picks one Head* per unit). */
@@ -114,6 +117,30 @@ function blowTime (root: THREE.Object3D, clip: THREE.AnimationClip, hand: string
     if (v > speed) { speed = v; best = times[i] }
   }
   return best
+}
+
+// What a game clip must look like, by its name: locomotion steps, standing clips stand. Library names can mislead
+// ("Carrying" was "Carrying Someone Idle", "Talking" "Talking While Seated"), so the export checks the motion itself.
+const STEPS = new Set(['Walk', 'Carry', 'Run'])
+// The library audit (tools/library_audit.py): clips whose motion contradicts their library name, by id.
+const AUDIT_FILE = path.join(WORKSPACE, 'library', 'audit.json')
+const AUDIT = existsSync(AUDIT_FILE)
+  ? (JSON.parse(readFileSync(AUDIT_FILE, 'utf8')) as { clips: Record<string, { name: string, problems: Array<{ rule: string, motion: string }> }> }).clips
+  : {}
+const STANDS = new Set(['Idle', 'Trade', 'Hunt'])
+
+/** Refuses a clip that doesn't move as its game name says: a walk whose feet don't swing, a standing clip whose hips
+ * sink (a seated or crouched clip). */
+function checkClip (root: THREE.Object3D, clip: THREE.AnimationClip, height: number): Record<string, number> {
+  const { at } = sample(root, clip, ['LeftFoot', 'RightFoot', 'Hips'], 15)
+  const swing = (n: string): number => {
+    const z = at.get(n)!.map(v => v.z)
+    return Math.max(...z) - Math.min(...z)
+  }
+  const hips = at.get('Hips')!.map(v => v.y).sort((a, b) => a - b)
+  const stats = { footSwing: +(Math.min(swing('LeftFoot'), swing('RightFoot')) / height).toFixed(3), hipsMedian: +(hips[Math.floor(hips.length / 2)] / height).toFixed(3) }
+  if (STEPS.has(clip.name) && stats.footSwing < 0.12) throw new Error(`clip ${clip.name}: the feet swing ${stats.footSwing} x height: it doesn't walk (an idle under a walking name?)`)
+  return stats
 }
 
 /** Ground covered per second by a walk at speed 1: the planted (lower) foot's backward speed. */
@@ -206,6 +233,11 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     if (c.trim !== undefined) clip = cut(clip, c.trim[0], Math.min(c.trim[1], clip.duration), name)
     clips.push(clip)
     clipReport[name] = { clip: c.clip, loop: c.loop === true, inPlace: c.inPlace === true, seconds: +clip.duration.toFixed(3) }
+    const flagged = AUDIT[c.clip]
+    if (flagged !== undefined) {
+      for (const p of flagged.problems) console.warn(`warning: ${unit} ${name}: library clip ${c.clip} "${flagged.name}" ${p.rule} ${p.motion}`)
+      Object.assign(clipReport[name] as object, { audit: flagged.problems.map(p => `${p.rule} ${p.motion}`) })
+    }
   }
 
   // The game unit: root bone above Hips, the mesh baked to world, scaled, grounded.
@@ -352,6 +384,26 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   }
   const walk = clips.find(c => c.name === 'Walk')
   const walkStride = walk !== undefined ? stride(out, walk) : null
+  for (const [name, c] of Object.entries(spec.clips)) {
+    const i = clips.findIndex(x => x.name === name)
+    const pace = c.matchStride !== undefined ? clips.find(x => x.name === c.matchStride) : undefined
+    if (pace === undefined) continue
+    const want = stride(out, pace); const have = stride(out, clips[i])
+    clips[i] = retime(clips[i], want / have)
+    clips[i].name = name
+    Object.assign(clipReport[name] as object, { matchStride: c.matchStride, retimed: +(want / have).toFixed(3), seconds: +clips[i].duration.toFixed(3) })
+  }
+  // every clip checked against its game name; standing clips against the rest pose's hips
+  exportSkeleton.pose()
+  out.updateMatrixWorld(true)
+  const restHips = new THREE.Vector3().setFromMatrixPosition(hips.matrixWorld).y / spec.height
+  for (const clip of clips) {
+    const stats = checkClip(out, clip, spec.height)
+    if (STANDS.has(clip.name) && stats.hipsMedian < 0.8 * restHips) {
+      throw new Error(`${unit}: clip ${clip.name}: the hips sit at ${stats.hipsMedian} x height (rest ${restHips.toFixed(3)}): not standing (a seated clip?)`)
+    }
+    Object.assign(clipReport[clip.name] as object, stats)
+  }
 
   // Back to the bind pose for export (sampling moved the bones).
   exportSkeleton.pose()
@@ -363,7 +415,7 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   const image = embeddedImage(riggedFile)
   if (image !== null) writeFileSync(path.join(srcDir, `base.${image.ext}`), image.bytes)
   let commit = 'unknown'
-  try { commit = execSync('git rev-parse --short HEAD', { cwd: ROOT }).toString().trim() } catch {}
+  try { commit = execSync('git rev-parse --short HEAD', { cwd: ROOT }).toString().trim() } catch { /* not a git checkout */ }
   const report = {
     unit,
     generator: 'rigsmith tools/game_export.ts',

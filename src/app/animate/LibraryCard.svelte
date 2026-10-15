@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { Check, CircleQuestionMark, Plus, Repeat } from '@lucide/svelte'
+  import { Check, CircleQuestionMark, Plus, Repeat, TriangleAlert } from '@lucide/svelte'
   import type { LibraryClip } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { animator } from '../../state/animator.svelte.ts'
@@ -47,6 +47,11 @@
     return `${clip.name}${detail === '' ? '' : ` — ${detail}`}${unsure}`
   })
 
+  // The library audit: the motion contradicts the name (an idle named "Carrying", a seated "Talking").
+  const warning = $derived((clip.problems ?? []).length > 0
+    ? `Doesn’t move as its name says: ${(clip.problems ?? []).map(p => p.motion).join('; ')}`
+    : null)
+
   async function add (e: MouseEvent): Promise<void> {
     e.stopPropagation()
     const c = app.selected
@@ -68,6 +73,7 @@
     {#if sheet === null && !failed}<div class="shimmer"></div>{/if}
     <span class="time mono">{duration}s</span>
     {#if clip.loop}<span class="loop" use:tooltip={'Loops seamlessly'}><Repeat size={11} /></span>{/if}
+    {#if warning}<span class="warn" use:tooltip={warning} aria-label={warning}><TriangleAlert size={12} /></span>{/if}
     <button class="add" class:on={added} onclick={add} aria-label={added ? 'Remove from set' : 'Add to set'} use:tooltip={added ? 'In this character’s set (click to remove)' : 'Add to set'}>
       {#if added}<Check size={14} strokeWidth={3} />{:else}<Plus size={15} />{/if}
     </button>
@@ -107,6 +113,7 @@
   @keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
   .time { position: absolute; left: 6px; bottom: 6px; font-size: 10.5px; padding: 1px 5px; border-radius: 4px; background: rgb(10 11 14 / 70%); color: var(--text-2); }
   .loop { position: absolute; left: 6px; top: 6px; color: var(--text-3); display: grid; }
+  .warn { position: absolute; right: 6px; bottom: 6px; padding: 3px; border-radius: 4px; display: grid; background: var(--warn-soft); color: var(--warn); }
   .add {
     position: absolute;
     right: 6px;

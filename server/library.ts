@@ -17,6 +17,9 @@ export interface Clip {
    * several near-equal `candidates`), 'provisional' (generated from motion features), 'bundled'.
    */
   nameSource?: string
+  /** Where the motion contradicts the name (tools/library_audit.py): "walks?" a walk that doesn't step, "standing?" a
+   * seated / crouched / lying clip whose name doesn't say so, "dies?", "jumps?". */
+  problems?: Array<{ rule: string, says: string, motion: string }>
   /** Other names an uncertain ('motion-candidate') clip may have. */
   candidates?: Array<{ name: string, description?: string | null, rmsDeg?: number }>
   source: string
@@ -124,7 +127,7 @@ async function bundledClips (): Promise<Clip[]> {
 
 async function manifest (): Promise<Manifest> {
   const file = path.join(LIBRARY, 'manifest.json')
-  let mtime = 0
+  let mtime: number
   try { mtime = (await stat(file)).mtimeMs } catch { return { version: 0, skeleton: 'mixamo', categories: [], clips: [] } }
   if (cache === null || cache.mtime !== mtime) {
     const loaded = await readJson<Manifest>(file, { version: 0, skeleton: 'mixamo', categories: [], clips: [] })
@@ -134,10 +137,24 @@ async function manifest (): Promise<Manifest> {
   return cache.manifest
 }
 
+let audit: { mtime: number, clips: Record<string, { problems: Clip['problems'] }> } | null = null
+
+/** tools/library_audit.py's findings, by clip id (re-read when the file changes). */
+async function auditFindings (): Promise<Record<string, { problems: Clip['problems'] }>> {
+  const file = path.join(LIBRARY, 'audit.json')
+  let mtime: number
+  try { mtime = (await stat(file)).mtimeMs } catch { return {} }
+  if (audit === null || audit.mtime !== mtime) {
+    audit = { mtime, clips: (await readJson<{ clips: Record<string, { problems: Clip['problems'] }> }>(file, { clips: {} })).clips }
+  }
+  return audit.clips
+}
+
 export interface LibraryQuery { category?: string, query?: string, source?: string, rig?: string, page: number, pageSize: number }
 
 export async function queryLibrary (q: LibraryQuery) {
   const m = await manifest()
+  const findings = await auditFindings()
   const rig = q.rig ?? 'human'
   const all = [...m.clips, ...await bundledClips()].filter(c => c.rig === rig)
   const terms = (q.query ?? '').toLowerCase().split(/\s+/).filter(Boolean)
@@ -167,6 +184,6 @@ export async function queryLibrary (q: LibraryQuery) {
     pages,
     pageSize,
     categories: order.map(id => ({ id, label: labels.get(id) ?? id.replace(/-/g, ' & ').replace(/^\w/, ch => ch.toUpperCase()), count: counts.get(id) ?? 0 })),
-    clips: matches.slice(page * pageSize, (page + 1) * pageSize).map(c => ({ ...c, url: c.href ?? `/files/library/${c.file}` })),
+    clips: matches.slice(page * pageSize, (page + 1) * pageSize).map(c => ({ ...c, url: c.href ?? `/files/library/${c.file}`, problems: findings[c.id]?.problems })),
   }
 }
