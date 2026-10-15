@@ -80,6 +80,17 @@ async function runInspect (id: string, update: Update, keepEdits = false): Promi
   })
 }
 
+/** A creature template's bundled clips (static/<template.animations>), if it has any. */
+async function templateAnimations (template: string): Promise<string | undefined> {
+  try {
+    const spec = JSON.parse(await readFile(path.join(ROOT, 'static', 'templates', `${template}.json`), 'utf8')) as { animations?: string }
+    const file = spec.animations === undefined ? undefined : path.join(ROOT, 'static', spec.animations)
+    return file !== undefined && existsSync(file) ? file : undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function runRig (id: string, update: Update): Promise<void> {
   const character = (await getCharacter(id))!
   const dir = characterDir(id)
@@ -92,15 +103,17 @@ async function runRig (id: string, update: Update): Promise<void> {
     args.push('--joints', jointsFile)
   }
   if (creature) args.push('--template', path.join(ROOT, 'static', 'templates', `${character.template!}.json`))
-  // Humanoids get pose-optimized weights after Blender (when PyTorch is around): Blender is the first 60%.
-  const optimize = !creature && torchPython() !== null
+  // Pose-optimized weights after Blender (when PyTorch is around): humanoids train on the library,
+  // creatures on their template's own clips. Blender is the first 60%.
+  const templateClips = creature ? await templateAnimations(character.template!) : undefined
+  const optimize = torchPython() !== null && (!creature || templateClips !== undefined)
   const share = optimize ? 0.6 : 1
   const started = Date.now()
   const { result } = await runBlender('autorig/rig.py', args, (progress, message) => { update({ progress: progress * share, message }) })
   const r = result as { joints: Record<string, Vec3>, seconds: number, method: string, warnings: string[] }
   if (optimize) {
     try {
-      await optimizeSkin(path.join(dir, 'rigged.glb'), (progress, message) => { update({ progress: share + (1 - share) * progress, message }) })
+      await optimizeSkin(path.join(dir, 'rigged.glb'), (progress, message) => { update({ progress: share + (1 - share) * progress, message }) }, templateClips)
       r.method += '+pose-optimized'
     } catch (error) {
       // The heat weights are a complete rig on their own; keep them and say what happened.
@@ -213,6 +226,27 @@ route('DELETE', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
   await deleteCharacter(id)
   events.emit('removed', id)
   send(res, 200, { ok: true })
+})
+
+// Creature template fitted along the mesh's medial skeleton (tools/creature_fit.py); 422 when the
+// mesh doesn't read as that body type (the client then uses the bounding-box fit).
+route('POST', /^\/api\/characters\/([a-z0-9-]+)\/fit-template$/, async (req, res, [id]) => {
+  const character = await getCharacter(id)
+  if (character === null) throw new HttpError(404, 'No such character')
+  const { template } = JSON.parse((await readBody(req)).toString() || '{}') as { template?: string }
+  if (template === undefined || !/^[a-z]+$/.test(template)) throw new HttpError(400, 'Bad template')
+  const python = path.join(ROOT, '.venv', 'bin', 'python')
+  const model = character.files.model === undefined ? null : path.join(characterDir(id), character.files.model)
+  if (model === null || !existsSync(python)) throw new HttpError(422, 'Skeleton fit unavailable')
+  const out = await new Promise<string>((resolve, reject) => {
+    const child = spawn(python, [path.join(ROOT, 'tools', 'creature_fit.py'), model, path.join(ROOT, 'static', 'templates', `${template}.json`)], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
+    child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+    child.on('close', code => { code === 0 ? resolve(stdout) : reject(new HttpError(422, stderr.trim().split('\n').pop() ?? 'fit failed')) })
+  })
+  send(res, 200, JSON.parse(out))
 })
 
 route('POST', /^\/api\/characters\/([a-z0-9-]+)\/rig$/, async (req, res, [id]) => {

@@ -36,7 +36,9 @@
       if (id !== 'human') {
         const box = viewer.character?.box
         if (box === undefined) throw new Error('The model is still loading')
-        joints = fitTemplate(await loadTemplate(id), box)
+        // Fit along the mesh's own skeleton (legs on their columns, tail along the tail); the plain
+        // bounding-box fit when the mesh doesn't read as that kind of body.
+        joints = (await api.fitTemplate(character.id, id).catch(() => null))?.joints ?? fitTemplate(await loadTemplate(id), box)
       } else if (character.autoJoints === undefined && character.kind !== 'mesh') {
         throw new Error('Humanoid re-rigging of an already rigged import is not supported yet; pick a creature template or re-import the unrigged mesh')
       }

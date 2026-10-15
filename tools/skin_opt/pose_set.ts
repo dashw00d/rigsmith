@@ -1,6 +1,8 @@
 // Export what the weight optimizer needs for one rigged GLB: rest vertices, triangles, current skin,
 // and world-space skinning matrices for a set of training poses retargeted from the library.
 // node tools/skin_opt/pose_set.ts <rig.glb> <out prefix> [--poses 256] [--exclude id,id] [--seed 1]
+//     [--from clips.glb [--only Name,Name | --skip Name,Name]]
+// --from samples a GLB's own clips (creature templates) instead of the humanoid library.
 //   writes <prefix>.json (layout) and <prefix>.bin (float32 / uint32 arrays, offsets in the json)
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -28,13 +30,32 @@ async function load (file: string): Promise<{ scene: THREE.Group, animations: TH
 }
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 
-const manifest = JSON.parse(readFileSync(path.join(LIBRARY, 'manifest.json'), 'utf8')) as { clips: Array<{ id: string, file: string, duplicateOf?: string | null, rig?: string | null, frames?: number }> }
-const pool = manifest.clips.filter(c => (c.duplicateOf === null || c.duplicateOf === undefined) && (c.rig === null || c.rig === undefined || c.rig === 'mixamo') && !exclude.has(c.id) && (c.frames ?? 0) > 1)
+// Training clips: a template's own clips (--from), or a random draw from the humanoid library.
+interface Source { scene: THREE.Group, clip: THREE.AnimationClip, poses: number }
+const fromFile = flag('--from')
 const picks: string[] = []
-const clipCount = Math.ceil(poseCount / 2)
-while (picks.length < Math.min(clipCount, pool.length)) {
-  const c = pool[Math.floor(random() * pool.length)]
-  if (!picks.includes(c.id)) picks.push(c.id)
+async function sources (): Promise<Source[]> {
+  if (fromFile !== undefined) {
+    const only = flag('--only')?.split(',')
+    const skip = new Set(flag('--skip')?.split(',') ?? [])
+    const gltf = await load(fromFile)
+    const clips = gltf.animations.filter(c => c.duration > 0 && !skip.has(c.name) && (only === undefined || only.includes(c.name)) && !/rest.?pose/i.test(c.name))
+    picks.push(...clips.map(c => c.name))
+    return clips.map(clip => ({ scene: gltf.scene, clip, poses: Math.ceil(poseCount / Math.max(clips.length, 1)) }))
+  }
+  const manifest = JSON.parse(readFileSync(path.join(LIBRARY, 'manifest.json'), 'utf8')) as { clips: Array<{ id: string, file: string, duplicateOf?: string | null, rig?: string | null, frames?: number }> }
+  const pool = manifest.clips.filter(c => (c.duplicateOf === null || c.duplicateOf === undefined) && (c.rig === null || c.rig === undefined || c.rig === 'mixamo') && !exclude.has(c.id) && (c.frames ?? 0) > 1)
+  const clipCount = Math.ceil(poseCount / 2)
+  while (picks.length < Math.min(clipCount, pool.length)) {
+    const c = pool[Math.floor(random() * pool.length)]
+    if (!picks.includes(c.id)) picks.push(c.id)
+  }
+  const out: Source[] = []
+  for (const id of picks) {
+    const clip = await load(path.join(LIBRARY, 'clips', `${id}.glb`))
+    out.push({ scene: clip.scene, clip: clip.animations[0], poses: 2 })
+  }
+  return out
 }
 
 const rig = await load(rigPath) as { scene: THREE.Group, animations: THREE.AnimationClip[], parser: { associations: Map<THREE.Object3D, { meshes?: number, primitives?: number }> } }
@@ -79,13 +100,12 @@ const bindTo = new THREE.Matrix4().copy(m0.matrixWorld).multiply(m0.bindMatrixIn
 const fromRest = new THREE.Matrix4().copy(m0.bindMatrix).multiply(new THREE.Matrix4().copy(m0.matrixWorld).invert())
 const inverses = boneNodes.map(b => { const k = meshes.findIndex(m => m.skeleton.bones.includes(b)); return meshes[k].skeleton.boneInverses[meshes[k].skeleton.bones.indexOf(b)] })
 let poses = 0
-for (const id of picks) {
-  const clip = await load(path.join(LIBRARY, 'clips', `${id}.glb`))
-  const source = captureRest(clip.scene, isBone)
-  const baked = retarget(clip.scene, source, clip.animations[0], target, { fps: 30, inPlace: true })
+for (const src of await sources()) {
+  const source = captureRest(src.scene, isBone)
+  const baked = retarget(src.scene, source, src.clip, target, { fps: 30, inPlace: true })
   const mixer = new THREE.AnimationMixer(rig.scene)
   mixer.clipAction(baked).play()
-  for (const t of [random(), random()]) {
+  for (const t of Array.from({ length: src.poses }, () => random())) {
     if (poses >= poseCount) break
     mixer.setTime(baked.duration * t)
     rig.scene.updateMatrixWorld(true)
@@ -110,5 +130,7 @@ const bin = new Uint8Array(offset)
 for (const [name, arr] of parts) bin.set(new Uint8Array(arr.buffer), layout[name].offset)
 writeFileSync(prefix + '.bin', bin)
 const heads = restHeads
-writeFileSync(prefix + '.json', JSON.stringify({ boneNames, parents, heads, meshes: meshInfo, poses, clips: picks, layout }))
+// Exact node names (as three.js sanitizes them) let apply.ts find the skin joints without any renaming.
+const nodeNames = boneNodes.map(b => b.name)
+writeFileSync(prefix + '.json', JSON.stringify({ boneNames, nodeNames, parents, heads, meshes: meshInfo, poses, clips: picks, layout }))
 console.log(`poses ${poses} bones ${boneNames.length} verts ${rest.length / 3} tris ${tris.length / 3}`)

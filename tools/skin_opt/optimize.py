@@ -158,14 +158,28 @@ def main():
         tt = ((Vn - a_) @ ab) / (ab @ ab)
         return tt, np.linalg.norm(Vn - (a_ + np.clip(tt, 0, 1)[:, None] * ab), axis=1)
     limb = [(seg_dist(heads[bi[a_]], heads[bi[b_]]), a_) for a_, b_ in segs if a_ in bi and b_ in bi]
-    spine_d = np.min([seg_dist(heads[bi[a_]], heads[bi[b_]])[1] for a_, b_ in zip(spine_names, spine_names[1:]) if a_ in bi and b_ in bi], axis=0)
-    all_d = np.stack([d for (_, d), _ in limb], 1)
-    nearest = all_d.argmin(1)
+    spine = [seg_dist(heads[bi[a_]], heads[bi[b_]])[1] for a_, b_ in zip(spine_names, spine_names[1:]) if a_ in bi and b_ in bi]
     groups = []
-    for k, ((tt, d), name_) in enumerate(limb):
-        g = np.flatnonzero((nearest == k) & (d < spine_d) & (d < 0.08) & (tt > 0.35) & (tt < 0.65))
-        if len(g) >= 8:
-            groups.append(g)
+    if limb and spine:
+        spine_d = np.min(spine, axis=0)
+        all_d = np.stack([d for (_, d), _ in limb], 1)
+        nearest = all_d.argmin(1)
+        for k, ((tt, d), name_) in enumerate(limb):
+            g = np.flatnonzero((nearest == k) & (d < spine_d) & (d < 0.08) & (tt > 0.35) & (tt < 0.65))
+            if len(g) >= 8:
+                groups.append(g)
+    if not groups:
+        # Not a humanoid (creature templates): the middle of every long bone should stay rigid.
+        segs2 = [(n_, names[c_]) for n_, c_list in ((names[b_], children[b_]) for b_ in range(B)) for c_ in c_list[:1]
+                 if deform[bi[n_]] and np.linalg.norm(heads[bi[n_]] - heads[c_]) > 0.04]
+        limb = [(seg_dist(heads[bi[a_]], heads[bi[b_]]), a_) for a_, b_ in segs2]
+        if limb:
+            all_d = np.stack([d for (_, d), _ in limb], 1)
+            nearest = all_d.argmin(1)
+            for k, ((tt, d), name_) in enumerate(limb):
+                g = np.flatnonzero((nearest == k) & (d < 0.08) & (tt > 0.35) & (tt < 0.65))
+                if len(g) >= 8:
+                    groups.append(g)
     if 'Head' in bi and 'HeadTop_End' in bi:
         hd, tp = heads[bi['Head']], heads[bi['HeadTop_End']]
         g = np.flatnonzero((Vn[:, 1] > hd[1] + 0.35 * (tp[1] - hd[1])) & (np.hypot(Vn[:, 0] - hd[0], Vn[:, 2] - hd[2]) < 0.1))

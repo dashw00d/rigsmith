@@ -55,6 +55,7 @@ export const api = {
   },
   settings: async () => await call<Settings>('GET', '/api/settings'),
   saveSettings: async (patch: Partial<Settings>) => await call<Settings>('PATCH', '/api/settings', patch),
+  fitTemplate: async (id: string, template: string) => await call<{ joints: Record<string, [number, number, number]>, notes: string[] }>('POST', `/api/characters/${id}/fit-template`, { template }),
   saveExport: async (name: string, data: Blob) => await call<{ path: string }>('POST', `/api/exports?name=${encodeURIComponent(name)}`, data),
 }
 

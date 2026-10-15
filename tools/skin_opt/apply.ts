@@ -15,9 +15,11 @@ const gltf = JSON.parse(glb.subarray(20, 20 + jsonLength).toString('utf8')) as {
   bufferViews: Array<{ byteOffset?: number, byteStride?: number }>
 }
 const binStart = 20 + jsonLength + 8
-const meta = JSON.parse(readFileSync(prefix + '.json', 'utf8')) as { boneNames: string[], meshes: Array<{ count: number, mesh?: number, primitive?: number }> }
+const meta = JSON.parse(readFileSync(prefix + '.json', 'utf8')) as { boneNames: string[], nodeNames?: string[], meshes: Array<{ count: number, mesh?: number, primitive?: number }> }
 const rows = readFileSync(prefix + '.opt.bin')
 const canonical = (name: string): string => name.replace(/^mixamorig\d*[:_]?/, '')
+// three.js's PropertyBinding.sanitizeNodeName, so JSON names compare with the names pose_set saw.
+const sanitize = (name: string): string => name.replace(/\s/g, '_').replace(/[[\].:/]/g, '')
 
 const SIZE: Record<number, number> = { 5121: 1, 5123: 2, 5126: 4 }
 function write (view: Buffer, type: number, offset: number, value: number, normalized: boolean): void {
@@ -33,8 +35,12 @@ for (const info of meta.meshes) {
   const prim = gltf.meshes[info.mesh].primitives[info.primitive]
   const node = gltf.nodes.find(n => n.mesh === info.mesh && n.skin !== undefined)
   if (node === undefined) throw new Error(`no skinned node for mesh ${info.mesh}`)
+  const raw = gltf.skins[node.skin!].joints.map(j => sanitize(gltf.nodes[j].name ?? ''))
   const joints = gltf.skins[node.skin!].joints.map(j => canonical(gltf.nodes[j].name ?? ''))
-  const jointOf = meta.boneNames.map(name => joints.indexOf(name))
+  const jointOf = meta.boneNames.map((name, b) => {
+    const exact = meta.nodeNames === undefined ? -1 : raw.indexOf(meta.nodeNames[b])
+    return exact >= 0 ? exact : joints.indexOf(name)
+  })
   const ja = gltf.accessors[prim.attributes.JOINTS_0]
   const wa = gltf.accessors[prim.attributes.WEIGHTS_0]
   if (ja.count !== info.count || wa.count !== info.count) throw new Error('vertex count mismatch')
