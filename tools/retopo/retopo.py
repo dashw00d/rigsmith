@@ -5,7 +5,7 @@ npm run retopo -- <in.glb|obj> <out.glb> [--remesher instant|quadwild] [--triang
 
 Remeshers:
   instant   Instant Meshes (PyNanoInstantMeshes): uniform field-aligned quads, ~0.5 s.
-  quadwild  QuadWild-BiMDF (binary release, RIGSMITH_QUADWILD or ~/dev/ml/quadwild-bimdf): traces
+  quadwild  QuadWild-BiMDF (binary release, RIGSMITH_QUADWILD or ~/dev/third_party/quadwild-bimdf): traces
             feature-following patches and solves a global quad layout, ~40-60 s. Its size control has
             a floor set by the patch count, so very low targets come out above the target.
 
@@ -62,7 +62,7 @@ def remesh(mesh, triangles, crease, smooth):
     return out, sum(1 for r in polys if len(r) == 4), len(polys)
 
 
-QUADWILD = os.environ.get('RIGSMITH_QUADWILD', os.path.expanduser('~/dev/ml/quadwild-bimdf'))
+QUADWILD = os.environ.get('RIGSMITH_QUADWILD', os.path.expanduser('~/dev/third_party/quadwild-bimdf'))
 
 
 def quads_to_trimesh(verts, polys):
