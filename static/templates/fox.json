@@ -1,0 +1,399 @@
+{
+ "id": "fox",
+ "label": "Fox",
+ "joints": {
+  "root": [
+   0,
+   0,
+   0
+  ],
+  "Hips": [
+   0.0,
+   1.06904,
+   -0.7268
+  ],
+  "Spine_1": [
+   -0.0,
+   1.02447,
+   -0.28847
+  ],
+  "Spine_2": [
+   0.0,
+   1.02066,
+   0.02401
+  ],
+  "Spine_2.001": [
+   0.0,
+   1.06157,
+   0.42333
+  ],
+  "Spine_3": [
+   0.0,
+   1.12574,
+   0.60055
+  ],
+  "Spine_4": [
+   0.0,
+   1.23231,
+   0.80312
+  ],
+  "Head": [
+   0.0,
+   1.33011,
+   0.96539
+  ],
+  "Nose": [
+   0.0,
+   1.25994,
+   1.26702
+  ],
+  "Head.tip": [
+   0.0,
+   1.20025,
+   1.43252
+  ],
+  "Ear_L": [
+   0.17621,
+   1.52295,
+   1.02129
+  ],
+  "Ear_Tip_L": [
+   0.21912,
+   1.67003,
+   1.05214
+  ],
+  "Chin": [
+   0.0,
+   1.16085,
+   1.22358
+  ],
+  "Chin_Tip": [
+   0.0,
+   1.07775,
+   1.32915
+  ],
+  "Ear_R": [
+   -0.17621,
+   1.52295,
+   1.02129
+  ],
+  "Ear_Tip_R": [
+   -0.21912,
+   1.67003,
+   1.05214
+  ],
+  "Front_Leg_Shoulder_L": [
+   0.0843,
+   1.16543,
+   0.11882
+  ],
+  "Front_Leg_Upper_L": [
+   0.14973,
+   0.8775,
+   0.53226
+  ],
+  "Front_Leg_Lower_L": [
+   0.14971,
+   0.49271,
+   0.39092
+  ],
+  "Front_Leg_Ankle_L": [
+   0.14973,
+   0.13162,
+   0.39868
+  ],
+  "Front_Leg_Foot_L": [
+   0.15134,
+   0.03772,
+   0.43346
+  ],
+  "Front_Leg_Tip_L": [
+   0.15134,
+   0.02948,
+   0.51588
+  ],
+  "Front_Leg_Shoulder_R": [
+   -0.0843,
+   1.16543,
+   0.11882
+  ],
+  "Front_Leg_Upper_R": [
+   -0.14973,
+   0.8775,
+   0.53226
+  ],
+  "Front_Leg_Lower_R": [
+   -0.14971,
+   0.49271,
+   0.39092
+  ],
+  "Front_Leg_Ankle_R": [
+   -0.14973,
+   0.13162,
+   0.39868
+  ],
+  "Front_Leg_Foot_R": [
+   -0.15134,
+   0.03772,
+   0.43346
+  ],
+  "Front_Leg_Tip_R": [
+   -0.15134,
+   0.02948,
+   0.51588
+  ],
+  "Stomach": [
+   -0.0,
+   0.91517,
+   -0.02389
+  ],
+  "Stomach_tip": [
+   -0.0,
+   0.74475,
+   -0.09622
+  ],
+  "Tail_Base": [
+   -0.0,
+   1.07471,
+   -0.82833
+  ],
+  "Tail_Mid": [
+   -0.0,
+   1.07729,
+   -1.09268
+  ],
+  "Tail_Mid.001": [
+   -0.0,
+   1.07338,
+   -1.51418
+  ],
+  "Tail_End": [
+   -0.0,
+   1.08991,
+   -1.8279
+  ],
+  "Tail_Tip": [
+   -0.0,
+   1.09965,
+   -2.06777
+  ],
+  "Back_Leg_Pelvis_L": [
+   0.07395,
+   1.16474,
+   -0.23495
+  ],
+  "Back_Leg_Upper_L": [
+   0.16055,
+   0.99676,
+   -0.66511
+  ],
+  "Back_Leg_Lower_L": [
+   0.16058,
+   0.69434,
+   -0.5383
+  ],
+  "Back_Leg_Ankle_L": [
+   0.16052,
+   0.35114,
+   -0.80323
+  ],
+  "Back_Leg_Foot_L": [
+   0.16049,
+   0.11218,
+   -0.75587
+  ],
+  "Back_Leg_Foot_1_L": [
+   0.16044,
+   0.02896,
+   -0.68962
+  ],
+  "Back_Leg_Tip_L": [
+   0.16044,
+   0.02652,
+   -0.63259
+  ],
+  "Back_Leg_Pelvis_R": [
+   -0.07395,
+   1.16474,
+   -0.23495
+  ],
+  "Back_Leg_Upper_R": [
+   -0.16055,
+   0.99676,
+   -0.66511
+  ],
+  "Back_Leg_Lower_R": [
+   -0.16058,
+   0.69434,
+   -0.5383
+  ],
+  "Back_Leg_Ankle_R": [
+   -0.16052,
+   0.35114,
+   -0.80323
+  ],
+  "Back_Leg_Foot_R": [
+   -0.16049,
+   0.11218,
+   -0.75587
+  ],
+  "Back_Leg_Foot_1_R": [
+   -0.16044,
+   0.02896,
+   -0.68962
+  ],
+  "Back_Leg_Tip_R": [
+   -0.16044,
+   0.02652,
+   -0.63259
+  ]
+ },
+ "parents": {
+  "root": null,
+  "Hips": "root",
+  "Spine_1": "Hips",
+  "Spine_2": "Spine_1",
+  "Spine_2.001": "Spine_2",
+  "Spine_3": "Spine_2.001",
+  "Spine_4": "Spine_3",
+  "Head": "Spine_4",
+  "Nose": "Head",
+  "Head.tip": "Nose",
+  "Ear_L": "Nose",
+  "Ear_Tip_L": "Ear_L",
+  "Chin": "Nose",
+  "Chin_Tip": "Chin",
+  "Ear_R": "Nose",
+  "Ear_Tip_R": "Ear_R",
+  "Front_Leg_Shoulder_L": "Spine_2.001",
+  "Front_Leg_Upper_L": "Front_Leg_Shoulder_L",
+  "Front_Leg_Lower_L": "Front_Leg_Upper_L",
+  "Front_Leg_Ankle_L": "Front_Leg_Lower_L",
+  "Front_Leg_Foot_L": "Front_Leg_Ankle_L",
+  "Front_Leg_Tip_L": "Front_Leg_Foot_L",
+  "Front_Leg_Shoulder_R": "Spine_2.001",
+  "Front_Leg_Upper_R": "Front_Leg_Shoulder_R",
+  "Front_Leg_Lower_R": "Front_Leg_Upper_R",
+  "Front_Leg_Ankle_R": "Front_Leg_Lower_R",
+  "Front_Leg_Foot_R": "Front_Leg_Ankle_R",
+  "Front_Leg_Tip_R": "Front_Leg_Foot_R",
+  "Stomach": "Spine_2",
+  "Stomach_tip": "Stomach",
+  "Tail_Base": "Hips",
+  "Tail_Mid": "Tail_Base",
+  "Tail_Mid.001": "Tail_Mid",
+  "Tail_End": "Tail_Mid.001",
+  "Tail_Tip": "Tail_End",
+  "Back_Leg_Pelvis_L": "Hips",
+  "Back_Leg_Upper_L": "Back_Leg_Pelvis_L",
+  "Back_Leg_Lower_L": "Back_Leg_Upper_L",
+  "Back_Leg_Ankle_L": "Back_Leg_Lower_L",
+  "Back_Leg_Foot_L": "Back_Leg_Ankle_L",
+  "Back_Leg_Foot_1_L": "Back_Leg_Foot_L",
+  "Back_Leg_Tip_L": "Back_Leg_Foot_1_L",
+  "Back_Leg_Pelvis_R": "Hips",
+  "Back_Leg_Upper_R": "Back_Leg_Pelvis_R",
+  "Back_Leg_Lower_R": "Back_Leg_Upper_R",
+  "Back_Leg_Ankle_R": "Back_Leg_Lower_R",
+  "Back_Leg_Foot_R": "Back_Leg_Ankle_R",
+  "Back_Leg_Foot_1_R": "Back_Leg_Foot_R",
+  "Back_Leg_Tip_R": "Back_Leg_Foot_1_R"
+ },
+ "order": [
+  "root",
+  "Hips",
+  "Spine_1",
+  "Spine_2",
+  "Spine_2.001",
+  "Spine_3",
+  "Spine_4",
+  "Head",
+  "Nose",
+  "Head.tip",
+  "Ear_L",
+  "Ear_Tip_L",
+  "Chin",
+  "Chin_Tip",
+  "Ear_R",
+  "Ear_Tip_R",
+  "Front_Leg_Shoulder_L",
+  "Front_Leg_Upper_L",
+  "Front_Leg_Lower_L",
+  "Front_Leg_Ankle_L",
+  "Front_Leg_Foot_L",
+  "Front_Leg_Tip_L",
+  "Front_Leg_Shoulder_R",
+  "Front_Leg_Upper_R",
+  "Front_Leg_Lower_R",
+  "Front_Leg_Ankle_R",
+  "Front_Leg_Foot_R",
+  "Front_Leg_Tip_R",
+  "Stomach",
+  "Stomach_tip",
+  "Tail_Base",
+  "Tail_Mid",
+  "Tail_Mid.001",
+  "Tail_End",
+  "Tail_Tip",
+  "Back_Leg_Pelvis_L",
+  "Back_Leg_Upper_L",
+  "Back_Leg_Lower_L",
+  "Back_Leg_Ankle_L",
+  "Back_Leg_Foot_L",
+  "Back_Leg_Foot_1_L",
+  "Back_Leg_Tip_L",
+  "Back_Leg_Pelvis_R",
+  "Back_Leg_Upper_R",
+  "Back_Leg_Lower_R",
+  "Back_Leg_Ankle_R",
+  "Back_Leg_Foot_R",
+  "Back_Leg_Foot_1_R",
+  "Back_Leg_Tip_R"
+ ],
+ "height": 1.67003,
+ "mirror": {
+  "Ear_L": "Ear_R",
+  "Ear_Tip_L": "Ear_Tip_R",
+  "Ear_R": "Ear_L",
+  "Ear_Tip_R": "Ear_Tip_L",
+  "Front_Leg_Shoulder_L": "Front_Leg_Shoulder_R",
+  "Front_Leg_Upper_L": "Front_Leg_Upper_R",
+  "Front_Leg_Lower_L": "Front_Leg_Lower_R",
+  "Front_Leg_Ankle_L": "Front_Leg_Ankle_R",
+  "Front_Leg_Foot_L": "Front_Leg_Foot_R",
+  "Front_Leg_Tip_L": "Front_Leg_Tip_R",
+  "Front_Leg_Shoulder_R": "Front_Leg_Shoulder_L",
+  "Front_Leg_Upper_R": "Front_Leg_Upper_L",
+  "Front_Leg_Lower_R": "Front_Leg_Lower_L",
+  "Front_Leg_Ankle_R": "Front_Leg_Ankle_L",
+  "Front_Leg_Foot_R": "Front_Leg_Foot_L",
+  "Front_Leg_Tip_R": "Front_Leg_Tip_L",
+  "Back_Leg_Pelvis_L": "Back_Leg_Pelvis_R",
+  "Back_Leg_Upper_L": "Back_Leg_Upper_R",
+  "Back_Leg_Lower_L": "Back_Leg_Lower_R",
+  "Back_Leg_Ankle_L": "Back_Leg_Ankle_R",
+  "Back_Leg_Foot_L": "Back_Leg_Foot_R",
+  "Back_Leg_Foot_1_L": "Back_Leg_Foot_1_R",
+  "Back_Leg_Tip_L": "Back_Leg_Tip_R",
+  "Back_Leg_Pelvis_R": "Back_Leg_Pelvis_L",
+  "Back_Leg_Upper_R": "Back_Leg_Upper_L",
+  "Back_Leg_Lower_R": "Back_Leg_Lower_L",
+  "Back_Leg_Ankle_R": "Back_Leg_Ankle_L",
+  "Back_Leg_Foot_R": "Back_Leg_Foot_L",
+  "Back_Leg_Foot_1_R": "Back_Leg_Foot_1_L",
+  "Back_Leg_Tip_R": "Back_Leg_Tip_L"
+ },
+ "animations": "animations/fox-animations.glb",
+ "meshBox": [
+  [
+   -0.25494,
+   -0.00268,
+   -2.12042
+  ],
+  [
+   0.25494,
+   1.69141,
+   1.46532
+  ]
+ ]
+}

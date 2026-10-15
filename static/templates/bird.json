@@ -1,0 +1,451 @@
+{
+ "id": "bird",
+ "label": "Bird",
+ "joints": {
+  "root": [
+   -0.0,
+   -0.00034,
+   0.00135
+  ],
+  "hips": [
+   -0.0,
+   0.50233,
+   -0.0835
+  ],
+  "spine_0": [
+   -0.00016,
+   0.48469,
+   0.0592
+  ],
+  "spine_1": [
+   0.00478,
+   0.48239,
+   0.25839
+  ],
+  "spine_2": [
+   0.00486,
+   0.49554,
+   0.4206
+  ],
+  "spine_3": [
+   0.00486,
+   0.52123,
+   0.5411
+  ],
+  "head": [
+   0.00486,
+   0.57182,
+   0.68848
+  ],
+  "mouth_upper": [
+   0.00486,
+   0.55962,
+   0.84933
+  ],
+  "mouth_upper_tip": [
+   0.00486,
+   0.52439,
+   1.03563
+  ],
+  "mouth_lower": [
+   0.00486,
+   0.48113,
+   0.87219
+  ],
+  "mouth_lower_tip": [
+   0.00486,
+   0.43615,
+   0.99985
+  ],
+  "wing_1_L": [
+   0.10387,
+   0.45943,
+   0.324
+  ],
+  "wing_2_L": [
+   0.39135,
+   0.65809,
+   0.22518
+  ],
+  "wing_feather_1_1_L": [
+   0.33106,
+   0.65809,
+   0.09464
+  ],
+  "wing_feather_1_2_L": [
+   0.34753,
+   0.65809,
+   -0.17017
+  ],
+  "wing_3_L": [
+   0.62553,
+   0.6747,
+   0.27476
+  ],
+  "wing_4_L": [
+   1.10804,
+   0.66011,
+   0.06711
+  ],
+  "wing_5_L": [
+   1.33079,
+   0.62769,
+   -0.09615
+  ],
+  "wing_tip_L": [
+   1.57485,
+   0.59818,
+   -0.32594
+  ],
+  "wing_feather_4_1_L": [
+   1.25383,
+   0.67251,
+   -0.16327
+  ],
+  "wing_feather_4_2_L": [
+   1.16793,
+   0.67089,
+   -0.31385
+  ],
+  "wing_feather_3_1_L": [
+   1.03973,
+   0.6642,
+   -0.02448
+  ],
+  "wing_feather_3_2_L": [
+   0.93116,
+   0.6626,
+   -0.18503
+  ],
+  "wing_feather_2_1_L": [
+   0.60323,
+   0.68986,
+   0.14863
+  ],
+  "wing_feather_2_2_L": [
+   0.63321,
+   0.6894,
+   -0.1067
+  ],
+  "wing_1_R": [
+   -0.10387,
+   0.45943,
+   0.324
+  ],
+  "wing_2_R": [
+   -0.39135,
+   0.65809,
+   0.22518
+  ],
+  "wing_feather_1_1_R": [
+   -0.33106,
+   0.65809,
+   0.09464
+  ],
+  "wing_feather_1_2_R": [
+   -0.34753,
+   0.65809,
+   -0.17017
+  ],
+  "wing_3_R": [
+   -0.62553,
+   0.6747,
+   0.27476
+  ],
+  "wing_4_R": [
+   -1.10898,
+   0.66011,
+   0.06588
+  ],
+  "wing_5_R": [
+   -1.33173,
+   0.62769,
+   -0.09738
+  ],
+  "wing_tip_R": [
+   -1.57485,
+   0.59818,
+   -0.32594
+  ],
+  "wing_feather_4_1_R": [
+   -1.25383,
+   0.67251,
+   -0.16327
+  ],
+  "wing_feather_4_2_R": [
+   -1.16793,
+   0.67089,
+   -0.31385
+  ],
+  "wing_feather_3_1_R": [
+   -1.03973,
+   0.6642,
+   -0.02448
+  ],
+  "wing_feather_3_2_R": [
+   -0.93116,
+   0.6626,
+   -0.18503
+  ],
+  "wing_feather_2_1_R": [
+   -0.60323,
+   0.68986,
+   0.14864
+  ],
+  "wing_feather_2_2_R": [
+   -0.63321,
+   0.6894,
+   -0.1067
+  ],
+  "tail_1": [
+   -0.0,
+   0.5265,
+   -0.26344
+  ],
+  "tail_2": [
+   -0.0,
+   0.56189,
+   -0.42323
+  ],
+  "tail_3": [
+   -0.0,
+   0.58621,
+   -0.59864
+  ],
+  "tail_tip": [
+   -0.0,
+   0.57852,
+   -0.77556
+  ],
+  "UpperLeg_L": [
+   0.01598,
+   0.44398,
+   -0.14277
+  ],
+  "LowerLeg_L": [
+   0.11581,
+   0.39918,
+   -0.08252
+  ],
+  "AnkleLeg_L": [
+   0.08566,
+   0.23033,
+   -0.1983
+  ],
+  "Foot_L": [
+   0.08565,
+   0.02852,
+   -0.06339
+  ],
+  "Toes_L": [
+   0.08565,
+   0.02099,
+   0.05255
+  ],
+  "Toes_tip_L": [
+   0.08566,
+   0.01637,
+   0.15887
+  ],
+  "UpperLeg_R": [
+   -0.01598,
+   0.44398,
+   -0.14277
+  ],
+  "LowerLeg_R": [
+   -0.11581,
+   0.39918,
+   -0.08252
+  ],
+  "AnkleLeg_R": [
+   -0.08566,
+   0.23033,
+   -0.1983
+  ],
+  "Foot_R": [
+   -0.08565,
+   0.02852,
+   -0.06339
+  ],
+  "Toes_R": [
+   -0.08565,
+   0.02099,
+   0.05255
+  ],
+  "Toes_tip_R": [
+   -0.08565,
+   0.01637,
+   0.15887
+  ]
+ },
+ "parents": {
+  "root": null,
+  "hips": "root",
+  "spine_0": "hips",
+  "spine_1": "spine_0",
+  "spine_2": "spine_1",
+  "spine_3": "spine_2",
+  "head": "spine_3",
+  "mouth_upper": "head",
+  "mouth_upper_tip": "mouth_upper",
+  "mouth_lower": "mouth_upper",
+  "mouth_lower_tip": "mouth_lower",
+  "wing_1_L": "spine_1",
+  "wing_2_L": "wing_1_L",
+  "wing_feather_1_1_L": "wing_2_L",
+  "wing_feather_1_2_L": "wing_feather_1_1_L",
+  "wing_3_L": "wing_2_L",
+  "wing_4_L": "wing_3_L",
+  "wing_5_L": "wing_4_L",
+  "wing_tip_L": "wing_5_L",
+  "wing_feather_4_1_L": "wing_5_L",
+  "wing_feather_4_2_L": "wing_feather_4_1_L",
+  "wing_feather_3_1_L": "wing_4_L",
+  "wing_feather_3_2_L": "wing_feather_3_1_L",
+  "wing_feather_2_1_L": "wing_3_L",
+  "wing_feather_2_2_L": "wing_feather_2_1_L",
+  "wing_1_R": "spine_1",
+  "wing_2_R": "wing_1_R",
+  "wing_feather_1_1_R": "wing_2_R",
+  "wing_feather_1_2_R": "wing_feather_1_1_R",
+  "wing_3_R": "wing_2_R",
+  "wing_4_R": "wing_3_R",
+  "wing_5_R": "wing_4_R",
+  "wing_tip_R": "wing_5_R",
+  "wing_feather_4_1_R": "wing_5_R",
+  "wing_feather_4_2_R": "wing_feather_4_1_R",
+  "wing_feather_3_1_R": "wing_4_R",
+  "wing_feather_3_2_R": "wing_feather_3_1_R",
+  "wing_feather_2_1_R": "wing_3_R",
+  "wing_feather_2_2_R": "wing_feather_2_1_R",
+  "tail_1": "hips",
+  "tail_2": "tail_1",
+  "tail_3": "tail_2",
+  "tail_tip": "tail_3",
+  "UpperLeg_L": "hips",
+  "LowerLeg_L": "UpperLeg_L",
+  "AnkleLeg_L": "LowerLeg_L",
+  "Foot_L": "AnkleLeg_L",
+  "Toes_L": "Foot_L",
+  "Toes_tip_L": "Toes_L",
+  "UpperLeg_R": "hips",
+  "LowerLeg_R": "UpperLeg_R",
+  "AnkleLeg_R": "LowerLeg_R",
+  "Foot_R": "AnkleLeg_R",
+  "Toes_R": "Foot_R",
+  "Toes_tip_R": "Toes_R"
+ },
+ "order": [
+  "root",
+  "hips",
+  "spine_0",
+  "spine_1",
+  "spine_2",
+  "spine_3",
+  "head",
+  "mouth_upper",
+  "mouth_upper_tip",
+  "mouth_lower",
+  "mouth_lower_tip",
+  "wing_1_L",
+  "wing_2_L",
+  "wing_feather_1_1_L",
+  "wing_feather_1_2_L",
+  "wing_3_L",
+  "wing_4_L",
+  "wing_5_L",
+  "wing_tip_L",
+  "wing_feather_4_1_L",
+  "wing_feather_4_2_L",
+  "wing_feather_3_1_L",
+  "wing_feather_3_2_L",
+  "wing_feather_2_1_L",
+  "wing_feather_2_2_L",
+  "wing_1_R",
+  "wing_2_R",
+  "wing_feather_1_1_R",
+  "wing_feather_1_2_R",
+  "wing_3_R",
+  "wing_4_R",
+  "wing_5_R",
+  "wing_tip_R",
+  "wing_feather_4_1_R",
+  "wing_feather_4_2_R",
+  "wing_feather_3_1_R",
+  "wing_feather_3_2_R",
+  "wing_feather_2_1_R",
+  "wing_feather_2_2_R",
+  "tail_1",
+  "tail_2",
+  "tail_3",
+  "tail_tip",
+  "UpperLeg_L",
+  "LowerLeg_L",
+  "AnkleLeg_L",
+  "Foot_L",
+  "Toes_L",
+  "Toes_tip_L",
+  "UpperLeg_R",
+  "LowerLeg_R",
+  "AnkleLeg_R",
+  "Foot_R",
+  "Toes_R",
+  "Toes_tip_R"
+ ],
+ "height": 0.6902,
+ "mirror": {
+  "wing_1_L": "wing_1_R",
+  "wing_2_L": "wing_2_R",
+  "wing_feather_1_1_L": "wing_feather_1_1_R",
+  "wing_feather_1_2_L": "wing_feather_1_2_R",
+  "wing_3_L": "wing_3_R",
+  "wing_4_L": "wing_4_R",
+  "wing_5_L": "wing_5_R",
+  "wing_tip_L": "wing_tip_R",
+  "wing_feather_4_1_L": "wing_feather_4_1_R",
+  "wing_feather_4_2_L": "wing_feather_4_2_R",
+  "wing_feather_3_1_L": "wing_feather_3_1_R",
+  "wing_feather_3_2_L": "wing_feather_3_2_R",
+  "wing_feather_2_1_L": "wing_feather_2_1_R",
+  "wing_feather_2_2_L": "wing_feather_2_2_R",
+  "wing_1_R": "wing_1_L",
+  "wing_2_R": "wing_2_L",
+  "wing_feather_1_1_R": "wing_feather_1_1_L",
+  "wing_feather_1_2_R": "wing_feather_1_2_L",
+  "wing_3_R": "wing_3_L",
+  "wing_4_R": "wing_4_L",
+  "wing_5_R": "wing_5_L",
+  "wing_tip_R": "wing_tip_L",
+  "wing_feather_4_1_R": "wing_feather_4_1_L",
+  "wing_feather_4_2_R": "wing_feather_4_2_L",
+  "wing_feather_3_1_R": "wing_feather_3_1_L",
+  "wing_feather_3_2_R": "wing_feather_3_2_L",
+  "wing_feather_2_1_R": "wing_feather_2_1_L",
+  "wing_feather_2_2_R": "wing_feather_2_2_L",
+  "UpperLeg_L": "UpperLeg_R",
+  "LowerLeg_L": "LowerLeg_R",
+  "AnkleLeg_L": "AnkleLeg_R",
+  "Foot_L": "Foot_R",
+  "Toes_L": "Toes_R",
+  "Toes_tip_L": "Toes_tip_R",
+  "UpperLeg_R": "UpperLeg_L",
+  "LowerLeg_R": "LowerLeg_L",
+  "AnkleLeg_R": "AnkleLeg_L",
+  "Foot_R": "Foot_L",
+  "Toes_R": "Toes_L",
+  "Toes_tip_R": "Toes_tip_L"
+ },
+ "animations": "animations/bird-animations.glb",
+ "meshBox": [
+  [
+   -1.65982,
+   -0.0011,
+   -0.86903
+  ],
+  [
+   1.65982,
+   0.71802,
+   1.06554
+  ]
+ ]
+}

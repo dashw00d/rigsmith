@@ -1,0 +1,65 @@
+// Typed client for the local server (server/api.ts).
+import type { AnimationEntry, Character, Garment, Settings, TextureImage, Vec3 } from '../../server/workspace.ts'
+import type { Job } from '../../server/jobs.ts'
+import type { Clip } from '../../server/library.ts'
+
+export type { AnimationEntry, Character, Clip, Garment, Job, Settings, TextureImage, Vec3 }
+
+export interface LibraryClip extends Clip { url: string }
+export interface LibraryPage {
+  total: number
+  page: number
+  pages: number
+  pageSize: number
+  categories: Array<{ id: string, label: string, count: number }>
+  clips: LibraryClip[]
+}
+
+async function call<T> (method: string, url: string, body?: BodyInit | object, headers: Record<string, string> = {}): Promise<T> {
+  const isRaw = body instanceof Blob || body instanceof ArrayBuffer || body instanceof Uint8Array
+  const response = await fetch(url, {
+    method,
+    headers: body === undefined || isRaw ? headers : { 'content-type': 'application/json', ...headers },
+    body: body === undefined ? undefined : isRaw ? body as BodyInit : JSON.stringify(body),
+  })
+  const text = await response.text()
+  const data = text === '' ? null : JSON.parse(text)
+  if (!response.ok) throw new Error(data?.error ?? `${response.status} ${response.statusText}`)
+  return data as T
+}
+
+export const api = {
+  characters: async () => await call<Character[]>('GET', '/api/characters'),
+  upload: async (file: File) => await call<Character>('POST', `/api/characters?name=${encodeURIComponent(file.name)}`, file),
+  update: async (id: string, patch: Partial<Character>) => await call<Character>('PATCH', `/api/characters/${id}`, patch),
+  remove: async (id: string) => await call<{ ok: boolean }>('DELETE', `/api/characters/${id}`),
+  rig: async (id: string) => await call<Job>('POST', `/api/characters/${id}/rig`),
+  setTemplate: async (id: string, template: string, joints?: Record<string, Vec3>) => await call<Character>('POST', `/api/characters/${id}/template`, { template, joints }),
+  reimport: async (id: string) => await call<Job>('POST', `/api/characters/${id}/reimport`),
+  fillTexture: async (id: string) => await call<Job>('POST', `/api/characters/${id}/texture/fill`),
+  revertTexture: async (id: string) => await call<Job>('DELETE', `/api/characters/${id}/texture/fill`),
+  uploadGarment: async (id: string, file: File) => await call<Character>('POST', `/api/characters/${id}/garments?name=${encodeURIComponent(file.name)}`, file),
+  putProjectionFile: async (id: string, pid: string, file: string, data: Blob) => await call<{ path: string }>('PUT', `/api/characters/${id}/projections/${pid}/${file}`, data),
+  projections: async (id: string) => await call<Array<{ id: string, createdAt: number, hasResult: boolean }>>('GET', `/api/characters/${id}/projections`),
+  projection: async (id: string, pid: string) => await call<{ path: string, files: string[], result: string | null, resultVersion: number | null }>('GET', `/api/characters/${id}/projections/${pid}`),
+  codex: async (id: string, pid: string) => await call<Job>('POST', `/api/characters/${id}/projections/${pid}/codex`),
+  saveTexture: async (id: string, name: string, data: Blob) => await call<Job>('PUT', `/api/characters/${id}/textures/${encodeURIComponent(name)}.png`, data),
+  openFolder: async (folder: string) => await call<{ ok: boolean }>('POST', '/api/open', { path: folder }),
+  skeletonPresets: async () => await call<Array<{ name: string, map: Record<string, string> }>>('GET', '/api/skeleton-presets'),
+  saveSkeletonPreset: async (name: string, map: Record<string, string>) => await call<{ ok: boolean }>('POST', '/api/skeleton-presets', { name, map }),
+  thumbnail: async (id: string, image: Blob) => await call<Character>('PUT', `/api/characters/${id}/thumbnail`, image),
+  library: async (params: { category?: string, q?: string, page?: number, size?: number, rig?: string }) => {
+    const query = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') query.set(k, String(v))
+    return await call<LibraryPage>('GET', `/api/library?${query.toString()}`)
+  },
+  settings: async () => await call<Settings>('GET', '/api/settings'),
+  saveSettings: async (patch: Partial<Settings>) => await call<Settings>('PATCH', '/api/settings', patch),
+  saveExport: async (name: string, data: Blob) => await call<{ path: string }>('POST', `/api/exports?name=${encodeURIComponent(name)}`, data),
+}
+
+export function fileUrl (character: Character, file: string | undefined): string | null {
+  if (file === undefined) return null
+  const version = file.startsWith('thumbnail') ? character.thumbVersion : file.startsWith('textures/') ? character.texture?.at : character.revision
+  return `/files/characters/${character.id}/${file}?v=${version ?? 0}`
+}

@@ -1,0 +1,204 @@
+// The on-disk workspace: characters, library, exports and settings. Plain files, no database.
+import { createHash, randomBytes } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import path from 'node:path'
+
+export const ROOT = path.resolve(import.meta.dirname, '..')
+export const WORKSPACE = path.resolve(process.env.RIGSMITH_WORKSPACE ?? path.join(ROOT, 'workspace'))
+export const CHARACTERS = path.join(WORKSPACE, 'characters')
+export const LIBRARY = path.join(WORKSPACE, 'library')
+export const EXPORTS = path.join(WORKSPACE, 'exports')
+const SETTINGS = path.join(WORKSPACE, 'settings.json')
+
+export type Vec3 = [number, number, number]
+
+export interface Character {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
+  source: { file: string, originalName: string, bytes: number }
+  status: 'importing' | 'ready' | 'rigging' | 'rigged' | 'error'
+  /** What the import contained. */
+  kind?: 'mesh' | 'rigged' | 'animation'
+  rigPreset?: string
+  stats?: { vertices: number, triangles: number, height: number, meshes: number, bones: number }
+  /** Auto-detected or user-edited joint positions (glTF space: Y up, +Z forward). */
+  joints?: Record<string, Vec3>
+  /** Joints as detected on import, for "reset". */
+  autoJoints?: Record<string, Vec3>
+  jointsEdited?: boolean
+  fingers?: 'none' | 'one' | 'two' | 'full'
+  /** Skeleton template: 'human' (Mixamo, auto-placed) or a creature template id from static/templates. */
+  template?: string
+  /** For imported non-Mixamo skeletons: Mixamo bone -> this character's bone. */
+  boneMap?: Record<string, string>
+  /** Files relative to the character folder. */
+  files: { model?: string, rigged?: string, thumbnail?: string }
+  /** Bumped whenever the files change (cache-busting without reloading on every edit). */
+  revision?: number
+  thumbVersion?: number
+  rigReport?: { method: string, seconds: number, warnings: string[] }
+  texture?: { filled: boolean, images: TextureImage[], at: number, painted?: boolean }
+  animations: AnimationEntry[]
+  /** Props/accessories pinned to bones (see src/engine/props.ts). */
+  props?: PropAttachment[]
+  /** The user's own meshes worn by the character (see src/engine/garments.ts). */
+  garments?: Garment[]
+  error?: string
+}
+
+export interface Garment {
+  id: string
+  name: string
+  /** Normalized model, relative to the character folder; absent while importing. */
+  file?: string
+  status: 'importing' | 'ready' | 'error'
+  error?: string
+  /** 'clothing' skins to the body; 'rigid' follows one bone. */
+  mode: 'clothing' | 'rigid'
+  /** Clothing: which bones may influence it. */
+  policy: 'body' | 'cape' | 'skirt' | 'upper' | 'lower' | 'head'
+  bone: string
+  position: [number, number, number]
+  rotation: [number, number, number]
+  scale: number
+  /** Hide body triangles covered by this garment (stops poke-through). */
+  hideBody: boolean
+}
+
+export interface PropAttachment {
+  id: string
+  ref: string
+  name: string
+  socket: string
+  position: [number, number, number]
+  rotation: [number, number, number]
+  scale: number
+}
+
+export interface TextureImage {
+  image: string
+  /** Fraction of the texture detected as unpainted (magenta). */
+  coverage: number
+  file: string | null
+  mask?: string
+}
+
+export interface AnimationEntry {
+  clipId: string
+  /** Where the clip loads from; omitted for converted library clips (clips/<clipId>.glb). */
+  url?: string
+  name: string
+  inPlace: boolean
+  loop: boolean
+  speed: number
+  trim?: [number, number]
+}
+
+export interface Settings {
+  exportDir: string
+  exportFormat: 'glb' | 'fbx'
+  boneNames: 'mixamo' | 'mixamorig'
+}
+
+const DEFAULT_SETTINGS: Settings = {
+  exportDir: EXPORTS,
+  exportFormat: 'glb',
+  boneNames: 'mixamo',
+}
+
+export async function ensureWorkspace (): Promise<void> {
+  for (const dir of [CHARACTERS, LIBRARY, EXPORTS]) await mkdir(dir, { recursive: true })
+}
+
+export async function readJson<T> (file: string, fallback: T): Promise<T> {
+  try {
+    return JSON.parse(await readFile(file, 'utf8')) as T
+  } catch {
+    return fallback
+  }
+}
+
+/** Atomic JSON write (temp file + rename) so a crash never leaves half a file. */
+export async function writeJson (file: string, value: unknown): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true })
+  const temp = `${file}.${randomBytes(4).toString('hex')}.tmp`
+  await writeFile(temp, JSON.stringify(value, null, 1))
+  await rename(temp, file)
+}
+
+export function characterDir (id: string): string {
+  if (!/^[a-z0-9-]+$/.test(id)) throw new Error('Bad character id')
+  return path.join(CHARACTERS, id)
+}
+
+export async function listCharacters (): Promise<Character[]> {
+  const entries = existsSync(CHARACTERS) ? await readdir(CHARACTERS) : []
+  const all = await Promise.all(entries.map(async id => await readJson<Character | null>(path.join(CHARACTERS, id, 'character.json'), null)))
+  return all.filter((c): c is Character => c !== null).sort((a, b) => a.createdAt - b.createdAt)
+}
+
+export async function getCharacter (id: string): Promise<Character | null> {
+  return await readJson<Character | null>(path.join(characterDir(id), 'character.json'), null)
+}
+
+// Serialize writes per character so concurrent job updates can't clobber each other.
+const locks = new Map<string, Promise<unknown>>()
+
+export async function updateCharacter (id: string, change: (c: Character) => void): Promise<Character> {
+  const previous = locks.get(id) ?? Promise.resolve()
+  const next = previous.then(async () => {
+    const character = await getCharacter(id)
+    if (character === null) throw new Error(`No character ${id}`)
+    change(character)
+    character.updatedAt = Date.now()
+    await writeJson(path.join(characterDir(id), 'character.json'), character)
+    return character
+  })
+  locks.set(id, next.catch(() => {}))
+  return await next
+}
+
+export async function createCharacter (originalName: string, bytes: Buffer): Promise<Character> {
+  const stem = originalName.replace(/\.[^.]+$/, '').replace(/_rigged$/i, '')
+  const slug = stem.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'character'
+  const id = `${slug}-${createHash('sha256').update(bytes).digest('hex').slice(0, 6)}`
+  const dir = characterDir(id)
+  const existing = await getCharacter(id)
+  if (existing !== null) return existing
+  const ext = path.extname(originalName).toLowerCase()
+  await mkdir(path.join(dir, 'source'), { recursive: true })
+  const file = `source/original${ext}`
+  await writeFile(path.join(dir, file), bytes)
+  const now = Date.now()
+  const character: Character = {
+    id,
+    name: stem.replace(/[_-]+/g, ' ').replace(/\b\w/g, m => m.toUpperCase()),
+    createdAt: now,
+    updatedAt: now,
+    source: { file, originalName, bytes: bytes.length },
+    status: 'importing',
+    files: {},
+    animations: [],
+  }
+  await writeJson(path.join(dir, 'character.json'), character)
+  return character
+}
+
+export async function deleteCharacter (id: string): Promise<void> {
+  await rm(characterDir(id), { recursive: true, force: true })
+}
+
+export async function getSettings (): Promise<Settings> {
+  return { ...DEFAULT_SETTINGS, ...(await readJson<Partial<Settings>>(SETTINGS, {})) }
+}
+
+export async function saveSettings (change: Partial<Settings>): Promise<Settings> {
+  const next = { ...(await getSettings()), ...change }
+  if (next.exportDir.startsWith('~')) next.exportDir = path.join(homedir(), next.exportDir.slice(1))
+  await writeJson(SETTINGS, next)
+  return next
+}

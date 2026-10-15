@@ -1,0 +1,464 @@
+{
+ "id": "spider",
+ "label": "Spider",
+ "joints": {
+  "root": [
+   0,
+   0,
+   0
+  ],
+  "hips": [
+   0.0,
+   0.10722,
+   -0.17232
+  ],
+  "spine_1": [
+   -0.0,
+   0.10503,
+   -0.03063
+  ],
+  "spine_2": [
+   -0.0,
+   0.10886,
+   0.09956
+  ],
+  "head": [
+   -0.0,
+   0.11365,
+   0.23359
+  ],
+  "teeth_l": [
+   0.07555,
+   0.12367,
+   0.38648
+  ],
+  "teeth_tip_l": [
+   0.05016,
+   0.09452,
+   0.46865
+  ],
+  "head_tip": [
+   0.0,
+   0.13279,
+   0.35709
+  ],
+  "teeth_r": [
+   -0.07555,
+   0.12367,
+   0.38648
+  ],
+  "teeth_tip_r": [
+   -0.05016,
+   0.09452,
+   0.46865
+  ],
+  "legs_anchor_l": [
+   -0.0,
+   0.10886,
+   0.09956
+  ],
+  "legs_anchor_1_l": [
+   0.07393,
+   0.10886,
+   0.10043
+  ],
+  "leg_a_1_l": [
+   0.14719,
+   0.13218,
+   0.1973
+  ],
+  "leg_a_2_l": [
+   0.35299,
+   0.67555,
+   0.55323
+  ],
+  "leg_a_3_l": [
+   0.62378,
+   0.47525,
+   1.11583
+  ],
+  "leg_a_tip_l": [
+   0.75934,
+   0.00986,
+   1.36476
+  ],
+  "legs_anchor_2_l": [
+   0.07393,
+   0.10886,
+   0.10043
+  ],
+  "leg_b_1_l": [
+   0.14755,
+   0.11568,
+   0.08743
+  ],
+  "leg_b_2_l": [
+   0.64632,
+   0.39596,
+   0.32868
+  ],
+  "leg_b_3_l": [
+   1.04424,
+   0.2724,
+   0.68985
+  ],
+  "leg_b_tip_l": [
+   1.3035,
+   0.0031,
+   0.98466
+  ],
+  "legs_anchor_3_l": [
+   0.07393,
+   0.10886,
+   0.10043
+  ],
+  "leg_c_1_l": [
+   0.12238,
+   0.13045,
+   0.01184
+  ],
+  "leg_c_2_l": [
+   0.63867,
+   0.43578,
+   -0.01022
+  ],
+  "leg_c_3_l": [
+   1.14074,
+   0.30057,
+   0.04606
+  ],
+  "leg_c_tip_l": [
+   1.48064,
+   0.00577,
+   0.09043
+  ],
+  "legs_anchor_4_l": [
+   0.07393,
+   0.10886,
+   0.10043
+  ],
+  "leg_d_1_l": [
+   0.10878,
+   0.12065,
+   -0.0616
+  ],
+  "leg_d_2_l": [
+   0.56272,
+   0.62707,
+   -0.27301
+  ],
+  "leg_d_3_l": [
+   0.93397,
+   0.55355,
+   -0.52853
+  ],
+  "leg_d_tip_l": [
+   1.21466,
+   0.00901,
+   -0.77158
+  ],
+  "legs_anchor_r": [
+   -0.0,
+   0.10886,
+   0.09956
+  ],
+  "legs_anchor_1_r": [
+   -0.07393,
+   0.10886,
+   0.10043
+  ],
+  "leg_a_1_r": [
+   -0.14719,
+   0.13218,
+   0.1973
+  ],
+  "leg_a_2_r": [
+   -0.35299,
+   0.67555,
+   0.55323
+  ],
+  "leg_a_3_r": [
+   -0.62378,
+   0.47525,
+   1.11583
+  ],
+  "leg_a_tip_r": [
+   -0.75934,
+   0.00986,
+   1.36476
+  ],
+  "legs_anchor_2_r": [
+   -0.07393,
+   0.10886,
+   0.10043
+  ],
+  "leg_b_1_r": [
+   -0.14755,
+   0.11568,
+   0.08743
+  ],
+  "leg_b_2_r": [
+   -0.64632,
+   0.39596,
+   0.32868
+  ],
+  "leg_b_3_r": [
+   -1.04424,
+   0.2724,
+   0.68985
+  ],
+  "leg_b_tip_r": [
+   -1.3035,
+   0.0031,
+   0.98466
+  ],
+  "legs_anchor_3_r": [
+   -0.07393,
+   0.10886,
+   0.10043
+  ],
+  "leg_c_1_r": [
+   -0.12238,
+   0.13045,
+   0.01184
+  ],
+  "leg_c_2_r": [
+   -0.63867,
+   0.43578,
+   -0.01022
+  ],
+  "leg_c_3_r": [
+   -1.14074,
+   0.30057,
+   0.04606
+  ],
+  "leg_c_tip_r": [
+   -1.48064,
+   0.00577,
+   0.09043
+  ],
+  "legs_anchor_4_r": [
+   -0.07393,
+   0.10886,
+   0.10043
+  ],
+  "leg_d_1_r": [
+   -0.10878,
+   0.12065,
+   -0.0616
+  ],
+  "leg_d_2_r": [
+   -0.56272,
+   0.62707,
+   -0.27301
+  ],
+  "leg_d_3_r": [
+   -0.93397,
+   0.55355,
+   -0.52853
+  ],
+  "leg_d_tip_r": [
+   -1.21466,
+   0.00901,
+   -0.77157
+  ],
+  "tail_1": [
+   -0.0,
+   0.10738,
+   -0.22574
+  ],
+  "tail_2": [
+   0.0,
+   0.12297,
+   -0.37652
+  ],
+  "tail_3": [
+   0.0,
+   0.14824,
+   -0.50174
+  ],
+  "tail_tip": [
+   0.0,
+   0.17236,
+   -0.77056
+  ]
+ },
+ "parents": {
+  "root": null,
+  "hips": "root",
+  "spine_1": "hips",
+  "spine_2": "spine_1",
+  "head": "spine_2",
+  "teeth_l": "head",
+  "teeth_tip_l": "teeth_l",
+  "head_tip": "head",
+  "teeth_r": "head",
+  "teeth_tip_r": "teeth_r",
+  "legs_anchor_l": "spine_1",
+  "legs_anchor_1_l": "legs_anchor_l",
+  "leg_a_1_l": "legs_anchor_1_l",
+  "leg_a_2_l": "leg_a_1_l",
+  "leg_a_3_l": "leg_a_2_l",
+  "leg_a_tip_l": "leg_a_3_l",
+  "legs_anchor_2_l": "legs_anchor_l",
+  "leg_b_1_l": "legs_anchor_2_l",
+  "leg_b_2_l": "leg_b_1_l",
+  "leg_b_3_l": "leg_b_2_l",
+  "leg_b_tip_l": "leg_b_3_l",
+  "legs_anchor_3_l": "legs_anchor_l",
+  "leg_c_1_l": "legs_anchor_3_l",
+  "leg_c_2_l": "leg_c_1_l",
+  "leg_c_3_l": "leg_c_2_l",
+  "leg_c_tip_l": "leg_c_3_l",
+  "legs_anchor_4_l": "legs_anchor_l",
+  "leg_d_1_l": "legs_anchor_4_l",
+  "leg_d_2_l": "leg_d_1_l",
+  "leg_d_3_l": "leg_d_2_l",
+  "leg_d_tip_l": "leg_d_3_l",
+  "legs_anchor_r": "spine_1",
+  "legs_anchor_1_r": "legs_anchor_r",
+  "leg_a_1_r": "legs_anchor_1_r",
+  "leg_a_2_r": "leg_a_1_r",
+  "leg_a_3_r": "leg_a_2_r",
+  "leg_a_tip_r": "leg_a_3_r",
+  "legs_anchor_2_r": "legs_anchor_r",
+  "leg_b_1_r": "legs_anchor_2_r",
+  "leg_b_2_r": "leg_b_1_r",
+  "leg_b_3_r": "leg_b_2_r",
+  "leg_b_tip_r": "leg_b_3_r",
+  "legs_anchor_3_r": "legs_anchor_r",
+  "leg_c_1_r": "legs_anchor_3_r",
+  "leg_c_2_r": "leg_c_1_r",
+  "leg_c_3_r": "leg_c_2_r",
+  "leg_c_tip_r": "leg_c_3_r",
+  "legs_anchor_4_r": "legs_anchor_r",
+  "leg_d_1_r": "legs_anchor_4_r",
+  "leg_d_2_r": "leg_d_1_r",
+  "leg_d_3_r": "leg_d_2_r",
+  "leg_d_tip_r": "leg_d_3_r",
+  "tail_1": "hips",
+  "tail_2": "tail_1",
+  "tail_3": "tail_2",
+  "tail_tip": "tail_3"
+ },
+ "order": [
+  "root",
+  "hips",
+  "spine_1",
+  "spine_2",
+  "head",
+  "teeth_l",
+  "teeth_tip_l",
+  "head_tip",
+  "teeth_r",
+  "teeth_tip_r",
+  "legs_anchor_l",
+  "legs_anchor_1_l",
+  "leg_a_1_l",
+  "leg_a_2_l",
+  "leg_a_3_l",
+  "leg_a_tip_l",
+  "legs_anchor_2_l",
+  "leg_b_1_l",
+  "leg_b_2_l",
+  "leg_b_3_l",
+  "leg_b_tip_l",
+  "legs_anchor_3_l",
+  "leg_c_1_l",
+  "leg_c_2_l",
+  "leg_c_3_l",
+  "leg_c_tip_l",
+  "legs_anchor_4_l",
+  "leg_d_1_l",
+  "leg_d_2_l",
+  "leg_d_3_l",
+  "leg_d_tip_l",
+  "legs_anchor_r",
+  "legs_anchor_1_r",
+  "leg_a_1_r",
+  "leg_a_2_r",
+  "leg_a_3_r",
+  "leg_a_tip_r",
+  "legs_anchor_2_r",
+  "leg_b_1_r",
+  "leg_b_2_r",
+  "leg_b_3_r",
+  "leg_b_tip_r",
+  "legs_anchor_3_r",
+  "leg_c_1_r",
+  "leg_c_2_r",
+  "leg_c_3_r",
+  "leg_c_tip_r",
+  "legs_anchor_4_r",
+  "leg_d_1_r",
+  "leg_d_2_r",
+  "leg_d_3_r",
+  "leg_d_tip_r",
+  "tail_1",
+  "tail_2",
+  "tail_3",
+  "tail_tip"
+ ],
+ "height": 0.67555,
+ "mirror": {
+  "teeth_l": "teeth_r",
+  "teeth_tip_l": "teeth_tip_r",
+  "teeth_r": "teeth_l",
+  "teeth_tip_r": "teeth_tip_l",
+  "legs_anchor_l": "legs_anchor_r",
+  "legs_anchor_1_l": "legs_anchor_1_r",
+  "leg_a_1_l": "leg_a_1_r",
+  "leg_a_2_l": "leg_a_2_r",
+  "leg_a_3_l": "leg_a_3_r",
+  "leg_a_tip_l": "leg_a_tip_r",
+  "legs_anchor_2_l": "legs_anchor_2_r",
+  "leg_b_1_l": "leg_b_1_r",
+  "leg_b_2_l": "leg_b_2_r",
+  "leg_b_3_l": "leg_b_3_r",
+  "leg_b_tip_l": "leg_b_tip_r",
+  "legs_anchor_3_l": "legs_anchor_3_r",
+  "leg_c_1_l": "leg_c_1_r",
+  "leg_c_2_l": "leg_c_2_r",
+  "leg_c_3_l": "leg_c_3_r",
+  "leg_c_tip_l": "leg_c_tip_r",
+  "legs_anchor_4_l": "legs_anchor_4_r",
+  "leg_d_1_l": "leg_d_1_r",
+  "leg_d_2_l": "leg_d_2_r",
+  "leg_d_3_l": "leg_d_3_r",
+  "leg_d_tip_l": "leg_d_tip_r",
+  "legs_anchor_r": "legs_anchor_l",
+  "legs_anchor_1_r": "legs_anchor_1_l",
+  "leg_a_1_r": "leg_a_1_l",
+  "leg_a_2_r": "leg_a_2_l",
+  "leg_a_3_r": "leg_a_3_l",
+  "leg_a_tip_r": "leg_a_tip_l",
+  "legs_anchor_2_r": "legs_anchor_2_l",
+  "leg_b_1_r": "leg_b_1_l",
+  "leg_b_2_r": "leg_b_2_l",
+  "leg_b_3_r": "leg_b_3_l",
+  "leg_b_tip_r": "leg_b_tip_l",
+  "legs_anchor_3_r": "legs_anchor_3_l",
+  "leg_c_1_r": "leg_c_1_l",
+  "leg_c_2_r": "leg_c_2_l",
+  "leg_c_3_r": "leg_c_3_l",
+  "leg_c_tip_r": "leg_c_tip_l",
+  "legs_anchor_4_r": "legs_anchor_4_l",
+  "leg_d_1_r": "leg_d_1_l",
+  "leg_d_2_r": "leg_d_2_l",
+  "leg_d_3_r": "leg_d_3_l",
+  "leg_d_tip_r": "leg_d_tip_l"
+ },
+ "animations": "animations/spider-animations.glb",
+ "meshBox": [
+  [
+   -1.52486,
+   0.00104,
+   -0.82812
+  ],
+  [
+   1.52486,
+   0.74519,
+   1.4051
+  ]
+ ]
+}

@@ -1,2 +1,9 @@
 **/node_modules/**
 dist/**
+
+# local working data
+workspace/
+
+# python
+__pycache__/
+*.pyc

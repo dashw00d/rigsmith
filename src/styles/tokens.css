@@ -1,0 +1,46 @@
+/* Design tokens. Dark, calm, precise; one accent; left/right/center colors match rigging convention. */
+:root {
+  color-scheme: dark;
+
+  --bg-0: #0a0b0e;
+  --bg-1: #101217;
+  --bg-2: #15181e;
+  --bg-3: #1b1f27;
+  --bg-4: #232833;
+  --line: #20242d;
+  --line-strong: #2c3240;
+  --overlay: rgb(10 11 14 / 72%);
+
+  --text-1: #e9ebf1;
+  --text-2: #a4aaba;
+  --text-3: #6c7384;
+  --text-4: #4a505d;
+
+  --accent: #8ea2ff;
+  --accent-strong: #a9b8ff;
+  --accent-soft: rgb(142 162 255 / 14%);
+  --accent-ink: #0d1020;
+
+  --ok: #5fd39a;
+  --ok-soft: rgb(95 211 154 / 14%);
+  --warn: #f5c45e;
+  --warn-soft: rgb(245 196 94 / 14%);
+  --danger: #f2777a;
+  --danger-soft: rgb(242 119 122 / 14%);
+
+  --side-left: #6aaaff;
+  --side-right: #ff7ab8;
+  --side-center: #f5c45e;
+
+  --font: 'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+
+  --r-1: 5px;
+  --r-2: 8px;
+  --r-3: 12px;
+
+  --shadow-pop: 0 12px 40px rgb(0 0 0 / 45%), 0 0 0 1px var(--line-strong);
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --fast: 120ms;
+  --med: 220ms;
+}

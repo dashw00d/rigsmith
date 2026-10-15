@@ -1,0 +1,273 @@
+{
+ "id": "shark",
+ "label": "Fish",
+ "joints": {
+  "root": [
+   0,
+   0,
+   0
+  ],
+  "pelvis": [
+   0.0,
+   0.11814,
+   0.53716
+  ],
+  "tail_1": [
+   0.0,
+   0.11016,
+   0.20841
+  ],
+  "tail_2": [
+   0.0,
+   0.09929,
+   -0.15295
+  ],
+  "tail_3": [
+   0.0,
+   0.07755,
+   -0.63385
+  ],
+  "tail_4": [
+   0.00416,
+   0.05854,
+   -1.17044
+  ],
+  "tail_5": [
+   -0.0,
+   0.02865,
+   -1.60923
+  ],
+  "tail_6": [
+   -0.0,
+   0.0042,
+   -2.09828
+  ],
+  "tail_7": [
+   -0.0,
+   -0.02297,
+   -2.57918
+  ],
+  "tail_8": [
+   -0.0,
+   -0.04471,
+   -2.86989
+  ],
+  "tail_tip": [
+   -0.0,
+   -0.05286,
+   -3.21766
+  ],
+  "back_fin_0_l": [
+   -0.0,
+   0.02865,
+   -1.60923
+  ],
+  "back_fin_1_l": [
+   0.29912,
+   -0.20936,
+   -1.80748
+  ],
+  "back_fin_2_l": [
+   0.451,
+   -0.20936,
+   -1.83274
+  ],
+  "back_fin_tip_l": [
+   0.61239,
+   -0.20936,
+   -1.85529
+  ],
+  "back_fin_0_r": [
+   -0.0,
+   0.02865,
+   -1.60923
+  ],
+  "back_fin_1_r": [
+   -0.29913,
+   -0.20936,
+   -1.80748
+  ],
+  "back_fin_2_r": [
+   -0.451,
+   -0.20936,
+   -1.83274
+  ],
+  "back_fin_tip_r": [
+   -0.61239,
+   -0.20936,
+   -1.85529
+  ],
+  "front_fin_0_l": [
+   0.0,
+   0.09929,
+   -0.15295
+  ],
+  "front_fin_1_l": [
+   0.47138,
+   -0.32716,
+   -0.0797
+  ],
+  "front_fin_2_l": [
+   0.73351,
+   -0.46018,
+   -0.11882
+  ],
+  "front_fin_tip_l": [
+   1.0778,
+   -0.69884,
+   -0.18533
+  ],
+  "front_fin_0_r": [
+   0.0,
+   0.09929,
+   -0.15295
+  ],
+  "front_fin_1_r": [
+   -0.47138,
+   -0.32716,
+   -0.0797
+  ],
+  "front_fin_2_r": [
+   -0.73351,
+   -0.46018,
+   -0.11882
+  ],
+  "front_fin_tip_r": [
+   -1.0778,
+   -0.69884,
+   -0.18533
+  ],
+  "neck": [
+   0.0,
+   0.23637,
+   0.55426
+  ],
+  "head": [
+   0.0,
+   0.26371,
+   0.74444
+  ],
+  "head_tip": [
+   -0.0,
+   0.19307,
+   1.64375
+  ],
+  "mouth_base": [
+   0.0,
+   0.26371,
+   0.74444
+  ],
+  "mouth_1": [
+   -0.0,
+   -0.07319,
+   0.85131
+  ],
+  "mouth_tip": [
+   -0.0,
+   -0.56496,
+   1.30957
+  ]
+ },
+ "parents": {
+  "root": null,
+  "pelvis": "root",
+  "tail_1": "pelvis",
+  "tail_2": "tail_1",
+  "tail_3": "tail_2",
+  "tail_4": "tail_3",
+  "tail_5": "tail_4",
+  "tail_6": "tail_5",
+  "tail_7": "tail_6",
+  "tail_8": "tail_7",
+  "tail_tip": "tail_8",
+  "back_fin_0_l": "tail_4",
+  "back_fin_1_l": "back_fin_0_l",
+  "back_fin_2_l": "back_fin_1_l",
+  "back_fin_tip_l": "back_fin_2_l",
+  "back_fin_0_r": "tail_4",
+  "back_fin_1_r": "back_fin_0_r",
+  "back_fin_2_r": "back_fin_1_r",
+  "back_fin_tip_r": "back_fin_2_r",
+  "front_fin_0_l": "tail_1",
+  "front_fin_1_l": "front_fin_0_l",
+  "front_fin_2_l": "front_fin_1_l",
+  "front_fin_tip_l": "front_fin_2_l",
+  "front_fin_0_r": "tail_1",
+  "front_fin_1_r": "front_fin_0_r",
+  "front_fin_2_r": "front_fin_1_r",
+  "front_fin_tip_r": "front_fin_2_r",
+  "neck": "pelvis",
+  "head": "neck",
+  "head_tip": "head",
+  "mouth_base": "neck",
+  "mouth_1": "mouth_base",
+  "mouth_tip": "mouth_1"
+ },
+ "order": [
+  "root",
+  "pelvis",
+  "tail_1",
+  "tail_2",
+  "tail_3",
+  "tail_4",
+  "tail_5",
+  "tail_6",
+  "tail_7",
+  "tail_8",
+  "tail_tip",
+  "back_fin_0_l",
+  "back_fin_1_l",
+  "back_fin_2_l",
+  "back_fin_tip_l",
+  "back_fin_0_r",
+  "back_fin_1_r",
+  "back_fin_2_r",
+  "back_fin_tip_r",
+  "front_fin_0_l",
+  "front_fin_1_l",
+  "front_fin_2_l",
+  "front_fin_tip_l",
+  "front_fin_0_r",
+  "front_fin_1_r",
+  "front_fin_2_r",
+  "front_fin_tip_r",
+  "neck",
+  "head",
+  "head_tip",
+  "mouth_base",
+  "mouth_1",
+  "mouth_tip"
+ ],
+ "height": 0.96255,
+ "mirror": {
+  "back_fin_0_l": "back_fin_0_r",
+  "back_fin_1_l": "back_fin_1_r",
+  "back_fin_2_l": "back_fin_2_r",
+  "back_fin_tip_l": "back_fin_tip_r",
+  "back_fin_0_r": "back_fin_0_l",
+  "back_fin_1_r": "back_fin_1_l",
+  "back_fin_2_r": "back_fin_2_l",
+  "back_fin_tip_r": "back_fin_tip_l",
+  "front_fin_0_l": "front_fin_0_r",
+  "front_fin_1_l": "front_fin_1_r",
+  "front_fin_2_l": "front_fin_2_r",
+  "front_fin_tip_l": "front_fin_tip_r",
+  "front_fin_0_r": "front_fin_0_l",
+  "front_fin_1_r": "front_fin_1_l",
+  "front_fin_2_r": "front_fin_2_l",
+  "front_fin_tip_r": "front_fin_tip_l"
+ },
+ "animations": "animations/shark-animations.glb",
+ "meshBox": [
+  [
+   -1.14959,
+   -0.72439,
+   -3.78661
+  ],
+  [
+   1.14959,
+   1.28895,
+   1.82647
+  ]
+ ]
+}

@@ -1,76 +1,51 @@
-<img src="./mesh2motion.svg" alt="Mesh2Motion Logo" width="400"/>
+# Rigsmith
 
-<table>
-  <tr>
-    <td><h4>Discord<h4></td>
-    <td><a href="https://discord.gg/UChE936q7y">Join the Discord channel</a></td>
-    <td>
-      <img src="https://img.shields.io/discord/1408921718231273613?label=People&color=purple" alt="Discord">
-    </td>
-  </tr>
-</table>
+A personal character pipeline for the RTS: drop in a model, get a rigged, outfitted, painted and animated
+GLB for Godot. One flow: **Import → Rig → Outfit → Texture → Animate → Export.**
 
-Import a 3D Model and automatically assign and export animations with Mesh2Motion. This is kind of similar to a web application like Mixamo, but I would like it to be more flexible so it can support other model and skeleton types. Hopefully the open source nature means it can be expanded on and evolve more than than the closed tools have. 
+```bash
+npm install
+npm run dev        # app + local server on http://127.0.0.1:5180
+npm start          # production build, served the same way
+```
 
-The marketing site that explains features and release notes: https://mesh2motion.org/
+Needs Node 24+, Blender 5.x on `PATH` (or `BLENDER=/path/to/blender`), and optionally the Codex CLI for
+AI repainting and Godot 4.x for the export check. All data lives in `workspace/` (gitignored).
 
-Try it live: https://app.mesh2motion.org/
+## The flow
 
-![Screenshot](./readme.png)
+| Step | What happens |
+| --- | --- |
+| Import | Drop FBX, GLB, OBJ, DAE or ZIP (Tripo zips work as-is), any number at once. Blender normalizes each one and detects whether it's a mesh, a rigged character (Mixamo, Unreal, Rigify, Tripo…) or an animation. |
+| Rig | Humanoids: joints are detected automatically (Mixamo-style markers you can drag, mirrored), then weights are computed in Blender (~5 s). Choose 25/33/41/65 bones. Creatures: pick a body type (horse, fox, bird, dragon, kaiju, spider, snake, fish); the template fits to the model. Already-rigged imports keep their weights; non-Mixamo skeletons are mapped onto Mixamo (auto, editable, savable as presets). **Auto-rig all** does a whole batch. |
+| Outfit | Props from the catalog (swords, shields, bows, tools, guns) pinned to sockets with a gizmo. Your own meshes: rigid pieces on a bone, or clothing skinned to the body with a policy (body, upper, lower, cape, skirt, head) so weights never bleed from the wrong bones, plus optional hide-body-underneath. |
+| Texture | Fill the magenta holes AI texture generators leave (filled from nearby paint in 3D, seam-aware). Projection painting: mask an area with the smart brush or region wand (edge-aware), capture the view, let Codex paint `result.png`, preview it projected onto the UVs, keep it. |
+| Animate | One library: your Mixamo clips, the 2,453-clip pack (deduplicated), bundled work/combat clips and creature clips. Categories, search, 24 per page, every card previewing the clip on *your* character. Build a per-character set (names, loop, in-place, speed) and copy it to other characters. |
+| Export | GLB for Godot: bone names (`Hips` or `mixamorig:Hips`), texture size and format, `-loop` suffix for looping clips, props as bone attachments. Writes into your export folder (e.g. inside the Godot project). |
 
-## Usage
-There are instructions built into the web application, but this is the general flow of how to use it:
-1. Import a 3d model of your choosing (currently only supports GLB/GLTF format)
-2. Pick what type of skeleton that the 3d model will use
-3. Modify the skeleton to fit inside of the model (optionally test the results)
-4. Test out various animations to see the results.
-5. Select which animations you want to use, then export (currently only GLB/GLTF supported format)
+## Layout
 
-## Building and running locally
-The main dependency you need is Node.js. I am using 24, but other versions probably work fine too. Open you command line tool to the directory this readme is in. Run ths following commands to start the web server.
+```
+src/app/        Svelte UI (one page; steps in app/steps)
+src/state/      app state, viewer, animator, outfit, painter (Svelte 5 runes)
+src/engine/     three.js: stage, character view, joint editor, retargeting, props, garments,
+                projection painting, edge-aware selection, exporter, skeleton presets
+server/         local API mounted on the Vite server: workspace, Blender/Codex job queue, library
+blender/        Blender jobs: inspect/import, auto-rig (landmarks, skeleton, heat weights), texture fill,
+                library conversion
+static/         props, creature rig templates and their clips, bundled human clips
+tests/godot/    headless Godot import check for exported GLBs
+```
 
-    npm install
-    npm run dev
+## Checks
 
-## Creating a production build for the web
-We mostly just have typescript for this project, which web browsers cannot just read, so we need to do a build step to get everything ready for deploying. This project uses Vite for the web server and builder. See the vite.config.js for more info. This command will create a "dist" folder with all the files to serve to the web:
+```bash
+npm run check                                   # types
+npm test                                        # unit tests incl. retargeting on real library clips
+npm run test:godot -- workspace/exports/X.glb   # imports a GLB in headless Godot, resolves every track
+```
 
-    npm run build
+Auto-rig quality is measured against the Mixamo rigs of the Tripo characters (`blender/autorig/dev/`):
+joints land ~2.4% of height from Mixamo's, dominant-bone agreement ~77% (81% on Mixamo's own joints).
 
-## Running in Docker
-If you don't want to modify your local file system, you can alternitvely build and run the project from Docker. Make sure you have Docker and Docker Compose installed. Navigate your command line tool to this directory where your Dockerfile is at. Make sure Docker is actually started and running before you run this command.
-
-Execute the following command.
-
-    docker-compose up -d
-
-To try it out, visit http://localhost:3000
-
-## Running and creating video previews
-There is separate tool in the web app where you can generate video previews for each animation. It isn't too hard to run, but it has a separate README file that explains how that works. It is more of an internal tool, so I didn't want to muddy up this page too much.
-
-[Preview Generator Documentation](src/preview-generator/README.md)
-
-## Blender 3D Source files
-Many of the 3d files are originally created using Blender. This includes 3d models, rigs, and animations. To prevent this repository from becoming too large with big animation files, these source files are separated into a different repository. The final compressed GLB files are saved to this repository. These source files aren't needed to buil and run the application, so you can ignore this unless you want to contribute more animations. This repository is located here: https://github.com/Mesh2Motion/mesh2motion-assets
-
-## Licenses
-
-The code and platform are all licensed under the very permissive MIT license. The art assets (3d models, rigs, animations) are all licensed under CC0. I tried making everything as open as possible to remix, change, and build upon for the future.
-
-
-## ❤️ Help the Project Grow
-I don't expect to be receiving money for working on this, but I am also not the best animator. If people want to see better, and more, animations made, add to the fund. I can pay for an animator to help build out the animation library better. Or, if you know an animator that wants to help with this, send them my way! I am just a dude working on this during nights and weekends.
-
-Tip page to help out: https://support.mesh2motion.org/
-
-
-
-
-
-
-
-
-
-
-
+Started from [Mesh2Motion](https://github.com/scottpetrovic/mesh2motion-app) (MIT code, CC0 assets).
