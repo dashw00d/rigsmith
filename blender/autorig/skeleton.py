@@ -16,10 +16,15 @@ WRIST_FROM_TIP = 0.334             # fraction of shoulder -> fingertip length
 FALLBACK_SHOULDER = (0.150, 0.698)  # (|x| from center, z above ground) when the armpit can't be found
 CLAVICLE_X = 0.051
 CLAVICLE_ABOVE_ARM = 0.026
-NECK_ABOVE_CLAVICLE = 0.014
-HEAD_ABOVE_NECK = 0.037
 HEAD_ABOVE_CHIN_NOTCH = 0.027    # Mixamo's head joint above its neck joint where the chin shows
 CHIN_NOTCH_DEPTH = 0.04          # a profile notch at least this deep (fraction of H) is a real chin
+# Where beards, hoods and pelts hide the chin, the reference rigs put it where the chin would be under the
+# beard, and their neck lands anywhere from 4% below the shoulders to 7% above them. Measured down from the
+# top of the head it varies half as much (Bearguard, Berserker, Caravan Trader, Raider, Seer, Skirmisher,
+# Warrior; leave-one-out head error 4.1 -> 2.2% of H).
+NECK_BELOW_TOP = 0.263
+HEAD_BELOW_TOP = 0.218
+CLAVICLE_FROM_NECK = -0.012      # Mixamo's clavicle follows its neck; halfway between this and the arm's
 UPLEG_Z = 0.409
 UPLEG_X = 0.090
 HIPS_ABOVE_UPLEG = 0.033
@@ -133,22 +138,23 @@ def build_joints(sil, markers, fingers='two'):
     # Spine and head
     upleg_z = z0 + UPLEG_Z * H
     hips_z = upleg_z + HIPS_ABOVE_UPLEG * H
-    clavicle_z = arm_z + CLAVICLE_ABOVE_ARM * H
-    neck_z = clavicle_z + NECK_ABOVE_CLAVICLE * H
-    head_z = neck_z + HEAD_ABOVE_NECK * H
-    # Where the face shows, the neck sits in the notch under the chin (side profile); beards, hoods and
-    # pelts hide it, and then the shoulder-relative proportions stand.
+    head_top = _head_top(sil, xc)
+    # Where the face shows, the neck sits in the notch under the chin (side profile); where beards, hoods
+    # and pelts hide it, neck and head hang from the top of the head.
     notch = _chin_notch(sil, xc, arm_z, H)
     markers['chin_notch'] = notch
     if notch is not None:
         neck_z = notch
         head_z = neck_z + HEAD_ABOVE_CHIN_NOTCH * H
+    else:
+        neck_z = head_top - NECK_BELOW_TOP * H
+        head_z = head_top - HEAD_BELOW_TOP * H
+    clavicle_z = 0.5 * (arm_z + CLAVICLE_ABOVE_ARM * H + neck_z + CLAVICLE_FROM_NECK * H)
     put_spine('Hips', hips_z)
     for name, fraction in zip(('Spine', 'Spine1', 'Spine2'), SPINE_FRACTIONS):
         put_spine(name, hips_z + fraction * (neck_z - hips_z))
     put_spine('Neck', neck_z)
     put_spine('Head', head_z)
-    head_top = _head_top(sil, xc)
     put('HeadTop_End', xc, head_top, 0.5)
     put('LeftShoulder', xc + CLAVICLE_X * H, clavicle_z, SPINE_DEPTH_BIAS)
 
