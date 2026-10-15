@@ -1,6 +1,6 @@
 """Volume build: a clean, watertight stand-in for a character mesh (sparse voxels -> SurfaceNets).
 
-npm run volume -- <in.glb|obj|ply|stl> <out.glb|obj|ply> [--voxel 0.005] [--close 0] [--smooth 0]
+npm run volume -- <in.glb|obj|ply|stl> <out.glb|obj|ply> [--voxel 0.01] [--close 0] [--smooth 0]
     [--fill winding|parity] [--no-shell] [--json]
 
 AI meshes are open (cracks, cloth edges), self-intersecting where parts were fused and unevenly
@@ -8,7 +8,8 @@ triangulated. This voxelizes the solid (three sweep axes, so a hole can't empty 
 one-voxel shell around the surface (so single-layer cloth like capes and skirt flaps survives), seals
 edge-only voxel contacts and meshes the result, giving a manifold, evenly sampled surface in the
 same space as the input. Gaps narrower than about two voxels close; `--voxel` is a fraction of the
-model's height (0.005 = 5 mm on a 1 m character keeps an A-pose arm off the body).
+model's height (0.01 = 1 cm on a 1 m character keeps A-pose arms off the body and the hands; 0.005
+adds surface detail at ~6x the cost).
 
 Uses sparse-cubes (GPL-3.0) from the repo's .venv.
 """
@@ -22,7 +23,7 @@ import sparsecubes as sc
 import trimesh
 
 
-def build(mesh, voxel=0.005, close=0, fill='winding', shell=True, smooth=0):
+def build(mesh, voxel=0.01, close=0, fill='winding', shell=True, smooth=0):
     """Watertight stand-in of a trimesh mesh. Returns (trimesh, stats)."""
     started = time.time()
     height = float(np.ptp(mesh.vertices[:, 1])) or float(mesh.extents.max())
@@ -52,7 +53,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('input')
     p.add_argument('output')
-    p.add_argument('--voxel', type=float, default=0.005, help='voxel size as a fraction of height')
+    p.add_argument('--voxel', type=float, default=0.01, help="voxel size as a fraction of height")
     p.add_argument('--close', type=int, default=0, help='closing iterations (bridges gaps up to 2x this, can fuse parts)')
     p.add_argument('--fill', default='winding', choices=['winding', 'parity'])
     p.add_argument('--no-shell', action='store_true', help="don't keep single-layer surfaces (cloth) as thin solids")
