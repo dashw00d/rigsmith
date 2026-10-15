@@ -65,7 +65,6 @@ class Viewer {
         view.showSkeleton(this.stage, this.skeleton)
         animator.attach(view, this.stage)
         outfit.bind(view, this.stage)
-        if (character.files.thumbnail === undefined) void this.captureThumbnail(character.id)
       } catch (error) {
         this.loadError = (error as Error).message
       } finally {
@@ -129,22 +128,6 @@ class Viewer {
 
   focus (): void {
     if (this.character !== null) this.stage?.frame(this.character.box)
-  }
-
-  private async captureThumbnail (id: string): Promise<void> {
-    await new Promise(resolve => setTimeout(resolve, 400))
-    if (this.stage === null || this.character === null) return
-    const wasEditor = this.editor?.group.visible
-    if (this.editor !== null) this.editor.group.visible = false
-    const mode = this.mode
-    this.character.setMode('shaded')
-    this.stage.renderer.render(this.stage.scene, this.stage.camera)
-    const blob = await this.stage.snapshot(192, 192)
-    this.character.setMode(mode)
-    if (this.editor !== null) this.editor.group.visible = wasEditor ?? true
-    try {
-      app.upsert(await api.thumbnail(id, blob))
-    } catch { /* thumbnails are cosmetic */ }
   }
 
   private clear (): void {

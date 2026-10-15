@@ -54,6 +54,8 @@ export class Stage {
     this.controls.dampingFactor = 0.12
     this.controls.target.set(0, 0.5, 0)
     this.controls.screenSpacePanning = true
+    // Once the user moves the camera, stop re-framing on resize.
+    this.controls.addEventListener('start', () => { this.framedBox = null; this.framing = null })
 
     this.resizeObserver = new ResizeObserver(() => { this.resize() })
     this.resizeObserver.observe(container)
@@ -108,13 +110,24 @@ export class Stage {
     this.camera.updateProjectionMatrix()
   }
 
-  /** Smoothly move the camera to frame a box (three-quarter front view). */
+  /** The box last framed automatically; re-framed when the viewport changes shape until the user orbits. */
+  private framedBox: THREE.Box3 | null = null
+
+  /** Smoothly move the camera to frame a box (three-quarter front view), fitting the viewport's width
+   * and height with room for the overlays along the bottom. */
   frame (box: THREE.Box3, instant = false): void {
+    this.framedBox = box.clone()
     const size = box.getSize(new THREE.Vector3())
     const center = box.getCenter(new THREE.Vector3())
-    const radius = Math.max(size.y, size.x * 0.9, size.z) * 0.62
-    const distance = radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2)) * 1.05
+    const vertical = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))
+    const horizontal = vertical * Math.max(this.camera.aspect, 0.2)
+    // Seen three-quarter on, the width on screen is a mix of the box's width and depth.
+    const across = Math.max(size.x * 0.92 + size.z * 0.38, size.z)
+    const margin = 1.16
+    const distance = Math.max(size.y * margin / 2 / vertical, across * margin / 2 / horizontal) + size.z / 2
     const direction = new THREE.Vector3(0.38, 0.16, 1).normalize()
+    // Aim a little low so the subject sits above the timeline and name label.
+    center.y -= size.y * 0.035
     const to = center.clone().addScaledVector(direction, distance)
     if (instant) {
       this.camera.position.copy(to)
@@ -133,11 +146,13 @@ export class Stage {
   private resize (): void {
     const { clientWidth: w, clientHeight: h } = this.container
     if (w === 0 || h === 0) return
+    const reshaped = Math.abs(this.camera.aspect - w / h) > 0.01
     this.renderer.setSize(w, h, false)
     this.renderer.domElement.style.width = '100%'
     this.renderer.domElement.style.height = '100%'
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
+    if (reshaped && this.framedBox !== null) this.frame(this.framedBox, true)
   }
 
   private tick (): void {

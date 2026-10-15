@@ -211,6 +211,7 @@ route('PATCH', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
 
 route('DELETE', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
   await deleteCharacter(id)
+  events.emit('removed', id)
   send(res, 200, { ok: true })
 })
 
@@ -395,9 +396,12 @@ route('GET', /^\/api\/events$/, async (req, res) => {
       void getCharacter(job.characterId).then(c => { if (c !== null) res.write(`event: character\ndata: ${JSON.stringify(c)}\n\n`) })
     }
   }
+  // Deleted elsewhere (another tab, the API): drop it from every open page.
+  const onRemoved = (id: string): void => { res.write(`event: removed\ndata: ${JSON.stringify(id)}\n\n`) }
   const ping = setInterval(() => res.write(': ping\n\n'), 25_000)
   events.on('job', onJob)
-  req.on('close', () => { clearInterval(ping); events.off('job', onJob) })
+  events.on('removed', onRemoved)
+  req.on('close', () => { clearInterval(ping); events.off('job', onJob); events.off('removed', onRemoved) })
 })
 
 route('GET', /^\/api\/library$/, async (req, res, _, url) => {

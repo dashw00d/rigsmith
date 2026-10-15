@@ -65,6 +65,7 @@ class AppState {
       if (job.status === 'failed') this.toast('error', `${job.label} failed: ${job.error ?? 'unknown error'}`)
     })
     source.addEventListener('character', (e) => { this.upsert(JSON.parse((e as MessageEvent).data) as Character) })
+    source.addEventListener('removed', (e) => { this.forget(JSON.parse((e as MessageEvent).data) as string) })
     source.onerror = () => { this.connected = false }
   }
 
@@ -100,6 +101,11 @@ class AppState {
 
   async remove (id: string): Promise<void> {
     await api.remove(id)
+    this.forget(id)
+  }
+
+  /** Drop a character that no longer exists (deleted here or elsewhere); never leave it selected. */
+  forget (id: string): void {
     this.characters = this.characters.filter(c => c.id !== id)
     if (this.selectedId === id) this.selectedId = this.characters[0]?.id ?? null
   }

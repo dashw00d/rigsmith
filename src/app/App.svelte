@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { app } from '../state/app.svelte.ts'
+  import { thumbnails } from '../state/thumbnails.svelte.ts'
   import TopBar from './TopBar.svelte'
   import CharacterList from './CharacterList.svelte'
   import Viewport from './Viewport.svelte'
@@ -12,6 +13,9 @@
 
   let ready = $state(false)
   let failed = $state<string | null>(null)
+
+  // Every character gets a list thumbnail, opened or not.
+  $effect(() => { thumbnails.ensure(app.characters) })
 
   onMount(() => {
     app.start().then(() => { ready = true }).catch((e: Error) => { failed = e.message })
