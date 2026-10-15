@@ -16,7 +16,7 @@ function attributeArray (attr: THREE.BufferAttribute | THREE.InterleavedBufferAt
 }
 
 /** Keep only the vertices `indices` uses; every attribute (skin included) follows. */
-function compact (geometry: THREE.BufferGeometry, indices: Uint32Array): THREE.BufferGeometry {
+export function compact (geometry: THREE.BufferGeometry, indices: Uint32Array): THREE.BufferGeometry {
   const remap = new Int32Array(geometry.attributes.position.count).fill(-1)
   const order: number[] = []
   const index = new Uint32Array(indices.length)

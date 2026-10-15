@@ -22,7 +22,7 @@ import * as THREE from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { MeshoptSimplifier } from 'meshoptimizer'
-import { simplify } from '../src/engine/export/lods.ts'
+import { compact, simplify } from '../src/engine/export/lods.ts'
 import { captureRest, retarget } from '../src/engine/retarget.ts'
 
 const g = globalThis as Record<string, unknown>
@@ -43,8 +43,12 @@ console.warn = (...a: unknown[]) => { if (!String(a[0]).includes('THREE.GLTFLoad
 const ROOT = path.resolve(import.meta.dirname, '..')
 const WORKSPACE = path.join(ROOT, 'workspace')
 
-interface ClipSpec { clip: string, loop?: boolean, inPlace?: boolean, speed?: number, attack?: boolean, hit?: number, hitAt?: number, hand?: string, trim?: [number, number] }
-interface UnitSpec { character: string, height: number, budget: number, lods?: number[], clips: Record<string, ClipSpec> }
+interface ClipSpec { clip: string, loop?: boolean, inPlace?: boolean, speed?: number, attack?: boolean, hit?: number, hitAt?: number, hand?: string, trim?: [number, number], window?: number }
+interface UnitSpec {
+  character: string, height: number, budget: number, lods?: number[], clips: Record<string, ClipSpec>
+  /** Split the body's own head off as its own mesh (a swappable head: the game picks one Head* per unit). */
+  head?: { name: string, above?: number }
+}
 
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 
@@ -243,39 +247,68 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
       for (let i = 0; i < n; i++) { si[i * 4] = index; sw[i * 4] = 1 }
       geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4))
       geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4))
-      const material = Array.isArray(m.material) ? m.material[0] : m.material
-      parts.push({ bone, geometry: geo, material, name: String(m.userData.part ?? m.name.split('.')[0]) })
+      const loaded = Array.isArray(m.material) ? m.material[0] : m.material
+      // (a part on the body's own surface shares its material: one "Main" in the file)
+      const partMaterial = /^Main(\.\d+)?$/.test(loaded.name) ? material : loaded
+      parts.push({
+        bone, geometry: geo, material: partMaterial, name: String(m.userData.part ?? m.name.split('.')[0]),
+        exact: m.userData.name !== undefined ? String(m.userData.name) : undefined,
+        lod: m.userData.lod !== undefined ? Number(m.userData.lod) : undefined,
+        budget: m.userData.budget !== false,
+      })
     })
   }
-  const partTris = parts.reduce((t, x) => t + triangles(x.geometry), 0)
+  // (parts with their own budget, the villager's gear and spare heads, don't eat into the body's)
+  const partTris = parts.reduce((t, x) => t + (x.budget && (x.lod ?? 0) === 0 ? triangles(x.geometry) : 0), 0)
   const bodyBudget = spec.budget - partTris
   const tris0 = triangles(geometry)
   const lod0 = tris0 > bodyBudget ? simplify(geometry, bodyBudget / tris0 * 0.99) : geometry
-  const levels = [lod0, ...(spec.lods ?? [0.45, 0.15]).map(r => simplify(lod0, r))]
-  const lodReport: number[] = []
   const meshes: THREE.SkinnedMesh[] = []
-  levels.forEach((geo, i) => {
-    geo.computeTangents()
-    const mesh = new THREE.SkinnedMesh(geo, material)
-    mesh.name = i === 0 ? unit : `${unit}_LOD${i}`
-    out.add(mesh)
-    meshes.push(mesh)
-    lodReport.push(triangles(geo))
-  })
-  const partReport: Record<string, number[]> = {}
-  for (const part of parts) {
-    const base = `${part.name}_${part.bone}`
-    const tris = triangles(part.geometry)
-    const partLevels = tris <= 60 ? [part.geometry] : [part.geometry, ...(spec.lods ?? [0.45, 0.15]).map(r => simplify(part.geometry, r))]
-    partReport[base] = []
-    partLevels.forEach((geo, i) => {
+  const lodReport: number[] = []
+  const addLevels = (base: string, geo0: THREE.BufferGeometry, mat: THREE.Material, report: number[]): void => {
+    const geos = triangles(geo0) <= 60 ? [geo0] : [geo0, ...(spec.lods ?? [0.45, 0.15]).map(r => simplify(geo0, r))]
+    geos.forEach((geo, i) => {
       if (geo.attributes.uv !== undefined && geo.index !== null) geo.computeTangents()
-      const mesh = new THREE.SkinnedMesh(geo, part.material)
+      const mesh = new THREE.SkinnedMesh(geo, mat)
       mesh.name = i === 0 ? base : `${base}_LOD${i}`
       out.add(mesh)
       meshes.push(mesh)
-      partReport[base].push(triangles(geo))
+      report.push(triangles(geo))
     })
+  }
+  // The body's own head, split off at `above` x height over the Neck joint (by face centre).
+  const headReport: number[] = []
+  if (spec.head !== undefined) {
+    const neck = bones.find(b => b.name === 'Neck')!
+    const cutY = new THREE.Vector3().setFromMatrixPosition(neck.matrixWorld).y + (spec.head.above ?? 0.02) * spec.height
+    const pos = lod0.attributes.position
+    const index = lod0.index!
+    const head: number[] = []; const body: number[] = []
+    for (let t = 0; t < index.count; t += 3) {
+      const a = index.getX(t); const b = index.getX(t + 1); const c = index.getX(t + 2)
+      const y = (pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3
+      ;(y > cutY ? head : body).push(a, b, c)
+    }
+    addLevels(unit, compact(lod0, Uint32Array.from(body)), material, lodReport)
+    addLevels(spec.head.name, compact(lod0, Uint32Array.from(head)), material, headReport)
+  } else {
+    addLevels(unit, lod0, material, lodReport)
+  }
+  const partReport: Record<string, number[]> = {}
+  for (const part of parts) {
+    if (part.lod !== undefined) {
+      // authored levels (the villager's gear and heads): kept as they come, by name
+      if (part.geometry.attributes.uv !== undefined && part.geometry.index !== null) part.geometry.computeTangents()
+      const mesh = new THREE.SkinnedMesh(part.geometry, part.material)
+      mesh.name = part.exact ?? part.name
+      out.add(mesh)
+      meshes.push(mesh)
+      const base = mesh.name.replace(/_LOD\d+$/, '')
+      ;(partReport[base] ??= [])[part.lod] = triangles(part.geometry)
+      continue
+    }
+    const base = part.exact ?? `${part.name}_${part.bone}`
+    addLevels(base, part.geometry, part.material, (partReport[base] = []))
   }
   const exportSkeleton = new THREE.Skeleton(bones)
   for (const mesh of meshes) mesh.bind(exportSkeleton)
@@ -305,7 +338,11 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
       const blow = c.hitAt ?? blowTime(out, clip, c.hand ?? 'RightHand')
       const want = c.hit ?? 0.45
       let start = 0; let end = clip.duration
-      if (blow / clip.duration < want) end = Math.min(clip.duration, blow / want)
+      if (c.window !== undefined) {
+        // a window of its own length around the blow (cut from a longer working clip: the villager's dig)
+        start = Math.max(0, blow - want * c.window)
+        end = Math.min(clip.duration, start + c.window)
+      } else if (blow / clip.duration < want) end = Math.min(clip.duration, blow / want)
       else start = Math.max(0, (blow - want * end) / (1 - want))
       clips[i] = cut(clip, start, end, name)
       Object.assign(clipReport[name] as object, { blow: +blow.toFixed(3), kept: [+start.toFixed(3), +end.toFixed(3)], seconds: +(end - start).toFixed(3), hit: want })
@@ -332,7 +369,7 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     height: spec.height,
     scale: +s.toFixed(5),
     bones: bones.length,
-    triangles: { source: tris0, budget: spec.budget, lods: lodReport, parts: partReport },
+    triangles: { source: tris0, budget: spec.budget, lods: lodReport, head: headReport.length > 0 ? headReport : undefined, parts: partReport },
     clips: clipReport,
     walkStride: walkStride === null ? null : +walkStride.toFixed(3),
     texture: image === null ? null : { file: `base.${image.ext}`, sha256: createHash('sha256').update(image.bytes).digest('hex') },
