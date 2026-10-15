@@ -1,0 +1,6 @@
+# PyTorch with CUDA for the skin-weight optimizer (tools/skin_opt). ~6 GB with NVIDIA's libraries; the
+# optimizer also runs on the CPU (about 4x slower) if you install the CPU build instead
+# (--index-url https://download.pytorch.org/whl/cpu).
+--index-url https://download.pytorch.org/whl/cu128
+--extra-index-url https://pypi.org/simple
+torch==2.8.0

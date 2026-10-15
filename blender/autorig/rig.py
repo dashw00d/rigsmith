@@ -35,7 +35,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--input', required=True)
     p.add_argument('--output')
-    p.add_argument('--fingers', default='two', choices=list(mixamo.FINGER_LEVELS))
+    p.add_argument('--fingers', default='full', choices=list(mixamo.FINGER_LEVELS))
     p.add_argument('--joints')
     p.add_argument('--overrides')
     p.add_argument('--template', help='creature template JSON (static/templates/*.json); joints required')
@@ -205,6 +205,8 @@ def main():
                 warnings.append(f'{side} arm not traced; used proportions')
         if markers['legs'] is None:
             warnings.append('legs not separable (robe or skirt); hip height from proportions')
+        if mixamo.FINGER_LEVELS[args.fingers] and not markers.get('fingers_traced', True):
+            warnings.append("fingers not separable on this mesh; placed from hand proportions (the 2-chain mitten may suit it better)")
 
     report.progress(0.3, 'Building skeleton')
     if template is not None:

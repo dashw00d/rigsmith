@@ -1,7 +1,7 @@
 // Pose-optimized skin weights (tools/skin_opt): pose the fresh rig through a few hundred library poses,
 // fit the weights on the GPU for minimal stretch, volume loss and limb wobble, and write them back into
-// the GLB. Needs a Python with PyTorch (RIGSMITH_TORCH_PYTHON); skipped when there isn't one.
-import { spawn } from 'node:child_process'
+// the GLB. Needs a Python with PyTorch (the repo's .venv, or RIGSMITH_TORCH_PYTHON); skipped without one.
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
 import os from 'node:os'
@@ -9,10 +9,14 @@ import path from 'node:path'
 import { ROOT } from './workspace.ts'
 
 const TOOLS = path.join(ROOT, 'tools', 'skin_opt')
-const CANDIDATES = [process.env.RIGSMITH_TORCH_PYTHON, path.join(os.homedir(), 'dev/ml/make-it-animatable/.venv/bin/python')]
+// The repo's .venv (npm run setup:python), else an explicit override, else any older install.
+const CANDIDATES = [process.env.RIGSMITH_TORCH_PYTHON, path.join(ROOT, '.venv', 'bin', 'python'), path.join(os.homedir(), 'dev/ml/make-it-animatable/.venv/bin/python')]
+let found: string | null | undefined
 
 export function torchPython (): string | null {
-  return CANDIDATES.find(p => p !== undefined && p !== '' && existsSync(p)) ?? null
+  if (found !== undefined) return found
+  found = CANDIDATES.find(p => p !== undefined && p !== '' && existsSync(p) && spawnSync(p, ['-c', 'import torch'], { stdio: 'ignore' }).status === 0) ?? null
+  return found
 }
 
 async function run (command: string, args: string[], onLine?: (line: string) => void): Promise<void> {

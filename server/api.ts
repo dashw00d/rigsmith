@@ -70,7 +70,7 @@ async function runInspect (id: string, update: Update, keepEdits = false): Promi
     c.stats = { ...r.stats!, bones: keepEdits && c.stats !== undefined ? c.stats.bones : r.stats!.bones }
     c.autoJoints = r.joints ?? undefined
     if (!keepEdits || c.jointsEdited !== true) { c.joints = r.joints ?? undefined; c.jointsEdited = false }
-    c.fingers = c.fingers ?? 'two'
+    c.fingers = c.fingers ?? 'full'
     if (r.model !== null) c.files.model = r.model
     c.files.thumbnail = undefined // re-captured from the fresh model
     c.revision = (c.revision ?? 0) + 1
@@ -84,7 +84,7 @@ async function runRig (id: string, update: Update): Promise<void> {
   const character = (await getCharacter(id))!
   const dir = characterDir(id)
   const args = ['--input', path.join(dir, character.source.file), '--output', path.join(dir, 'rigged.glb'),
-    '--fingers', character.fingers ?? 'two', '--overrides', texturesDir(id)]
+    '--fingers', character.fingers ?? 'full', '--overrides', texturesDir(id)]
   const creature = character.template !== undefined && character.template !== 'human'
   if ((character.jointsEdited === true || creature) && character.joints !== undefined) {
     const jointsFile = path.join(dir, 'joints.json')

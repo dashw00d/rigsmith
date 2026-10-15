@@ -15,13 +15,13 @@
   let { character }: { character: Character } = $props()
 
   const fingerOptions: Array<{ value: FingerLevel, label: string, hint: string }> = [
-    { value: 'none', label: 'None', hint: 'Mitten hands, 25 bones' },
-    { value: 'one', label: '1', hint: 'Index finger chain (33 bones)' },
-    { value: 'two', label: '2', hint: 'Thumb and index (41 bones)' },
-    { value: 'full', label: 'All', hint: 'Every finger (65 bones)' },
+    { value: 'none', label: 'None', hint: 'No finger bones; the hand moves as one piece (25 bones)' },
+    { value: 'one', label: '1', hint: 'One chain curls all fingers and the thumb together (33 bones)' },
+    { value: 'two', label: '2', hint: "Mixamo's mitten: thumb plus one chain for all four fingers (41 bones)" },
+    { value: 'full', label: 'All', hint: 'Every finger traced from the mesh (65 bones)' },
   ]
-  let fingers = $state<FingerLevel>('two')
-  $effect(() => { fingers = (character.fingers ?? 'two') as FingerLevel })
+  let fingers = $state<FingerLevel>('full')
+  $effect(() => { fingers = (character.fingers ?? 'full') as FingerLevel })
   let mirror = $state(viewer.mirror)
 
   const job = $derived(app.jobFor(character.id))

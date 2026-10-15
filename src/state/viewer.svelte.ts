@@ -91,7 +91,7 @@ class Viewer {
     const id = character.id
     const template = character.template ?? 'human'
     const spec: Promise<SkeletonSpec> = template === 'human'
-      ? Promise.resolve(humanSpec((character.fingers ?? 'two') as FingerLevel))
+      ? Promise.resolve(humanSpec((character.fingers ?? 'full') as FingerLevel))
       : loadTemplate(template).then(templateSpec)
     void spec.then(spec => {
       if (token !== this.editorToken || this.editor !== null || this.stage === null || this.character === null) return

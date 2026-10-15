@@ -64,19 +64,34 @@ wobble and less than half the volume loss of Mixamo's hand-marked rigs.
 
 A clean, watertight, evenly sampled stand-in for a character (for volumetric work later: weights on a
 proxy, inside/outside tests). Sparse voxels via [sparse-cubes](https://github.com/navis-org/sparse-cubes)
-(GPL-3.0), SurfaceNets meshing; ~1–2 s per character at 5 mm voxels. Single-layer cloth survives as a
+(GPL-3.0), SurfaceNets meshing; under a second per character at the default 1 cm voxels (2–3 s at 5 mm). Single-layer cloth survives as a
 thin solid, sealed pockets inside the body are filled.
 
 ```bash
 npm run setup:python                                       # once: .venv with sparse-cubes + trimesh
-npm run volume -- workspace/characters/<id>/rigged.glb proxy.glb [--voxel 0.005] [--smooth 10]
+npm run volume -- workspace/characters/<id>/rigged.glb proxy.glb [--voxel 0.01] [--smooth 10]
 ```
+
+### Retopology
+
+The in-repo, Linux take on MegaTopo's Blender + Instant Meshes mode: volume build → Instant Meshes
+([PyNanoInstantMeshes](https://pypi.org/project/PyNanoInstantMeshes/), quad field-aligned, at a target
+size) → [xatlas](https://github.com/jpcy/xatlas) UV atlas → colour baked from the original in Cycles
+(OptiX/CUDA, CPU fallback) → GLB. ~8–9 s per character at 8k triangles / 2K texture.
+
+```bash
+npm run retopo -- workspace/characters/<id>/model.glb clean.glb [--triangles 8000] [--texture 2048]
+```
+
+Uniform quads spend triangles evenly, so at the same budget as a Tripo mesh thin parts (fingers, antler
+tips) lose detail; best for messy generator output and for LODs.
 
 ### Pose-optimized weights
 
 After Blender rigs a humanoid, `server/skinopt.ts` poses it through 256 library poses
 (`tools/skin_opt/pose_set.ts`), fits the weights on the GPU for minimal stretch, wobble and volume loss
-(`tools/skin_opt/optimize.py`, PyTorch from `RIGSMITH_TORCH_PYTHON`) and writes them into the GLB
-(`tools/skin_opt/apply.ts`). ~10–15 s; skipped (with a warning) when PyTorch or the GPU isn't available.
+(`tools/skin_opt/optimize.py`, PyTorch from the repo's `.venv` via `npm run setup:python`, or
+`RIGSMITH_TORCH_PYTHON`) and writes them into the GLB (`tools/skin_opt/apply.ts`). ~10–15 s on the GPU,
+~60 s on the CPU when the GPU is busy; skipped (with a warning) without PyTorch.
 
 Started from [Mesh2Motion](https://github.com/scottpetrovic/mesh2motion-app) (MIT code, CC0 assets).

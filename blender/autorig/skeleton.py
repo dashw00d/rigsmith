@@ -18,6 +18,8 @@ CLAVICLE_X = 0.051
 CLAVICLE_ABOVE_ARM = 0.026
 NECK_ABOVE_CLAVICLE = 0.014
 HEAD_ABOVE_NECK = 0.037
+HEAD_ABOVE_CHIN_NOTCH = 0.027    # Mixamo's head joint above its neck joint where the chin shows
+CHIN_NOTCH_DEPTH = 0.04          # a profile notch at least this deep (fraction of H) is a real chin
 UPLEG_Z = 0.409
 UPLEG_X = 0.090
 HIPS_ABOVE_UPLEG = 0.033
@@ -134,6 +136,13 @@ def build_joints(sil, markers, fingers='two'):
     clavicle_z = arm_z + CLAVICLE_ABOVE_ARM * H
     neck_z = clavicle_z + NECK_ABOVE_CLAVICLE * H
     head_z = neck_z + HEAD_ABOVE_NECK * H
+    # Where the face shows, the neck sits in the notch under the chin (side profile); beards, hoods and
+    # pelts hide it, and then the shoulder-relative proportions stand.
+    notch = _chin_notch(sil, xc, arm_z, H)
+    markers['chin_notch'] = notch
+    if notch is not None:
+        neck_z = notch
+        head_z = neck_z + HEAD_ABOVE_CHIN_NOTCH * H
     put_spine('Hips', hips_z)
     for name, fraction in zip(('Spine', 'Spine1', 'Spine2'), SPINE_FRACTIONS):
         put_spine(name, hips_z + fraction * (neck_z - hips_z))
@@ -180,6 +189,7 @@ def build_joints(sil, markers, fingers='two'):
     _add_fingers(joints, fingers, hand)
     if mixamo.FINGER_LEVELS[fingers]:
         detected = detect_finger_joints(sil.verts, sil.tris, both, H, xc)
+        markers['fingers_traced'] = bool(detected)
         if detected:
             joints.update(fit_finger_level(detected, fingers, joints))
 
@@ -190,6 +200,32 @@ def build_joints(sil, markers, fingers='two'):
             joints[mixamo.mirror_name(name)] = np.array([2 * xc - p[0], p[1], p[2]])
     order = [b for b, _ in mixamo.hierarchy(fingers)]
     return {b: joints[b] for b in order}
+
+
+def _chin_notch(sil, xc, arm_z, H):
+    """Height of the notch under the chin in the side profile, or None when there's no clear one.
+
+    The front of the body's central band, from just below the shoulders to above them: the face juts
+    forward, the neck recedes under it, the chest juts forward again. The deepest recess relative to
+    both sides is the under-chin notch."""
+    pts = sil.points
+    band = np.abs(pts[:, 0] - xc) < 0.06 * H
+    zs = np.arange(arm_z - 0.08 * H, arm_z + 0.2 * H, 0.004 * H)
+    front = np.full(len(zs), np.nan)
+    for i, z in enumerate(zs):
+        near = band & (np.abs(pts[:, 2] - z) < 0.004 * H)
+        if near.sum() > 3:
+            front[i] = np.percentile(pts[near, 1], 2)  # front = smallest Y
+    ok = np.isfinite(front)
+    if ok.sum() < len(zs) * 0.6:
+        return None
+    front = np.interp(zs, zs[ok], front[ok])
+    depth = np.array([front[i] - max(front[:i].min() if i else front[i], front[i + 1:].min() if i + 1 < len(zs) else front[i])
+                      for i in range(len(zs))])
+    k = int(np.argmax(depth))
+    if depth[k] < CHIN_NOTCH_DEPTH * H or not (arm_z - 0.06 * H <= zs[k] <= arm_z + 0.12 * H):
+        return None
+    return float(zs[k])
 
 
 def _head_top(sil, xc):
