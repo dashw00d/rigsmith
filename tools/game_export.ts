@@ -23,7 +23,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { MeshoptSimplifier } from 'meshoptimizer'
 import { compact, simplify } from '../src/engine/export/lods.ts'
-import { captureRest, retarget } from '../src/engine/retarget.ts'
+import { captureRest, pelvisName, retarget } from '../src/engine/retarget.ts'
 
 const g = globalThis as Record<string, unknown>
 g.self ??= globalThis
@@ -56,6 +56,26 @@ interface UnitSpec {
   /** Hands that hold something in every clip (a second axe, a staff through a casting clip): side -> the library
    * clip whose most closed fist that hand keeps throughout (its fingers' rotations, held in every clip). */
   grip?: Partial<Record<'Left' | 'Right', string>>
+  /** A second character in the same unit (the caravan's pony beside its trader): its own skeleton under the
+   * unit's root, its own surface, its clips under the same game names fitted to the unit's. */
+  companion?: CompanionSpec
+}
+interface CompanionSpec {
+  character: string
+  /** Its height in game units (soles at 0). */
+  height: number
+  /** Its bones' prefix: they share the unit's skeleton, under root. */
+  prefix: string
+  /** Where it stands from the unit's origin (game x, z) and which way it faces (degrees about +Y, 0 = +Z). */
+  at?: [number, number]
+  yaw?: number
+  budget: number
+  /** Its surface, "Atlas_<material>": the game draws it from textures/models/<material>. */
+  material: string
+  /** Game clip name -> "horse:<Name>" (Rigsmith's horse set) or a library clip id. A game clip it lacks plays its Idle. */
+  clips: Record<string, { clip: string, speed?: number }>
+  /** The feet whose planted one paces its walk (default: a horse's four). */
+  feet?: string[]
 }
 
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
@@ -147,12 +167,11 @@ function checkClip (root: THREE.Object3D, clip: THREE.AnimationClip, height: num
 }
 
 /** Ground covered per second by a walk at speed 1: the planted (lower) foot's backward speed. */
-function stride (root: THREE.Object3D, clip: THREE.AnimationClip): number {
-  const feet = ['LeftFoot', 'RightFoot']
+function stride (root: THREE.Object3D, clip: THREE.AnimationClip, feet = ['LeftFoot', 'RightFoot']): number {
   const { times, at } = sample(root, clip, feet)
   const speeds: number[] = []
   for (let i = 1; i < times.length - 1; i++) {
-    const foot = at.get('LeftFoot')![i].y <= at.get('RightFoot')![i].y ? 'LeftFoot' : 'RightFoot'
+    const foot = feet.reduce((low, f) => at.get(f)![i].y < at.get(low)![i].y ? f : low)
     const p = at.get(foot)!
     const dt = times[i + 1] - times[i - 1]
     speeds.push(Math.hypot(p[i + 1].x - p[i - 1].x, p[i + 1].z - p[i - 1].z) / dt)
@@ -191,6 +210,70 @@ function retime (clip: THREE.AnimationClip, speed: number): THREE.AnimationClip 
   if (speed === 1) return clip
   const tracks = clip.tracks.map(t => { const c = t.clone(); c.times = c.times.map(x => x / speed); return c })
   return new THREE.AnimationClip(clip.name, clip.duration / speed, tracks)
+}
+
+/** The clip played `times` times over (keys shifted a cycle each time; a key a cycle repeats is kept once). */
+function repeat (clip: THREE.AnimationClip, times: number): THREE.AnimationClip {
+  if (times === 1) return clip
+  const T = clip.duration
+  const tracks = clip.tracks.map(t => {
+    const size = t.getValueSize()
+    const keys: number[] = []; const values: number[] = []
+    for (let r = 0; r < times; r++) {
+      for (let i = 0; i < t.times.length; i++) {
+        const at = t.times[i] + r * T
+        if (keys.length > 0 && at <= keys[keys.length - 1] + 1e-6) continue
+        keys.push(at)
+        for (let j = 0; j < size; j++) values.push(t.values[i * size + j])
+      }
+    }
+    const Track = t.constructor as new (name: string, times: number[], values: number[]) => THREE.KeyframeTrack
+    return new Track(t.name, keys, values)
+  })
+  return new THREE.AnimationClip(clip.name, T * times, tracks)
+}
+
+/** A companion character, its clips retargeted onto it and scaled to its height (placed later, under the root). */
+async function loadCompanion (unit: string, c: CompanionSpec): Promise<{ mesh: THREE.SkinnedMesh, top: THREE.Bone, geometry: THREE.BufferGeometry, floor: number, s: number, clips: Map<string, THREE.AnimationClip>, file: string }> {
+  const dir = path.join(WORKSPACE, 'characters', c.character)
+  const info = JSON.parse(readFileSync(path.join(dir, 'character.json'), 'utf8')) as { files: { rigged?: string } }
+  const file = path.join(dir, info.files.rigged ?? 'rigged.glb')
+  const { scene } = await load(file)
+  scene.updateMatrixWorld(true)
+  const skinned: THREE.SkinnedMesh[] = []
+  scene.traverse(o => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) skinned.push(o as THREE.SkinnedMesh) })
+  if (skinned.length !== 1) throw new Error(`${unit}: companion ${c.character}: expected one skinned mesh, found ${skinned.length}`)
+  const mesh = skinned[0]
+  const rest = captureRest(scene, isBone)
+  // its top bone carries it (a creature rig's own root above the pelvis, or the pelvis): every bone hangs from it
+  const tops = mesh.skeleton.bones.filter(b => !isBone(b.parent ?? new THREE.Object3D()))
+  if (tops.length !== 1) throw new Error(`${unit}: companion ${c.character}: ${tops.length} top bones (${tops.map(b => b.name).join(', ')})`)
+  const top = tops[0]
+  if (!mesh.skeleton.bones.some(b => b.name === pelvisName(rest))) throw new Error(`${unit}: companion ${c.character}: no pelvis`)
+  const geometry = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld)
+  geometry.computeBoundingBox()
+  const floor = geometry.boundingBox!.min.y
+  const s = c.height / (geometry.boundingBox!.max.y - floor)
+  let horse: { scene: THREE.Group, animations: THREE.AnimationClip[] } | null = null
+  const clips = new Map<string, THREE.AnimationClip>()
+  for (const [name, cc] of Object.entries(c.clips)) {
+    let src: { scene: THREE.Group, animations: THREE.AnimationClip[] }
+    let anim: THREE.AnimationClip | undefined
+    if (cc.clip.startsWith('horse:')) {
+      horse ??= await load(path.join(ROOT, 'static', 'animations', 'horse-animations.glb'))
+      src = horse
+      anim = horse.animations.find(a => a.name === cc.clip.slice('horse:'.length))
+    } else {
+      src = await load(path.join(WORKSPACE, 'library', 'clips', `${cc.clip}.glb`))
+      anim = src.animations[0]
+    }
+    if (anim === undefined) throw new Error(`${unit}: companion clip ${name}: ${cc.clip} not found`)
+    let clip = retarget(src.scene, captureRest(src.scene, isBone), anim, rest, { fps: 30, inPlace: true })
+    clip = retime(scalePositions(clip, s, floor, top.name), cc.speed ?? 1)
+    clip.name = name
+    clips.set(name, clip)
+  }
+  return { mesh, top, geometry, floor, s, clips, file }
 }
 
 function triangles (geometry: THREE.BufferGeometry): number {
@@ -277,6 +360,8 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     gripReport[side] = { clip: src, at: +best.toFixed(3), curl: +(curl / 0.45).toFixed(2) }
   }
 
+  const comp = spec.companion !== undefined ? await loadCompanion(unit, spec.companion) : null
+
   // The game unit: root bone above Hips, the mesh baked to world, scaled, grounded.
   const out = new THREE.Group()
   out.name = 'Armature'
@@ -290,8 +375,47 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   hips.quaternion.copy(q)
   hips.scale.set(1, 1, 1)
   hips.traverse(b => { if (b !== hips) b.position.multiplyScalar(s) })
+  // The companion beside it: its top bone under the root too, placed (scaled to its height, turned, moved to `at`);
+  // its bones and clip tracks take its prefix, its top bone's own keys the same placing.
+  const compBones: THREE.Bone[] = []
+  let place = new THREE.Matrix4()
+  if (comp !== null) {
+    const c = spec.companion!
+    const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(c.yaw ?? 0))
+    const at = new THREE.Vector3(c.at?.[0] ?? 0, 0, c.at?.[1] ?? 0)
+    place = new THREE.Matrix4().compose(at, qYaw, new THREE.Vector3(1, 1, 1))
+      .multiply(new THREE.Matrix4().makeScale(comp.s, comp.s, comp.s)).multiply(new THREE.Matrix4().makeTranslation(0, -comp.floor, 0))
+    const p2 = new THREE.Vector3(); const q2 = new THREE.Quaternion(); const s2 = new THREE.Vector3()
+    comp.top.matrixWorld.decompose(p2, q2, s2)
+    root.add(comp.top)
+    comp.top.position.copy(p2.applyMatrix4(place))
+    comp.top.quaternion.copy(qYaw.clone().multiply(q2))
+    comp.top.scale.set(1, 1, 1)
+    comp.top.traverse(b => { if (b !== comp.top) b.position.multiplyScalar(comp.s) })
+    const topName = comp.top.name
+    compBones.push(...comp.mesh.skeleton.bones)
+    for (const b of compBones) b.name = c.prefix + b.name
+    for (const [name, clip] of comp.clips) {
+      const tracks = clip.tracks.map(t => {
+        const copy = t.clone()
+        const dot = t.name.lastIndexOf('.')
+        const bone = t.name.slice(0, dot); const prop = t.name.slice(dot + 1)
+        copy.name = `${c.prefix}${bone}.${prop}`
+        if (bone === topName && prop === 'position') {
+          const v = new THREE.Vector3()
+          for (let i = 0; i < copy.values.length; i += 3) v.fromArray(copy.values, i).applyQuaternion(qYaw).add(at).toArray(copy.values, i)
+        }
+        if (bone === topName && prop === 'quaternion') {
+          const q = new THREE.Quaternion()
+          for (let i = 0; i < copy.values.length; i += 4) q.fromArray(copy.values, i).premultiply(qYaw).toArray(copy.values, i)
+        }
+        return copy
+      })
+      comp.clips.set(name, new THREE.AnimationClip(name, clip.duration, tracks))
+    }
+  }
   out.updateMatrixWorld(true)
-  const bones = [...skeleton.bones, root]
+  const bones = [...skeleton.bones, root, ...compBones]
   const material = new THREE.MeshStandardMaterial({ name: 'Main' })
   geometry.applyMatrix4(new THREE.Matrix4().makeScale(s, s, s).multiply(new THREE.Matrix4().makeTranslation(0, -floor, 0)))
   for (const name of Object.keys(geometry.attributes)) if (!['position', 'normal', 'uv', 'skinIndex', 'skinWeight'].includes(name)) geometry.deleteAttribute(name)
@@ -381,6 +505,28 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     const base = part.exact ?? `${part.name}_${part.bone}`
     addLevels(base, part.geometry, part.material, (partReport[base] = []))
   }
+  // The companion's mesh: placed as its skeleton, skinned to its bones (after the unit's), its own surface.
+  const compReport: Record<string, unknown> = {}
+  if (comp !== null) {
+    const c = spec.companion!
+    const geo = comp.geometry.clone().applyMatrix4(place)
+    for (const name of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv', 'skinIndex', 'skinWeight'].includes(name)) geo.deleteAttribute(name)
+    const offset = skeleton.bones.length + 1
+    const si = geo.attributes.skinIndex
+    for (let i = 0; i < si.count * si.itemSize; i++) (si.array as Uint16Array)[i] += offset
+    si.needsUpdate = true
+    const t0 = triangles(geo)
+    const lod0c = t0 > c.budget ? simplify(geo, c.budget / t0 * 0.99) : geo
+    const levels: number[] = []
+    addLevels(c.material, lod0c, new THREE.MeshStandardMaterial({ name: `Atlas_${c.material}` }), levels)
+    compReport.character = c.character
+    compReport.triangles = { source: t0, budget: c.budget, lods: levels }
+    const img = embeddedImage(comp.file)
+    if (img !== null) {
+      mkdirSync(srcDir, { recursive: true })
+      writeFileSync(path.join(srcDir, `base_${c.material}.${img.ext}`), img.bytes)
+    }
+  }
   const exportSkeleton = new THREE.Skeleton(bones)
   for (const mesh of meshes) mesh.bind(exportSkeleton)
 
@@ -442,6 +588,48 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     Object.assign(clipReport[clip.name] as object, stats)
   }
 
+  // The companion's clips joined to the unit's under the same names. Its walk first takes the unit's pace (its
+  // planted foot as fast as the unit's), then loops fit by whole cycles (m of the unit's against n of its own, the
+  // closest within six); its attack fits the unit's (the blows together); anything else plays at its own length.
+  if (comp !== null) {
+    const c = spec.companion!
+    const feet = (c.feet ?? ['front_leg_foot_l', 'front_leg_foot_r', 'back_leg_foot_l', 'back_leg_foot_r']).map(f => c.prefix + f)
+    const clipsOut: Record<string, unknown> = {}
+    for (let k = 0; k < clips.length; k++) {
+      const main = clips[k]
+      let other = comp.clips.get(main.name) ?? comp.clips.get('Idle')
+      if (other === undefined) continue
+      const info: Record<string, unknown> = { clip: (c.clips[main.name] ?? c.clips.Idle).clip }
+      if (main.name === 'Walk' && walkStride !== null) {
+        const pace = walkStride / stride(out, other, feet)
+        other = retime(other, pace)
+        info.pace = +pace.toFixed(3)
+      }
+      let m = 1; let n = 1
+      if (spec.clips[main.name]?.loop === true) {
+        let err = Infinity
+        for (let mm = 1; mm <= 6; mm++) {
+          for (let nn = 1; nn <= 6; nn++) {
+            const e = Math.abs(mm * main.duration - nn * other.duration) / (mm * main.duration)
+            if (e < err - 1e-9) { err = e; m = mm; n = nn }
+          }
+        }
+        other = retime(other, n * other.duration / (m * main.duration))
+        Object.assign(info, { cycles: [m, n], fit: +err.toFixed(3) })
+      } else if (spec.clips[main.name]?.attack === true) {
+        other = retime(other, other.duration / main.duration)
+      }
+      const a = repeat(main, m); const b = repeat(other, n)
+      clips[k] = new THREE.AnimationClip(main.name, Math.max(a.duration, b.duration), [...a.tracks, ...b.tracks])
+      clipsOut[main.name] = { ...info, seconds: +b.duration.toFixed(3) }
+    }
+    compReport.clips = clipsOut
+    exportSkeleton.pose()
+    out.updateMatrixWorld(true)
+    const walkC = clips.find(x => x.name === 'Walk')
+    compReport.walkStride = walkC !== undefined ? +stride(out, walkC, feet).toFixed(3) : null
+  }
+
   // Back to the bind pose for export (sampling moved the bones).
   exportSkeleton.pose()
 
@@ -463,6 +651,7 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     triangles: { source: tris0, budget: spec.budget, lods: lodReport, head: headReport.length > 0 ? headReport : undefined, parts: partReport },
     clips: clipReport,
     grip: gripReport,
+    companion: comp !== null ? compReport : undefined,
     walkStride: walkStride === null ? null : +walkStride.toFixed(3),
     texture: image === null ? null : { file: `base.${image.ext}`, sha256: createHash('sha256').update(image.bytes).digest('hex') },
     rigged: { file: path.relative(WORKSPACE, riggedFile), sha256: createHash('sha256').update(readFileSync(riggedFile)).digest('hex') },

@@ -328,6 +328,10 @@ export function retarget (sourceRoot: THREE.Object3D, source: RestSkeleton, clip
   sourceRoot.traverse(o => { const c = canonical(o.name); if (source.bones.has(c) && !sourceRig.has(c)) sourceRig.set(c, o) })
   const mixer = new THREE.AnimationMixer(sourceRoot)
   const action = mixer.clipAction(clip)
+  // Once and held at the end: sampled at its very end, a looping action wraps to frame 0, and a clip that doesn't
+  // loop (a death) would end on a copy of its first pose (a corpse standing back up when the game holds the end).
+  action.setLoop(THREE.LoopOnce, 1)
+  action.clampWhenFinished = true
   action.play()
 
   const frames = options.samples ?? Math.max(2, Math.round(duration * fps) + 1)
