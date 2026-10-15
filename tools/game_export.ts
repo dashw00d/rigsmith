@@ -53,6 +53,9 @@ interface UnitSpec {
   head?: { name: string, above?: number }
   /** Where this one's .glb goes instead of <models dir> (relative to the spec's repo: a source, not a unit). */
   models_dir?: string
+  /** Hands that hold something in every clip (a second axe, a staff through a casting clip): side -> the library
+   * clip whose most closed fist that hand keeps throughout (its fingers' rotations, held in every clip). */
+  grip?: Partial<Record<'Left' | 'Right', string>>
 }
 
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
@@ -240,6 +243,40 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     }
   }
 
+  // Held fists: a hand that holds something all the time keeps its fingers closed in every clip, as the grip
+  // clip closes them most (finger rotations are relative to the hand, so they carry over to any clip).
+  const gripReport: Record<string, unknown> = {}
+  for (const [side, src] of Object.entries(spec.grip ?? {})) {
+    const g = await load(path.join(WORKSPACE, 'library', 'clips', `${src}.glb`))
+    const gClip = retarget(g.scene, captureRest(g.scene, isBone), g.animations[0], rest, { fps: 30, inPlace: true })
+    const fingers: string[] = []
+    scene.traverse(o => { if (isBone(o) && new RegExp(`^${side}Hand(Thumb|Index|Middle|Ring|Pinky)\\d$`).test(o.name)) fingers.push(o.name) })
+    const chains = ['Index', 'Middle', 'Ring', 'Pinky'].map(f => [1, 2, 3, 4].map(i => `${side}Hand${f}${i}`).filter(n => fingers.includes(n)))
+    const { times, at } = sample(scene, gClip, chains.flat(), 30)
+    let best = 0; let curl = -1
+    times.forEach((_, i) => {
+      const c = chains.reduce((sum, ch) => {
+        const pts = ch.map(n => at.get(n)![i])
+        const len = pts.slice(1).reduce((d, x, k) => d + x.distanceTo(pts[k]), 0)
+        return sum + 1 - pts[0].distanceTo(pts[pts.length - 1]) / Math.max(len, 1e-6)
+      }, 0) / chains.length
+      if (c > curl) { curl = c; best = times[i] }
+    })
+    const mixer = new THREE.AnimationMixer(scene)
+    mixer.clipAction(gClip).play()
+    mixer.setTime(best)
+    const held = new Map(fingers.map(n => [n, scene.getObjectByName(n)!.quaternion.clone()]))
+    mixer.stopAllAction()
+    mixer.uncacheRoot(scene)
+    for (let k = 0; k < clips.length; k++) {
+      const c = clips[k]
+      const tracks = c.tracks.filter(t => !held.has(t.name.replace(/\.quaternion$/, '')))
+      for (const [n, q] of held) tracks.push(new THREE.QuaternionKeyframeTrack(`${n}.quaternion`, [0, c.duration], [...q.toArray(), ...q.toArray()]))
+      clips[k] = new THREE.AnimationClip(c.name, c.duration, tracks)
+    }
+    gripReport[side] = { clip: src, at: +best.toFixed(3), curl: +(curl / 0.45).toFixed(2) }
+  }
+
   // The game unit: root bone above Hips, the mesh baked to world, scaled, grounded.
   const out = new THREE.Group()
   out.name = 'Armature'
@@ -425,6 +462,7 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     bones: bones.length,
     triangles: { source: tris0, budget: spec.budget, lods: lodReport, head: headReport.length > 0 ? headReport : undefined, parts: partReport },
     clips: clipReport,
+    grip: gripReport,
     walkStride: walkStride === null ? null : +walkStride.toFixed(3),
     texture: image === null ? null : { file: `base.${image.ext}`, sha256: createHash('sha256').update(image.bytes).digest('hex') },
     rigged: { file: path.relative(WORKSPACE, riggedFile), sha256: createHash('sha256').update(readFileSync(riggedFile)).digest('hex') },
