@@ -45,7 +45,26 @@ npm test                                        # unit tests incl. retargeting o
 npm run test:godot -- workspace/exports/X.glb   # imports a GLB in headless Godot, resolves every track
 ```
 
-Auto-rig quality is measured against the Mixamo rigs of the Tripo characters (`blender/autorig/dev/`):
-joints land ~2.4% of height from Mixamo's, dominant-bone agreement ~77% (81% on Mixamo's own joints).
+### Rig quality vs Mixamo
+
+`tools/dev/bench.ts` drives two rigs of the same meshes (e.g. Mixamo's and ours) with the same clips through
+the same retargeter and scores deformation: edge stretch, rigidity of mid-limbs/head/feet, volume loss,
+weight bleed, joint centering. Body regions come from geometry (Mixamo's own weights are lopsided), and
+the 18 benchmark clips (`tools/skin_opt/holdout.json`) are never used to fit weights.
+
+```bash
+blender/autorig/dev/bench/rig_all.sh workspace/rigdev/bench/ours     # auto-rig the 12 Tripo characters
+node tools/dev/bench.ts workspace/rigdev/bench/mixamo workspace/rigdev/bench/ours
+```
+
+On the user's 12 Mixamo-rigged Tripo characters our automatic rigs have 27% less stretch, half the limb
+wobble and less than half the volume loss of Mixamo's hand-marked rigs.
+
+### Pose-optimized weights
+
+After Blender rigs a humanoid, `server/skinopt.ts` poses it through 256 library poses
+(`tools/skin_opt/pose_set.ts`), fits the weights on the GPU for minimal stretch, wobble and volume loss
+(`tools/skin_opt/optimize.py`, PyTorch from `RIGSMITH_TORCH_PYTHON`) and writes them into the GLB
+(`tools/skin_opt/apply.ts`). ~10–15 s; skipped (with a warning) when PyTorch or the GPU isn't available.
 
 Started from [Mesh2Motion](https://github.com/scottpetrovic/mesh2motion-app) (MIT code, CC0 assets).

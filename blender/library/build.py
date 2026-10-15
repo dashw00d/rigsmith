@@ -3,7 +3,10 @@
 
   python3 blender/library/build.py convert   [--procs 8] [--limit N] [--sources a,b]
   python3 blender/library/build.py aggregate  # features -> categories, names, manifest
-  python3 blender/library/build.py all        # convert + aggregate
+  python3 blender/library/build.py all        # convert + aggregate (npm run library)
+
+Pack clips are named from a motion-match names file when present (--names, default
+$RIGSMITH_ANIMATION_NAMES or ~/Downloads/Mixamo/animation-names.json; --names '' to skip).
 
 Outputs go to workspace/library/ (see README.md written there).
 """
@@ -227,13 +230,15 @@ def main():
     ap.add_argument("--procs", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0, help="only the first N pack clips (testing)")
     ap.add_argument("--sources", default="", help="comma list: mixamo,mixamo-pack,mixamo-pack-extra,mannequin")
+    ap.add_argument("--names", default=os.environ.get("RIGSMITH_ANIMATION_NAMES", os.path.join(DL, "Mixamo", "animation-names.json")),
+                    help="names file for the hashed pack clips ('' = provisional names)")
     args = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
     if args.cmd in ("convert", "all"):
         cmd_convert(args)
     if args.cmd in ("aggregate", "all"):
         import aggregate
-        aggregate.run(OUT)
+        aggregate.run(OUT, names_path=os.path.expanduser(args.names) if args.names else None)
 
 
 if __name__ == "__main__":

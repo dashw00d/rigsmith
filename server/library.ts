@@ -6,9 +6,19 @@ import { LIBRARY, readJson, ROOT } from './workspace.ts'
 export interface Clip {
   id: string
   name: string
+  /** Mixamo's longer description ("Walking With A Briefcase"); tells apart clips sharing a name. */
+  description?: string
+  /** Short label telling apart distinct clips with the same name + description ("turns 90° left"). */
+  variant?: string
   sourceName?: string
-  /** 'provisional' when the name was generated from motion features (hashed source files). */
+  /**
+   * Where the name came from: 'source' (the user's file name), 'matched' (pack clip matching one of
+   * those), 'motion-match' (names file, confident), 'motion-candidate' (names file, closest of
+   * several near-equal `candidates`), 'provisional' (generated from motion features), 'bundled'.
+   */
   nameSource?: string
+  /** Other names an uncertain ('motion-candidate') clip may have. */
+  candidates?: Array<{ name: string, description?: string | null, rmsDeg?: number }>
   source: string
   file: string
   fps: number
@@ -35,6 +45,27 @@ interface Manifest {
 
 let cache: { mtime: number, manifest: Manifest } | null = null
 let bundled: Clip[] | null = null
+const haystacks = new WeakMap<Clip, { names: string, all: string }>()
+
+/** Lower-case text a search term may match: the names (name, description, candidates) and all of it (+ tags, category). */
+function haystack (c: Clip): { names: string, all: string } {
+  let text = haystacks.get(c)
+  if (text === undefined) {
+    const names = [c.name, c.description, c.variant, ...(c.candidates ?? []).flatMap(k => [k.name, k.description])]
+      .filter(Boolean).join('\n').toLowerCase()
+    text = { names, all: [names, ...c.tags, c.category].join('\n').toLowerCase() }
+    haystacks.set(c, text)
+  }
+  return text
+}
+
+/** The user's own clips first, then everything with a real name, then generated names. */
+function nameRank (c: Clip): number {
+  if (c.nameSource === 'source' || c.nameSource === 'matched') return 0
+  return c.nameSource === 'provisional' ? 2 : 1
+}
+
+const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare
 
 const CATEGORY_WORDS: Array<[string, RegExp]> = [
   ['locomotion', /walk|run|trot|gallop|jog|sprint|swim|crawl|sneak|strafe|turn|side.?wind|fly|glide|flap|climb/i],
@@ -97,7 +128,7 @@ async function manifest (): Promise<Manifest> {
   try { mtime = (await stat(file)).mtimeMs } catch { return { version: 0, skeleton: 'mixamo', categories: [], clips: [] } }
   if (cache === null || cache.mtime !== mtime) {
     const loaded = await readJson<Manifest>(file, { version: 0, skeleton: 'mixamo', categories: [], clips: [] })
-    loaded.clips = loaded.clips.filter(c => c.duplicateOf === null || c.duplicateOf === undefined)
+    loaded.clips = loaded.clips.filter(c => c.duplicateOf === null || c.duplicateOf === undefined).map(c => ({ ...c, rig: c.rig ?? 'human' }))
     cache = { mtime, manifest: loaded }
   }
   return cache.manifest
@@ -108,15 +139,21 @@ export interface LibraryQuery { category?: string, query?: string, source?: stri
 export async function queryLibrary (q: LibraryQuery) {
   const m = await manifest()
   const rig = q.rig ?? 'human'
-  const all = [...m.clips.map(c => ({ ...c, rig: c.rig ?? 'human' })), ...await bundledClips()].filter(c => c.rig === rig)
+  const all = [...m.clips, ...await bundledClips()].filter(c => c.rig === rig)
   const terms = (q.query ?? '').toLowerCase().split(/\s+/).filter(Boolean)
   const matches = all.filter(c =>
     (q.category === undefined || q.category === '' || c.category === q.category) &&
     (q.source === undefined || q.source === '' || c.source === q.source) &&
-    terms.every(t => c.name.toLowerCase().includes(t) || c.tags.some(tag => tag.includes(t)) || c.category.includes(t)))
-  // Named clips first: they are the ones the user picked or that were recognized.
-  const provisional = (c: Clip): number => Number(c.nameSource === 'provisional')
-  matches.sort((a, b) => provisional(a) - provisional(b) || a.name.localeCompare(b.name, undefined, { numeric: true }))
+    terms.every(t => haystack(c).all.includes(t)))
+  // Names starting a word with every term first ("laying", not "playing"), then names containing
+  // them, then clips found only through tags ("left" ~ turn-left).
+  const starts = terms.map(t => new RegExp(`(^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+  const relevance = (c: Clip): number => {
+    const { names } = haystack(c)
+    return starts.every(re => re.test(names)) ? 0 : terms.every(t => names.includes(t)) ? 1 : 2
+  }
+  matches.sort((a, b) => relevance(a) - relevance(b) || nameRank(a) - nameRank(b) || byName(a.name, b.name) ||
+    byName(a.description ?? '', b.description ?? '') || a.duration - b.duration)
   const pageSize = Math.min(Math.max(q.pageSize, 1), 96)
   const pages = Math.max(1, Math.ceil(matches.length / pageSize))
   const page = Math.min(Math.max(q.page, 0), pages - 1)

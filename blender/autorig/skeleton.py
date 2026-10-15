@@ -6,6 +6,8 @@ workspace/rigdev/gt (see dev/fit_stats in the rig notes). All lengths are fracti
 import numpy as np
 
 import mixamo
+from fingers import finger_chains, hand_fingers
+from hands import measure_hand, mirror, symmetric_hand
 
 # Calibrated against Mixamo rigs (mean over 11 stylized A-pose characters).
 SHOULDER_ABOVE_ARMPIT = 0.100      # along the arm axis, from the armpit's projection
@@ -26,11 +28,22 @@ TOE_BASE_FRACTION = 0.65             # ankle -> toe tip, along depth
 TOE_Z = 0.005
 SPINE_DEPTH_BIAS = 0.55              # 0 front, 1 back
 
-# Finger joints in the hand frame (x: along forearm, y: forward, z: x × forward), units of forearm length.
+# Finger joints in the measured hand frame (hands.py): (along the hand, toward the thumb, palm side), in
+# units of hand length (wrist -> fingertip). Thumb and index are medians of Mixamo's rigs of the Tripo
+# characters (dev/calib_hands.py). Index runs a little thumbward of the hand's center line so a mitten
+# (two-chain) hand curls evenly; the other fingers fan across the palm.
 FINGER_LAYOUT = {
+    'Thumb': [(0.169, 0.177, 0.029), (0.304, 0.318, 0.053), (0.429, 0.44, 0.083), (0.53, 0.5, 0.087)],
+    'Index': [(0.55, 0.06, 0.0), (0.70, 0.065, 0.0), (0.84, 0.07, 0.0), (0.97, 0.075, 0.0)],
+    'Middle': [(0.56, -0.01, 0.0), (0.72, -0.01, 0.0), (0.87, -0.01, 0.0), (1.0, -0.01, 0.0)],
+    'Ring': [(0.54, -0.08, 0.0), (0.69, -0.085, 0.0), (0.83, -0.09, 0.0), (0.95, -0.09, 0.0)],
+    'Pinky': [(0.51, -0.15, 0.0), (0.64, -0.16, 0.0), (0.75, -0.165, 0.0), (0.86, -0.17, 0.0)],
+}
+# Fallback when the hand can't be measured: the old forearm frame (x along the forearm, y forward,
+# z = x cross forward), units of forearm length.
+FOREARM_FINGER_LAYOUT = {
     'Thumb': [(0.196, 0.15, 0.128), (0.353, 0.271, 0.231), (0.503, 0.363, 0.343), (0.635, 0.406, 0.388)],
     'Index': [(0.556, 0.004, 0.071), (0.806, -0.025, 0.087), (1.015, -0.012, 0.153), (1.207, 0.123, 0.234)],
-    # Not in the ground truth (Mixamo used two chains). Spread from Index toward the back of the hand.
     'Middle': [(0.565, 0.0, 0.0), (0.82, -0.02, 0.0), (1.03, -0.01, 0.0), (1.22, 0.1, 0.0)],
     'Ring': [(0.55, 0.0, -0.065), (0.79, -0.02, -0.075), (0.98, -0.01, -0.08), (1.15, 0.08, -0.085)],
     'Pinky': [(0.52, 0.0, -0.125), (0.72, -0.02, -0.14), (0.87, -0.01, -0.15), (1.0, 0.06, -0.16)],
@@ -156,8 +169,19 @@ def build_joints(sil, markers, fingers='two'):
     put('LeftToeBase', toe_x, z0 + TOE_Z * H, y=ankle_y + TOE_BASE_FRACTION * (toe_end_y - ankle_y))
     put('LeftToe_End', toe_x, z0 + TOE_Z * H, y=toe_end_y)
 
-    # Fingers, in a frame built from the forearm direction.
-    _add_fingers(joints, fingers)
+    # Fingers, in the measured hand frame (both hands measured, averaged mirrored).
+    hand = None
+    if mixamo.FINGER_LEVELS[fingers]:
+        both = dict(joints)
+        for name in ('LeftHand', 'LeftForeArm'):
+            p = joints[name]
+            both[mixamo.mirror_name(name)] = np.array([2 * xc - p[0], p[1], p[2]])
+        hand = symmetric_hand(sil.verts, sil.tris, both, H, xc)
+    _add_fingers(joints, fingers, hand)
+    if mixamo.FINGER_LEVELS[fingers]:
+        detected = detect_finger_joints(sil.verts, sil.tris, both, H, xc)
+        if detected:
+            joints.update(fit_finger_level(detected, fingers, joints))
 
     # Mirror every Left* joint to Right*.
     for name in list(joints):
@@ -179,8 +203,15 @@ def _toe_tip_y(sil, toe_x, z0, H):
     return float(np.percentile(sil.points[near, 1], 0.5))
 
 
-def _add_fingers(joints, fingers):
-    wrist, elbow = joints['LeftHand'], joints['LeftForeArm']
+def _add_fingers(joints, fingers, hand=None):
+    wrist = joints['LeftHand']
+    if hand is not None:
+        frame = np.stack([hand['axis'], hand['thumb'], hand['palm']])
+        for finger in mixamo.FINGER_LEVELS[fingers]:
+            for i, offset in enumerate(FINGER_LAYOUT[finger], start=1):
+                joints[f'LeftHand{finger}{i}'] = wrist + hand['length'] * (np.array(offset) @ frame)
+        return
+    elbow = joints['LeftForeArm']
     x_axis = wrist - elbow
     length = np.linalg.norm(x_axis)
     x_axis /= length
@@ -189,5 +220,49 @@ def _add_fingers(joints, fingers):
     y_axis /= np.linalg.norm(y_axis)
     z_axis = np.cross(x_axis, y_axis)  # matches the ground-truth frame (z = x × forward)
     for finger in mixamo.FINGER_LEVELS[fingers]:
-        for i, (fx, fy, fz) in enumerate(FINGER_LAYOUT[finger], start=1):
+        for i, (fx, fy, fz) in enumerate(FOREARM_FINGER_LAYOUT[finger], start=1):
             joints[f'LeftHand{finger}{i}'] = wrist + length * (fx * x_axis + fy * y_axis + fz * z_axis)
+
+
+def detect_finger_joints(verts, tris, joints, height, x_center):
+    """Left-hand finger joints traced from the mesh (both hands, the right one mirrored and averaged).
+
+    {'LeftHandThumb2': p, ..., 'LeftHandPinky4': p}; empty when neither hand shows five fingers."""
+    per_side = []
+    for prefix, side in (('Left', 1), ('Right', -1)):
+        wrist, elbow = joints[prefix + 'Hand'], joints[prefix + 'ForeArm']
+        hand = measure_hand(verts, tris, wrist, elbow, side, height)
+        if hand is None:
+            continue
+        labeled = hand_fingers(verts, tris, hand, wrist, height)
+        if not labeled:
+            continue
+        chains = finger_chains(labeled)
+        out = {}
+        for finger, points in chains.items():
+            for i, p in enumerate(points, start=1):
+                if p is not None:
+                    out[f'LeftHand{finger}{i}'] = p if side > 0 else np.array([2 * x_center - p[0], p[1], p[2]])
+        per_side.append(out)
+    if not per_side:
+        return {}
+    keys = set.intersection(*(set(d) for d in per_side))
+    return {k: np.mean([d[k] for d in per_side], axis=0) for k in keys}
+
+
+def fit_finger_level(detected, fingers, joints):
+    """Detected five-finger joints reduced to the requested level. Mitten levels (Mixamo's one/two
+    chains) drive all four fingers from the Index chain, so it runs down the middle of them."""
+    out = {}
+    wanted = mixamo.FINGER_LEVELS[fingers]
+    for finger in wanted:
+        for i in range(1, 5):
+            name = f'LeftHand{finger}{i}'
+            if finger == 'Index' and fingers in ('one', 'two'):
+                pts = [detected.get(f'LeftHand{f}{i}') for f in ('Index', 'Middle', 'Ring', 'Pinky')]
+                pts = [p for p in pts if p is not None]
+                if pts:
+                    out[name] = np.mean(pts, axis=0)
+            elif name in detected:
+                out[name] = detected[name]
+    return out

@@ -9,6 +9,8 @@ so they work with user-edited joints too.
 """
 import numpy as np
 
+from fingers import hand_fingers
+from hands import measure_hand
 from heat import segment_distances
 from landmarks import Silhouettes
 from raster import runs
@@ -18,7 +20,9 @@ ARM_START = 0.025          # along the arm, past the shoulder joint
 HAND_START = 0.10          # forearm lengths before the wrist joint
 NECK_START = 0.18          # of the Spine2->Neck segment, above the neck joint
 FOOT_ABOVE_ANKLE = 0.019
-CLAVICLE_INNER = 0.046     # lateral of the clavicle's inner end
+CLAVICLE_IN = 0.035        # clavicle band starts this far inside the shoulder joint (x)...
+CAP_OUT = 0.015            # ...and hands over to the upper arm this far outside it
+CAP_BELOW = 0.05           # shoulder cap reaches this far below the shoulder joint
 CLAVICLE_LOW = -0.18       # of the Spine2->Neck segment, relative to Spine2
 
 
@@ -62,6 +66,38 @@ def _limb_radius(verts, a, b, height):
     return float(np.median(d[near])) if near.any() else 0.05 * height
 
 
+def vertex_normals(verts, tris):
+    n = np.cross(verts[tris[:, 1]] - verts[tris[:, 0]], verts[tris[:, 2]] - verts[tris[:, 0]])
+    out = np.zeros_like(verts)
+    for k in range(3):
+        np.add.at(out, tris[:, k], n)
+    # Coincident vertices (UV seams) share a normal.
+    keys = np.round(verts / 1e-6).astype(np.int64)
+    _, inverse = np.unique(keys, axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    summed = np.zeros((inverse.max() + 1, 3))
+    np.add.at(summed, inverse, out)
+    out = summed[inverse]
+    return out / np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-12)
+
+
+def _segment_radial(verts, a, b):
+    """Distance to segment a-b and the unit direction from the segment out to each vertex."""
+    ab = b - a
+    t = np.clip(((verts - a) @ ab) / (ab @ ab), 0, 1)
+    off = verts - (a + t[:, None] * ab)
+    d = np.linalg.norm(off, axis=1)
+    return d, off / np.maximum(d, 1e-12)[:, None]
+
+
+def _surface_radius(d, radial, normals, verts, a, b, height):
+    """Limb thickness: median distance of outward-facing skin around the middle of the segment."""
+    ab = b - a
+    t = ((verts - a) @ ab) / (ab @ ab)
+    near = (t > 0.25) & (t < 0.75) & (d < 0.12 * height) & ((radial * normals).sum(1) > 0.5)
+    return float(np.median(d[near])) if near.sum() > 4 else 0.04 * height
+
+
 def attach(verts, tris, names, heads, tails, joints):
     """(attach_index, distance) per vertex: the bone each vertex is attached to before diffusion."""
     idx = {n: i for i, n in enumerate(names)}
@@ -69,6 +105,7 @@ def attach(verts, tris, names, heads, tails, joints):
     xc = sil.x_center
     H = sil.height
     dist, _ = segment_distances(verts, heads, tails)
+    normals = vertex_normals(verts, tris)
     n = len(verts)
     attach_to = np.full(n, -1)
 
@@ -93,8 +130,15 @@ def attach(verts, tris, names, heads, tails, joints):
         arm_bones = [b for b in names if b.startswith(prefix) and ('Arm' in b or 'Hand' in b)]
         arm_dist = dist[:, [idx[b] for b in arm_bones]].min(axis=1)
         radius = _limb_radius(verts, joints[prefix + 'ForeArm'], joints[prefix + 'Hand'], H)
-        # Lateral of the torso, or hugging the arm where a hand touches the body; never far from the arm.
-        mask = beyond & (lateral | (arm_dist < 1.0 * radius)) & (arm_dist < 2.5 * radius) & (attach_to < 0)
+        # Where the arm rests against the body, skin facing away from the arm's axis is arm and skin
+        # facing it is the body (each segment measured with its own thickness).
+        facing_out = np.zeros(len(verts), dtype=bool)
+        for a, b in ((prefix + 'Arm', prefix + 'ForeArm'), (prefix + 'ForeArm', prefix + 'Hand')):
+            d_seg, radial = _segment_radial(verts, joints[a], joints[b])
+            seg_radius = _surface_radius(d_seg, radial, normals, verts, joints[a], joints[b], H)
+            facing_out |= (d_seg < 1.6 * seg_radius) & ((radial * normals).sum(1) > 0.2)
+        # Lateral of the torso, or arm skin against the body; never far from the arm.
+        mask = beyond & (lateral | facing_out | (arm_dist < 1.0 * radius)) & (arm_dist < 2.5 * max(radius, 0.04 * H)) & (attach_to < 0)
         nearest_of(mask, arm_bones)
         # The wrist belongs to the hand (Mixamo's boundary sits before the wrist joint).
         wrist, elbow = joints[prefix + 'Hand'], joints[prefix + 'ForeArm']
@@ -103,6 +147,8 @@ def attach(verts, tris, names, heads, tails, joints):
         past = (verts - wrist) @ (forearm / length) > -HAND_START * length
         attach_to[(attach_to == idx[prefix + 'ForeArm']) & past] = idx[prefix + 'Hand']
 
+    _attach_hands(verts, tris, names, idx, dist, joints, attach_to, H)
+
     # Head and neck: above the neck band start, within the head's width (pauldrons stay torso).
     spine2_z, neck_z, head_z = joints['Spine2'][2], joints['Neck'][2], joints['Head'][2]
     neck_start = neck_z + NECK_START * (neck_z - spine2_z)
@@ -110,7 +156,8 @@ def attach(verts, tris, names, heads, tails, joints):
     head_runs = [r for r in runs(sil.front[head_row]) if r[0] <= sil.center_col < r[1]]
     head_half = (max(head_runs[0][1] - sil.center_col, sil.center_col - head_runs[0][0]) * sil.pixel * 1.1
                  if head_runs else 0.2 * H)
-    mask = (z > neck_start) & (np.abs(x - xc) < head_half) & (attach_to < 0)
+    # Anything above the head joint is head (antlers, feathers, hat brims), whatever its width.
+    mask = (z > neck_start) & ((np.abs(x - xc) < head_half) | (z >= head_z)) & (attach_to < 0)
     attach_to[mask & (z < head_z)] = idx['Neck']
     attach_to[mask & (z >= head_z)] = idx['Head']
 
@@ -125,12 +172,16 @@ def attach(verts, tris, names, heads, tails, joints):
         boot = z < joints[prefix + 'Foot'][2] + FOOT_ABOVE_ANKLE * H
         attach_to[(attach_to == idx[prefix + 'Leg']) & boot] = idx[prefix + 'Foot']
 
-    # Clavicles: top of the torso, lateral of the clavicle's inner end.
+    # Shoulders, top of the torso: a narrow clavicle band around the shoulder joint; the cap beyond
+    # it (deltoid, pauldron, fur) rides with the upper arm, the chest inside it stays Spine2.
     torso = attach_to < 0
     clav_z = spine2_z + CLAVICLE_LOW * (neck_z - spine2_z)
     for prefix, sign in (('Left', 1), ('Right', -1)):
-        inner = abs(joints[prefix + 'Shoulder'][0] - xc) + CLAVICLE_INNER * H
-        mask = torso & (z > clav_z) & (sign * (x - xc) > inner)
+        arm_x = abs(joints[prefix + 'Arm'][0] - xc)
+        lateral = sign * (x - xc)
+        cap = torso & (z > joints[prefix + 'Arm'][2] - CAP_BELOW * H) & (lateral > arm_x + CAP_OUT * H)
+        attach_to[cap] = idx[prefix + 'Arm']
+        mask = torso & ~cap & (z > clav_z) & (lateral > arm_x - CLAVICLE_IN * H)
         attach_to[mask] = idx[prefix + 'Shoulder']
 
     # Torso bands by height.
@@ -144,3 +195,53 @@ def attach(verts, tris, names, heads, tails, joints):
 
     distance = dist[np.arange(n), attach_to]
     return attach_to, distance
+
+
+def _chain_for(finger, prefix, idx):
+    """Deform bones that drive a detected finger at the rig's finger level (mittens share Index)."""
+    own = [f'{prefix}Hand{finger}{i}' for i in (1, 2, 3)]
+    if all(b in idx for b in own):
+        return own
+    if finger != 'Thumb':
+        shared = [f'{prefix}HandIndex{i}' for i in (1, 2, 3)]
+        if all(b in idx for b in shared):
+            return shared
+    return []
+
+
+def _attach_hands(verts, tris, names, idx, dist, joints, attach_to, height):
+    """Each detected finger's vertices attach only to its own chain (no bleed between touching
+    fingers); the palm attaches to the hand."""
+    for prefix, side in (('Left', 1), ('Right', -1)):
+        if prefix + 'Hand' not in idx or prefix + 'ForeArm' not in joints:
+            continue
+        wrist = joints[prefix + 'Hand']
+        hand = measure_hand(verts, tris, wrist, joints[prefix + 'ForeArm'], side, height)
+        if hand is None:
+            continue
+        labeled = hand_fingers(verts, tris, hand, wrist, height)
+        hand_bone = idx[prefix + 'Hand']
+        driven = np.isin(attach_to, [idx[b] for b in names if b.startswith(prefix + 'Hand')])
+        in_fingers = np.zeros(len(verts), dtype=bool)
+        for finger, f in labeled.items():
+            members = np.array(f['members'])
+            members = members[driven[members]]
+            in_fingers[members] = True
+            cand = [hand_bone] + [idx[b] for b in _chain_for(finger, prefix, idx)]
+            sub = dist[np.ix_(members, cand)]
+            attach_to[members] = np.array(cand)[np.argmin(sub, axis=1)]
+        if labeled:
+            # Palm: the hand, except skin past a knuckle that's nearest that finger's first bone
+            # (it bends with the finger when the hand closes), like Mixamo's knuckle weights.
+            palm = np.flatnonzero(driven & ~in_fingers)
+            attach_to[palm] = hand_bone
+            firsts = {_chain_for(f, prefix, idx)[0] for f in labeled if _chain_for(f, prefix, idx)}
+            cand = [hand_bone] + [idx[b] for b in sorted(firsts)]
+            sub = dist[np.ix_(palm, cand)].copy()
+            for k, b in enumerate(sorted(firsts), start=1):
+                child = b[:-1] + '2'
+                head, tail = joints[b], joints.get(child, joints[b])
+                axis = tail - head
+                past = (verts[palm] - head) @ axis > 0
+                sub[~past, k] = np.inf
+            attach_to[palm] = np.array(cand)[np.argmin(sub, axis=1)]

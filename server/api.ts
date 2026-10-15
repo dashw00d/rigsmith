@@ -6,6 +6,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path'
 import { enqueue, events, type Job, listJobs, runBlender, runCodex } from './jobs.ts'
+import { optimizeSkin, torchPython } from './skinopt.ts'
 import { queryLibrary } from './library.ts'
 import {
   type Character, characterDir, type Garment, type TextureImage, createCharacter, deleteCharacter, getCharacter, getSettings, listCharacters,
@@ -91,8 +92,22 @@ async function runRig (id: string, update: Update): Promise<void> {
     args.push('--joints', jointsFile)
   }
   if (creature) args.push('--template', path.join(ROOT, 'static', 'templates', `${character.template!}.json`))
-  const { result } = await runBlender('autorig/rig.py', args, (progress, message) => { update({ progress, message }) })
+  // Humanoids get pose-optimized weights after Blender (when PyTorch is around): Blender is the first 60%.
+  const optimize = !creature && torchPython() !== null
+  const share = optimize ? 0.6 : 1
+  const started = Date.now()
+  const { result } = await runBlender('autorig/rig.py', args, (progress, message) => { update({ progress: progress * share, message }) })
   const r = result as { joints: Record<string, Vec3>, seconds: number, method: string, warnings: string[] }
+  if (optimize) {
+    try {
+      await optimizeSkin(path.join(dir, 'rigged.glb'), (progress, message) => { update({ progress: share + (1 - share) * progress, message }) })
+      r.method += '+pose-optimized'
+    } catch (error) {
+      // The heat weights are a complete rig on their own; keep them and say what happened.
+      r.warnings.push(`weights not pose-optimized: ${(error as Error).message.slice(0, 200)}`)
+    }
+    r.seconds = Math.round((Date.now() - started) / 100) / 10
+  }
   await updateCharacter(id, c => {
     c.status = 'rigged'
     c.files.rigged = 'rigged.glb'

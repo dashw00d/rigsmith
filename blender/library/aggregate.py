@@ -18,41 +18,117 @@ import features as F
 
 CATEGORIES = [
     ("locomotion", "Locomotion"), ("idle", "Idle"), ("combat", "Combat"), ("reactions", "Reactions"),
-    ("jump", "Jump & Acrobatics"), ("crouch-prone", "Crouch & Prone"), ("sit-lie", "Sit & Lie"),
-    ("dance", "Dance"), ("gesture", "Gesture"), ("work", "Work"), ("transition", "Transition"), ("pose", "Pose"),
+    ("jump", "Jump & Acrobatics"), ("climb", "Climb & Hang"), ("crouch-prone", "Crouch & Prone"),
+    ("sit-lie", "Sit & Lie"), ("dance", "Dance"), ("gesture", "Gesture"), ("work", "Work"),
+    ("sports", "Sports & Fitness"), ("transition", "Transition"), ("pose", "Pose"),
 ]
 CAT_LABEL = dict(CATEGORIES)
 CAT_ORDER = {c: i for i, (c, _) in enumerate(CATEGORIES)}
 
-# Name keywords, checked in order (first hit wins), used for named / recovered names.
-KEYWORDS = [
-    ("pose", [r"\bpose\b"]),
-    ("transition", [r"\bto (stand|sit|crouch|idle|prone|lie)", r"stand(ing)? up", r"get(ting)? up", r"sit(ting)? down",
-                    r"lie down"]),
-    ("work", [r"\bdig", r"fish", r"pick(ing)? up", r"\bcarr(y|ying)", r"\bpull", r"\brope", r"working", r"device",
-              r"hammer", r"\bchop", r"\bmin(e|ing)\b", r"\bpush", r"\blift", r"repair", r"\bplant", r"typing",
-              r"harvest", r"\bbuild"]),
-    ("reactions", [r"\bdie\b", r"dying", r"death", r"\bhit\b", r"reaction", r"knock", r"\bfall", r"stumbl",
-                   r"electrocut", r"stagger"]),
-    ("combat", [r"attack", r"slash", r"punch", r"kick", r"sword", r"draw arrow", r"\barrow", r"shoot", r"\bblock",
-                r"fight", r"boxing", r"\bstab", r"strike", r"combo", r"spell", r"\bcast", r"rifle", r"pistol",
-                r"parry", r"dodge"]),
-    ("jump", [r"jump", r"flip", r"somersault", r"vault", r"leap", r"cartwheel"]),
-    ("crouch-prone", [r"crouch", r"crawl", r"prone", r"sneak"]),
-    ("sit-lie", [r"\bsit", r"\blying\b", r"\blie\b", r"laying", r"sleep"]),
-    ("dance", [r"danc", r"samba", r"hip hop", r"salsa", r"twerk"]),
-    ("gesture", [r"talk", r"\bwav(e|ing)", r"\bpoint", r"\bclap", r"cheer", r"\bnod", r"shrug", r"gesture",
-                 r"salut", r"\bbow(ing)?\b", r"agree", r"argu", r"\byell", r"laugh"]),
-    ("idle", [r"idle", r"breathing"]),
-    ("locomotion", [r"walk", r"\brun", r"\bjog", r"sprint", r"strafe", r"\bturn"]),
+# Keyword rules for named clips (the user's own names, or Mixamo name + description from the
+# names file). Mixamo names are the headline action ("Firing Rifle", "Sitting Clap") and the
+# description adds context ("... While Crouch Walking"), so:
+#   1. CONTEXT_KEYWORDS are matched against "name | description" (set/sport/static-pose words
+#      that may only appear in the description, e.g. "Chip | Soccer Chip Shot");
+#   2. KEYWORDS are matched against the name first, then the description (first hit wins, in
+#      order, so the specific rules sit above the broad ones);
+#   3. WEAPON_WORDS (rifle, sword ...) put anything else holding a weapon into combat.
+# Clips no rule matches keep the motion-feature category.
+CONTEXT_KEYWORDS = [
+    ("pose", [r"^(male|female) \w+ pose( \||$)", r"\b(t|a|da)-pose\b"]),
+    ("sports", [r"golf", r"soccer", r"baseball", r"basketball", r"football", r"goal(keeper|ie)", r"quarterback",
+                r"umpire", r"referee", r"batter", r"pitching", r"dribbl", r"tackl", r"workout", r"fitness",
+                r"\bsquat\b", r"push ?ups?\b", r"sit ?ups?\b", r"situps?\b", r"burpee", r"\bplank\b", r"crunch",
+                r"kettlebell", r"jumping jacks", r"bicep curl", r"jump(ing)? rope", r"treadmill", r"skateboard",
+                r"(arm|neck) stretching", r"warm(ing)? up\b", r"receiver catch", r"throw in\b", r"defender", r"paddling"]),
+    ("dance", [r"danc", r"samba", r"salsa", r"rumba", r"hip hop", r"breakdance", r"bboy", r"uprock", r"twerk",
+               r"macarena", r"ymca", r"gangnam", r"thriller", r"can can", r"moonwalk", r"northern soul", r"\bflair\b",
+               r"headspin", r"\bfreezes?\b", r"charleston"]),
 ]
+KEYWORDS = [
+    ("climb", [r"climb", r"ladder", r"\bhang\b", r"hanging", r"braced", r"shimmy", r"ledge", r"wall run",
+               r"runs up a wall", r"free ?hang", r"rope swing", r"^(start )?swing(ing)?\b", r"wall crash"]),
+    # airborne loops and landings before the generic "fall" of reactions
+    ("jump", [r"falling idle", r"\bfall [ab]\b", r"falling to (landing|roll)", r"hard landing", r"\blanding\b",
+              r"\bland (from|to)\b", r"out of a (flying )?plane"]),
+    ("reactions", [r"death", r"dying", r"\bdie\b", r"\bdead\b", r"knocked", r"knockdown", r"reaction", r"\breact(ing)?\b",
+                   r"receiv(e|ing) (a |an )?((big|light|medium|small) )?(hit|punch|kick|uppercut|body|stomach)",
+                   r"getting (hit|shot|thrown|shoved|rocked|spat|spit|snuck)", r"\bhit\b(?! combo)", r"struck", r"impact",
+                   r"stumbl", r"\btrip(ping)?\b", r"\bslip", r"electrocut", r"stagger", r"flinch", r"shove", r"agon(y|iz)",
+                   r"writhing", r"convuls", r"seizure", r"spat (in|on)", r"\bspit\b", r"strangled", r"victim", r"thrown",
+                   r"\bfall(s|ing)?\b", r"fall over", r"losing balance", r"teeter", r"wobbl", r"taking punch",
+                   r"to the groin", r"pulled (from|out)"]),
+    # weapon handling
+    ("combat", [r"draw(ing)? (a |an |the )?(great )?(sword|gun|arrow|weapon|bow)", r"sheath", r"\bequip", r"disarm",
+                r"withdraw", r"put(ting)? (back|away)", r"\bput away", r"pull(ing)? out", r"holster",
+                r"grab(bing)? (a |the )?(rifle|pistol)", r"grab rifle", r"grab and put back",
+                r"light(ing)? torch", r"grab torch"]),
+    ("jump", [r"\bflip\b", r"backflip", r"somersault", r"vault", r"\bleap", r"cartwheel", r"(?<!prone )\broll(ing)?\b",
+              r"\bdiv(e|ing)\b", r"kip up", r"corkscrew", r"jump(?!.*\b(attack|kick|punch))", r"\bhop\b"]),
+    # starting to move ("Idle To Walk Forward") is locomotion, not a posture change
+    ("locomotion", [r"\bto (walk|run|sprint|jog)"]),
+    ("transition", [r"\b(stand|standing|sit|sitting|crouch|crouched|crouching|kneel|kneeling|prone|lying|laying|seated)"
+                    r" to\b",
+                    r"\b(to|into) (a |an )?(stand|standing|sit|sitting|crouch|crouched|crouching|kneel|kneeling|prone|"
+                    r"lying|laying|seated|fight|fighting|action idle|fitness idle|block idle|idle)\b",
+                    r"\bstand(ing)? up\b", r"\bget(ting)? up\b", r"\bsit(ting)? down\b", r"\b(lie|lying) down\b",
+                    r"\bkneel(ing)? down\b", r"transition", r"waking up", r"\bidle to (?!walk|run|sprint|jog)",
+                    r"\bfrom (a |an )?(crouch|crouched|crouching|kneeling|seated|sitting|lying|laying|back|stomach|prone)\b"]),
+    ("sit-lie", [r"\bsit(s|ting)?\b", r"seated", r"\blying\b", r"\blie\b", r"\blaying\b", r"sleep", r"\bbed\b", r"toilet", r"reclin"]),
+    ("combat", [r"attack", r"slash", r"punch", r"\bkick", r"\bstab", r"strike", r"combo", r"spell", r"magic", r"shoot",
+                r"\bfir(e|ing)\b", r"reload", r"\bblock", r"parry", r"dodg", r"\bfight(ing)?\b(?! idle)", r"boxing",
+                r"\bjab", r"uppercut", r"\bhook\b", r"elbow", r"illegal knee", r"headbutt", r"leg sweep", r"takedown",
+                r"choke", r"strangling", r"assassin", r"grenade", r"gunplay", r"smash", r"\bbash(ing)?\b", r"thrust", r"swip",
+                r"\bbit(e|ing)\b", r"power(ing)? up", r"melee", r"\bthrow", r"capoeira", r"\bmma\b", r"muay thai",
+                r"martelo", r"armada", r"chapa", r"bencao", r"queshada", r"pontera", r"meia lua", r"rasteira",
+                r"esquiva", r"macaco", r"ginga", r"aggressor", r"attacker", r"hostage", r"slam", r"\bduel"]),
+    ("crouch-prone", [r"crouch", r"crawl", r"prone", r"sneak", r"kneel", r"squatting", r"\bduck(ing)?\b", r"hiding"]),
+    ("work", [r"\bdig", r"fish", r"pick(ing)? (up|fruit|item)", r"\bcarr(y|ying|ied)", r"\bpull", r"working", r"device",
+              r"hammer", r"\bchop", r"\bmin(e|ing)\b", r"\bpush", r"\blift", r"repair", r"\bplant", r"typing", r"\btype\b",
+              r"harvest", r"\bbuild", r"wheelbarrow", r"gather", r"watering", r"milking", r"\bcards\b", r"\bdice\b",
+              r"piano", r"guitar", r"drums", r"bartend", r"writing", r"\bfax\b", r"files", r"filing", r"cabinet",
+              r"drawer", r"\blid\b", r"opening", r"closing", r"lever", r"driv(e|ing|er)\b", r"steering", r"honking",
+              r"pilot", r"helicopter", r"\bcar\b", r"\bcpr\b", r"petting", r"putting down", r"holding (an|down)",
+              r"moving object", r"gaming", r"video game", r"finding", r"dropping", r"taking (an )?item", r"\bbox\b",
+              r"drinking", r"helping", r"burn webs", r"tender(ly)? plac"]),
+    ("gesture", [r"talk", r"\bwav(e|ing)\b", r"\bpoint", r"\bclap", r"cheer", r"\bnod", r"shrug", r"gesture", r"salut",
+                 r"\b(formal|informal) bow\b", r"bowing", r"agree", r"acknowledg", r"argu", r"\byell", r"laugh", r"taunt",
+                 r"insult", r"dismiss", r"loser", r"victory", r"defeat", r"celebrat", r"fist pump", r"thumbs up", r"kiss",
+                 r"crying", r"pray", r"rallying", r"singing", r"rapping", r"counting", r"signal", r"\bno\b",
+                 r"head shake", r"shaking head", r"look away", r"bashful", r"cocky", r"plotting", r"relieved",
+                 r"rejected", r"terrified", r"scared", r"threatening", r"thinking", r"whatever", r"crazy", r"focus",
+                 r"shake fist", r"hand raising", r"raising a hand", r"intercept", r"patting", r"shaking hands", r"phone",
+                 r"texting", r"calling", r"roar", r"scream", r"flexing", r"spank", r"disappointed", r"annoyed",
+                 r"disapprov", r"asking", r"question", r"stomp", r"meeting", r"watercooler", r"\bchat", r"banging fist"]),
+    ("idle", [r"idle", r"breathing", r"weight shift", r"^(?!.*\b(run|walk|jog|sprint)).*\blook(ing)?\b", r"\blean", r"yawn", r"wiping sweat", r"inspect",
+              r"examin", r"waiting", r"smoking", r"stance"]),
+    ("locomotion", [r"walk", r"\brun", r"\bjog", r"sprint", r"strafe", r"strafing", r"\bturn", r"\bstep", r"pacing",
+                    r"swim", r"treading water", r"stairs", r"backward", r"\barc\b", r"pivot", r"side ?step", r"wheelchair",
+                    r"catwalk", r"\bstop\b", r"\bstart\b", r"moving", r"advanc", r"shuffle", r"circle", r"spin in place"]),
+    # moods without an activity ("Happy", "Angry") are gestures; "Happy Walk" / "Sad Idle" matched above
+    ("gesture", [r"happy", r"\bsad\b", r"angr(y|ily)", r"surprised", r"excited", r"nervous", r"bored"]),
+]
+WEAPON_WORDS = (r"rifle|pistol|\bguns?\b|sword|shield|\baxe\b|\bbow\b|knife|weapon|\bclub\b|bayonet|shotgun|\bstaff\b|"
+                r"hand cannon")
+_CONTEXT_RE = [(c, [re.compile(p) for p in ps]) for c, ps in CONTEXT_KEYWORDS]
+_KEYWORD_RE = [(c, [re.compile(p) for p in ps]) for c, ps in KEYWORDS]
+_WEAPON_RE = re.compile(WEAPON_WORDS)
 
 
-def keyword_category(name):
-    n = (name or "").lower()
-    for cat, pats in KEYWORDS:
-        if any(re.search(p, n) for p in pats):
+def keyword_category(name, description=None):
+    n, d = (name or "").lower().strip(), (description or "").lower().strip()
+    both = f"{n} | {d}" if d else n
+    for cat, pats in _CONTEXT_RE:
+        if any(p.search(both) for p in pats):
             return cat
+    for text in (n, d):
+        if not text:
+            continue
+        for cat, pats in _KEYWORD_RE:
+            if any(p.search(text) for p in pats):
+                return cat
+    if _WEAPON_RE.search(both):
+        return "combat"
     return None
 
 
@@ -322,15 +398,33 @@ def sig_dist(a, b):
     return np.degrees(np.linalg.norm(a - b, axis=-1).mean(axis=(-1, -2)))
 
 
+def start_frame(P):
+    """Joint positions moved to a common start: initial hips over the origin, initially facing +Z.
+    Returns (positions, initial yaw in degrees)."""
+    yaw, _ = F.facing_yaw(P)
+    return F.rot_y(P - P[0, F.JI["Hips"]] * np.array([1, 0, 1]), -yaw[0]), float(np.degrees(yaw[0]))
+
+
 def find_duplicates(out, pack):
     """Pack-internal duplicates: same frame count, signature within 0.5 deg and all cached
-    joint positions within 2 mm. Returns {id: canonical_id} for non-canonical members."""
+    joint positions within 2 mm, compared from a common start (see start_frame) so copies the
+    pack exported with a different initial facing (e.g. turned 180 deg) count too.
+    Returns ({id: canonical_id} for non-canonical members, pairs checked, {id: initial yaw deg}
+    for group members). The canonical member is the one starting closest to facing +Z, then the
+    lowest id."""
     parent = {}
+    starts = {}
 
     def find(x):
         while parent.get(x, x) != x:
             x = parent[x]
         return x
+
+    def start(m):
+        if m["id"] not in starts:
+            P = np.load(os.path.join(out, "cache", m["id"] + ".npz"))["P"].astype(np.float64)
+            starts[m["id"]] = start_frame(P)
+        return starts[m["id"]]
     by = defaultdict(list)
     for m in pack:
         by[m["frames"]].append(m)
@@ -345,19 +439,22 @@ def find_duplicates(out, pack):
             t = np.abs(T[i + 1:] - T[i]).max(axis=(1, 2))
             for j in np.where((d < 0.5) & (t < 0.01))[0]:
                 a, b = g[i], g[i + 1 + j]
-                Pa = np.load(os.path.join(out, "cache", a["id"] + ".npz"))["P"]
-                Pb = np.load(os.path.join(out, "cache", b["id"] + ".npz"))["P"]
                 checked += 1
-                if np.linalg.norm(Pa - Pb, axis=2).max() < 0.002:
+                if np.linalg.norm(start(a)[0] - start(b)[0], axis=2).max() < 0.002:
                     ra, rb = find(a["id"]), find(b["id"])
                     if ra != rb:
                         parent[max(ra, rb)] = min(ra, rb)
-    dup = {}
+    groups = defaultdict(list)
     for x in list(parent):
-        r = find(x)
-        if r != x:
-            dup[x] = r
-    return dup, checked
+        groups[find(x)] += [x, find(x)]
+    dup, yaw0 = {}, {}
+    for members in groups.values():
+        members = sorted(set(members))
+        yaw0.update({x: start({"id": x})[1] for x in members})
+        # 5 deg buckets so float noise between exact copies never changes the pick
+        canon = min(members, key=lambda x: (round(abs(yaw0[x]) / 5), x))
+        dup.update({x: canon for x in members if x != canon})
+    return dup, checked, yaw0
 
 
 def match_named(named, pack_canon):
@@ -448,7 +545,64 @@ MANIFEST_FEATURES = [
 ]
 
 
-def run(out):
+# --------------------------------------------------------------------------- names file
+
+DEFAULT_NAMES = os.path.expanduser("~/Downloads/Mixamo/animation-names.json")
+NAME_CONFIDENCE = {"source": 0.95, "matched": 0.9, "motion-match": 0.9, "motion-candidate": 0.75}
+
+
+def load_names(path):
+    """Mixamo names for the hashed pack clips from a motion-match names file:
+    {"metadata": {...}, "animations": {<pack file name without .fbx>: {"name" (null when uncertain),
+    "status": "strong_motion_match" | "needs_review", "closest_name", "description",
+    "mixamo_motion_id", "rotation_rms_degrees", "candidates": [{"name", "description",
+    "rotation_rms_deg"}, ...]}}}. Returns ({hash: record}, info); empty when there is no file."""
+    if not path or not os.path.exists(path):
+        return {}, None
+    doc = json.load(open(path))
+    meta = doc.get("metadata", {})
+    return doc.get("animations", {}), {"path": path, "createdUtc": meta.get("created_utc"),
+                                       "counts": meta.get("counts"), "method": meta.get("method")}
+
+
+def name_from_record(rec):
+    """(name, nameSource, description, candidates) for one names-file record. Uncertain matches
+    take the closest name and keep the alternatives that fit about as well (for search)."""
+    strong = rec.get("status") == "strong_motion_match" and bool(rec.get("name"))
+    name = (rec.get("name") if strong else rec.get("closest_name")) or None
+    desc = (rec.get("description") or "").strip() or None
+    cands = []
+    if not strong:
+        options = [c for c in rec.get("candidates", []) if c.get("name") and c.get("rotation_rms_deg") is not None]
+        if options:
+            best = min(c["rotation_rms_deg"] for c in options)
+            seen = {(name, desc)}
+            for c in sorted(options, key=lambda c: c["rotation_rms_deg"]):
+                key = (c["name"], (c.get("description") or "").strip() or None)
+                if key in seen or c["rotation_rms_deg"] > max(1.5 * best, best + 3):
+                    continue
+                seen.add(key)
+                cands.append({"name": key[0], "description": key[1], "rmsDeg": round(c["rotation_rms_deg"], 2)})
+    return name, ("motion-match" if strong else "motion-candidate"), desc, cands[:3]
+
+
+def variant_labels(es):
+    """Short labels telling apart distinct clips that share name + description (Mixamo lists some
+    motions several times, and the pack has exports with and without root rotation): the first of
+    root turn / root motion / looping / duration that differs for every member, else "variant k"."""
+    def turn(e):
+        y = e["features"]["netYawDeg"]
+        return f"turns {abs(round(y / 15) * 15):.0f}° {'left' if y > 0 else 'right'}" if abs(y) >= 20 else "no turn"
+    kinds = [turn, lambda e: "in place" if e["inPlace"] else "root motion",
+             lambda e: "loops" if e["loop"] else "one-shot", lambda e: f"{e['duration']:.1f}s"]
+    for fn in kinds:
+        labels = [fn(e) for e in es]
+        if len(set(labels)) == len(es):
+            return labels
+    return [f"variant {k}" for k in range(1, len(es) + 1)]
+
+
+def run(out, names_path=DEFAULT_NAMES):
     t0 = time.time()
     meta_dir = os.path.join(out, "meta")
     paths = sorted(os.path.join(meta_dir, f) for f in os.listdir(meta_dir) if f.endswith(".json"))
@@ -469,10 +623,15 @@ def run(out):
 
     pack = sorted([m for m in clips if m["source"] == "mixamo-pack"], key=lambda m: m["sourceName"])
     named = sorted([m for m in clips if m["source"] == "mixamo"], key=lambda m: m["name"])
-    dup, checked = find_duplicates(out, pack)
+    dup, checked, start_yaw = find_duplicates(out, pack)
     canon = [m for m in pack if m["id"] not in dup]
     matches = match_named(named, canon)
     by_id = {m["id"]: m for m in clips}
+    names, names_info = load_names(names_path)
+    if names_info:
+        print(f"names: {len(names)} records from {names_path}", flush=True)
+    else:
+        print(f"names: no names file at {names_path!r}; hashed clips get provisional names", flush=True)
 
     # names / categories
     entries = {}
@@ -486,16 +645,29 @@ def run(out):
         e = {"id": m["id"], "sourceName": m["sourceName"], "source": m["source"], "sourcePath": m["sourcePath"],
              "file": m["file"], "fps": m["fps"], "frames": m["frames"], "duration": f["duration"],
              "duplicateOf": None}
+        rec = names.get(m["sourceName"]) if m["source"] == "mixamo-pack" else None
+        r_name, r_src, r_desc, r_cands = name_from_record(rec) if rec else (None, None, None, [])
         name_src = None
         if m.get("name"):
             e["name"], name_src = m["name"], "source"
-        elif m["id"] in recovered:
+        elif m["id"] in recovered:  # the user's own name wins over the names file
             e["name"], name_src = recovered[m["id"]]["name"], "matched"
             e["matchedFrom"] = recovered[m["id"]]["id"]
-        kc = keyword_category(e.get("name")) if name_src else None
+        elif r_name:
+            e["name"], name_src = r_name, r_src
+            if r_cands:
+                e["candidates"] = r_cands
+        if rec:
+            if r_desc:
+                e["description"] = r_desc
+            e["motionId"] = rec.get("mixamo_motion_id")
+            e["matchRmsDeg"] = rec.get("rotation_rms_degrees")
+        kc = keyword_category(e.get("name"), e.get("description")) if name_src else None
+        if kc != "pose" and m["frames"] <= 10:
+            kc = None  # a single held frame is a pose whatever it is called
         fc, fconf, scores = classify(f, m["frames"])
         if kc:
-            e["category"], e["confidence"], e["categorySource"] = kc, (0.95 if name_src == "source" else 0.9), "name"
+            e["category"], e["confidence"], e["categorySource"] = kc, NAME_CONFIDENCE[name_src], "name"
         else:
             e["category"], e["confidence"], e["categorySource"] = fc, fconf, "features"
         e["featureCategory"] = fc
@@ -515,6 +687,9 @@ def run(out):
     # duplicates: pack-internal (share canonical's name/category) and named -> pack match
     for d, c in dup.items():
         entries[d]["duplicateOf"] = c
+        turned = (start_yaw[d] - start_yaw[c] + 180) % 360 - 180
+        if abs(turned) > 10:
+            entries[d]["duplicateNote"] = f"same motion exported facing {abs(turned):.0f}° away"
     for n in named:
         mt = matches[n["id"]]
         if mt["matched"]:
@@ -529,8 +704,11 @@ def run(out):
             e["name"] = provisional_name(m["features"], e["category"], m["frames"])
     for d, c in dup.items():
         src = entries[c]
-        for k in ("name", "category", "confidence", "categorySource", "nameSource"):
-            entries[d][k] = src[k]
+        for k in ("name", "description", "candidates", "category", "confidence", "categorySource", "nameSource"):
+            if k in src:
+                entries[d][k] = src[k]
+            else:
+                entries[d].pop(k, None)
         if src.get("matchedFrom"):
             entries[d]["matchedFrom"] = src["matchedFrom"]
             entries[d]["tags"] += [t for t in by_id[src["matchedFrom"]].get("tags", []) if t not in entries[d]["tags"]]
@@ -545,6 +723,26 @@ def run(out):
                 e["name"] = f"{nm} #{k}"
     for d, c in dup.items():
         entries[d]["name"] = entries[c]["name"]
+    # the user's named clips stand behind their pack match: show its description there too
+    for n in named:
+        best = entries[entries[n["id"]]["duplicateOf"]] if entries[n["id"]]["duplicateOf"] else None
+        if best and best.get("description"):
+            entries[n["id"]]["description"] = best["description"]
+    # distinct clips sharing name + description get a short variant label
+    same = defaultdict(list)
+    for e in entries.values():
+        if e["duplicateOf"] is None and e["nameSource"] != "provisional":
+            same[(e["name"].lower(), (e.get("description") or "").lower())].append(e)
+    for es in same.values():
+        if len(es) > 1:
+            es.sort(key=lambda e: e["sourceName"])
+            for e, label in zip(es, variant_labels(es)):
+                e["variant"] = label
+    # pack duplicate groups whose members the names file calls different motions (expected: none)
+    motion_ids = defaultdict(set)
+    for d, c in dup.items():
+        motion_ids[c] |= {entries[x].get("motionId") for x in (c, d)}
+    dup_conflicts = sorted(entries[c]["name"] for c, ids in motion_ids.items() if len(ids - {None}) > 1)
 
     # rest skeletons
     rest_groups = []
@@ -571,13 +769,17 @@ def run(out):
 
     # patch GLB animation names, sizes
     for e in entries.values():
-        e["bytes"] = patch_glb_name(os.path.join(out, e["file"]), e["name"],
-                                    {"name": e["name"], "category": e["category"]})
+        extras = {"name": e["name"], "category": e["category"]}
+        if e.get("description"):
+            extras["description"] = e["description"]
+        e["bytes"] = patch_glb_name(os.path.join(out, e["file"]), e["name"], extras)
 
-    order = ["id", "name", "sourceName", "source", "sourcePath", "file", "bytes", "fps", "frames", "duration",
-             "category", "confidence", "tags", "loop", "inPlace", "rest", "duplicateOf", "nameSource",
-             "categorySource", "featureCategory", "matchedFrom", "matchDistanceDeg", "duplicateNote", "features"]
-    clip_list = sorted(entries.values(), key=lambda e: (CAT_ORDER[e["category"]], e["name"].lower(), e["id"]))
+    order = ["id", "name", "description", "variant", "sourceName", "source", "sourcePath", "file", "bytes", "fps",
+             "frames", "duration", "category", "confidence", "tags", "loop", "inPlace", "rest", "duplicateOf",
+             "nameSource", "candidates", "motionId", "matchRmsDeg", "categorySource", "featureCategory", "matchedFrom",
+             "matchDistanceDeg", "duplicateNote", "features"]
+    clip_list = sorted(entries.values(), key=lambda e: (CAT_ORDER[e["category"]], e["name"].lower(),
+                                                        (e.get("description") or "").lower(), e["id"]))
     clip_list = [{k: e[k] for k in order if k in e} for e in clip_list]
     cat_counts = Counter(e["category"] for e in clip_list)
     manifest = {
@@ -606,11 +808,17 @@ def run(out):
         "categorySource": dict(Counter(e["categorySource"] for e in clip_list)),
         "nameSource": dict(Counter(e["nameSource"] for e in clip_list)),
         "packDuplicates": len(dup), "duplicatePairsChecked": checked,
+        "packDuplicateGroups": len(set(dup.values())),
+        "packDuplicatesTurned": sum(1 for d in dup if "duplicateNote" in entries[d]),
+        "duplicateNameConflicts": dup_conflicts,
+        "names": dict(names_info, records=len(names)) if names_info else None,
+        "sameNameVariants": sum(1 for e in clip_list if e.get("variant")),
         "namedMatches": {by_id[k]["name"]: v for k, v in matches.items()},
         "packNamedByMatch": sum(1 for e in clip_list if e["source"] == "mixamo-pack" and e["nameSource"] == "matched"),
         "restSkeletons": {k: {kk: vv for kk, vv in v.items() if kk != "bones"} for k, v in rest_skeletons.items()},
         "totalBytes": sum(e["bytes"] for e in clip_list) + (mannequin["bytes"] if mannequin else 0),
-        "meanConfidenceFeatures": round(float(np.mean([e["confidence"] for e in clip_list if e["categorySource"] == "features"])), 3),
+        "meanConfidenceFeatures": round(float(np.mean([e["confidence"] for e in clip_list if e["categorySource"] == "features"]
+                                                      or [0])), 3),
         "aggregateSeconds": round(time.time() - t0, 1),
     }
     json.dump(stats, open(os.path.join(out, "work", "stats.json"), "w"), indent=1)
@@ -637,8 +845,9 @@ Generated {manifest['generatedAt']} by `blender/library/build.py`. Do not edit b
 ## Rebuild
 
 ```sh
-python3 blender/library/build.py all                # convert (resumable, 8 Blender procs) + aggregate
-python3 blender/library/build.py aggregate          # re-classify / re-name / manifest only (no Blender)
+python3 blender/library/build.py all                # convert (resumable, 8 Blender procs) + aggregate (= npm run library)
+python3 blender/library/build.py aggregate          # re-classify / re-name / manifest only (no Blender, seconds)
+python3 blender/library/build.py aggregate --names other-names.json   # another names file ('' = none)
 python3 blender/library/verify/run_verify.py --all-named --random 6   # fidelity check (Blender + three.js)
 ```
 
@@ -657,7 +866,7 @@ from `cache/` without Blender.
   are constant become 2-key tracks; rest-equal tracks are only dropped for leaf bones and for
   non-root translations (so targets keep their own proportions).
 - `mannequin/ybot.glb` - skinned Y Bot (2 meshes, 65-joint skin, no animation), same node layout.
-- `manifest.json` - all clips sorted by category then name, with features, tags, confidence.
+- `manifest.json` - all clips sorted by category, name, description, with features, tags, confidence.
 - `meta/<id>.json` - full per-clip record (rest skeleton, track stats, features, signature);
   `cache/<id>.npz` - world joint positions used for features; `verify/` - fidelity reports.
 
@@ -687,18 +896,27 @@ Last conversion: {conv.get('converted', '?')} converted, {conv.get('failed', '?'
   Fishing Cast), so the mannequin is built from `~/Downloads/Mixamo/character/Y_Bot.fbx`
   (Linzhan/Mixamo-Animations-Characters, see `ybot-source.json`), whose skeleton matches the named clips.
 - Pack clips are 60 fps (named clips 30 fps); `duration` = (frames-1)/fps = GLB clip length.
-- **Categories for hashed clips are heuristic** (`categorySource: "features"`, confidence <= 0.85,
-  mean {st['meanConfidenceFeatures']}); named or name-recovered clips use name keywords (0.9-0.95).
-  `featureCategory` is always the feature-based guess; `features.categoryScores` shows the top scores.
-  Spot-checked by eye (stick-figure contact sheets, `blender/library/verify/contact_sheet.py`) on 93
-  random pack clips: ~93% agreement at confidence >= 0.75, ~45-60% below; about 1 in 5 random clips
-  was ambiguous even visually. Two untouched hold-out samples gave 64% overall agreement.
-- **Name recovery**: pack clips whose motion matches a named clip (segment-direction signature,
-  same duration) take its name ({st['packNamedByMatch']} pack clips); the named entry gets
-  `duplicateOf` = that pack clip. Exact duplicates inside the pack ({st['packDuplicates']} clips, all joints
-  within 2 mm on every frame) get `duplicateOf` = the lowest-hash copy and share its name.
-  Other pack clips get provisional names "Category · key features · duration" (`nameSource:
-  "provisional"`, `sourceName` = original hash).
+- **Names.** The user's own clips keep their file names (`nameSource: "source"`); pack clips whose
+  motion matches one of them (segment-direction signature, same duration) take that name too
+  (`"matched"`, {st['packNamedByMatch']} pack clips; the named entry gets `duplicateOf` = that pack clip).
+  All other pack clips are named from the motion-match names file
+  ({(st['names'] or {}).get('path', 'none found')}; `--names` / `RIGSMITH_ANIMATION_NAMES`): Mixamo
+  `name` + `description` (`"motion-match"`, rotation RMS <= 5 deg with a margin), or for uncertain
+  matches the closest name with up to 3 near-equal `candidates` kept for search (`"motion-candidate"`).
+  `motionId` / `matchRmsDeg` come from that file. Without the file, pack clips get provisional names
+  "Category · key features · duration" (`"provisional"`). `sourceName` is always the pack file hash.
+  Distinct clips sharing name + description ({st['sameNameVariants']} clips) get a short `variant`
+  label (root turn, in place, loop, duration or "variant k").
+- **Categories** come from keyword rules on name + description (`categorySource: "name"`, confidence
+  0.75-0.95; `CONTEXT_KEYWORDS` / `KEYWORDS` / `WEAPON_WORDS` in `aggregate.py`), else from motion
+  features (`"features"`, confidence <= 0.85, mean {st['meanConfidenceFeatures']}; ~64% agreement on
+  hand-checked random samples). Single-frame clips are always `pose`. `featureCategory` is always the
+  feature-based guess; `features.categoryScores` shows the top scores.
+- **Duplicates.** Pack clips whose joints stay within 2 mm on every frame once both start at the
+  origin facing +Z get `duplicateOf` = the copy starting closest to +Z, then the lowest hash, and
+  share its name ({st['packDuplicates']} clips in {st['packDuplicateGroups']} groups,
+  {st['packDuplicatesTurned']} of them exported facing another way). Groups whose members the names file
+  calls different motions: {len(st['duplicateNameConflicts'])}.
 - `loop` means seamlessly loopable (start/end pose within 5 cm RMS and no acceleration spike at the
   seam, ignoring root translation/yaw); many attacks that return to their stance qualify.
 """

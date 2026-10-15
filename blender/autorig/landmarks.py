@@ -14,6 +14,7 @@ from raster import Grid2D, close, distance_transform, fill_holes, runs, sample_s
 class Silhouettes:
     def __init__(self, verts, tris, resolution=400):
         self.verts = verts
+        self.tris = tris
         self.z_min = float(verts[:, 2].min())
         self.z_max = float(verts[:, 2].max())
         self.height = self.z_max - self.z_min

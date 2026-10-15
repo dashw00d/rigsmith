@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { Check, Plus, Repeat } from '@lucide/svelte'
+  import { Check, CircleQuestionMark, Plus, Repeat } from '@lucide/svelte'
   import type { LibraryClip } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { animator } from '../../state/animator.svelte.ts'
@@ -36,6 +36,16 @@
 
   const duration = $derived(clip.duration < 10 ? clip.duration.toFixed(1) : Math.round(clip.duration).toString())
   const named = $derived(clip.nameSource !== 'provisional')
+  const uncertain = $derived(clip.nameSource === 'motion-candidate')
+  // Mixamo's description, when it says more than the name ("Walking" -> "Walking With A Briefcase").
+  const description = $derived(clip.description !== undefined && clip.description.toLowerCase() !== clip.name.toLowerCase() ? clip.description : '')
+  const detail = $derived([description, clip.variant].filter(Boolean).join(' · '))
+  const hint = $derived.by(() => {
+    if (detail === '' && !uncertain) return null
+    const alternatives = (clip.candidates ?? []).map(c => c.name).filter(n => n !== clip.name)
+    const unsure = uncertain ? ` · Uncertain name${alternatives.length > 0 ? `; could also be ${[...new Set(alternatives)].join(', ')}` : ''}` : ''
+    return `${clip.name}${detail === '' ? '' : ` — ${detail}`}${unsure}`
+  })
 
   async function add (e: MouseEvent): Promise<void> {
     e.stopPropagation()
@@ -45,7 +55,9 @@
       await app.update(c.id, { animations: c.animations.filter(a => a.clipId !== clip.id) })
       return
     }
-    const entry = { clipId: clip.id, url: clip.url, name: clip.name, inPlace: clip.inPlace || clip.category === 'locomotion', loop: clip.loop, speed: 1 }
+    // Many Mixamo clips share a name ("Walking"); name a second one in the set after its description.
+    const name = description !== '' && c.animations.some(a => a.name === clip.name) ? description : clip.name
+    const entry = { clipId: clip.id, url: clip.url, name, inPlace: clip.inPlace || clip.category === 'locomotion', loop: clip.loop, speed: 1 }
     await app.update(c.id, { animations: [...c.animations, entry] })
   }
 </script>
@@ -60,8 +72,9 @@
       {#if added}<Check size={14} strokeWidth={3} />{:else}<Plus size={15} />{/if}
     </button>
   </div>
-  <div class="label">
-    <span class="name" class:provisional={!named}>{clip.name}</span>
+  <div class="label" use:tooltip={hint}>
+    <span class="name" class:provisional={!named}>{clip.name}{#if uncertain}<span class="unsure" aria-label="Uncertain name"><CircleQuestionMark size={11} /></span>{/if}</span>
+    {#if detail}<span class="detail">{detail}</span>{/if}
   </div>
 </div>
 
@@ -112,7 +125,9 @@
   .card:hover .add, .add.on, .card:focus-within .add { opacity: 1; }
   .add:hover { transform: scale(1.08); background: var(--accent); color: var(--accent-ink); }
   .add.on { background: var(--ok); color: #06140d; }
-  .label { padding: 7px 8px 8px; min-height: 40px; }
+  .label { padding: 7px 8px 8px; min-height: 40px; display: flex; flex-direction: column; gap: 2px; }
   .name { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; font-weight: 550; line-height: 1.3; }
   .name.provisional { color: var(--text-2); font-weight: 450; }
+  .unsure { display: inline-grid; margin-left: 4px; vertical-align: -1px; color: var(--text-3); }
+  .detail { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; line-height: 1.3; color: var(--text-3); }
 </style>
