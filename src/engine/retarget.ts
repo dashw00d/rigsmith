@@ -400,13 +400,31 @@ export function retarget (sourceRoot: THREE.Object3D, source: RestSkeleton, clip
 /** Remove net horizontal travel but keep sway: subtract the straight line from start to end. */
 function removeTravel (offsets: THREE.Vector3[]): void {
   const n = offsets.length
-  const start = offsets[0].clone()
-  const end = offsets[n - 1].clone()
-  for (let i = 0; i < n; i++) {
-    const t = n === 1 ? 0 : i / (n - 1)
-    offsets[i].x -= start.x + (end.x - start.x) * t
-    offsets[i].z -= start.z + (end.z - start.z) * t
+  if (n < 2) {
+    for (const o of offsets) { o.x = 0; o.z = 0 }
+    return
   }
+  // Some clips end on a copy of their first frame: the travel snaps back on the last step. The line is
+  // fitted without that frame, which then closes the loop.
+  const steps = offsets.slice(1).map((o, i) => Math.hypot(o.x - offsets[i].x, o.z - offsets[i].z))
+  const typical = [...steps].sort((a, b) => a - b)[Math.floor(steps.length / 2)]
+  const wraps = n > 3 && steps[n - 2] > 4 * Math.max(typical, 1e-6)
+  const m = wraps ? n - 1 : n
+  // Least-squares line through the hips' horizontal path: the travel.
+  let st = 0; let sx = 0; let sz = 0; let stt = 0; let stx = 0; let stz = 0
+  for (let i = 0; i < m; i++) {
+    st += i; sx += offsets[i].x; sz += offsets[i].z; stt += i * i; stx += i * offsets[i].x; stz += i * offsets[i].z
+  }
+  const d = m * stt - st * st
+  const bx = d === 0 ? 0 : (m * stx - st * sx) / d
+  const bz = d === 0 ? 0 : (m * stz - st * sz) / d
+  const ax = (sx - bx * st) / m
+  const az = (sz - bz * st) / m
+  for (let i = 0; i < m; i++) {
+    offsets[i].x -= ax + bx * i
+    offsets[i].z -= az + bz * i
+  }
+  if (wraps) offsets[n - 1].copy(offsets[0]).setY(offsets[n - 1].y)
 }
 
 /** Mirror a baked clip: swap Left/Right tracks and reflect rotations/positions across X. */

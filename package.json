@@ -15,7 +15,8 @@
     "lint": "eslint .",
     "volume": ".venv/bin/python tools/volume/build.py",
     "setup:python": "uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r tools/requirements.txt && uv pip install --python .venv/bin/python -r tools/requirements-torch.txt",
-    "retopo": ".venv/bin/python tools/retopo/retopo.py"
+    "retopo": ".venv/bin/python tools/retopo/retopo.py",
+    "export:game": "node tools/game_export.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
