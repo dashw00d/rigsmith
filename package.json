@@ -12,7 +12,9 @@
     "test:watch": "vitest",
     "test:godot": "godot --headless --script tests/godot/check_export.gd --",
     "library": "python3 blender/library/build.py all",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "volume": ".venv/bin/python tools/volume/build.py",
+    "setup:python": "uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r tools/requirements.txt"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

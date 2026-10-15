@@ -1,0 +1,3 @@
+sparse-cubes[skeleton]>=0.7
+trimesh>=4
+numpy

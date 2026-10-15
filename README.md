@@ -60,6 +60,18 @@ node tools/dev/bench.ts workspace/rigdev/bench/mixamo workspace/rigdev/bench/our
 On the user's 12 Mixamo-rigged Tripo characters our automatic rigs have 27% less stretch, half the limb
 wobble and less than half the volume loss of Mixamo's hand-marked rigs.
 
+### Volume build
+
+A clean, watertight, evenly sampled stand-in for a character (for volumetric work later: weights on a
+proxy, inside/outside tests). Sparse voxels via [sparse-cubes](https://github.com/navis-org/sparse-cubes)
+(GPL-3.0), SurfaceNets meshing; ~1–2 s per character at 5 mm voxels. Single-layer cloth survives as a
+thin solid, sealed pockets inside the body are filled.
+
+```bash
+npm run setup:python                                       # once: .venv with sparse-cubes + trimesh
+npm run volume -- workspace/characters/<id>/rigged.glb proxy.glb [--voxel 0.005] [--smooth 10]
+```
+
 ### Pose-optimized weights
 
 After Blender rigs a humanoid, `server/skinopt.ts` poses it through 256 library poses

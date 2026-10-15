@@ -7,3 +7,6 @@ workspace/
 # python
 __pycache__/
 *.pyc
+
+# python tools (sparse-cubes volume build)
+.venv/
