@@ -24,6 +24,7 @@ CLAVICLE_IN = 0.035        # clavicle band starts this far inside the shoulder j
 CAP_OUT = 0.015            # ...and hands over to the upper arm this far outside it
 CAP_BELOW = 0.05           # shoulder cap reaches this far below the shoulder joint
 CLAVICLE_LOW = -0.18       # of the Spine2->Neck segment, relative to Spine2
+ARM_CLEARLY_NEARER = 0.5   # left over for the torso but at most this fraction of its spine distance from an arm
 
 
 def _torso_half_widths(sil, joints, side):
@@ -183,6 +184,16 @@ def attach(verts, tris, names, heads, tails, joints):
         attach_to[cap] = idx[prefix + 'Arm']
         mask = torso & ~cap & (z > clav_z) & (lateral > arm_x - CLAVICLE_IN * H)
         attach_to[mask] = idx[prefix + 'Shoulder']
+
+    # Wide sleeves and cloth hanging under the arm overlap the torso in the front view, so the arm test
+    # above misses them; skin twice as close to an arm bone as to any spine bone is arm (Caravan Trader's
+    # sleeves, Raider's cloak under the arms: 47 vertices agree with Mixamo, 3 don't, over 12 characters).
+    spine = [idx[b] for b in ('Hips', 'Spine', 'Spine1', 'Spine2') if b in idx]
+    spine_dist = dist[:, spine].min(axis=1)
+    for prefix in ('Left', 'Right'):
+        arm = [idx[prefix + b] for b in ('Arm', 'ForeArm') if prefix + b in idx]
+        nearer = (attach_to < 0) & (dist[:, arm].min(axis=1) < ARM_CLEARLY_NEARER * spine_dist)
+        attach_to[nearer] = np.array(arm)[np.argmin(dist[np.ix_(nearer, arm)], axis=1)]
 
     # Torso bands by height.
     torso = attach_to < 0
