@@ -567,6 +567,8 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   }
   const walk = clips.find(c => c.name === 'Walk')
   const walkStride = walk !== undefined ? stride(out, walk) : null
+  const run = clips.find(c => c.name === 'Run')
+  const runStride = run !== undefined ? stride(out, run) : null
   for (const [name, c] of Object.entries(spec.clips)) {
     const i = clips.findIndex(x => x.name === name)
     const pace = c.matchStride !== undefined ? clips.find(x => x.name === c.matchStride) : undefined
@@ -600,8 +602,9 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
       let other = comp.clips.get(main.name) ?? comp.clips.get('Idle')
       if (other === undefined) continue
       const info: Record<string, unknown> = { clip: (c.clips[main.name] ?? c.clips.Idle).clip }
-      if (main.name === 'Walk' && walkStride !== null) {
-        const pace = walkStride / stride(out, other, feet)
+      const own = main.name === 'Walk' ? walkStride : main.name === 'Run' ? runStride : null
+      if (own !== null) {
+        const pace = own / stride(out, other, feet)
         other = retime(other, pace)
         info.pace = +pace.toFixed(3)
       }
@@ -628,6 +631,8 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     out.updateMatrixWorld(true)
     const walkC = clips.find(x => x.name === 'Walk')
     compReport.walkStride = walkC !== undefined ? +stride(out, walkC, feet).toFixed(3) : null
+    const runC = clips.find(x => x.name === 'Run')
+    if (runC !== undefined) compReport.runStride = +stride(out, runC, feet).toFixed(3)
   }
 
   // Back to the bind pose for export (sampling moved the bones).
@@ -653,6 +658,7 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     grip: gripReport,
     companion: comp !== null ? compReport : undefined,
     walkStride: walkStride === null ? null : +walkStride.toFixed(3),
+    runStride: runStride === null ? undefined : +runStride.toFixed(3),
     texture: image === null ? null : { file: `base.${image.ext}`, sha256: createHash('sha256').update(image.bytes).digest('hex') },
     rigged: { file: path.relative(WORKSPACE, riggedFile), sha256: createHash('sha256').update(readFileSync(riggedFile)).digest('hex') },
   }
@@ -671,5 +677,5 @@ for (const [unit, unitSpec] of Object.entries(spec.units)) {
   const merged = { ...spec.defaults, ...unitSpec } as UnitSpec
   const repo = path.resolve(path.dirname(specFile), '..', '..')
   const report = await exportUnit(unit, merged, merged.models_dir !== undefined ? path.join(repo, merged.models_dir) : modelsDir, workDir)
-  console.log(JSON.stringify({ unit, triangles: report.triangles, walkStride: report.walkStride, clips: report.clips }))
+  console.log(JSON.stringify({ unit, triangles: report.triangles, walkStride: report.walkStride, runStride: report.runStride, clips: report.clips }))
 }
