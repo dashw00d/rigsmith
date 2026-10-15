@@ -11,7 +11,8 @@ Remeshers:
 
 The Linux, in-repo take on MegaTopo's Blender + Instant Meshes mode:
   1. Volume build (tools/volume): a watertight, evenly sampled solid of the input, cloth kept.
-  2. Instant Meshes (PyNanoInstantMeshes): field-aligned quad-dominant remesh at the target size.
+  2. Instant Meshes (PyNanoInstantMeshes): field-aligned quad-dominant remesh at the target size, then
+     unfolded (cleanup.py): no quad folded over its own corner.
   3. xatlas: a packed UV atlas (tighter than Smart UV Project, so more texels per pixel).
   4. Blender Cycles (blender/jobs/bake.py): diffuse colour baked from the original's texture,
      selected-to-active through a cage, then the GLB is written.
@@ -35,6 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'volume'))
 from build import build as volume_build  # noqa: E402
+from cleanup import unfold  # noqa: E402
 
 
 def progress(value, message):
@@ -42,7 +44,7 @@ def progress(value, message):
 
 
 def remesh(mesh, triangles, crease, smooth):
-    """Instant Meshes, quad-dominant; returns (vertices, quads-or-tris list, triangles array)."""
+    """Instant Meshes, quad-dominant; returns (vertices, polygons)."""
     quads = max(triangles // 2, 64)
     # The bindings' face/vertex counts don't match the CLI's; an edge length from the surface area does.
     # (Its scale is about half an edge: measured 3.8x the quads at sqrt(area / quads).)
@@ -58,8 +60,7 @@ def remesh(mesh, triangles, crease, smooth):
         ring = [int(v) for i, v in enumerate(f) if v != f[i - 1]]
         if len(ring) >= 3 and len(set(ring)) == len(ring):
             polys.append(ring)
-    out = quads_to_trimesh(verts, polys)
-    return out, sum(1 for r in polys if len(r) == 4), len(polys)
+    return verts, polys
 
 
 QUADWILD = os.environ.get('RIGSMITH_QUADWILD', os.path.expanduser('~/dev/third_party/quadwild-bimdf'))
@@ -94,7 +95,8 @@ def read_obj_polys(path):
 
 
 def remesh_quadwild(source, triangles, work):
-    """QuadWild-BiMDF on a smoothed volume build; picks the flow scale that lands nearest the target."""
+    """QuadWild-BiMDF on a smoothed volume build; picks the flow scale that lands nearest the target.
+    Returns (vertices, polygons, scale, the volume build it remeshed)."""
     solid, _ = volume_build(source, voxel=0.01, smooth=20)
     obj = os.path.join(work, 'qw.obj')
     solid.export(obj)
@@ -132,7 +134,7 @@ def remesh_quadwild(source, triangles, work):
         raise SystemExit('quad_from_patches produced nothing')
     scale, (count, path) = min(tried.items(), key=lambda kv: abs(kv[1][0] - target))
     verts, polys = read_obj_polys(path)
-    return quads_to_trimesh(verts, polys), sum(1 for r in polys if len(r) == 4), len(polys), scale
+    return verts, polys, scale, solid
 
 
 def main():
@@ -161,7 +163,7 @@ def main():
         t = time.time()
         if a.remesher == 'quadwild':
             progress(0.08, 'Remeshing (QuadWild-BiMDF)')
-            retopo, quads, polys, scale = remesh_quadwild(source, a.triangles, work)
+            verts, polys, scale, solid = remesh_quadwild(source, a.triangles, work)
             stats['remesh'] = {'remesher': 'quadwild', 'scale': scale}
         else:
             progress(0.08, 'Building the volume')
@@ -169,9 +171,12 @@ def main():
             stats['volume'] = {k: vstats[k] for k in ('spacing', 'faces', 'watertight', 'seconds')}
             progress(0.25, 'Remeshing (Instant Meshes)')
             t = time.time()
-            retopo, quads, polys = remesh(solid, a.triangles, a.crease, a.smooth)
+            verts, polys = remesh(solid, a.triangles, a.crease, a.smooth)
             stats['remesh'] = {'remesher': 'instant'}
-        stats['remesh'].update({'polygons': polys, 'quads': quads, 'triangles': int(len(retopo.faces)),
+        verts, polys, stats['unfold'] = unfold(verts, polys, solid)
+        retopo = quads_to_trimesh(verts, polys)
+        stats['remesh'].update({'polygons': len(polys), 'quads': sum(1 for r in polys if len(r) == 4),
+                                'triangles': int(len(retopo.faces)),
                                 'vertices': int(len(retopo.vertices)), 'watertight': bool(retopo.is_watertight),
                                 'seconds': round(time.time() - t, 2)})
 
