@@ -20,10 +20,14 @@ HEAD_ABOVE_CHIN_NOTCH = 0.027    # Mixamo's head joint above its neck joint wher
 CHIN_NOTCH_DEPTH = 0.04          # a profile notch at least this deep (fraction of H) is a real chin
 # Where beards, hoods and pelts hide the chin, the reference rigs put it where the chin would be under the
 # beard, and their neck lands anywhere from 4% below the shoulders to 7% above them. Measured down from the
-# top of the head it varies half as much (Bearguard, Berserker, Caravan Trader, Raider, Seer, Skirmisher,
-# Warrior; leave-one-out head error 4.1 -> 2.2% of H).
-NECK_BELOW_TOP = 0.263
-HEAD_BELOW_TOP = 0.218
+# top of the head it varies half as much, and less again scaled by how bulky the head is: hoods and pelts
+# make it both taller and wider. Width of the head 12% of H below its top -> distance from the top, fit over
+# all 12 reference rigs (leave-one-out on the 7 without a chin notch: neck 2.9 -> 2.3% of H, head
+# 2.2 -> 1.6; a tall narrow helmet like Raider's is what it can't see).
+HEAD_WIDTH_BELOW_TOP = 0.12
+NECK_BELOW_TOP = (0.1312, 0.5463)    # intercept, per unit of head width (both fractions of H)
+HEAD_BELOW_TOP = (0.1294, 0.3786)
+HEAD_WIDTH_RANGE = (0.14, 0.32)      # widths seen on the reference rigs, a little extended
 CLAVICLE_FROM_NECK = -0.012      # Mixamo's clavicle follows its neck; halfway between this and the arm's
 UPLEG_Z = 0.409
 UPLEG_X = 0.090
@@ -147,8 +151,9 @@ def build_joints(sil, markers, fingers='two'):
         neck_z = notch
         head_z = neck_z + HEAD_ABOVE_CHIN_NOTCH * H
     else:
-        neck_z = head_top - NECK_BELOW_TOP * H
-        head_z = head_top - HEAD_BELOW_TOP * H
+        width = np.clip(_head_width(sil, xc, head_top - HEAD_WIDTH_BELOW_TOP * H) / H, *HEAD_WIDTH_RANGE)
+        neck_z = head_top - (NECK_BELOW_TOP[0] + NECK_BELOW_TOP[1] * width) * H
+        head_z = head_top - (HEAD_BELOW_TOP[0] + HEAD_BELOW_TOP[1] * width) * H
     clavicle_z = 0.5 * (arm_z + CLAVICLE_ABOVE_ARM * H + neck_z + CLAVICLE_FROM_NECK * H)
     put_spine('Hips', hips_z)
     for name, fraction in zip(('Spine', 'Spine1', 'Spine2'), SPINE_FRACTIONS):
@@ -238,6 +243,20 @@ def _head_top(sil, xc):
     """Top of the silhouette near the center column (skips ears/antlers off to the side)."""
     band = np.abs(sil.points[:, 0] - xc) < 0.04 * sil.height
     return float(np.percentile(sil.points[band, 2], 99.5))
+
+
+def _head_width(sil, xc, z):
+    """Width of the front silhouette's central run at height z (the head and whatever it wears)."""
+    row = sil.front[sil.row(z)]
+    col = sil.center_col
+    if not row[col]:
+        return 0.0
+    left, right = col, col
+    while left > 0 and row[left - 1]:
+        left -= 1
+    while right < len(row) - 1 and row[right + 1]:
+        right += 1
+    return (right - left + 1) * sil.pixel
 
 
 def _toe_tip_y(sil, toe_x, z0, H):
