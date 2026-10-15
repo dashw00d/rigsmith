@@ -91,8 +91,101 @@ def import_any(path, overrides=None):
     meshes = [o for o in added if o.type == 'MESH']
     clean_materials(meshes)
     apply_texture_overrides(meshes, overrides)
+    close_small_holes(meshes)
     return meshes
 
+
+def close_small_holes(meshes, max_fraction=0.03, weld_fraction=0.002):
+    """Close cracks and pinholes (AI meshes have dozens): weld slits, cap small loops.
+
+    Slits (two boundary chains a fraction of a millimetre apart where surfaces meet but were never
+    stitched) are welded. Remaining loops smaller than max_fraction of the model's height get one face.
+    Big loops are real cloth edges (cape and skirt hems, sleeve openings) and stay open. No vertices
+    are added, so existing skin weights stay valid; cap UVs come from the loop's own."""
+    import bmesh
+    from mathutils import Vector
+    if not meshes:
+        return 0
+    zs = [(o.matrix_world @ Vector(c)).z for o in meshes for c in o.bound_box]
+    height = max(zs) - min(zs)
+    changed = 0
+    for ob in meshes:
+        scale = max(ob.matrix_world.to_scale())
+        bm = bmesh.new()
+        bm.from_mesh(ob.data)
+        edge_verts = list({v for e in bm.edges if e.is_boundary for v in e.verts})
+        before = len(bm.verts)
+        if edge_verts:
+            bmesh.ops.remove_doubles(bm, verts=edge_verts, dist=weld_fraction * height / scale)
+        changed += before - len(bm.verts)
+        uv_layer = bm.loops.layers.uv.active
+        for loop_edges in _boundary_loops(bm):
+            cycle = _ordered_cycle(loop_edges)
+            if cycle is None or len(cycle) < 3:
+                continue
+            extent = max(max(v.co[i] for v in cycle) - min(v.co[i] for v in cycle) for i in range(3)) * scale
+            if extent > max_fraction * height:
+                continue
+            uv = {}
+            if uv_layer is not None:
+                for v in cycle:
+                    for corner in v.link_loops:
+                        uv[v] = corner[uv_layer].uv.copy()
+                        break
+            try:
+                face = bm.faces.new(cycle)
+            except ValueError:
+                continue
+            if uv_layer is not None:
+                for corner in face.loops:
+                    corner[uv_layer].uv = uv.get(corner.vert, corner[uv_layer].uv)
+            changed += 1
+        if changed:
+            bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 4])
+            bm.normal_update()
+            bm.to_mesh(ob.data)
+            ob.data.update()
+        bm.free()
+    return changed
+
+
+def _boundary_loops(bm):
+    boundary = {e for e in bm.edges if e.is_boundary}
+    loops = []
+    while boundary:
+        start = boundary.pop()
+        loop, stack = [start], [start]
+        while stack:
+            e = stack.pop()
+            for v in e.verts:
+                for f in v.link_edges:
+                    if f in boundary:
+                        boundary.discard(f)
+                        loop.append(f)
+                        stack.append(f)
+        loops.append(loop)
+    return loops
+
+
+def _ordered_cycle(edges):
+    """Vertices of a simple boundary loop, ordered against the neighboring faces' winding (so the
+    cap's normal agrees with them), or None for tangles."""
+    if len({v for e in edges for v in e.verts}) != len(edges):
+        return None
+    # Each boundary edge has one face; that face walks it a -> b, so the cap must walk it b -> a.
+    nxt = {}
+    for e in edges:
+        corner = e.link_loops[0]
+        a, b = corner.vert, corner.link_loop_next.vert
+        nxt[b] = a
+    start = next(iter(nxt))
+    cycle, v = [start], nxt[start]
+    while v is not start:
+        if v not in nxt or len(cycle) > len(edges):
+            return None
+        cycle.append(v)
+        v = nxt[v]
+    return cycle if len(cycle) == len(edges) else None
 
 def clean_materials(meshes):
     """Opaque, game-ready materials: Tripo and many FBX exporters wire the texture's alpha into the
