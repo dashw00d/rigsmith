@@ -425,6 +425,8 @@ route('POST', /^\/api\/exports$/, async (req, res, _, url) => {
   await mkdir(settings.exportDir, { recursive: true })
   const target = path.join(settings.exportDir, name)
   await writeFile(target, await readBody(req))
+  // Godot import script that wires distance LODs (see godot/rigsmith_lods.gd); kept current.
+  await writeFile(path.join(settings.exportDir, 'rigsmith_lods.gd'), await readFile(path.join(ROOT, 'godot', 'rigsmith_lods.gd')))
   send(res, 201, { path: target })
 })
 

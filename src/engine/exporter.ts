@@ -5,6 +5,7 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { AnimationEntry } from '../../server/workspace.ts'
 import type { CharacterView } from './CharacterView.ts'
 import type { RetargetCache } from './clips.ts'
+import { addLods } from './export/lods.ts'
 
 export interface ExportOptions {
   boneNames: 'mixamo' | 'mixamorig'
@@ -14,9 +15,11 @@ export interface ExportOptions {
   /** Append "-loop" to looping clips so Godot imports them with looping on. */
   loopSuffix: boolean
   fps: number
+  /** Distance LOD levels to add (0-3): simplified copies at 50 / 25 / 12% of the triangles. */
+  lods: number
 }
 
-export const DEFAULT_EXPORT: ExportOptions = { boneNames: 'mixamo', textureSize: 2048, imageFormat: 'png', loopSuffix: true, fps: 30 }
+export const DEFAULT_EXPORT: ExportOptions = { boneNames: 'mixamo', textureSize: 2048, imageFormat: 'png', loopSuffix: true, fps: 30, lods: 3 }
 
 export function clipName (entry: AnimationEntry, options: ExportOptions): string {
   const base = entry.name.trim() || 'Animation'
@@ -69,6 +72,8 @@ export async function exportCharacter (view: CharacterView, entries: AnimationEn
     })
     mesh.material = Array.isArray(mesh.material) ? materials : materials[0]
   })
+
+  await addLods(root, options.lods ?? 0, view.height)
 
   const animations: THREE.AnimationClip[] = []
   const used = new Set<string>()

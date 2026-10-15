@@ -23,6 +23,7 @@
   $effect(() => { try { localStorage.setItem('rigsmith.export', JSON.stringify(options)) } catch {} })
 
   let textureChoice = $state(String(options.textureSize ?? 'original'))
+  let lodChoice = $state(String(options.lods ?? 0))
   let includeProps = $state(true)
   let busy = $state<string | null>(null)
   let last = $state<{ path: string, bytes: number, name: string } | null>(null)
@@ -120,6 +121,14 @@
       <span>Image format</span>
       <Segmented size="sm" bind:value={options.imageFormat} options={[{ value: 'png', label: 'PNG' }, { value: 'jpeg', label: 'JPEG' }]} />
     </div>
+    <div class="field">
+      <span>Distance LODs</span>
+      <Segmented size="sm" bind:value={lodChoice} onchange={(v) => { options.lods = Number(v) }}
+        options={[{ value: '0', label: 'Off' }, { value: '1', label: '1' }, { value: '2', label: '2' }, { value: '3', label: '3' }]} />
+    </div>
+    {#if options.lods > 0}
+      <p class="faint small">Simplified copies at {[50, 25, 12].slice(0, options.lods).join(' / ')}% of the triangles, switching at {[12, 25, 50].slice(0, options.lods).map(d => `${Math.round(d * (viewer.character?.height ?? 1))} m`).join(' / ')}. In Godot, set <span class="mono">rigsmith_lods.gd</span> (written next to the export) as the scene import script once: Project Settings → Import Defaults → Scene.</p>
+    {/if}
     <Toggle label="Godot looping" hint="Adds -loop to looping clips so Godot loops them on import" bind:checked={options.loopSuffix} />
     {#if (character.props?.length ?? 0) > 0}
       <Toggle label="Include props" hint="Exported as bone attachments ({character.props?.length} attached)" bind:checked={includeProps} />
