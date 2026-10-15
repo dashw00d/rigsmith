@@ -329,6 +329,9 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   // Held fists: a hand that holds something all the time keeps its fingers closed in every clip, as the grip
   // clip closes them most (finger rotations are relative to the hand, so they carry over to any clip).
   const gripReport: Record<string, unknown> = {}
+  // (the grip is chosen by posing this skeleton, which is bound below: every bone goes back to rest after)
+  const restLocal = new Map<THREE.Object3D, [THREE.Vector3, THREE.Quaternion, THREE.Vector3]>()
+  scene.traverse(o => { if (isBone(o)) restLocal.set(o, [o.position.clone(), o.quaternion.clone(), o.scale.clone()]) })
   for (const [side, src] of Object.entries(spec.grip ?? {})) {
     const g = await load(path.join(WORKSPACE, 'library', 'clips', `${src}.glb`))
     const gClip = retarget(g.scene, captureRest(g.scene, isBone), g.animations[0], rest, { fps: 30, inPlace: true })
@@ -359,6 +362,8 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     }
     gripReport[side] = { clip: src, at: +best.toFixed(3), curl: +(curl / 0.45).toFixed(2) }
   }
+  for (const [o, [p, q, s]] of restLocal) { o.position.copy(p); o.quaternion.copy(q); o.scale.copy(s) }
+  scene.updateMatrixWorld(true)
 
   const comp = spec.companion !== undefined ? await loadCompanion(unit, spec.companion) : null
 
