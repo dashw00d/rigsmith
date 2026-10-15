@@ -12,7 +12,7 @@ Remeshers:
 The Linux, in-repo take on MegaTopo's Blender + Instant Meshes mode:
   1. Volume build (tools/volume): a watertight, evenly sampled solid of the input, cloth kept.
   2. Instant Meshes (PyNanoInstantMeshes): field-aligned quad-dominant remesh at the target size, then
-     unfolded (cleanup.py): no quad folded over its own corner.
+     repaired (cleanup.py): closed, manifold, no quad folded over its own corner.
   3. xatlas: a packed UV atlas (tighter than Smart UV Project, so more texels per pixel).
   4. Blender Cycles (blender/jobs/bake.py): diffuse colour baked from the original's texture,
      selected-to-active through a cage, then the GLB is written.
@@ -36,7 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'volume'))
 from build import build as volume_build  # noqa: E402
-from cleanup import unfold  # noqa: E402
+from cleanup import clean  # noqa: E402
 
 
 def progress(value, message):
@@ -67,16 +67,20 @@ QUADWILD = os.environ.get('RIGSMITH_QUADWILD', os.path.expanduser('~/dev/third_p
 
 
 def quads_to_trimesh(verts, polys):
+    """Triangulate: each quad along its shorter diagonal, unless that pair of vertices is already joined
+    by another edge (two triangles on top of an existing edge would make it non-manifold)."""
+    joined = {frozenset((ring[k], ring[(k + 1) % len(ring)])) for ring in polys for k in range(len(ring))}
     tris = []
     for ring in polys:
         if len(ring) == 3:
             tris.append(ring)
         elif len(ring) == 4:
             a, b, c, d = ring
-            if np.linalg.norm(verts[a] - verts[c]) <= np.linalg.norm(verts[b] - verts[d]):
-                tris += [[a, b, c], [a, c, d]]
-            else:
-                tris += [[a, b, d], [b, c, d]]
+            options = sorted([((a, c), [[a, b, c], [a, c, d]]), ((b, d), [[a, b, d], [b, c, d]])],
+                             key=lambda o: np.linalg.norm(verts[o[0][0]] - verts[o[0][1]]))
+            diagonal, split = next((o for o in options if frozenset(o[0]) not in joined), options[0])
+            joined.add(frozenset(diagonal))
+            tris += split
         elif len(ring) > 4:
             tris += [[ring[0], ring[i], ring[i + 1]] for i in range(1, len(ring) - 1)]
     out = trimesh.Trimesh(verts, np.array(tris), process=True)
@@ -173,7 +177,7 @@ def main():
             t = time.time()
             verts, polys = remesh(solid, a.triangles, a.crease, a.smooth)
             stats['remesh'] = {'remesher': 'instant'}
-        verts, polys, stats['unfold'] = unfold(verts, polys, solid)
+        verts, polys, stats['cleanup'] = clean(verts, polys, solid)
         retopo = quads_to_trimesh(verts, polys)
         stats['remesh'].update({'polygons': len(polys), 'quads': sum(1 for r in polys if len(r) == 4),
                                 'triangles': int(len(retopo.faces)),
