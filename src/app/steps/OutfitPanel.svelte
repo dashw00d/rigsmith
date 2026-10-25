@@ -153,8 +153,8 @@
   {#if fitting}
     <Section title="Fit {fitting.name}">
       {#if fitting.mode === 'rigid'}
-        <p class="faint small">On {fitting.bone}: it follows that bone in the pose above (at rest a new bone changes nothing you can
-          see; pick a clip to watch it follow). Drag the gizmo, or type the numbers, at any frame.</p>
+        <p class="faint small">On {fitting.bone}: it follows that bone in the pose above. The other hand takes it into that hand, held
+          the same way; any other bone carries it from where it sits. Drag the gizmo, or type the numbers, at any frame.</p>
       {:else}
         <p class="faint small">Shown unbound while you place it. Click it again in the list (or pick another) to bind it.</p>
       {/if}
@@ -173,7 +173,7 @@
       {:else}
         <div class="field">
           <span>Attached to</span>
-          <select value={fitting.bone} onchange={(e) => outfit.patchGarment(fitting.id, { bone: (e.target as HTMLSelectElement).value })}>
+          <select value={fitting.bone} onchange={(e) => outfit.setBone(fitting.id, (e.target as HTMLSelectElement).value)}>
             {#each bones.includes(fitting.bone) ? bones : [fitting.bone, ...bones] as b}<option value={b}>{b}</option>{/each}
           </select>
         </div>
