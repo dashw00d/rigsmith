@@ -1,26 +1,26 @@
-"""Bring the game's units back into Rigsmith: each unit's clips and the gear it carries, as the game has them now.
+"""Bring a game unit back into Rigsmith from its last build: its clips, scripts and gear, as the game has them.
 
     python3 tools/game_import.py <game repo> [unit ...] [--replace] [--dry-run]
 
-The reverse of tools/game_export.ts. Reads the game's spec (<game>/tools/rigsmith/units.json) and its built units
-(<game>/assets/models/units/<unit>.glb), and per unit updates the unit's Rigsmith character (and its companion's):
+Rigsmith is where a unit's clips and gear are chosen (tools/game_export.ts builds the game's units from it); this is the
+way back, for a character that lacks them (a new workspace, a part rebuilt in the game's Blender pipeline). From the
+game's spec (<game>/tools/rigsmith/units.json), its built units (<game>/assets/models/units/<unit>.glb) and their
+build records (<game>/assets/textures/models/<unit>/<unit>.json, sources.rigsmith):
 
-  animations  the clips under the game's names (Idle, Walk, Run, Attack, Die, the villager's jobs), with loop, in place
-              and speed (a clip the export retimed to the Walk's stride, the villager's Carry, plays at that speed). A
-              clip id from before the named catalog (12 hex) is found again by its Mixamo motion, through the old pack's
-              manifest in workspace/library/backups/before-named-catalog/.
+  animations  the clips the unit was built with, under the game's names (clip, loop, in place, speed)
+  scripts     the clip scripts it was built with (src/engine/scripts.ts)
   garments    every part the built unit carries besides its body (Weapons_<bone>, the villager's Gear* and spare Head*,
-              and his job wear from <game>/assets/models/kits/<unit>_wear.glb), LOD0, moved from game space back into
-              the character's (the export's scale and floor undone: exact), a rigid garment on the bone it rides, with
-              the colour map the game draws it with. A tool the game draws bigger (data/visual.json work_gear_scale) gets
-              that scale about its grip, as UnitView.ScaleGear grows it. Pieces the game swaps by job (Gear*, Head*,
-              Wear*) come in hidden, except the jobless forager's look.
+              his job wear from <game>/assets/models/kits/<unit>_wear.glb), LOD0, moved from game space back into the
+              character's (the export's scale and floor undone, then the placement it was built with: exact), a rigid
+              garment on its bone, its surfaces keeping the game's material names with the colour maps the game draws
+              them with. Pieces the game swaps by job (Gear*, Head*, Wear*) come in hidden, except the forager's look.
 
-Without --replace a set keeps the entries the game doesn't name, and the character keeps the garments and props it
-didn't bring; with it the character holds only the game's clips and gear. Garments it brought before (from
-"emberhold:...") are replaced in place, keeping whether you hid them. Each character.json is backed up first
-(workspace/backups/game-import/<time>/). Writes through the running app's API when it is up (RIGSMITH_URL, default
-http://127.0.0.1:5180), so the writes queue with the app's own; reload an open page afterwards.
+By default nothing you made is touched: a garment it brought before (from "emberhold:...") gets the game's mesh again
+but keeps its placement and whether it is hidden, and clips and scripts are only filled in where the character has
+none. --replace puts the character back as the game's last build has it (its clips, scripts, gear and placements;
+garments and props it didn't bring go). A build from before Rigsmith held the clips reads them from the spec's old
+clip table. Each character.json is backed up first (workspace/backups/game-import/<time>/). Writes through the running
+app's API when it is up (RIGSMITH_URL, default http://127.0.0.1:5180); reload an open page afterwards.
 """
 import argparse
 import io
@@ -135,7 +135,7 @@ class Glb:
 
 
 def write_glb(path, name, prims):
-    """One mesh node `name` at the origin; prims [(positions, normals, uvs, indices, (image bytes, mime))]."""
+    """One mesh node `name` at the origin; prims [(positions, normals, uvs, indices, (image bytes, mime), material)]."""
     j = {'asset': {'version': '2.0', 'generator': 'rigsmith tools/game_import.py'}, 'scene': 0, 'scenes': [{'nodes': [0]}],
          'nodes': [{'name': name, 'mesh': 0}], 'meshes': [{'name': name, 'primitives': []}], 'materials': [], 'textures': [],
          'images': [], 'samplers': [{'magFilter': 9729, 'minFilter': 9987, 'wrapS': 10497, 'wrapT': 10497}],
@@ -160,19 +160,23 @@ def write_glb(path, name, prims):
         j['accessors'].append(a)
         return len(j['accessors']) - 1
     images = {}
-    for pos, nrm, uv, idx, (img, mime) in prims:
-        key = id(img)
-        if key not in images:
+    materials = {}
+    for pos, nrm, uv, idx, (img, mime), material in prims:
+        if id(img) not in images:
             j['images'].append({'bufferView': view(img), 'mimeType': mime})
             j['textures'].append({'sampler': 0, 'source': len(j['images']) - 1})
-            j['materials'].append({'name': 'Atlas_%d' % len(j['materials']), 'pbrMetallicRoughness': {
-                'baseColorTexture': {'index': len(j['textures']) - 1}, 'metallicFactor': 0.0, 'roughnessFactor': ROUGHNESS}})
-            images[key] = len(j['materials']) - 1
+            images[id(img)] = len(j['textures']) - 1
+        key = (material, images[id(img)])
+        if key not in materials:
+            # (the game binds a surface's maps by this name: Main, Atlas_<set>, Trim_<sheet>)
+            j['materials'].append({'name': material, 'pbrMetallicRoughness': {
+                'baseColorTexture': {'index': images[id(img)]}, 'metallicFactor': 0.0, 'roughnessFactor': ROUGHNESS}})
+            materials[key] = len(j['materials']) - 1
         j['meshes'][0]['primitives'].append({'attributes': {
             'POSITION': accessor(pos.astype(np.float32), 'VEC3', 5126, 34962, True),
             'NORMAL': accessor(nrm.astype(np.float32), 'VEC3', 5126, 34962),
             'TEXCOORD_0': accessor(uv.astype(np.float32), 'VEC2', 5126, 34962)},
-            'indices': accessor(idx.astype(np.uint32), 'SCALAR', 5125, 34963), 'material': images[key]})
+            'indices': accessor(idx.astype(np.uint32), 'SCALAR', 5125, 34963), 'material': materials[key]})
     while len(blob) % 4:
         blob.append(0)
     j['buffers'].append({'byteLength': len(blob)})
@@ -322,31 +326,60 @@ def gear_hold(pos, bone_at, bone):
     return c + axis * (axis @ (bone_at - c))
 
 
-def unit_animations(lib, game, unit, spec, keep):
-    report = game.report(unit).get('clips', {})
-    names = list(spec['clips'])
+def euler_matrix(deg):
+    """three.js Euler (XYZ order, degrees) as a rotation matrix."""
+    x, y, z = np.radians(deg)
+    rx = np.array([[1, 0, 0], [0, np.cos(x), -np.sin(x)], [0, np.sin(x), np.cos(x)]])
+    ry = np.array([[np.cos(y), 0, np.sin(y)], [0, 1, 0], [-np.sin(y), 0, np.cos(y)]])
+    rz = np.array([[np.cos(z), -np.sin(z), 0], [np.sin(z), np.cos(z), 0], [0, 0, 1]])
+    return rx @ ry @ rz
+
+
+def game_clips(lib, spec_clips, built, comp=False):
+    """The clips a unit (or its companion) was built with: [entry]. From the build record; a build from before
+    Rigsmith held them, from the spec's old clip table (game name -> {clip, loop, inPlace, speed, ...})."""
     out = []
-    for name, c in spec['clips'].items():
-        speed = float(c.get('speed', 1)) * float(report.get(name, {}).get('retimed', 1))
-        out.append({'clipId': lib.named(c['clip']), 'name': name, 'inPlace': c.get('inPlace') is True,
-                    'loop': c.get('loop') is True, 'speed': round(speed, 3)})
-    return out + [a for a in keep if a['name'] not in names]
+    if isinstance(spec_clips, dict):
+        for name, c in spec_clips.items():
+            if comp:
+                anim = c['clip'][len('horse:'):]
+                out.append({'clipId': 'horse-' + re.sub(r'[^a-z0-9]+', '-', anim.lower()), 'url': f'/animations/horse-animations.glb#{anim}',
+                            'name': name, 'inPlace': True, 'loop': name in ('Idle', 'Walk', 'Run'), 'speed': float(c.get('speed', 1))})
+            else:
+                speed = float(c.get('speed', 1)) * float(built.get(name, {}).get('retimed', 1))
+                out.append({'clipId': lib.named(c['clip']), 'name': name, 'inPlace': c.get('inPlace') is True,
+                            'loop': c.get('loop') is True, 'speed': round(speed, 3)})
+        return out
+    for name in spec_clips:
+        b = built.get(name)
+        if b is None or 'clip' not in b:
+            continue
+        e = {'clipId': b['clip'], 'name': name, 'inPlace': b.get('inPlace', True), 'loop': b.get('loop', False), 'speed': b.get('speed', 1)}
+        if b.get('url'):
+            e['url'] = b['url']
+        out.append(e)
+    return out
 
 
-def companion_animations(unit_spec, comp, keep):
+def old_scripts(spec):
+    """The scripts a build from before Rigsmith held them had, from the spec's old fields (grip, attack, window, matchStride)."""
     out = []
-    for name, c in comp['clips'].items():
-        if not c['clip'].startswith('horse:'):
-            raise SystemExit(f'companion clip {c["clip"]}: only the horse set is handled')
-        anim = c['clip'][len('horse:'):]
-        loop = unit_spec['clips'].get(name, {}).get('loop') is True
-        out.append({'clipId': 'horse-' + re.sub(r'[^a-z0-9]+', '-', anim.lower()), 'url': f'/animations/horse-animations.glb#{anim}',
-                    'name': name, 'inPlace': True, 'loop': loop, 'speed': float(c.get('speed', 1))})
-    return out + [a for a in keep if a['name'] not in comp['clips']]
+    for side, clip in (spec.get('grip') or {}).items():
+        out.append({'id': secrets.token_hex(4), 'kind': 'grip', 'enabled': True, 'side': side, 'clip': clip})
+    for name, c in (spec['clips'] if isinstance(spec['clips'], dict) else {}).items():
+        if c.get('attack'):
+            b = {'id': secrets.token_hex(4), 'kind': 'blow', 'enabled': True, 'clip': name, 'at': c.get('hit', 0.45), 'hand': c.get('hand', 'RightHand')}
+            if 'window' in c:
+                b['window'] = c['window']
+            out.append(b)
+        if c.get('matchStride'):
+            out.append({'id': secrets.token_hex(4), 'kind': 'pace', 'enabled': True, 'clip': name, 'like': c['matchStride']})
+    return out
 
 
-def unit_parts(game, unit, spec, cid):
-    """The parts the built unit carries, in the character's rest space: [(part, bone, prims, position, scale)]."""
+def unit_parts(game, unit, spec, cid, built):
+    """The parts the built unit carries, in the character's rest space before their placement: [(part, bone, prims,
+    placement)], placement {position, rotation, scale} as built (the build record), else as the old game drew it."""
     floor, tall, joints = rest_frame(cid)
     s = float(spec['height']) / tall
     to_char = np.array([1 / s, 1 / s, 1 / s])
@@ -357,6 +390,7 @@ def unit_parts(game, unit, spec, cid):
     if 'Hips' in game_joints and np.abs(game_joints['Hips'] * to_char + lift - joints['Hips']).max() > 1e-4:
         raise SystemExit(f'{unit}: the built unit no longer matches its character {cid} (rebuilt from another rig?)')
     sources = [(model, None)]
+    names_in_model = {n for n, *_ in model.parts()}
     kit = os.path.join(game.repo, 'assets', 'models', 'kits', unit + '_wear.glb')
     wear_bone = {piece: bone for pieces in game.look_wear.values() for piece, bone in pieces}
     if os.path.exists(kit):
@@ -364,8 +398,8 @@ def unit_parts(game, unit, spec, cid):
     out = []
     for glb, bones in sources:
         for name, world, prims, bone, share in glb.parts():
-            if name in skip:
-                continue
+            if name in skip or (bones is not None and name in names_in_model):
+                continue    # (wear built into the unit comes from it, not the kit)
             if bones is not None:
                 if name not in bones:
                     print(f'  {unit}: {name} is worn by no look (UnitView.LookWear): skipped')
@@ -377,19 +411,26 @@ def unit_parts(game, unit, spec, cid):
                 print(f'  {unit}: {name} is skinned to more than {bone} ({share:.3f}): carried rigidly on {bone}')
             if bone not in joints:
                 raise SystemExit(f'{unit}: part {name} rides {bone}, not in {cid}')
+            rec = built.get(name) if bones is None else None
+            if rec and 'position' in rec:
+                place = {'position': rec['position'], 'rotation': rec['rotation'], 'scale': rec['scale']}
+            else:
+                place = {'position': [0.0, 0.0, 0.0], 'rotation': [0, 0, 0], 'scale': 1.0}
+            R = euler_matrix(place['rotation'])
             mine = []
             for pos, nrm, uv, idx, mat in prims:
-                p = pos @ world[:3, :3].T + world[:3, 3]
+                p = (pos @ world[:3, :3].T + world[:3, 3]) * to_char + lift
                 n = nrm @ world[:3, :3].T
+                # (back out of the placement it was built with: the mesh as it sits in Rigsmith before it)
+                p = ((p - np.array(place['position'])) @ R) / float(place['scale'])
+                n = n @ R
                 n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
-                mine.append((p * to_char + lift, n, uv, idx, game.image(unit, name, mat)))
-            k = game.gear_scale.get(name[len('Gear'):], 1.0) if name.startswith('Gear') else 1.0
-            position = [0.0, 0.0, 0.0]
-            if k != 1.0:
-                allp = np.concatenate([p for p, *_ in mine])
-                hold = gear_hold(allp, joints[bone], bone)
-                position = [round(float(x), 6) for x in hold * (1 - k)]
-            out.append((name, bone, mine, position, k))
+                mine.append((p, n, uv, idx, game.image(unit, name, mat), mat))
+            k = game.gear_scale.get(name[len('Gear'):], 1.0) if name.startswith('Gear') and not (rec and 'position' in rec) else 1.0
+            if k != 1.0:    # (an old build: the game drew this tool k times bigger about its grip, UnitView.ScaleGear)
+                hold = gear_hold(np.concatenate([q for q, *_ in mine]), joints[bone], bone)
+                place = {'position': [round(float(x), 6) for x in hold * (1 - k)], 'rotation': [0, 0, 0], 'scale': k}
+            out.append((name, bone, mine, place))
     return out
 
 
@@ -397,7 +438,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('game')
     ap.add_argument('units', nargs='*')
-    ap.add_argument('--replace', action='store_true', help="only the game's clips and gear: drop the rest")
+    ap.add_argument('--replace', action='store_true', help="as the game's last build has it: drop what it didn't have")
     ap.add_argument('--dry-run', action='store_true')
     a = ap.parse_args()
     game = Game(os.path.abspath(os.path.expanduser(a.game)))
@@ -416,35 +457,51 @@ def main():
         if not spec['clips'] and not os.path.exists(game.model(unit)):
             print(f'{unit}: no clips and no built unit (posed by the game itself): left as it is')
             continue
+        report = game.report(unit)
         todo = [(spec['character'], 'unit')]
         if spec.get('companion'):
             todo.append((spec['companion']['character'], 'companion'))
         for cid, role in todo:
             c = character(cid)
-            keep = [] if a.replace else c.get('animations', [])
             if role == 'unit':
-                anims = unit_animations(lib, game, unit, spec, keep)
-                parts = unit_parts(game, unit, spec, cid) if os.path.exists(game.model(unit)) else []
+                built = game_clips(lib, spec['clips'], report.get('clips', {}))
+                built_scripts = [{k: v for k, v in x.items() if k != 'did'} for x in report['scripts']] if 'scripts' in report else old_scripts(spec)
+                parts = unit_parts(game, unit, spec, cid, report.get('gear', {})) if os.path.exists(game.model(unit)) else []
             else:
-                anims = companion_animations(spec, spec['companion'], keep)
-                parts = []
+                cspec = spec['companion'].get('clips', spec['clips'])
+                built = game_clips(lib, cspec, (report.get('companion') or {}).get('clips', {}), comp=True)
+                built_scripts, parts = [], []
+            have = c.get('animations', [])
+            if a.replace:
+                anims = built
+            else:
+                anims = have + [e for e in built if e['name'] not in {x['name'] for x in have}]
+            scripts = built_scripts if a.replace or not c.get('scripts') else c['scripts']
             old = {g.get('from'): g for g in c.get('garments', []) if g.get('from')}
             garments = [] if a.replace else [g for g in c.get('garments', []) if not (g.get('from') or '').startswith('emberhold:')]
             made = []
-            for name, bone, prims, position, k in parts:
+            for name, bone, prims, place in parts:
                 tag = f'emberhold:{unit}/{name}'
-                was = old.get(tag)
-                gid = was['id'] if was else secrets.token_hex(4)
-                hidden = was.get('hidden', False) if was else (name.startswith(SWAPPED) and name not in forager)
+                was = None if a.replace else old.get(tag)
+                gid = old[tag]['id'] if tag in old else secrets.token_hex(4)
                 g = {'id': gid, 'name': name, 'file': f'garments/{gid}/model.glb', 'status': 'ready', 'mode': 'rigid',
-                     'policy': 'body', 'bone': bone, 'position': position, 'rotation': [0, 0, 0], 'scale': k,
-                     'hideBody': False, 'hidden': hidden, 'from': tag}
+                     'policy': 'body', 'bone': bone, 'position': place['position'], 'rotation': place['rotation'],
+                     'scale': place['scale'], 'hideBody': False,
+                     'hidden': (name.startswith(SWAPPED) and name not in forager) if was is None else was.get('hidden', False), 'from': tag}
+                if was is not None:    # (yours: where it sits and whether it shows)
+                    g.update({k: was[k] for k in ('bone', 'position', 'rotation', 'scale') if k in was})
                 garments.append(g)
                 made.append((g, prims))
-            gone = [g for t, g in old.items() if t.startswith('emberhold:') and t not in {g['from'] for g, _ in made}]
+            brought = {g['from'] for g, _ in made}
+            gone = [g for t, g in old.items() if t.startswith('emberhold:') and t not in brought]
+            if not a.replace:
+                garments += gone    # (not in the game's build any more: kept, yours to remove)
+                for g in gone:
+                    print(f'  {g["name"]}: not in the game\'s build; kept')
             props = [] if a.replace else c.get('props', [])
             shown = [g['name'] for g, _ in made if not g['hidden']]
-            print(f'{unit} -> {cid} ({c["name"]}): {len(anims)} clips [{", ".join(x["name"] + "=" + x["clipId"] for x in anims)}]')
+            print(f'{unit} -> {cid} ({c["name"]}): {len(anims)} clips [{", ".join(x["name"] + "=" + x["clipId"] for x in anims)}]; '
+                  f'{len(scripts)} scripts{" (kept)" if scripts is c.get("scripts") else ""}')
             if made:
                 print(f'  {len(made)} parts: {", ".join(g["name"] + "@" + g["bone"] + ("" if g["scale"] == 1 else " x%g" % g["scale"]) for g, _ in made)}')
                 print(f'  shown: {", ".join(shown) or "none"}; {len(made) - len(shown)} hidden')
@@ -458,7 +515,7 @@ def main():
                 path = os.path.join(CHARACTERS, cid, g['file'])
                 write_glb(path, g['name'], prims)
                 shutil.copyfile(path, os.path.join(os.path.dirname(path), 'source.glb'))
-            patch = {'animations': anims, 'garments': garments, 'props': props}
+            patch = {'animations': anims, 'scripts': scripts, 'garments': garments, 'props': props}
             if live:
                 api('PATCH', f'/api/characters/{cid}', patch)
             else:
@@ -468,8 +525,9 @@ def main():
                 with open(tmp, 'w') as f:
                     json.dump(c, f, indent=1)
                 os.replace(tmp, os.path.join(CHARACTERS, cid, 'character.json'))
-            for g in gone:
-                shutil.rmtree(os.path.join(CHARACTERS, cid, 'garments', g['id']), ignore_errors=True)
+            if a.replace:
+                for g in gone:
+                    shutil.rmtree(os.path.join(CHARACTERS, cid, 'garments', g['id']), ignore_errors=True)
     if not a.dry_run:
         print(f'backups: {backup}')
 

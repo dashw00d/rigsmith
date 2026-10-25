@@ -1,6 +1,7 @@
 // Animation playback in the main viewport, and sprite previews for the library.
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { AnimationEntry, LibraryClip } from './api.ts'
 import { app } from './app.svelte.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
@@ -8,6 +9,7 @@ import { RetargetCache } from '../engine/clips.ts'
 import { renamer } from '../engine/presets/skeletonMap.ts'
 import { Player } from '../engine/Player.ts'
 import { PreviewRenderer } from '../engine/PreviewRenderer.ts'
+import { applyScripts, retime } from '../engine/scripts.ts'
 import type { Stage } from '../engine/Stage.ts'
 
 export interface NowPlaying {
@@ -51,6 +53,8 @@ class Animator {
   private mannequin: Promise<THREE.Object3D | null> | null = null
   private token = 0
   private lastKey = ''
+  /** A posable copy of the character, for scripts to measure clips on without moving the one on stage. */
+  private posable: THREE.Object3D | null = null
 
   attach (view: CharacterView, stage: Stage): void {
     this.detach()
@@ -62,6 +66,7 @@ class Animator {
     this.player.setLoop(this.loop)
     this.player.setPlaying(this.playing)
     this.cache = new RetargetCache(view.rest)
+    this.posable = null
     this.offFrame = stage.onFrame(dt => {
       if (this.player === null || this.player.clip === null) return
       this.player.update(dt)
@@ -77,6 +82,7 @@ class Animator {
     this.player = null
     this.cache = null
     this.view = null
+    this.posable = null
     this.current = null
     this.duration = 0
     this.time = 0
@@ -85,7 +91,7 @@ class Animator {
 
   get ready (): boolean { return this.player !== null }
 
-  /** Play a library clip or an entry from the character's set. */
+  /** Play a library clip or an entry from the character's set (an entry with the character's scripts on it). */
   async play (target: NowPlaying, options: { inPlace?: boolean, speed?: number, loop?: boolean } = {}): Promise<void> {
     if (this.player === null || this.cache === null) return
     const token = ++this.token
@@ -96,7 +102,10 @@ class Animator {
     if (options.speed !== undefined) this.setSpeed(options.speed)
     if (options.loop !== undefined) this.setLoop(options.loop)
     try {
-      const clip = await this.cache.get(target.url, { inPlace: this.inPlace, mirror: this.mirror })
+      const entry = target.entry !== null ? app.selected?.animations[target.entry] : undefined
+      const clip = entry !== undefined && entry.clipId === target.clipId && (app.selected?.scripts ?? []).some(s => s.enabled)
+        ? await this.scripted(entry)
+        : await this.cache.get(target.url, { inPlace: this.inPlace, mirror: this.mirror })
       if (token !== this.token || this.player === null) return
       this.player.play(clip)
       this.duration = clip.duration
@@ -109,6 +118,26 @@ class Animator {
 
   playEntry (entry: AnimationEntry, index: number): void {
     void this.play({ clipId: entry.clipId, url: entryUrl(entry), name: entry.name, entry: index }, { inPlace: entry.inPlace, speed: entry.speed, loop: entry.loop })
+  }
+
+  /** An entry as the game export makes it: at its speed, the scripts applied (with the clips a pace needs), then
+   * played back at its speed again so the speed control keeps its meaning. */
+  private async scripted (entry: AnimationEntry): Promise<THREE.AnimationClip> {
+    const cache = this.cache!
+    const character = app.selected!
+    const scripts = character.scripts ?? []
+    this.posable ??= cloneSkinned(this.view!.root)
+    const build = async (e: AnimationEntry): Promise<THREE.AnimationClip> =>
+      retime(await cache.get(entryUrl(e), { inPlace: e.inPlace, mirror: this.mirror }), e.speed)
+    const clips = new Map([[entry.name, await build(entry)]])
+    for (const s of scripts) {
+      if (s.enabled && s.kind === 'pace' && s.clip === entry.name) {
+        const like = character.animations.find(a => a.name === s.like)
+        if (like !== undefined) clips.set(like.name, await build(like))
+      }
+    }
+    const { clips: out } = await applyScripts(this.posable, clips, scripts, async id => await cache.get(clipUrl(id), { inPlace: true }))
+    return retime(out.get(entry.name)!, 1 / entry.speed)
   }
 
   playLibrary (clip: LibraryClip): void {

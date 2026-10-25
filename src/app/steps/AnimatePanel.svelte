@@ -3,6 +3,7 @@
   import type { AnimationEntry, Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { animator } from '../../state/animator.svelte.ts'
+  import ScriptsPanel from '../animate/ScriptsPanel.svelte'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
   import { tooltip } from '../../ui/tooltip.ts'
@@ -68,7 +69,7 @@
             ondragover={(e) => e.preventDefault()} ondrop={() => drop(i)}>
             <span class="grip"><GripVertical size={13} /></span>
             <button class="play" onclick={() => animator.playEntry(entry, i)} aria-label="Play {entry.name}"><Play size={12} /></button>
-            <input class="name" value={entry.name} aria-label="Animation name"
+            <input class="name" value={entry.name} aria-label="Animation name" title={entry.note ?? entry.clipId}
               onchange={(e) => patch(i, { name: (e.target as HTMLInputElement).value.trim() || entry.name })} />
             <button class="flag" class:on={entry.loop} onclick={() => patch(i, { loop: !entry.loop })} use:tooltip={entry.loop ? 'Loops' : 'Plays once'}><Repeat size={13} /></button>
             <button class="flag" class:on={entry.inPlace} onclick={() => patch(i, { inPlace: !entry.inPlace })} use:tooltip={entry.inPlace ? 'In place (root motion removed)' : 'Root motion kept'}><Footprints size={13} /></button>
@@ -82,6 +83,10 @@
       <p class="faint small">Names become the animation names in Godot. Drag to reorder.</p>
     {/if}
   </Section>
+
+  {#if character.animations.length > 0}
+    <ScriptsPanel {character} />
+  {/if}
 
   {#if others.length > 0 && character.animations.length > 0}
     <Section>

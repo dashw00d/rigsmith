@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import type { ClipScript } from '../src/engine/scripts.ts'
 
 export const ROOT = path.resolve(import.meta.dirname, '..')
 export const WORKSPACE = path.resolve(process.env.RIGSMITH_WORKSPACE ?? path.join(ROOT, 'workspace'))
@@ -43,6 +44,8 @@ export interface Character {
   rigReport?: { method: string, seconds: number, warnings: string[] }
   texture?: { filled: boolean, images: TextureImage[], at: number, painted?: boolean }
   animations: AnimationEntry[]
+  /** Switchable changes to the clips, played here and exported to the game alike (src/engine/scripts.ts). */
+  scripts?: ClipScript[]
   /** Props/accessories pinned to bones (see src/engine/props.ts). */
   props?: PropAttachment[]
   /** The user's own meshes worn by the character (see src/engine/garments.ts). */
@@ -100,6 +103,8 @@ export interface AnimationEntry {
   loop: boolean
   speed: number
   trim?: [number, number]
+  /** Why this clip (what it does with the unit's gear, what the others did wrong). */
+  note?: string
 }
 
 export interface Settings {

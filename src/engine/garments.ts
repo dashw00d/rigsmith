@@ -8,6 +8,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import type { Garment } from '../../server/workspace.ts'
 import type { CharacterView } from './CharacterView.ts'
+import { garmentMatrix } from './placement.ts'
 
 export type { Garment }
 
@@ -46,10 +47,7 @@ async function load (url: string): Promise<THREE.Group> {
   return await pending
 }
 
-export function garmentMatrix (g: Garment): THREE.Matrix4 {
-  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(...g.rotation.map(d => THREE.MathUtils.degToRad(d)) as [number, number, number]))
-  return new THREE.Matrix4().compose(new THREE.Vector3(...g.position), q, new THREE.Vector3(g.scale, g.scale, g.scale))
-}
+export { garmentMatrix }
 
 /** The garment's meshes as static geometry in character rest space (transform applied). */
 export async function garmentMeshes (url: string, g: Garment): Promise<THREE.Mesh[]> {

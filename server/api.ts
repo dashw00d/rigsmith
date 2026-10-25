@@ -215,7 +215,7 @@ route('GET', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
 
 route('PATCH', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
   const patch = await readJsonBody<Partial<Character>>(req)
-  const allowed: Array<keyof Character> = ['name', 'joints', 'jointsEdited', 'fingers', 'animations', 'props', 'garments', 'boneMap']
+  const allowed: Array<keyof Character> = ['name', 'joints', 'jointsEdited', 'fingers', 'animations', 'scripts', 'props', 'garments', 'boneMap']
   const character = await updateCharacter(id, c => {
     for (const key of allowed) if (key in patch) (c as unknown as Record<string, unknown>)[key] = patch[key]
   })
