@@ -67,6 +67,10 @@ export interface Garment {
   scale: number
   /** Hide body triangles covered by this garment (stops poke-through). */
   hideBody: boolean
+  /** Not worn for now (kept, not shown or exported): one of several a unit swaps, like a villager's job tools. */
+  hidden?: boolean
+  /** Brought in by a tool rather than added by hand (tools/game_import.py: "emberhold:<unit>/<part>"). */
+  from?: string
 }
 
 export interface PropAttachment {

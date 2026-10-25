@@ -45,6 +45,22 @@ npm test                                        # unit tests incl. retargeting o
 npm run test:godot -- workspace/exports/X.glb   # imports a GLB in headless Godot, resolves every track
 ```
 
+## Game units
+
+The RTS's units are built from these characters by a spec in the game's repo (`tools/rigsmith/units.json` there):
+
+```bash
+npm run export:game -- <spec.json> <models dir> <work dir> [unit ...]   # the units out to the game
+python3 tools/game_import.py ~/dev/games/emberhold [unit ...] [--replace] [--dry-run]   # and back in
+```
+
+`tools/game_import.py` gives each character the game's clips under the game's names (Idle, Walk, Run, Attack, Die, the
+villager's jobs) and the gear the built unit carries (weapons, shields, quivers, the villager's tools, spare heads and job
+wear) as rigid garments on their bones, moved back from game space exactly, with the game's colour maps. Pieces the game
+swaps by job come in hidden (the eye in the Outfit list shows one); hidden garments are kept but not shown or exported.
+`--replace` drops whatever the game doesn't have; without it the extras stay. It writes through the running app, so
+reload an open page afterwards.
+
 ### Rig quality vs Mixamo
 
 `tools/dev/bench.ts` drives two rigs of the same meshes (e.g. Mixamo's and ours) with the same clips through

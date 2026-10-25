@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Move3d, Rotate3d, Scale3d, RotateCcw, Shirt, Trash2, Sword } from '@lucide/svelte'
+  import { Eye, EyeOff, Move3d, Rotate3d, Scale3d, RotateCcw, Shirt, Trash2, Sword } from '@lucide/svelte'
   import type { Character } from '../../state/api.ts'
   import { outfit, type GizmoMode } from '../../state/outfit.svelte.ts'
   import { SOCKETS, type Socket } from '../../engine/props.ts'
@@ -105,7 +105,7 @@
     {:else}
       <ul>
         {#each garments as g (g.id)}
-          <li class:selected={g.id === outfit.fitting}>
+          <li class:selected={g.id === outfit.fitting} class:hidden={g.hidden === true}>
             <button class="row" disabled={g.status !== 'ready'} onclick={() => outfit.fit(g.id === outfit.fitting ? null : g.id)}>
               <span class="name">{g.name}</span>
               <span class="socket faint">
@@ -113,6 +113,10 @@
                 {:else if g.status === 'error'}<CircleAlert size={12} /> failed
                 {:else}{g.mode === 'rigid' ? `on ${g.bone}` : POLICIES.find(p => p.id === g.policy)?.label}{/if}
               </span>
+            </button>
+            <button class="icon show" onclick={() => outfit.patchGarment(g.id, { hidden: g.hidden !== true })}
+              aria-label="{g.hidden === true ? 'Show' : 'Hide'} {g.name}" title={g.hidden === true ? 'Hidden: not shown or exported' : 'Shown'}>
+              {#if g.hidden === true}<EyeOff size={13} />{:else}<Eye size={13} />{/if}
             </button>
             <button class="icon" onclick={() => outfit.removeGarment(g.id)} aria-label="Remove {g.name}"><Trash2 size={13} /></button>
           </li>
@@ -170,6 +174,9 @@
   .socket { font-size: 12px; }
   .icon { width: 26px; height: 26px; margin-right: 4px; border: 0; border-radius: 5px; background: transparent; color: var(--text-3); display: grid; place-items: center; }
   .icon:hover { color: var(--danger); background: var(--danger-soft); }
+  .icon.show { margin-right: 0; }
+  .icon.show:hover { color: var(--text-1); background: var(--bg-3); }
+  li.hidden .name { color: var(--text-3); }
   .field { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .field span { color: var(--text-2); }
   select { height: 28px; border-radius: var(--r-1); border: 1px solid var(--line-strong); background: var(--bg-2); padding: 0 6px; }

@@ -368,7 +368,7 @@ export async function attachGarments (view: CharacterView, garments: Garment[], 
   const skeleton = body.mesh.skeleton
   const hideFrom: THREE.BufferGeometry[] = []
   for (const g of garments) {
-    if (g.status !== 'ready' || g.file === undefined) continue
+    if (g.status !== 'ready' || g.file === undefined || (g.hidden === true && g.id !== fitting)) continue
     const meshes = await garmentMeshes(urlFor(g), g)
     if (g.id === fitting) {
       // Static, unbound copy for placement; the gizmo moves this group.
