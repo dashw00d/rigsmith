@@ -94,7 +94,9 @@ export function stride (root: THREE.Object3D, clip: THREE.AnimationClip, feet = 
 export function cut (clip: THREE.AnimationClip, start: number, end: number, name = clip.name): THREE.AnimationClip {
   const tracks = clip.tracks.map(t => {
     const size = t.getValueSize()
-    const at = (time: number): number[] => Array.from(t.createInterpolant().evaluate(time) as ArrayLike<number>).slice(0, size)
+    // (the track's own interpolant: a quaternion's slerps)
+    const interpolant = (t as unknown as { createInterpolant: () => THREE.Interpolant }).createInterpolant()
+    const at = (time: number): number[] => Array.from(interpolant.evaluate(time) as ArrayLike<number>).slice(0, size)
     const times: number[] = [0]; const values: number[] = [...at(start)]
     for (let i = 0; i < t.times.length; i++) {
       if (t.times[i] <= start + 1e-6 || t.times[i] >= end - 1e-6) continue

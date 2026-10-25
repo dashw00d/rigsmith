@@ -15,9 +15,13 @@ build records (<game>/assets/textures/models/<unit>/<unit>.json, sources.rigsmit
               garment on its bone, its surfaces keeping the game's material names with the colour maps the game draws
               them with. Pieces the game swaps by job (Gear*, Head*, Wear*) come in hidden, except the forager's look.
 
-By default nothing you made is touched: a garment it brought before (from "emberhold:...") gets the game's mesh again
-but keeps its placement and whether it is hidden, and clips and scripts are only filled in where the character has
-none. --replace puts the character back as the game's last build has it (its clips, scripts, gear and placements;
+Each part's own origin is where it is held (UnitView.GearHold's rule: a hand item on its handle's line nearest the
+hand's joint, anything else the point of its box nearest the joint it rides), so the viewer's gizmo sits there and
+turning or sizing it keeps it in the fist. --repivot moves the origin of the parts a character already has there,
+leaving each exactly where it is (its position takes up the shift).
+
+By default nothing you made is touched: a garment it brought before (from "emberhold:...") stays as it is, only the
+parts the character lacks come in, and clips and scripts are only filled in where the character has none. --replace puts the character back as the game's last build has it (its clips, scripts, gear and placements;
 garments and props it didn't bring go). A build from before Rigsmith held the clips reads them from the spec's old
 clip table. Each character.json is backed up first (workspace/backups/game-import/<time>/). Writes through the running
 app's API when it is up (RIGSMITH_URL, default http://127.0.0.1:5180); reload an open page afterwards.
@@ -187,6 +191,52 @@ def write_glb(path, name, prims):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'wb') as f:
         f.write(out)
+
+def shifted_glb(data, offset):
+    """A GLB's bytes with every POSITION moved by -offset (its bounds too), all else as it was."""
+    n = struct.unpack('<I', data[12:16])[0]
+    j = json.loads(data[20:20 + n])
+    off = 20 + n
+    blen = struct.unpack('<I', data[off:off + 4])[0]
+    binary = bytearray(data[off + 8: off + 8 + blen])
+    done = set()
+    for mesh in j['meshes']:
+        for prim in mesh['primitives']:
+            ai = prim['attributes']['POSITION']
+            if ai in done:
+                continue
+            done.add(ai)
+            a = j['accessors'][ai]
+            bv = j['bufferViews'][a['bufferView']]
+            if a['componentType'] != 5126 or bv.get('byteStride', 12) != 12:
+                raise SystemExit('shifted_glb: only tight float positions')
+            start = bv.get('byteOffset', 0) + a.get('byteOffset', 0)
+            pos = np.frombuffer(bytes(binary[start:start + 12 * a['count']]), dtype=np.float32).reshape(-1, 3) - np.asarray(offset, np.float32)
+            binary[start:start + 12 * a['count']] = pos.astype(np.float32).tobytes()
+            a['min'] = [float(x) for x in pos.min(0)]
+            a['max'] = [float(x) for x in pos.max(0)]
+    js = json.dumps(j, separators=(',', ':')).encode()
+    js += b' ' * (-len(js) % 4)
+    return struct.pack('<III', 0x46546C67, 2, 12 + 8 + len(js) + 8 + len(binary)) + struct.pack('<II', len(js), 0x4E4F534A) + js \
+        + struct.pack('<II', len(binary), 0x004E4942) + bytes(binary)
+
+
+def garment_file(gid, data):
+    """Where a garment's mesh goes: named by its content, so an open page loads the new one, not its cached old one."""
+    import hashlib
+    return f'garments/{gid}/model.{hashlib.sha256(data).hexdigest()[:8]}.glb'
+
+
+def repivot(g, mesh_points, joints):
+    """The origin shift that puts garment `g`'s pivot where it is held: (offset in its mesh's frame, its new position)."""
+    R = euler_matrix(g['rotation'])
+    k = float(g['scale'])
+    p = np.asarray(g['position'], dtype=np.float64)
+    world = p + k * mesh_points @ R.T
+    hold = gear_hold(world, joints[g['bone']], g['bone'])
+    local = ((hold - p) @ R) / k
+    return local, [round(float(x), 6) for x in hold]
+
 
 # --- the game's side -------------------------------------------------------------------------------------------------
 
@@ -439,6 +489,7 @@ def main():
     ap.add_argument('game')
     ap.add_argument('units', nargs='*')
     ap.add_argument('--replace', action='store_true', help="as the game's last build has it: drop what it didn't have")
+    ap.add_argument('--repivot', action='store_true', help='move the origin of the parts already there to where each is held (nothing moves)')
     ap.add_argument('--dry-run', action='store_true')
     a = ap.parse_args()
     game = Game(os.path.abspath(os.path.expanduser(a.game)))
@@ -452,6 +503,45 @@ def main():
     backup = os.path.join(WORKSPACE, 'backups', 'game-import', stamp)
     forager = {piece for piece, _ in game.look_wear.get('forager', [])}
     print(f'game {game.repo}; {"through the app at " + API if live else "dry run" if a.dry_run else "the files (the app is not running)"}')
+    if a.repivot:
+        for unit in units:
+            cid = game.spec[unit]['character']
+            c = character(cid)
+            _, _, joints = rest_frame(cid)
+            garments, moved = [], []
+            for g in c.get('garments', []):
+                if not (g.get('from') or '').startswith('emberhold:') or g.get('mode') != 'rigid' or not g.get('file'):
+                    garments.append(g)
+                    continue
+                path = os.path.join(CHARACTERS, cid, g['file'])
+                data = open(path, 'rb').read()
+                pts = np.concatenate([q[0] for _, _, prims, _, _ in Glb(path).parts() for q in prims])
+                local, position = repivot(g, pts, joints)
+                if np.abs(local).max() < 1e-6:
+                    garments.append(g)
+                    continue
+                data = shifted_glb(data, local)
+                g = dict(g, position=position, file=garment_file(g['id'], data))
+                moved.append(g['name'])
+                if not a.dry_run:
+                    with open(os.path.join(CHARACTERS, cid, g['file']), 'wb') as f:
+                        f.write(data)
+                garments.append(g)
+            print(f'{unit} -> {cid}: pivots moved to the hold: {", ".join(moved) or "none"}')
+            if a.dry_run or not moved:
+                continue
+            os.makedirs(backup, exist_ok=True)
+            shutil.copy2(os.path.join(CHARACTERS, cid, 'character.json'), os.path.join(backup, cid + '.json'))
+            if live:
+                api('PATCH', f'/api/characters/{cid}', {'garments': garments})
+            else:
+                c['garments'] = garments
+                c['updatedAt'] = int(time.time() * 1000)
+                tmp = os.path.join(CHARACTERS, cid, f'character.json.{secrets.token_hex(4)}.tmp')
+                with open(tmp, 'w') as f:
+                    json.dump(c, f, indent=1)
+                os.replace(tmp, os.path.join(CHARACTERS, cid, 'character.json'))
+        return
     for unit in units:
         spec = game.spec[unit]
         if not spec['clips'] and not os.path.exists(game.model(unit)):
@@ -483,16 +573,17 @@ def main():
             for name, bone, prims, place in parts:
                 tag = f'emberhold:{unit}/{name}'
                 was = None if a.replace else old.get(tag)
+                if was is not None:    # (yours as it is: where it sits, its mesh, whether it shows)
+                    garments.append(was)
+                    continue
                 gid = old[tag]['id'] if tag in old else secrets.token_hex(4)
                 g = {'id': gid, 'name': name, 'file': f'garments/{gid}/model.glb', 'status': 'ready', 'mode': 'rigid',
                      'policy': 'body', 'bone': bone, 'position': place['position'], 'rotation': place['rotation'],
                      'scale': place['scale'], 'hideBody': False,
                      'hidden': (name.startswith(SWAPPED) and name not in forager) if was is None else was.get('hidden', False), 'from': tag}
-                if was is not None:    # (yours: where it sits and whether it shows)
-                    g.update({k: was[k] for k in ('bone', 'position', 'rotation', 'scale') if k in was})
                 garments.append(g)
                 made.append((g, prims))
-            brought = {g['from'] for g, _ in made}
+            brought = {g['from'] for g, _ in made} | {g.get('from') for g in garments}
             gone = [g for t, g in old.items() if t.startswith('emberhold:') and t not in brought]
             if not a.replace:
                 garments += gone    # (not in the game's build any more: kept, yours to remove)
@@ -511,10 +602,18 @@ def main():
                 continue
             os.makedirs(backup, exist_ok=True)
             shutil.copy2(os.path.join(CHARACTERS, cid, 'character.json'), os.path.join(backup, cid + '.json'))
+            _, _, joints = rest_frame(cid)
             for g, prims in made:
-                path = os.path.join(CHARACTERS, cid, g['file'])
-                write_glb(path, g['name'], prims)
-                shutil.copyfile(path, os.path.join(os.path.dirname(path), 'source.glb'))
+                os.makedirs(os.path.join(CHARACTERS, cid, 'garments', g['id']), exist_ok=True)
+                tmp = os.path.join(CHARACTERS, cid, 'garments', g['id'], 'model.tmp.glb')
+                write_glb(tmp, g['name'], prims)
+                data = open(tmp, 'rb').read()
+                local, g['position'] = repivot(g, np.concatenate([q[0] for q in prims]), joints)    # (its pivot where it is held)
+                data = shifted_glb(data, local)
+                g['file'] = garment_file(g['id'], data)
+                with open(os.path.join(CHARACTERS, cid, g['file']), 'wb') as f:
+                    f.write(data)
+                os.remove(tmp)
             patch = {'animations': anims, 'scripts': scripts, 'garments': garments, 'props': props}
             if live:
                 api('PATCH', f'/api/characters/{cid}', patch)

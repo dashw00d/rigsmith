@@ -76,7 +76,7 @@
     </div>
   {/if}
 
-  {#if app.step === 'animate' || app.step === 'export'}<Timeline />{/if}
+  {#if app.step === 'animate' || app.step === 'export' || app.step === 'outfit'}<Timeline />{/if}
   {#if painter.active && app.step === 'texture'}<MaskPainter />{/if}
 
   {#if animator.error}<div class="busy error">{animator.error}</div>{/if}

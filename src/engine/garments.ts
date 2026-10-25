@@ -51,9 +51,13 @@ export { garmentMatrix }
 
 /** The garment's meshes as static geometry in character rest space (transform applied). */
 export async function garmentMeshes (url: string, g: Garment): Promise<THREE.Mesh[]> {
+  return await meshesOf(url, g, garmentMatrix(g))
+}
+
+/** The garment's meshes in its own frame (before its placement): a rigid garment's placement is a node above them. */
+async function meshesOf (url: string, g: Garment, placement: THREE.Matrix4): Promise<THREE.Mesh[]> {
   const scene = await load(url)
   scene.updateMatrixWorld(true)
-  const placement = garmentMatrix(g)
   const out: THREE.Mesh[] = []
   scene.traverse(o => {
     const mesh = o as THREE.Mesh
@@ -354,9 +358,17 @@ export function detachGarments (view: CharacterView): void {
   restoreBody(view)
 }
 
+/** A bone's rest frame in the character's rest space (no scale): what a rigid garment's placement is relative to. */
+export function restFrame (view: CharacterView, bone: string): THREE.Matrix4 | null {
+  const rest = view.rest?.bones.get(bone)
+  return rest === undefined ? null : new THREE.Matrix4().compose(rest.worldPosition, rest.worldQuaternion, new THREE.Vector3(1, 1, 1))
+}
+
 /**
- * Attach ready garments. `fitting` (a garment id) shows that one as a static mesh with its placement,
- * so it can be moved with a gizmo before binding.
+ * Attach ready garments. A rigid one rides its bone: bone -> its rest frame undone -> a node holding its placement
+ * (the object returned for it, which a gizmo moves while the character plays or holds a pose) -> its meshes. A clothing
+ * one is skinned to the body; while `fitting` (its id) it shows as a static mesh with its placement instead, to move
+ * before binding. A hidden garment is left off unless it is the one being fitted.
  */
 export async function attachGarments (view: CharacterView, garments: Garment[], urlFor: (g: Garment) => string, fitting: string | null = null): Promise<Map<string, THREE.Object3D>> {
   detachGarments(view)
@@ -367,6 +379,22 @@ export async function attachGarments (view: CharacterView, garments: Garment[], 
   const hideFrom: THREE.BufferGeometry[] = []
   for (const g of garments) {
     if (g.status !== 'ready' || g.file === undefined || (g.hidden === true && g.id !== fitting)) continue
+    if (g.mode === 'rigid') {
+      const bone = view.bones.get(g.bone) ?? skeleton.bones[0]
+      const group = new THREE.Group()
+      group.name = g.name.replace(/[^\w]+/g, '_')
+      group.userData[GARMENT_FLAG] = g.id
+      // Keep the rest-space placement: express it in the bone's rest frame.
+      group.applyMatrix4((restFrame(view, g.bone) ?? bone.matrixWorld.clone()).invert())
+      const place = new THREE.Group()
+      place.name = `${group.name}_place`
+      garmentMatrix(g).decompose(place.position, place.quaternion, place.scale)
+      for (const m of await meshesOf(urlFor(g), g, new THREE.Matrix4())) place.add(m)
+      group.add(place)
+      bone.add(group)
+      out.set(g.id, place)
+      continue
+    }
     const meshes = await garmentMeshes(urlFor(g), g)
     if (g.id === fitting) {
       // Static, unbound copy for placement; the gizmo moves this group.
@@ -377,20 +405,6 @@ export async function attachGarments (view: CharacterView, garments: Garment[], 
       for (const m of meshes) { m.geometry.applyMatrix4(inverse); group.add(m) }
       group.applyMatrix4(garmentMatrix(g))
       view.root.add(group)
-      out.set(g.id, group)
-      continue
-    }
-    if (g.mode === 'rigid') {
-      const bone = view.bones.get(g.bone) ?? skeleton.bones[0]
-      const group = new THREE.Group()
-      group.name = g.name.replace(/[^\w]+/g, '_')
-      group.userData[GARMENT_FLAG] = g.id
-      // Keep the rest-space placement: express it in the bone's rest frame.
-      const rest = view.rest?.bones.get(g.bone)
-      const restWorld = rest !== undefined ? new THREE.Matrix4().compose(rest.worldPosition, rest.worldQuaternion, new THREE.Vector3(1, 1, 1)) : bone.matrixWorld.clone()
-      group.applyMatrix4(restWorld.invert())
-      for (const m of meshes) group.add(m)
-      bone.add(group)
       out.set(g.id, group)
       continue
     }

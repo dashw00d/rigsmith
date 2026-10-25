@@ -7,6 +7,7 @@
   import { CircleAlert, LoaderCircle, Upload } from '@lucide/svelte'
   import Toggle from '../../ui/Toggle.svelte'
   import { app } from '../../state/app.svelte.ts'
+  import { animator } from '../../state/animator.svelte.ts'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
   import Segmented from '../../ui/Segmented.svelte'
@@ -35,6 +36,20 @@
     { value: 'scale', label: 'Scale', icon: Scale3d },
   ]
 
+  // The pose the gear is fitted in: rest, rest with the fists closed (the Hold fist scripts), or any clip of the set
+  // (with its scripts, as the game plays it), paused at any frame from the timeline.
+  const pose = $derived(animator.current === null ? 'rest' : animator.current.clipId === 'fists' ? 'fists'
+    : animator.current.entry !== null ? String(animator.current.entry) : 'rest')
+  function setPose (value: string): void {
+    if (value === 'rest') animator.stop()
+    else if (value === 'fists') void animator.playFists()
+    else {
+      const i = Number(value)
+      const entry = character.animations[i]
+      if (entry !== undefined) animator.playEntry(entry, i)
+    }
+  }
+
   function number (index: number, key: 'position' | 'rotation', value: string): void {
     if (selected === null) return
     const v = Number(value)
@@ -48,6 +63,16 @@
 {#if character.status !== 'rigged'}
   <Section><p class="muted">Rig {character.name} first. Props and accessories attach to its bones.</p></Section>
 {:else}
+  <Section title="Pose">
+    <select class="pose" value={pose} onchange={(e) => setPose((e.target as HTMLSelectElement).value)} aria-label="Pose">
+      <option value="rest">Rest</option>
+      <option value="fists">Rest, fists closed</option>
+      {#each character.animations as a, i}<option value={String(i)}>{a.name}</option>{/each}
+    </select>
+    <p class="faint small">Fit gear on a clip as the game plays it (its scripts too: a held fist stays closed). Pause on any frame
+      (Space, or the timeline; , and . step a frame) and drag the gizmo there.</p>
+  </Section>
+
   <Section title="Attached">
     {#if attached.length === 0}
       <div class="empty">
@@ -87,7 +112,7 @@
         <input class="mono wide" type="number" step="0.05" min="0.01" value={selected.scale} onchange={(e) => outfit.patch(selected.id, { scale: Math.max(0.01, Number((e.target as HTMLInputElement).value) || selected.scale) })} aria-label="Scale" />
       </div>
       <Button size="sm" variant="ghost" onclick={() => outfit.reset(selected.id)}><RotateCcw size={13} /> Reset placement</Button>
-      <p class="faint small">Tip: play an animation in the Animate step to check the grip in motion. Props export as bone attachments.</p>
+      <p class="faint small">Pick a clip under Pose to check the grip in motion. Props export as bone attachments.</p>
     </Section>
   {/if}
 
@@ -127,7 +152,12 @@
 
   {#if fitting}
     <Section title="Fit {fitting.name}">
-      <p class="faint small">Shown unbound while you place it. Click it again in the list (or pick another) to bind it.</p>
+      {#if fitting.mode === 'rigid'}
+        <p class="faint small">On {fitting.bone}: it follows that bone in the pose above (at rest a new bone changes nothing you can
+          see; pick a clip to watch it follow). Drag the gizmo, or type the numbers, at any frame.</p>
+      {:else}
+        <p class="faint small">Shown unbound while you place it. Click it again in the list (or pick another) to bind it.</p>
+      {/if}
       <Segmented options={[{ value: 'clothing', label: 'Clothing' }, { value: 'rigid', label: 'Rigid' }]} value={fitting.mode}
         onchange={(m) => outfit.patchGarment(fitting.id, { mode: m as 'clothing' | 'rigid' })} />
       {#if fitting.mode === 'clothing'}
@@ -144,7 +174,7 @@
         <div class="field">
           <span>Attached to</span>
           <select value={fitting.bone} onchange={(e) => outfit.patchGarment(fitting.id, { bone: (e.target as HTMLSelectElement).value })}>
-            {#each bones as b}<option value={b}>{b}</option>{/each}
+            {#each bones.includes(fitting.bone) ? bones : [fitting.bone, ...bones] as b}<option value={b}>{b}</option>{/each}
           </select>
         </div>
       {/if}
@@ -157,7 +187,7 @@
         <span class="label faint">Scale</span>
         <input class="mono wide" type="number" step="0.05" min="0.01" value={fitting.scale} onchange={(e) => outfit.patchGarment(fitting.id, { scale: Math.max(0.01, Number((e.target as HTMLInputElement).value) || fitting.scale) })} aria-label="Scale" />
       </div>
-      <Button variant="primary" block onclick={() => outfit.fit(null)}>Bind to {app.selected?.name ?? 'character'}</Button>
+      <Button variant="primary" block onclick={() => outfit.fit(null)}>{fitting.mode === 'rigid' ? 'Done' : `Bind to ${app.selected?.name ?? 'character'}`}</Button>
     </Section>
   {/if}
 {/if}
@@ -177,6 +207,7 @@
   .icon.show { margin-right: 0; }
   .icon.show:hover { color: var(--text-1); background: var(--bg-3); }
   li.hidden .name { color: var(--text-3); }
+  .pose { width: 100%; height: 30px; border-radius: var(--r-1); border: 1px solid var(--line-strong); background: var(--bg-2); padding: 0 6px; margin-bottom: 6px; }
   .field { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .field span { color: var(--text-2); }
   select { height: 28px; border-radius: var(--r-1); border: 1px solid var(--line-strong); background: var(--bg-2); padding: 0 6px; }

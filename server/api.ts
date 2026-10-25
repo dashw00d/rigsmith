@@ -219,6 +219,8 @@ route('PATCH', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
   const character = await updateCharacter(id, c => {
     for (const key of allowed) if (key in patch) (c as unknown as Record<string, unknown>)[key] = patch[key]
   })
+  // (every open page takes it: a page holding an older copy would otherwise save that back over it)
+  events.emit('character', character)
   send(res, 200, character)
 })
 
@@ -432,10 +434,13 @@ route('GET', /^\/api\/events$/, async (req, res) => {
   }
   // Deleted elsewhere (another tab, the API): drop it from every open page.
   const onRemoved = (id: string): void => { res.write(`event: removed\ndata: ${JSON.stringify(id)}\n\n`) }
+  // Changed elsewhere (another tab, a tool through the API): every open page takes the new copy.
+  const onCharacter = (c: Character): void => { res.write(`event: character\ndata: ${JSON.stringify(c)}\n\n`) }
   const ping = setInterval(() => res.write(': ping\n\n'), 25_000)
   events.on('job', onJob)
   events.on('removed', onRemoved)
-  req.on('close', () => { clearInterval(ping); events.off('job', onJob); events.off('removed', onRemoved) })
+  events.on('character', onCharacter)
+  req.on('close', () => { clearInterval(ping); events.off('job', onJob); events.off('removed', onRemoved); events.off('character', onCharacter) })
 })
 
 route('GET', /^\/api\/library$/, async (req, res, _, url) => {

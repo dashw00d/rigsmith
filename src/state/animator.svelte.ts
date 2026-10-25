@@ -9,7 +9,7 @@ import { RetargetCache } from '../engine/clips.ts'
 import { renamer } from '../engine/presets/skeletonMap.ts'
 import { Player } from '../engine/Player.ts'
 import { PreviewRenderer } from '../engine/PreviewRenderer.ts'
-import { applyScripts, retime } from '../engine/scripts.ts'
+import { applyScripts, fistPose, retime, type GripScript } from '../engine/scripts.ts'
 import type { Stage } from '../engine/Stage.ts'
 
 export interface NowPlaying {
@@ -107,6 +107,7 @@ class Animator {
         ? await this.scripted(entry)
         : await this.cache.get(target.url, { inPlace: this.inPlace, mirror: this.mirror })
       if (token !== this.token || this.player === null) return
+      if (this.player.clip?.name === 'Rest, fists closed') this.player.stop()   // (no closed fingers left over)
       this.player.play(clip)
       this.duration = clip.duration
     } catch (error) {
@@ -138,6 +139,35 @@ class Animator {
     }
     const { clips: out } = await applyScripts(this.posable, clips, scripts, async id => await cache.get(clipUrl(id), { inPlace: true }))
     return retime(out.get(entry.name)!, 1 / entry.speed)
+  }
+
+  /** The rest pose with the hands closed as the character's Hold fist scripts close them (both hands round a shaft, as
+   * in 2hand Idle, if it has none): to fit what a hand holds. */
+  async playFists (): Promise<void> {
+    if (this.player === null || this.cache === null || this.view === null) return
+    const token = ++this.token
+    const cache = this.cache
+    this.current = { clipId: 'fists', url: '', name: 'Rest, fists closed', entry: null }
+    this.loading = true
+    this.error = null
+    try {
+      const grips = (app.selected?.scripts ?? []).filter((x): x is GripScript => x.enabled && x.kind === 'grip')
+      const hands = grips.length > 0 ? grips.map(g => ({ side: g.side, clip: g.clip })) : (['Left', 'Right'] as const).map(side => ({ side, clip: 'mixamo-2hand_Idle' }))
+      this.posable ??= cloneSkinned(this.view.root)
+      const tracks: THREE.KeyframeTrack[] = []
+      for (const h of hands) {
+        const { pose } = fistPose(this.posable, await cache.get(clipUrl(h.clip), { inPlace: true }), h.side)
+        for (const [n, q] of pose) tracks.push(new THREE.QuaternionKeyframeTrack(`${n}.quaternion`, [0, 1], [...q.toArray(), ...q.toArray()]))
+      }
+      if (token !== this.token || this.player === null) return
+      this.player.stop()
+      this.player.play(new THREE.AnimationClip('Rest, fists closed', 1, tracks))
+      this.duration = 1
+    } catch (error) {
+      if (token === this.token) this.error = (error as Error).message
+    } finally {
+      if (token === this.token) this.loading = false
+    }
   }
 
   playLibrary (clip: LibraryClip): void {

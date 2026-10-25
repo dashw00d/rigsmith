@@ -5,6 +5,7 @@ import { api, fileUrl, type Garment } from './api.ts'
 import { app } from './app.svelte.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
 import { attachGarments } from '../engine/garments.ts'
+import { animator } from './animator.svelte.ts'
 import {
   applyOffset, attachProps, CATALOG, defaultPlacement, defaultScale, readOffset, type PropAttachment, type Socket,
 } from '../engine/props.ts'
@@ -14,7 +15,8 @@ export type GizmoMode = 'translate' | 'rotate' | 'scale'
 
 class Outfit {
   selected = $state<string | null>(null)
-  /** Garment being fitted (shown unbound, with the gizmo). */
+  /** Garment being fitted, with the gizmo: a rigid one on its bone (move it at any pose or frame), a clothing one shown
+   * unbound until it is bound again. */
   fitting = $state<string | null>(null)
   mode = $state<GizmoMode>('translate')
   busy = $state(false)
@@ -48,6 +50,8 @@ class Outfit {
       this.gizmo.setSize(0.8)
       this.gizmo.addEventListener('dragging-changed', (e) => {
         stage.controls.enabled = !(e as unknown as { value: boolean }).value
+        // (hold the frame while a piece is moved on a playing clip)
+        if ((e as unknown as { value: boolean }).value && animator.playing) animator.setPlaying(false)
         if (!(e as unknown as { value: boolean }).value) {
           if (this.fitting !== null) this.commitFit()
           else this.commitGizmo()

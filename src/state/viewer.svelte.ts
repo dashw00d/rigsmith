@@ -73,7 +73,7 @@ class Viewer {
     }
     this.syncEditor(character, step)
     void outfit.sync(step === 'outfit')
-    if (step !== 'animate' && step !== 'export' && animator.current !== null) animator.stop()
+    if (step !== 'animate' && step !== 'export' && step !== 'outfit' && animator.current !== null) animator.stop()
   }
 
   private editorToken = 0
