@@ -8,6 +8,7 @@
   import { BODY_TYPES, fitTemplate, loadTemplate } from '../../engine/templates.ts'
   import { api } from '../../state/api.ts'
   import SkeletonMapping from './SkeletonMapping.svelte'
+  import WeightPaintPanel from '../rig/WeightPaintPanel.svelte'
   import { markerBoard } from '../../state/markers.svelte.ts'
   import { jointOf, keysOf } from '../../engine/markers.ts'
   import Button from '../../ui/Button.svelte'
@@ -159,6 +160,7 @@
       <button class="bone-chip" onclick={() => viewer.character?.setHighlightBone(null)}>All</button>
     </div>
   </Section>
+  {#if character.kind === 'mesh'}<WeightPaintPanel {character} />{/if}
   <Section>
     <Button variant="ghost" block onclick={adjust}><Wrench size={14} /> Adjust joints and re-rig</Button>
   </Section>

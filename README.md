@@ -94,6 +94,11 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   the wrong ones and every joint follows live (as rigidly as it can, keeping the skeleton's shape), saved on letting
   go. A person's finger tips go on a view of each hand ("Place finger markers": from the back of the hand, along the
   fingers, cut to the hand; the other hand mirrored).
+- **Fix weights** (Rig; `src/engine/weightpaint.ts`, `src/state/paint.svelte.ts`, `server/weights.ts`): pause a test
+  clip on the frame that shows the problem and paint on the body as it stands. *Heal*: mark the problem skin, Heal
+  refills its weights smoothly from the good skin round it (skin pulled by a wrong bone goes with what surrounds it);
+  *Add*, *Remove*, *Smooth* a chosen bone by hand. Seams never part (their vertices are one point), four bones a vertex.
+  Save writes them into the rig and keeps them (`weight_edits.json`): every re-rig puts them back; Forget drops them.
 - **Test the rig** (Rig, Check deformation; `static/templates/tests.json`): library clips picked for how hard they
   work the joints, per body type (a person: arm stretching, jumping jacks, an air squat, a fist pump, grab and slam,
   thumbs up, counting, boxing, each with its fingers animated; a horse: its template's walk, run, rear, kick, eating,

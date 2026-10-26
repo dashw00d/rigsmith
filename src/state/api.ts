@@ -36,6 +36,8 @@ export const api = {
   characters: async () => await call<Character[]>('GET', '/api/characters'),
   upload: async (file: File) => await call<Character>('POST', `/api/characters?name=${encodeURIComponent(file.name)}`, file),
   update: async (id: string, patch: Partial<Character>) => await call<Character>('PATCH', `/api/characters/${id}`, patch),
+  saveWeights: async (id: string, edits: Array<{ mesh: number, vertex: number, weights: Array<[string, number]> }>) => await call<{ written: number, kept: number }>('PUT', `/api/characters/${id}/weights`, { edits }),
+  forgetWeights: async (id: string) => await call<{ ok: boolean }>('DELETE', `/api/characters/${id}/weights`),
   game: async () => await call<GameStatus>('GET', '/api/game'),
   putUnit: async (name: string, entry: UnitSpec | null) => await call<GameStatus>('PUT', `/api/game/units/${name}`, entry as unknown as object),
   exportUnits: async (units: string[]) => await call<Job>('POST', '/api/game/export', { units }),

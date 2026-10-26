@@ -13,6 +13,8 @@ function boneColor (index: number): THREE.Color {
   return new THREE.Color().setHSL((index * 0.618034) % 1, 0.78, 0.52)
 }
 
+const PAINT_TINT = new THREE.Color(0xff3df0)
+
 export class CharacterView {
   readonly root: THREE.Group
   readonly meshes: THREE.Mesh[] = []
@@ -147,9 +149,20 @@ export class CharacterView {
           if (w > 0) color.add(boneColor(skinIndex.getComponent(i, k)).multiplyScalar(w))
         }
       }
+      // (the weight painter's area, tinted over the weights)
+      const m = this.paintMasks.get(mesh)?.[i] ?? 0
+      if (m > 0) color.lerp(PAINT_TINT, 0.65 * m)
       colors.set([color.r, color.g, color.b], i * 3)
     }
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  }
+
+  /** The weight painter's area per mesh (0..1 per vertex), tinted in the Weights view. */
+  readonly paintMasks = new Map<THREE.Mesh, Float32Array>()
+
+  /** Weights changed (painted): the Weights view drawn again. */
+  refreshWeights (): void {
+    if (this.mode === 'weights') for (const mesh of this.meshes) this.writeWeightColors(mesh)
   }
 
   /** Bone lines overlay (for rigged characters), updated every frame. */

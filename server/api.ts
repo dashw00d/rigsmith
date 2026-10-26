@@ -10,6 +10,7 @@ import { optimizeSkin, torchPython } from './skinopt.ts'
 import { queryLibrary } from './library.ts'
 import { journal, note as note_, record } from './journal.ts'
 import { exportUnits, gameSlots, gameStatus, saveUnits, units, type UnitSpec } from './game.ts'
+import { dropWeightEdits, keepWeightEdits, weightEdits, writeWeights, type WeightEdit } from './weights.ts'
 import {
   type Character, characterDir, type Garment, type TextureImage, createCharacter, deleteCharacter, getCharacter, getSettings, listCharacters,
   ROOT, saveSettings, updateCharacter, type Vec3, WORKSPACE, writeJson,
@@ -131,6 +132,12 @@ async function runRig (id: string, update: Update): Promise<void> {
       r.warnings.push(`weights not pose-optimized: ${(error as Error).message.slice(0, 200)}`)
     }
     r.seconds = Math.round((Date.now() - started) / 100) / 10
+  }
+  // (the weights painted on it, put back: the source mesh, and its vertex order, are the same)
+  const painted = await weightEdits(id)
+  if (painted.length > 0) {
+    const n = await writeWeights(path.join(dir, 'rigged.glb'), painted)
+    r.warnings.push(`${n} painted vertices put back (Fix weights; Forget the painting to drop them)`)
   }
   await updateCharacter(id, c => {
     c.status = 'rigged'
@@ -259,6 +266,25 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/journal$/, async (req, res, [id
 // The game's side of a character (Rigsmith's units, server/game.ts): its unit and the clip names the game plays for it.
 route('GET', /^\/api\/characters\/([a-z0-9-]+)\/game$/, async (req, res, [id]) => {
   send(res, 200, await gameSlots(id))
+})
+
+// Painted weights (the Rig step's Fix weights): written into the rig and kept for the next re-rig; DELETE forgets them.
+route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/weights$/, async (req, res, [id]) => {
+  const character = await getCharacter(id)
+  if (character?.files.rigged === undefined || character.kind !== 'mesh') throw new HttpError(400, 'Only a Rigsmith rig can be painted')
+  const { edits } = await readJsonBody<{ edits?: WeightEdit[] }>(req)
+  if (!Array.isArray(edits) || edits.length === 0) throw new HttpError(400, 'No weights to write')
+  const written = await writeWeights(path.join(characterDir(id), character.files.rigged), edits)
+  const kept = await keepWeightEdits(id, edits)
+  await note_(id, by(req), `weights painted: ${written} vertices (${kept} kept for re-rigs)`)
+  const after = await updateCharacter(id, c => { c.revision = (c.revision ?? 0) + 1 })
+  events.emit('character', after)
+  send(res, 200, { written, kept })
+})
+route('DELETE', /^\/api\/characters\/([a-z0-9-]+)\/weights$/, async (req, res, [id]) => {
+  await dropWeightEdits(id)
+  await note_(id, by(req), 'painted weights forgotten (the next rig makes them afresh)')
+  send(res, 200, { ok: true })
 })
 
 // Rigsmith's game units: each with the game's own entry and whether they differ (what Export would write).
