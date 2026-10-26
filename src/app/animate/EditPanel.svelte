@@ -85,6 +85,7 @@
             <button class="iconbtn" onclick={() => clipEdit.selectProp(null)} aria-label="Let go of the prop"><X size={13} /></button>
           </div>
           <span use:tooltip={'Leads: the hands on it follow its path, and the body follows the hands. Off: it rides the hand carrying it, as the clip moves that hand.'}><Toggle label="Leads (the body follows it)" checked={clipEdit.paths[p.name]?.locked ?? false} onchange={(on: boolean) => clipEdit.setLocked(p.name, on)} /></span>
+          <span use:tooltip={'Off: moving or turning it with the gizmo keys its path at this frame. On: the move is put on every frame (the whole path moved and turned by it), to set where it is held through the whole clip.'}><Toggle label="Move every frame" checked={clipEdit.propMoves === 'every'} onchange={(on: boolean) => { clipEdit.propMoves = on ? 'every' : 'frame' }} /></span>
           {#if clipEdit.busy !== null}<p class="small busy">{clipEdit.busy}…</p>{/if}
           <p class="faint small">Move or turn it with the gizmo to key its path at this frame (that makes it lead). Switching Leads on, or putting a hand on a socket, fits the prop to the body once over the whole clip (it moves a little: the spear farther out); a hand on a socket sits on the shaft at the socket's spot, clear of the other hand.</p>
           {#if clipEdit.paths[p.name]?.locked && /^(Left|Right)Hand$/.test(p.bone)}

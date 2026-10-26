@@ -49,6 +49,8 @@ class ClipEdit {
   props = $derived((app.selected?.garments ?? []).filter(g => g.mode === 'rigid' && g.hidden !== true).map(g => ({ name: g.name, bone: g.bone, sockets: ((g.sockets ?? []) as Socket[]).filter(x => !x.name.endsWith('(carries it)')) })))
   /** The prop selected (clicked), or none. */
   prop = $state<string | null>(null)
+  /** What the gizmo on a prop moves: this frame only (a key on its path) or every frame (the whole path, by the move). */
+  propMoves = $state<'frame' | 'every'>('frame')
   /** Each prop's path: locked (it leads), and its keys. */
   paths = $state.raw<Record<string, PropPath>>({})
   /** The hands on sockets. */
@@ -215,7 +217,29 @@ class ClipEdit {
     }, 0, () => this.propNodes())
     this.editor.setMode(this.gizmo)
     this.editor.setSpace(this.space)
+    this.editor.setGripLock(b => this.gripHold(b))
   }
+
+  /** A hand on a socket (not the hand the prop rides): where its fist holds the prop and the prop's long axis there
+   * (world): its gizmo slides it along the prop and rolls it round it, and letting go moves its socket (every frame). */
+  private gripHold (bone: string): { at: THREE.Vector3, axis: THREE.Vector3 } | null {
+    const hand = /^(Left|Right)Hand$/.exec(bone)?.[1] as 'Left' | 'Right' | undefined
+    const a = hand === undefined ? undefined : this.attachments.find(x => x.hand === hand)
+    const p = a === undefined ? undefined : this.props.find(x => x.name === a.prop)
+    const view = animator.character; const b = view?.bones.get(bone)
+    if (hand === undefined || a === undefined || p === undefined || p.bone === bone || b === undefined) return null
+    const node = view?.root.getObjectByName(propNode(a.prop))
+    const local = this.axisCache.get(a.prop) ?? this.shaftLocal(a.prop)
+    const grip = this.gripOf(hand, a.prop)
+    if (node === undefined || local === null || grip === null) return null
+    this.axisCache.set(a.prop, local)
+    node.updateMatrixWorld(true)
+    const axis = local.to.clone().applyMatrix4(node.matrixWorld).sub(local.from.clone().applyMatrix4(node.matrixWorld)).normalize()
+    const at = grip.fist.clone().applyQuaternion(b.getWorldQuaternion(new THREE.Quaternion())).add(b.getWorldPosition(new THREE.Vector3()))
+    return { at, axis }
+  }
+  /** Each prop's long axis in its own node's frame (measured once: its mesh doesn't change while editing). */
+  private axisCache = new Map<string, { from: THREE.Vector3, to: THREE.Vector3, radius: number }>()
 
   /** The props on stage: by name, their placed nodes. */
   private propNodes (): Map<string, THREE.Object3D> {
@@ -662,6 +686,7 @@ class ClipEdit {
 
   /** A prop moved or turned by the gizmo, let go at `place` (world): a key on its path at the playhead (and it leads). */
   private commitProp (prop: string, place: THREE.Matrix4): void {
+    if (this.propMoves === 'every') { this.offsetProp(prop, place); return }
     const base = this.baseClip
     if (base === null) return
     const u = this.phase(); const t = u * base.duration
@@ -682,6 +707,30 @@ class ClipEdit {
     this.holdRoot(prop, u, before, after)
     // (moving a prop makes it lead)
     this.paths = { ...this.paths, [prop]: after }
+    this.show(t)
+  }
+
+  /** A prop moved or turned by its gizmo with "every frame" on, let go at `place`: its whole path moved and turned by
+   * that, on every frame (about the prop's own place there), and it leads. */
+  private offsetProp (prop: string, place: THREE.Matrix4): void {
+    const base = this.baseClip
+    if (base === null) return
+    const u = this.phase(); const t = u * base.duration
+    const was = this.rodeAt(prop, t)
+    if (was === null) return
+    const path = this.paths[prop] ?? { locked: true, keys: [] }
+    const now = onPath(was, path, u, this.loop)
+    const a = new THREE.Vector3(); const qa = new THREE.Quaternion(); const b = new THREE.Vector3(); const qb = new THREE.Quaternion(); const sc = new THREE.Vector3()
+    now.decompose(a, qa, sc); place.decompose(b, qb, sc)
+    const dp = b.sub(a); const dq = qb.multiply(qa.invert()).normalize()
+    // (no path yet: one key, which a path holds on every frame)
+    const ks: ClipKey[] = path.keys.length > 0 ? path.keys : [{ u: 0, q: [...IDENTITY] as ClipKey['q'], p: [0, 0, 0] }]
+    const moved = ks.map(k => ({
+      ...k,
+      q: dq.clone().multiply(new THREE.Quaternion(...k.q)).normalize().toArray().map(v => Math.round(v * 1e6) / 1e6) as ClipKey['q'],
+      p: new THREE.Vector3(...(k.p ?? [0, 0, 0])).add(dp).toArray().map(v => Math.round(v * 1e5) / 1e5) as ClipKey['p'],
+    }))
+    this.paths = { ...this.paths, [prop]: { locked: true, keys: moved } }
     this.show(t)
   }
 
@@ -891,6 +940,8 @@ class ClipEdit {
     if (view === null || base === null || root === null || this.base === null) return
     this.edited = buildEdit(base, this.keys, this.loop, restOf(view), root, this.rig, 0, this.limitsOn ? this.limits : null, this.propRig(), view.height, this.solver)
     animator.showClip(this.edited, { ...this.base, name: this.held ? 'New clip (editing)' : `${this.base.name} (editing)` }, time)
+    // (a hand just put on a prop, or let go of one: its gizmo locks to the prop, or is free again)
+    this.editor?.setGripLock(b => this.gripHold(b))
   }
 
   /** Save the edited clip into the library as a new one: a person's (a library clip) through the library's build, a

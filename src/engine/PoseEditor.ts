@@ -9,7 +9,7 @@ import * as THREE from 'three'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { CharacterView } from './CharacterView.ts'
 import type { JointLimits } from './limits.ts'
-import { keepOffFloor, moveHips, plantedFeet, reach, type Leg, type Limb } from './ik.ts'
+import { keepOffFloor, moveHips, plantedFeet, reach, setWorldQuaternion, type Leg, type Limb } from './ik.ts'
 import type { Stage } from './Stage.ts'
 
 /** How a body is posed: its hips, the limbs a dragged end reaches with, the legs that stand. Names as the rig has them. */
@@ -91,6 +91,11 @@ export class PoseEditor {
   private readonly props: () => Map<string, THREE.Object3D>
   /** The prop selected (the gizmo on it), or none. */
   private prop: string | null = null
+  /** A joint held on a prop (a hand on a socket): where it holds it (world) and the prop's long axis there; the gizmo
+   * then only slides it along that axis and rolls it round it. Given by the caller; null: no joint is. */
+  private gripLock: ((bone: string) => { at: THREE.Vector3, axis: THREE.Vector3 } | null) | null = null
+  /** A locked drag: where it began (the hold, the axis, the joint's place and turn, the gizmo's). */
+  private lockStart: { at: THREE.Vector3, axis: THREE.Vector3, wrist: THREE.Vector3, turn: THREE.Quaternion, proxyAt: THREE.Vector3, proxyTurn: THREE.Quaternion } | null = null
 
   constructor (stage: Stage, view: CharacterView, rig: PoseRig, limits: JointLimits | null, events: Partial<PoseEditorEvents>, floor = 0, props: () => Map<string, THREE.Object3D> = () => new Map()) {
     this.stage = stage; this.view = view; this.rig = rig; this.limits = limits; this.events = events; this.floor = floor; this.props = props
@@ -138,6 +143,10 @@ export class PoseEditor {
         this.allowed = this.sunk()
         this.gizmoFeet = plantedFeet(this.legs)
         this.gizmoMoved = new Set(this.selected !== null && this.mode === 'rotate' ? [this.selected] : [])
+        // (a joint held on a prop: the drag slides or rolls it from here)
+        const lock = this.selected === null || this.prop !== null ? null : this.gripLock?.(this.selected) ?? null
+        const held = this.selected === null ? undefined : this.view.bones.get(this.selected)
+        this.lockStart = lock === null || held === undefined ? null : { ...lock, wrist: held.getWorldPosition(new THREE.Vector3()), turn: held.getWorldQuaternion(new THREE.Quaternion()), proxyAt: this.proxy.position.clone(), proxyTurn: this.proxy.quaternion.clone() }
         this.events.begin?.()
         return
       }
@@ -148,6 +157,7 @@ export class PoseEditor {
       if (!this.gizmoDragging) return
       if (this.prop !== null) { this.proxy.updateMatrixWorld(true); this.events.moveProp?.(this.prop, this.proxy.matrixWorld.clone(), false); return }
       if (this.selected === null) return
+      if (this.lockStart !== null) { this.moveHeld(this.selected, this.lockStart); return }
       if (this.mode === 'move') { this.moveJoint(this.selected, this.proxy.position.clone(), this.gizmoFeet, this.gizmoMoved); return }
       const b = bone(this.selected)
       if (b !== null && this.limits !== null && this.limits.has(b.name)) b.quaternion.copy(this.limits.clamp(b.name, b.quaternion))
@@ -200,6 +210,35 @@ export class PoseEditor {
 
   get selectedProp (): string | null { return this.prop }
 
+  /** Which joints are held on a prop (see gripLock): their gizmo slides them along the prop and rolls them round it. */
+  setGripLock (lock: ((bone: string) => { at: THREE.Vector3, axis: THREE.Vector3 } | null) | null): void { this.gripLock = lock; this.attachGizmo() }
+
+  /** A held joint dragged by its locked gizmo: slid along the prop's axis (moved), or rolled round it about where it holds
+   * (turned: the roll only, whatever handle turned the gizmo); its limb reaches after it. */
+  private moveHeld (name: string, from: NonNullable<PoseEditor['lockStart']>): void {
+    const l = this.rig.limbs[name]; const end = this.view.bones.get(name)
+    if (l === undefined || end === undefined) return
+    const limb: Limb = { upper: this.view.bones.get(l.upper)!, lower: this.view.bones.get(l.lower)!, end: this.view.bones.get(l.end)! }
+    const opts = { limits: this.limits ?? undefined, nameOf: this.nameOf }
+    if (this.mode === 'move') {
+      const d = this.proxy.position.clone().sub(from.proxyAt).dot(from.axis)
+      this.proxy.position.copy(from.proxyAt).addScaledVector(from.axis, d)
+      reach(limb, from.wrist.clone().addScaledVector(from.axis, d), { ...opts, keepEnd: true })
+      setWorldQuaternion(end, from.turn)
+    } else {
+      // (the gizmo's turn since the drag began, its roll round the axis only)
+      const delta = this.proxy.quaternion.clone().multiply(from.proxyTurn.clone().invert())
+      const angle = 2 * Math.atan2(delta.x * from.axis.x + delta.y * from.axis.y + delta.z * from.axis.z, delta.w)
+      const roll = new THREE.Quaternion().setFromAxisAngle(from.axis, angle)
+      this.proxy.quaternion.copy(roll.clone().multiply(from.proxyTurn))
+      reach(limb, from.wrist.clone().sub(from.at).applyQuaternion(roll).add(from.at), { ...opts, keepEnd: false })
+      setWorldQuaternion(end, roll.clone().multiply(from.turn))
+    }
+    end.updateMatrixWorld(true)
+    for (const b of [limb.upper, limb.lower, limb.end]) this.gizmoMoved.add(b.name)
+    this.events.constrain?.(name)
+  }
+
   /** Move the joint (the limb follows) or turn its bone; turn about the bone's own axes or the world's. */
   setMode (mode: 'move' | 'rotate'): void { this.mode = mode; this.attachGizmo() }
   setSpace (space: 'local' | 'world'): void { this.space = space; this.attachGizmo() }
@@ -226,6 +265,17 @@ export class PoseEditor {
     }
     const b = this.selected === null ? undefined : this.view.bones.get(this.selected)
     if (b === undefined) { this.gizmo.detach(); return }
+    // (a joint held on a prop: the gizmo where it holds it, its X along the prop: slide along it, or roll round it)
+    const lock = this.gripLock?.(b.name) ?? null
+    const gz = this.gizmo as unknown as { showX: boolean, showY: boolean, showZ: boolean }
+    gz.showX = true; gz.showY = lock === null; gz.showZ = lock === null
+    if (lock !== null) {
+      this.placeOnLock(lock)
+      this.gizmo.setMode(this.mode === 'move' ? 'translate' : 'rotate')
+      this.gizmo.setSpace('local')
+      this.gizmo.attach(this.proxy)
+      return
+    }
     if (this.mode === 'move') {
       b.getWorldPosition(this.proxy.position)
       this.proxy.updateMatrixWorld(true)
@@ -241,10 +291,19 @@ export class PoseEditor {
 
   get selection (): string | null { return this.selected }
 
+  /** The gizmo's proxy where a held joint holds, its X along the prop. */
+  private placeOnLock (lock: { at: THREE.Vector3, axis: THREE.Vector3 }): void {
+    this.proxy.position.copy(lock.at)
+    this.proxy.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), lock.axis.clone().normalize())
+    this.proxy.updateMatrixWorld(true)
+  }
+
   /** The handles follow the bones (each frame), and the move gizmo its joint (but while it's dragged). */
   private place (): void {
     const v = new THREE.Vector3()
+    const lock = this.selected === null || this.prop !== null || this.gizmoDragging ? null : this.gripLock?.(this.selected) ?? null
     if (this.prop !== null && !this.gizmoDragging) this.proxyOnProp()
+    else if (lock !== null) this.placeOnLock(lock)
     else if (this.mode === 'move' && !this.gizmoDragging && this.selected !== null) {
       this.view.bones.get(this.selected)?.getWorldPosition(this.proxy.position)
       this.proxy.updateMatrixWorld(true)
