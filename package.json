@@ -12,6 +12,8 @@
     "test:watch": "vitest",
     "test:godot": "godot --headless --script tests/godot/check_export.gd --",
     "library": "python3 blender/library/build.py all && python3 tools/library_audit.py --quiet",
+    "library:sync": "python3 blender/library/catalog.py sync && npm run library && npm run library:verify",
+    "library:verify": "python3 blender/library/catalog.py verify",
     "library:audit": "python3 tools/library_audit.py",
     "lint": "eslint .",
     "volume": ".venv/bin/python tools/volume/build.py",

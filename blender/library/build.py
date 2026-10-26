@@ -15,13 +15,14 @@ import glob
 import hashlib
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
-OUT = os.path.join(REPO, "workspace", "library")
+OUT = os.path.join(os.environ.get("RIGSMITH_WORKSPACE", os.path.join(REPO, "workspace")), "library")
 BLENDER = os.environ.get("BLENDER", "/snap/bin/blender")
 DL = os.path.expanduser("~/Downloads")
 
@@ -69,16 +70,18 @@ def sha256_file(path, cache):
 
 
 def enumerate_sources(selected=None):
+    import catalog
     items = []
-    for p in sorted(glob.glob(os.path.join(DL, "Mixamo", "animation", "*.fbx"))):
+    include_legacy = catalog.read_index(OUT) is None or bool(selected and selected & {"mixamo", "mixamo-pack", "mixamo-pack-extra"})
+    for p in sorted(glob.glob(os.path.join(DL, "Mixamo", "animation", "*.fbx"))) if include_legacy else []:
         items.append({"kind": "clip", "source": "mixamo-pack", "sourcePath": p,
                       "sourceName": os.path.basename(p)[:-4], "name": None, "tags": []})
-    for fn, nm in (("a-pose.fbx", "A-Pose"), ("da-pose.fbx", "DA-Pose")):
+    for fn, nm in (("a-pose.fbx", "A-Pose"), ("da-pose.fbx", "DA-Pose")) if include_legacy else []:
         p = os.path.join(DL, "Mixamo", "animation_extra", fn)
         if os.path.exists(p):
             items.append({"kind": "clip", "source": "mixamo-pack-extra", "sourcePath": p,
                           "sourceName": fn[:-4], "name": nm, "tags": []})
-    for p in sorted(glob.glob(os.path.join(DL, "mixamo", "*.fbx"))):
+    for p in sorted(glob.glob(os.path.join(DL, "mixamo", "*.fbx"))) if include_legacy else []:
         fn = os.path.basename(p)
         if fn in NAMED_EXCLUDE:
             continue
@@ -88,8 +91,6 @@ def enumerate_sources(selected=None):
     if os.path.exists(MANNEQUIN_SRC):
         items.append({"kind": "mannequin", "source": "mixamo-character", "sourcePath": MANNEQUIN_SRC,
                       "sourceName": "Y_Bot", "name": "Y Bot", "tags": []})
-    if selected:
-        items = [i for i in items if i["source"] in selected or (i["kind"] == "mannequin" and "mannequin" in selected)]
     cache_path = os.path.join(OUT, "work", "hashcache.json")
     try:
         cache = json.load(open(cache_path))
@@ -98,8 +99,17 @@ def enumerate_sources(selected=None):
     for it in items:
         it["sha256"] = sha256_file(it["sourcePath"], cache)
         it["id"] = it["sha256"][:12]
+    items += catalog.jobs(OUT)
+    # Downloads may be moved/deleted after conversion. Keep those cached clips and their IDs;
+    # a rebuild or a --sources subset must never silently remove them from the library.
+    saved_path = os.path.join(OUT, "work", "sources.json")
+    saved = json.loads(Path(saved_path).read_text()) if os.path.exists(saved_path) else []
+    items = list({i["id"]: i for i in saved + items}.values())
+    if selected:
+        items = [i for i in items if i["source"] in selected or (i["kind"] == "mannequin" and "mannequin" in selected)]
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-    json.dump(cache, open(cache_path, "w"))
+    with open(cache_path, "w") as fh:
+        json.dump(cache, fh)
     return items
 
 
@@ -148,7 +158,7 @@ def run_shards(jobs, procs):
             if os.path.exists(cur):
                 os.remove(cur)
             logf = open(os.path.join(work, f"shard-{i}.log"), "a")
-            cmd = [BLENDER, "-b", "--factory-startup", "--python", os.path.join(HERE, "convert.py"), "--",
+            cmd = [BLENDER, "-b", "--threads", "1", "--factory-startup", "--python", os.path.join(HERE, "convert.py"), "--",
                    "--jobs", jf, "--out", OUT, "--shard", str(i)]
             running[i] = (subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT), logf)
         total = sum(len(s) for s in pending.values())
@@ -197,7 +207,11 @@ def cmd_convert(args):
     for it in items:
         if it["id"] in ids:
             log(f"duplicate source bytes: {it['sourcePath']} == {ids[it['id']]['sourcePath']}")
+        ids[it["id"]] = it
     todo = [i for i in items if not is_done(i, version)]
+    missing = [i["sourcePath"] for i in todo if not os.path.isfile(i["sourcePath"])]
+    if missing:
+        raise FileNotFoundError(f"{len(missing)} uncached source files are missing: {missing[:5]}")
     log(f"{len(items)} sources, {len(todo)} to convert (converter v{version})")
     fdir = os.path.join(OUT, "failures")
     os.makedirs(fdir, exist_ok=True)
@@ -220,7 +234,14 @@ def cmd_convert(args):
         stats["finishedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         json.dump(stats, open(os.path.join(OUT, "work", "last-convert.json"), "w"), indent=1)
     log(f"convert done in {dt:.1f}s: {stats}")
-    json.dump(items, open(os.path.join(OUT, "work", "sources.json"), "w"), indent=1)
+    sources_path = os.path.join(OUT, "work", "sources.json")
+    previous = json.load(open(sources_path)) if os.path.exists(sources_path) else []
+    sources = list({i["id"]: i for i in previous + items}.values())
+    with open(sources_path + ".tmp", "w") as fh:
+        json.dump(sources, fh, indent=1)
+    os.replace(sources_path + ".tmp", sources_path)
+    if failures:
+        raise RuntimeError(f"{len(failures)} conversions failed; see {OUT}/failures.json")
     return items
 
 
@@ -229,7 +250,7 @@ def main():
     ap.add_argument("cmd", choices=["convert", "aggregate", "all"])
     ap.add_argument("--procs", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0, help="only the first N pack clips (testing)")
-    ap.add_argument("--sources", default="", help="comma list: mixamo,mixamo-pack,mixamo-pack-extra,mannequin")
+    ap.add_argument("--sources", default="", help="comma list: mixamo-catalog,mixamo,mixamo-pack,mixamo-pack-extra,mannequin")
     ap.add_argument("--names", default=os.environ.get("RIGSMITH_ANIMATION_NAMES", os.path.join(DL, "Mixamo", "animation-names.json")),
                     help="names file for the hashed pack clips ('' = provisional names)")
     args = ap.parse_args()

@@ -40,7 +40,7 @@ function directions (root: THREE.Object3D, rest: RestSkeleton): Map<string, THRE
 }
 
 describe.skipIf(!have)('retarget onto the Y Bot mannequin', () => {
-  const clips = ['c5dd9d93edee', '594aa124446c', '4358b1d9096c', '086915e942aa'] // Walking, Dying, Draw Arrow, a combat clip
+  const clips = ['mixamo-Walking_19', 'mixamo-Dying', 'mixamo-Standing_Draw_Arrow', 'mixamo-Jumping_Down_8'] // Walking, Dying, Draw Arrow, a combat clip
 
   for (const id of clips) {
     it(`bone directions follow the source (${id})`, async () => {

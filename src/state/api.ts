@@ -1,12 +1,13 @@
 // Typed client for the local server (server/api.ts).
 import type { AnimationEntry, Character, Garment, Settings, TextureImage, Vec3 } from '../../server/workspace.ts'
 import type { Job } from '../../server/jobs.ts'
-import type { Clip } from '../../server/library.ts'
+import type { CatalogStatus, Clip } from '../../server/library.ts'
 
 export type { AnimationEntry, Character, Clip, Garment, Job, Settings, TextureImage, Vec3 }
 
 export interface LibraryClip extends Clip { url: string }
 export interface LibraryPage {
+  catalog: CatalogStatus | null
   total: number
   page: number
   pages: number

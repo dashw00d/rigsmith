@@ -20,7 +20,7 @@ AI repainting and Godot 4.x for the export check. All data lives in `workspace/`
 | Rig | Humanoids: joints are detected automatically (Mixamo-style markers you can drag, mirrored), then weights are computed in Blender (~5 s). Choose 25/33/41/65 bones. Creatures: pick a body type (horse, fox, bird, dragon, kaiju, spider, snake, fish); the template fits to the model. Already-rigged imports keep their weights; non-Mixamo skeletons are mapped onto Mixamo (auto, editable, savable as presets). **Auto-rig all** does a whole batch. |
 | Outfit | Props from the catalog (swords, shields, bows, tools, guns) pinned to sockets with a gizmo. Your own meshes: rigid pieces on a bone, or clothing skinned to the body with a policy (body, upper, lower, cape, skirt, head) so weights never bleed from the wrong bones, plus optional hide-body-underneath. |
 | Texture | Fill the magenta holes AI texture generators leave (filled from nearby paint in 3D, seam-aware). Projection painting: mask an area with the smart brush or region wand (edge-aware), capture the view, let Codex paint `result.png`, preview it projected onto the UVs, keep it. |
-| Animate | One library: your Mixamo clips, the 2,453-clip pack (deduplicated), bundled work/combat clips and creature clips. Categories, search, 24 per page, every card previewing the clip on *your* character. Build a per-character set (names, loop, in-place, speed) and copy it to other characters. |
+| Animate | The complete named Mixamo collection (2,317 motions + 129 poses), bundled work/combat clips and creature clips. Search names, filenames and descriptions; numbered variants stay distinct. Every card previews the clip on *your* character. Build a per-character set (names, loop, in-place, speed) and copy it to other characters. |
 | Export | GLB for Godot: bone names (`Hips` or `mixamorig:Hips`), texture size and format, `-loop` suffix for looping clips, props as bone attachments. Writes into your export folder (e.g. inside the Godot project). |
 
 ## Layout
@@ -67,6 +67,28 @@ node tools/dev/script_parity.ts <models dir> <unit> <character> <clip ...>   # t
   with a warning.
 - `game_import` fills in what a character lacks from the unit's last build (its record in the game's
   `assets/textures/models/<unit>/<unit>.json`) and touches nothing already there; `--replace` puts it back as built.
+
+## Named animation library
+
+```bash
+npm run library:sync    # download, checksum-verify and convert all 2,446 named FBXs
+npm run library         # rebuild from local sources/cache, no download
+npm run library:verify  # verify every source hash, converted name, skeleton, FPS and frame count
+node tools/library_verify.ts # load and retarget every named clip on Y Bot and a local character
+```
+
+Sources come from [Linzhan/Mixamo-Animations-Characters](https://huggingface.co/datasets/Linzhan/Mixamo-Animations-Characters),
+pinned to revision `7f134bc734557b1d9516cb476d25ea1f577e45c1`. The full `animation/` folder includes static
+poses. Downloads resume and use the publisher's SHA-256 hashes. Files live under
+`workspace/library/sources/mixamo-named/animation/`; converted files use readable names such as
+`workspace/library/clips/mixamo-Jab_Cross_2.glb`. `metadata.csv` and `index.json` preserve the original
+Mixamo names, descriptions and motion IDs. The app reports completeness against that inventory;
+`catalog-verification.json` records the full integrity check. Some publisher CSV frame counts are stale;
+playback uses the actual FBX timing, and the report records those differences. The FBXs retain their source terms.
+
+The original hashed pack is not a reliable filename-to-name index for this collection. Saved sets
+must be checked and migrated before retiring it. Rebuilding keeps cached clips even if their old
+Downloads folder is gone, and retains recovered names when the separate names file is unavailable.
 
 ### Rig quality vs Mixamo
 

@@ -459,6 +459,8 @@ def find_duplicates(out, pack):
 
 def match_named(named, pack_canon):
     """Named clip -> pack clip with the same motion (different rest skeleton, fps may differ)."""
+    if not pack_canon:
+        return {n["id"]: {"matched": False} for n in named}
     D = np.array([m["signature"]["dirs"] for m in pack_canon])
     T = np.array([m["signature"]["traj"] for m in pack_canon])
     dur = np.array([m["features"]["duration"] for m in pack_canon])
@@ -548,7 +550,7 @@ MANIFEST_FEATURES = [
 # --------------------------------------------------------------------------- names file
 
 DEFAULT_NAMES = os.path.expanduser("~/Downloads/Mixamo/animation-names.json")
-NAME_CONFIDENCE = {"source": 0.95, "matched": 0.9, "motion-match": 0.9, "motion-candidate": 0.75}
+NAME_CONFIDENCE = {"catalog": 1.0, "source": 0.95, "matched": 0.9, "motion-match": 0.9, "motion-candidate": 0.75}
 
 
 def load_names(path):
@@ -603,7 +605,10 @@ def variant_labels(es):
 
 
 def run(out, names_path=DEFAULT_NAMES):
+    import catalog
     t0 = time.time()
+    previous_path = os.path.join(out, "manifest.json")
+    previous = {c["id"]: c for c in json.load(open(previous_path))["clips"]} if os.path.exists(previous_path) else {}
     meta_dir = os.path.join(out, "meta")
     paths = sorted(os.path.join(meta_dir, f) for f in os.listdir(meta_dir) if f.endswith(".json"))
     metas = [json.load(open(p)) for p in paths]
@@ -615,6 +620,13 @@ def run(out, names_path=DEFAULT_NAMES):
         metas = [json.load(open(p)) for p in paths]
     mannequin = next((m for m in metas if m.get("kind") == "mannequin"), None)
     clips = [m for m in metas if m.get("kind") == "clip"]
+    catalog_jobs = {j["id"]: j for j in catalog.jobs(out)}
+    for m in clips:
+        if m["source"] == catalog.SOURCE:
+            job = catalog_jobs[m["id"]]
+            if m["sha256"] != job["sha256"]:
+                raise ValueError(f"Catalog source checksum changed for {m['id']}; reconvert first")
+            m.update(job)
     sources = json.load(open(os.path.join(out, "work", "sources.json"))) if os.path.exists(
         os.path.join(out, "work", "sources.json")) else []
     live = {s["id"] for s in sources}
@@ -631,7 +643,7 @@ def run(out, names_path=DEFAULT_NAMES):
     if names_info:
         print(f"names: {len(names)} records from {names_path}", flush=True)
     else:
-        print(f"names: no names file at {names_path!r}; hashed clips get provisional names", flush=True)
+        print(f"names: no names file at {names_path!r}; retaining cached names where available", flush=True)
 
     # names / categories
     entries = {}
@@ -645,10 +657,23 @@ def run(out, names_path=DEFAULT_NAMES):
         e = {"id": m["id"], "sourceName": m["sourceName"], "source": m["source"], "sourcePath": m["sourcePath"],
              "file": m["file"], "fps": m["fps"], "frames": m["frames"], "duration": f["duration"],
              "duplicateOf": None}
+        for key in ("description", "originalName"):
+            if m.get(key):
+                e[key] = m[key]
         rec = names.get(m["sourceName"]) if m["source"] == "mixamo-pack" else None
         r_name, r_src, r_desc, r_cands = name_from_record(rec) if rec else (None, None, None, [])
         name_src = None
-        if m.get("name"):
+        if m["source"] == catalog.SOURCE:
+            e["name"], name_src = m["name"], "catalog"
+            for key in ("description", "originalName", "motionId", "sourceRevision", "catalogFrames"):
+                e[key] = m[key]
+        elif not rec and m["id"] in previous:
+            old = previous[m["id"]]
+            e["name"], name_src = old["name"], old["nameSource"]
+            for key in ("description", "candidates", "motionId", "matchRmsDeg", "matchedFrom"):
+                if key in old:
+                    e[key] = old[key]
+        elif m.get("name"):
             e["name"], name_src = m["name"], "source"
         elif m["id"] in recovered:  # the user's own name wins over the names file
             e["name"], name_src = recovered[m["id"]]["name"], "matched"
@@ -663,9 +688,10 @@ def run(out, names_path=DEFAULT_NAMES):
             e["motionId"] = rec.get("mixamo_motion_id")
             e["matchRmsDeg"] = rec.get("rotation_rms_degrees")
         kc = keyword_category(e.get("name"), e.get("description")) if name_src else None
-        if kc != "pose" and m["frames"] <= 10:
+        classification_frames = max(11, m["frames"]) if m.get("catalogFrames", 0) > 2 else m["frames"]
+        if kc != "pose" and classification_frames <= 10:
             kc = None  # a single held frame is a pose whatever it is called
-        fc, fconf, scores = classify(f, m["frames"])
+        fc, fconf, scores = classify(f, classification_frames)
         if kc:
             e["category"], e["confidence"], e["categorySource"] = kc, NAME_CONFIDENCE[name_src], "name"
         else:
@@ -684,6 +710,8 @@ def run(out, names_path=DEFAULT_NAMES):
         e["features"]["categoryScores"] = {k: round(v, 3) for k, v in top}
         entries[m["id"]] = e
 
+    catalog_status = catalog.coverage(out, list(entries.values()))
+
     # duplicates: pack-internal (share canonical's name/category) and named -> pack match
     for d, c in dup.items():
         entries[d]["duplicateOf"] = c
@@ -692,7 +720,7 @@ def run(out, names_path=DEFAULT_NAMES):
             entries[d]["duplicateNote"] = f"same motion exported facing {abs(turned):.0f}° away"
     for n in named:
         mt = matches[n["id"]]
-        if mt["matched"]:
+        if mt["matched"] and not (catalog_status and catalog_status["complete"]):
             entries[n["id"]]["duplicateOf"] = mt["best"]
             entries[n["id"]]["matchDistanceDeg"] = mt["dist"]
             if mt.get("trajDiff", 0) > 0.05:
@@ -777,7 +805,7 @@ def run(out, names_path=DEFAULT_NAMES):
     order = ["id", "name", "description", "variant", "sourceName", "source", "sourcePath", "file", "bytes", "fps",
              "frames", "duration", "category", "confidence", "tags", "loop", "inPlace", "rest", "duplicateOf",
              "nameSource", "candidates", "motionId", "matchRmsDeg", "categorySource", "featureCategory", "matchedFrom",
-             "matchDistanceDeg", "duplicateNote", "features"]
+             "matchDistanceDeg", "duplicateNote", "features", "originalName", "sourceRevision", "catalogFrames"]
     clip_list = sorted(entries.values(), key=lambda e: (CAT_ORDER[e["category"]], e["name"].lower(),
                                                         (e.get("description") or "").lower(), e["id"]))
     clip_list = [{k: e[k] for k in order if k in e} for e in clip_list]
@@ -794,6 +822,7 @@ def run(out, names_path=DEFAULT_NAMES):
                       "meshes": mannequin["meshes"], "rest": "ybot"} if mannequin else None,
         "categories": [{"id": c, "label": l, "count": cat_counts.get(c, 0)} for c, l in CATEGORIES],
         "clips": clip_list,
+        "catalog": catalog_status,
     }
     with open(os.path.join(out, "manifest.json.tmp"), "w") as fh:
         json.dump(manifest, fh, separators=(",", ":"))
@@ -846,19 +875,22 @@ Generated {manifest['generatedAt']} by `blender/library/build.py`. Do not edit b
 
 ```sh
 python3 blender/library/build.py all                # convert (resumable, 8 Blender procs) + aggregate (= npm run library)
+npm run library:sync                               # fetch and verify the complete named catalog first
+npm run library:verify                             # check publisher hashes, frames, names and skeletons
 python3 blender/library/build.py aggregate          # re-classify / re-name / manifest only (no Blender, seconds)
 python3 blender/library/build.py aggregate --names other-names.json   # another names file ('' = none)
 python3 blender/library/verify/run_verify.py --all-named --random 6   # fidelity check (Blender + three.js)
 ```
 
 Conversion skips sources whose `meta/<id>.json` has the same source sha256 + converter version;
-failures go to `failures.json` and do not stop the batch. Bump `CONVERTER_VERSION` in
+failures go to `failures.json`; the batch finishes but returns an error if any clip failed. Bump `CONVERTER_VERSION` in
 `convert.py` to force a rebuild; bump `FEATURES_VERSION` in `features.py` to recompute features
 from `cache/` without Blender.
 
 ## Contents
 
-- `clips/<id>.glb` - {st['clips']} bones-only clips (`<id>` = first 12 hex of sha256 of the source FBX).
+- `clips/<id>.glb` - {st['clips']} bones-only clips. Catalog IDs are readable `mixamo-<source filename>`;
+  older imports use the first 12 hex of the source SHA-256.
   glTF space (Y-up, meters, character faces +Z). Node 0 `Armature` (identity), nodes 1..65 the 65
   canonical Mixamo bones (bare names, fixed order) with the source's rest pose as node TRS, plus a
   mesh-less skin so three.js creates `Bone`s. One animation named after the clip; every source frame
@@ -896,6 +928,9 @@ Last conversion: {conv.get('converted', '?')} converted, {conv.get('failed', '?'
   Fishing Cast), so the mannequin is built from `~/Downloads/Mixamo/character/Y_Bot.fbx`
   (Linzhan/Mixamo-Animations-Characters, see `ybot-source.json`), whose skeleton matches the named clips.
 - Pack clips are 60 fps (named clips 30 fps); `duration` = (frames-1)/fps = GLB clip length.
+- **Catalog.** `sources/mixamo-named/index.json` pins the complete publisher inventory and SHA-256
+  hashes. All catalog clips retain distinct numbered filenames, descriptions, original names and
+  motion IDs (`nameSource: "catalog"`). Catalog entries are never hidden by motion deduplication.
 - **Names.** The user's own clips keep their file names (`nameSource: "source"`); pack clips whose
   motion matches one of them (segment-direction signature, same duration) take that name too
   (`"matched"`, {st['packNamedByMatch']} pack clips; the named entry gets `duplicateOf` = that pack clip).
@@ -903,8 +938,9 @@ Last conversion: {conv.get('converted', '?')} converted, {conv.get('failed', '?'
   ({(st['names'] or {}).get('path', 'none found')}; `--names` / `RIGSMITH_ANIMATION_NAMES`): Mixamo
   `name` + `description` (`"motion-match"`, rotation RMS <= 5 deg with a margin), or for uncertain
   matches the closest name with up to 3 near-equal `candidates` kept for search (`"motion-candidate"`).
-  `motionId` / `matchRmsDeg` come from that file. Without the file, pack clips get provisional names
-  "Category · key features · duration" (`"provisional"`). `sourceName` is always the pack file hash.
+  `motionId` / `matchRmsDeg` come from that file. Without the file, cached names are retained;
+  previously unnamed pack clips get provisional names
+  "Category · key features · duration" (`"provisional"`). `sourceName` is the original filename stem.
   Distinct clips sharing name + description ({st['sameNameVariants']} clips) get a short `variant`
   label (root turn, in place, loop, duration or "variant k").
 - **Categories** come from keyword rules on name + description (`categorySource: "name"`, confidence

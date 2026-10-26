@@ -548,7 +548,8 @@ def main():
             fh.write(job["id"])
         try:
             res = convert_mannequin(job, out_dir) if job["kind"] == "mannequin" else convert_clip(job, out_dir)
-            meta = {k2: job[k2] for k2 in ("id", "sha256", "kind", "source", "sourcePath", "sourceName", "name", "tags")
+            meta = {k2: job[k2] for k2 in ("id", "sha256", "kind", "source", "sourcePath", "sourceName", "name", "tags",
+                                         "description", "originalName", "motionId", "catalogFrames", "sourceRevision")
                     if k2 in job}
             meta.update({"converterVersion": CONVERTER_VERSION, "convertedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
             meta.update(res)

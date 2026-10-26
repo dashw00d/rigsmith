@@ -26,6 +26,8 @@ beforeAll(async () => {
     clip('f', 'Breathing Idle', { category: 'idle', nameSource: 'matched' }),
     clip('h', 'Guitar Playing', { category: 'work', description: 'Playing A Guitar' }),
     clip('g', 'Walking', { description: 'Walking With A Briefcase', duplicateOf: 'a' }),
+    clip('mixamo-Jab_Cross', 'Jab Cross', { source: 'mixamo-catalog', nameSource: 'catalog', sourceName: 'Jab_Cross', originalName: 'Jab Cross', description: 'Short Jab Cross' }),
+    clip('mixamo-Jab_Cross_2', 'Jab Cross 2', { source: 'mixamo-catalog', nameSource: 'catalog', sourceName: 'Jab_Cross_2', originalName: 'Jab Cross', description: 'Boxing Jab Cross Long' }),
   ]
   writeFileSync(path.join(dir, 'library', 'manifest.json'), JSON.stringify({ version: 1, skeleton: 'mixamo', categories: [], clips }))
   process.env.RIGSMITH_WORKSPACE = dir // read when workspace.ts is first imported
@@ -49,5 +51,12 @@ describe('queryLibrary', () => {
 
   it('hides duplicates and sorts own clips first, then by name and description', async () => {
     expect(await ids('')).toEqual(['f', 'c', 'h', 'e', 'd', 'b', 'a'])
+  })
+
+  it('keeps numbered catalog variants and searches source filenames and descriptions', async () => {
+    const query = async (query: string) => (await queryLibrary({ query, source: 'mixamo-catalog', page: 0, pageSize: 24 })).clips
+    expect((await query('jab cross')).map(c => c.name)).toEqual(['Jab Cross', 'Jab Cross 2'])
+    expect((await query('Jab_Cross_2.fbx')).map(c => c.id)).toEqual(['mixamo-Jab_Cross_2'])
+    expect((await query('boxing long')).map(c => c.id)).toEqual(['mixamo-Jab_Cross_2'])
   })
 })

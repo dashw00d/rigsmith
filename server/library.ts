@@ -11,10 +11,13 @@ export interface Clip {
   /** Short label telling apart distinct clips with the same name + description ("turns 90° left"). */
   variant?: string
   sourceName?: string
+  originalName?: string
+  motionId?: string
   /**
    * Where the name came from: 'source' (the user's file name), 'matched' (pack clip matching one of
    * those), 'motion-match' (names file, confident), 'motion-candidate' (names file, closest of
-   * several near-equal `candidates`), 'provisional' (generated from motion features), 'bundled'.
+   * several near-equal `candidates`), 'catalog' (publisher metadata for that exact source FBX),
+   * 'provisional' (generated from motion features), 'bundled'.
    */
   nameSource?: string
   /** Where the motion contradicts the name (tools/library_audit.py): "walks?" a walk that doesn't step, "standing?" a
@@ -44,6 +47,17 @@ interface Manifest {
   skeleton: string
   categories: Array<{ id: string, label: string, count: number }>
   clips: Clip[]
+  catalog?: CatalogStatus | null
+}
+
+export interface CatalogStatus {
+  repository: string
+  revision: string
+  complete: boolean
+  count: number
+  converted: number
+  motionCount: number
+  poseCount: number
 }
 
 let cache: { mtime: number, manifest: Manifest } | null = null
@@ -54,7 +68,9 @@ const haystacks = new WeakMap<Clip, { names: string, all: string }>()
 function haystack (c: Clip): { names: string, all: string } {
   let text = haystacks.get(c)
   if (text === undefined) {
-    const names = [c.name, c.description, c.variant, ...(c.candidates ?? []).flatMap(k => [k.name, k.description])]
+    const names = [c.name, c.originalName, c.description, c.variant, c.id, c.motionId,
+      c.sourceName === undefined ? undefined : `${c.sourceName}.fbx`,
+      ...(c.candidates ?? []).flatMap(k => [k.name, k.description])]
       .filter(Boolean).join('\n').toLowerCase()
     text = { names, all: [names, ...c.tags, c.category].join('\n').toLowerCase() }
     haystacks.set(c, text)
@@ -183,6 +199,7 @@ export async function queryLibrary (q: LibraryQuery) {
     page,
     pages,
     pageSize,
+    catalog: rig === 'human' ? m.catalog ?? null : null,
     categories: order.map(id => ({ id, label: labels.get(id) ?? id.replace(/-/g, ' & ').replace(/^\w/, ch => ch.toUpperCase()), count: counts.get(id) ?? 0 })),
     clips: matches.slice(page * pageSize, (page + 1) * pageSize).map(c => ({ ...c, url: c.href ?? `/files/library/${c.file}`, problems: findings[c.id]?.problems })),
   }

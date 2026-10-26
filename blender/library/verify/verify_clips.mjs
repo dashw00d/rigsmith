@@ -202,6 +202,7 @@ async function main () {
   }
   console.log(`\nybot.glb: ${ybotJoints.length} joints, canonical order: ${report.ybot.jointsMatchCanon}, meshes ${report.ybot.meshes}`)
   if (outPath) fs.writeFileSync(outPath, JSON.stringify(report, null, 1))
+  if (report.fidelity?.some(r => !r.pass) || st.problems.length > 0 || !report.ybot.jointsMatchCanon) process.exitCode = 1
 }
 
 main().catch(e => { console.error(e); process.exit(1) })

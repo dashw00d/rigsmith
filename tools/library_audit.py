@@ -35,9 +35,10 @@ STANDING_WORDS = re.compile(r'\b(standing|stand|idle)\b', re.I)
 
 def problems(c):
     f = c.get('features') or {}
-    if not f:
+    if not f or c.get('category') == 'pose':
         return []
     name = str(c.get('name') or '')
+    context = name + ' ' + str(c.get('description') or '')
     gait = f.get('gait') or {}
     post = f.get('posture') or {}
     hips = f.get('hipsHeight') or {}
@@ -53,7 +54,7 @@ def problems(c):
     # seated / lying / crouched motion under a name that doesn't say so
     low = float(post.get('thighsFlatFrac') or 0) > 0.6 or float(post.get('lyingFrac') or 0) > 0.5 or \
         (hips.get('mean') is not None and float(hips['mean']) < 0.68 * stand_h and float(post.get('lowFrac') or 0) > 0.5)
-    if low and not SIT.search(name) and not DIE.search(name):
+    if low and not SIT.search(context) and not DIE.search(context):
         what = 'lying' if float(post.get('lyingFrac') or 0) > 0.5 else 'seated or crouched'
         out.append({'rule': 'standing?', 'says': name,
                     'motion': '%s most of the clip (hips %.2f m, thighs level %.0f%%, lying %.0f%%)' % (

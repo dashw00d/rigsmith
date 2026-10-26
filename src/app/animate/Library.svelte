@@ -55,6 +55,16 @@
     </label>
   </header>
 
+  {#if library.data?.catalog}
+    <p class="coverage faint">
+      {#if library.data.catalog.complete}
+        Mixamo collection complete · {library.data.catalog.motionCount.toLocaleString()} motions + {library.data.catalog.poseCount.toLocaleString()} poses
+      {:else}
+        Mixamo collection · {library.data.catalog.converted.toLocaleString()} of {library.data.catalog.count.toLocaleString()} clips
+      {/if}
+    </p>
+  {/if}
+
   <div class="chips" role="tablist" aria-label="Categories">
     <button role="tab" aria-selected={library.category === ''} class:active={library.category === ''} onclick={() => library.setCategory('')}>
       All <span>{total.toLocaleString()}</span>
@@ -75,8 +85,8 @@
       <div class="empty">
         <LibraryBig size={22} />
         {#if total === 0}
-          <strong>The library is being built</strong>
-          <p class="faint">Your Mixamo pack is converting in the background. Animations appear here as soon as it finishes.</p>
+          <strong>No animations available</strong>
+          <p class="faint">Choose another collection or import animations.</p>
         {:else}
           <strong>No matches</strong>
           <p class="faint">Try another word or category.</p>
@@ -115,6 +125,7 @@
   .title { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
   h2 { margin: 0; font-size: 13px; font-weight: 600; }
   .title span { font-size: 12px; }
+  .coverage { margin: 0; padding: 0 16px 8px; font-size: 11px; }
   .search {
     flex: 1;
     max-width: 280px;

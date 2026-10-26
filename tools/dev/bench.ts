@@ -22,9 +22,9 @@ g.self ??= globalThis
 g.createImageBitmap ??= async () => { throw new Error('no images') }
 console.error = () => {}
 
-const CLIPS = ['c5dd9d93edee', '594aa124446c', '4358b1d9096c', '3623f0314d26', 'e923445ab87b', '535ff6653eda', '275ecf82779d',
-  '96fb5d36590f', 'ca94fd1bb4cd', '6cbfcd32e205', '2ac9006e0a5a', '4f32811358e8', '1acdf8a3500a', '1b1d0345a75e',
-  '11f10d679a40', 'a1af69683d26', '4f099eb0787e', 'dcd88ede66b0']
+const CLIPS = ['mixamo-Walking_19', 'mixamo-Dying', 'mixamo-Standing_Draw_Arrow', 'mixamo-Carrying', 'mixamo-Digging', 'mixamo-Combo_Punch', 'mixamo-Flying_Kick',
+  'mixamo-Air_Squat', 'mixamo-Push_Up', 'mixamo-Backflip_2', 'mixamo-Climbing_6', 'mixamo-Pick_Up_Item_2', 'mixamo-Spell_Cast', 'mixamo-Crouched_Sneaking_Left',
+  'mixamo-Arm_Stretching', 'mixamo-Great_Sword_Jump_Attack', 'mixamo-Dive_Roll', 'mixamo-Breakdance_1990']
 const LIBRARY = path.resolve(import.meta.dirname, '../../workspace/library/clips')
 
 const args = process.argv.slice(2)
