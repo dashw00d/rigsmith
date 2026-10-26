@@ -323,6 +323,19 @@ export interface NaturalResult {
   rollYield: number
   /** What each goal with a `give` turned off its asked turn (degrees): the roll round its grip line, and the rest (the swing of the line). */
   give: Array<{ bone: string, roll: number, other: number }>
+  /** The score the search lowers, term by term, where it began (the warm start, or the start) and where it ended (every row on, at the goals' own weights: two solves compare fairly). */
+  objective?: { start: ObjectiveTerms, end: ObjectiveTerms }
+}
+
+/** The solver's score of a pose, term by term (each a sum of squares). */
+export interface ObjectiveTerms {
+  /** The hands' goals; the feet's (kept, soft, the floor); balance and upright; the elbows; the joint ranges. */
+  hands: number, feet: number, balance: number, elbows: number, limits: number
+  /** How far the pose moved from the start (whitened: per spread of natural variation), and the heading's and hips' springs. */
+  near: number, springs: number
+  /** How much less natural than the start it is. */
+  natural: number
+  total: number
 }
 
 /** An arm's elbow in the chest's frame (forward from the shoulders' line; the shoulder line's left to right). */
@@ -1105,7 +1118,33 @@ export class NaturalRig {
         if (!this.limits.within(BODY[b], lt)) exempt[b] = 1
       }
     }
+    // (the score term by term, at the goals' own weights with every row on)
+    const weights0 = [...weights]
+    const terms = (pp: ArrayLike<number>, zz: Float64Array): ObjectiveTerms => {
+      const held = [...weights]; const ph = phase
+      for (let i = 0; i < weights.length; i++) weights[i] = weights0[i]
+      phase = 2
+      const out = new Float64Array(nRows)
+      const rr = evalRows(pp, zz, out)
+      for (let i = 0; i < weights.length; i++) weights[i] = held[i]
+      phase = ph
+      const sq = (a: number, b: number): number => { let v = 0; for (let i = a; i < b; i++) v += out[i] * out[i]; return v }
+      let hands = 0; let feet = 0
+      rows.forEach((row, i) => { const v = sq(i * 9, i * 9 + 9); if (row.bone.endsWith('Hand')) hands += v; else feet += v })
+      const G = rows.length * 9
+      let near = 0; let springs = 0
+      for (let j = 0; j < n; j++) {
+        const dz = zz[j] - (j < DIM ? z0[j] : 0)
+        const v = prior[j] * dz * dz + sdiag[j] * (zz[j] - zref[j]) ** 2 + (j < DIM ? pullW * zz[j] * zz[j] : 0)
+        if (j < DIM) near += v; else springs += v
+      }
+      const e = PRIOR.natural * lessNatural(zz)
+      const t = { hands, feet, balance: sq(G, G + 3), elbows: sq(G + 3, G + 6), limits: sq(G + 6, rr), near, springs, natural: e * e, total: 0 }
+      t.total = hands + feet + t.balance + t.elbows + t.limits + near + springs + t.natural
+      return t
+    }
     limitPull(p)
+    const startTerms = terms(p, z)
     let r = evalRows(p, z, f)
     let c = cost(f, r, z)
     let mu = 1e-2
@@ -1229,9 +1268,13 @@ export class NaturalRig {
     }
     // ---- put it on the bones ----
     const pose: NaturalPose = { p: Float64Array.from(p), yaw: z[DIM] * HEADING_SPREAD + start.yaw, hips: new THREE.Vector3(zStartHips[0] + z[DIM + 1] * spreadH, zStartHips[1] + z[DIM + 2] * spreadH, zStartHips[2] + z[DIM + 3] * spreadH) }
+    limitPull(p)
+    const endTerms = terms(p, z)
     this.apply(pose)
     this.hold(rows, exempt, opts)
-    return this.measure(rows, startCost, start, performance.now() - t0, iterations, feetNames)
+    const res = this.measure(rows, startCost, start, performance.now() - t0, iterations, feetNames)
+    res.objective = { start: startTerms, end: endTerms }
+    return res
   }
 
   /** Joints held in range; the kept bones put back by reach where the search left them off. */
@@ -1411,7 +1454,7 @@ export function restSoles (bones: Map<string, THREE.Bone>, floorY = 0): Record<s
 // ---- a drop-in for src/engine/bodysolve.ts solveBody -----------------------------------------------------------------
 
 /** What the drop-in hands back as the frame's state: bodysolve's four numbers (as they came out, for show and for a rule-based next frame) and this solver's own warm start. */
-export type NaturalBodyState = BodyState & { warm?: Float64Array }
+export type NaturalBodyState = BodyState & { warm?: Float64Array, objective?: NaturalResult['objective'] }
 /** solveBody's options, and: `planted` (the feet hard-locked, the first solver's behaviour), the `floor` (world y) and `soles` (each leg's [ankle, ball, tip] rest heights above it, as ik.ts keepOffFloor takes them) that keep every sole point from going under it. */
 export interface NaturalSolveOptions extends SolveOptions {
   planted?: boolean, floor?: number, soles?: number[][]
@@ -1524,7 +1567,7 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
     logTo(wq(spine).multiply(turnBefore.invert()), rv, 0)
     const ahead = new THREE.Vector3().crossVectors(lateral, new THREE.Vector3(0, 1, 0)).normalize()
     const moved = wp(hips).sub(hipsBefore)
-    const state: NaturalBodyState = { yaw: rv[1], lean: rv[0] * lateral.x + rv[2] * lateral.z, forward: moved.dot(ahead) / opts.height, drop: -moved.y / opts.height, warm: res.delta }
+    const state: NaturalBodyState = { yaw: rv[1], lean: rv[0] * lateral.x + rv[2] * lateral.z, forward: moved.dot(ahead) / opts.height, drop: -moved.y / opts.height, warm: res.delta, objective: res.objective }
     return { state, miss }
   }
 }
