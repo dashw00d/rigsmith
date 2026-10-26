@@ -65,8 +65,9 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
 - **Slots** (Animate, "In the game"): each clip name the game plays, filled with a library clip. Arm a slot and press a
   card's button, or play a card and press Use. Entries the game doesn't name are Trials: kept here, never exported.
 - **Tune** (Animate, under the slots; `src/engine/keys.ts`): on the slot playing, its **ground** (the whole body raised or
-  lowered through the clip, in cm in the game; Auto sets its lowest point on the ground: Mixamo clips sink the feet a few
-  per cent of the height, which the game used to hide by lifting units every frame) and **keys** on its bones (turns;
+  lowered through the clip, in cm in the game; Auto stands it on the floor by its flat feet, `src/engine/ground.ts`: the
+  frames a foot's heel and toe are down at one height, its lowest point only where it never plants one; All slots does
+  every slot the game plays at once; library clips and rig tests are stood on the floor so as they play) and **keys** on its bones (turns;
   the Hips also move) and props (moves and turns about where they are held). Pause on a frame and drag the gizmo: letting
   go keys it there. Keys sit at a phase of the clip, blend between, wrap round a loop and hold at a one-shot's ends. A
   keyed prop gets its own bone in the game file (`Prop_<part>`) that the clips move.
@@ -97,6 +98,9 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   work the joints, per body type (a person: arm stretching, jumping jacks, an air squat, a fist pump, grab and slam,
   thumbs up, counting, boxing, each with its fingers animated; a horse: its template's walk, run, rear, kick, eating,
   lying down, head-butt, death), played on the rig in place, looped; pause and scrub on the timeline.
+- A person's feet keep their own rest angle in a retargeted clip and take its turn on top (`retarget.ts` alignment):
+  pointing the foot bone the way the source's points tipped the sole wherever the rigs' ankles sit at different heights
+  (until 2026-10-26 a standing clip's heel sank 3 % of the height through the floor, its toe floating).
 - A creature's hips under a root bone (the horse template's `root` is tilted) take their track in that bone's frame
   (`retarget.ts`; until 2026-10-26 written in world space, which crouched the caravan pony's walk).
 

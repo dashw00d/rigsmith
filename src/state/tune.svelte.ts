@@ -5,7 +5,8 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { AnimationEntry, ClipKey } from './api.ts'
 import { app } from './app.svelte.ts'
 import { animator } from './animator.svelte.ts'
-import { KEY_FPS, lowestPoints } from '../engine/keys.ts'
+import { KEY_FPS } from '../engine/keys.ts'
+import { groundFit } from '../engine/ground.ts'
 import { garmentMatrix } from '../engine/placement.ts'
 
 export type TuneMode = 'rotate' | 'translate'
@@ -138,8 +139,26 @@ class Tune {
     animator.playEntry(next[index], index, true)
   }
 
-  /** The lift that sets this clip's lowest point on the ground (the soles' height at rest): measured on the clip as it
-   * plays now, with the lift it has. */
+  /** Every slot (`names`) stood on the floor by its flat feet, at once. */
+  async autoGroundAll (names: string[]): Promise<number> {
+    const c = app.selected
+    if (c === null) return 0
+    this.busy = true
+    try {
+      const lifts = await animator.groundEntries(names)
+      if (lifts.size === 0) return 0
+      const next = c.animations.map((a, i) => lifts.has(i) ? { ...a, lift: Math.round(lifts.get(i)! * 1e4) / 1e4 } : a)
+      await app.update(c.id, { animations: next })
+      const e = this.entry
+      if (e !== null) animator.playEntry(next[e.index], e.index, true)
+      return lifts.size
+    } finally {
+      this.busy = false
+    }
+  }
+
+  /** The lift that stands this clip on the floor by its flat feet (src/engine/ground.ts: heel and toe down at one
+   * height; its lowest point where it never plants one): measured on the clip as it plays now, with the lift it has. */
   async autoGround (): Promise<void> {
     const e = this.entry
     const view = animator.character
@@ -151,8 +170,8 @@ class Tune {
       let body: THREE.SkinnedMesh | undefined
       root.traverse(o => { if (body === undefined && (o as THREE.SkinnedMesh).isSkinnedMesh) body = o as THREE.SkinnedMesh })
       if (body === undefined) return
-      const lowest = Math.min(...lowestPoints(root, body, clip))
-      const lift = (e.entry.lift ?? 0) + (view.box.min.y - lowest)
+      const fit = groundFit(root, body, clip, view.height)
+      const lift = (e.entry.lift ?? 0) + fit.lift
       await this.patchEntry(e.index, { lift: Math.round(lift * 1e4) / 1e4 })
     } finally {
       this.busy = false

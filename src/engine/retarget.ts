@@ -274,7 +274,13 @@ function basis (direction: THREE.Vector3, palm: THREE.Vector3): THREE.Quaternion
 }
 
 /** Rotation taking the target's rest bone onto the source's: direction always, palm twist for arms. */
+const FEET_KEEP_REST = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.RIG_FEET_ALIGN !== '1'
+
 function alignment (source: RestSkeleton, target: RestSkeleton, name: string): THREE.Quaternion {
+  // (a foot keeps its own rest angle and takes the clip's turn on top: pointing it the way the source's foot bone
+  // points, ankle to ball, tips the sole wherever the two rigs' ankles sit at different heights: a standing clip's heel
+  // sank 3 % of the height through the floor and its toe floated)
+  if (FEET_KEEP_REST && /^(Left|Right)(Foot|ToeBase)$/.test(name)) return new THREE.Quaternion()
   const toward = sharedChild(source, target, name)
   const ds = restDirection(source, name, toward)
   const dt = restDirection(target, name, toward)

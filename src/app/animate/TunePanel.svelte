@@ -63,7 +63,8 @@
       <span class="row">
         <input class="mono" type="number" step="0.5" value={liftShown} onchange={(e) => setLift(Number((e.target as HTMLInputElement).value) || 0)} aria-label="Lift" />
         <span class="faint">{perCm !== null ? 'cm' : '%'}</span>
-        <button class="small-btn" disabled={tune.busy} onclick={() => tune.autoGround()} use:tooltip={'Lift it until the lowest point of the clip touches the ground'}>Auto</button>
+        <button class="small-btn" disabled={tune.busy} onclick={() => tune.autoGround()} use:tooltip={'Stand it on the floor by its flat feet: where heel and toe are down together (its lowest point if it never plants one)'}>Auto</button>
+        {#if slots.game !== null && slots.game.clips.length > 1}<button class="small-btn" disabled={tune.busy} onclick={async () => { const n = await tune.autoGroundAll(slots.game!.clips); app.toast('ok', `Stood ${n} slot${n === 1 ? '' : 's'} on the floor by their flat feet`) }} use:tooltip={'Every slot the game plays, stood on the floor by its flat feet'}>All slots</button>{/if}
         {#if (entry.lift ?? 0) !== 0}<button class="icon" onclick={() => tune.patchEntry(current.index, { lift: 0 })} aria-label="No lift"><X size={12} /></button>{/if}
       </span>
     </div>

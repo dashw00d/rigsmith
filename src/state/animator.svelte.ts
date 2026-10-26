@@ -11,6 +11,7 @@ import { Player } from '../engine/Player.ts'
 import { PreviewRenderer } from '../engine/PreviewRenderer.ts'
 import { applyScripts, fistPose, retime, type GripScript } from '../engine/scripts.ts'
 import { applyBoneKeys, applyLift, propTracks } from '../engine/keys.ts'
+import { groundFit } from '../engine/ground.ts'
 import { garmentMatrix } from '../engine/placement.ts'
 import { fitRide, freezeClip } from '../engine/mount.ts'
 import type { Stage } from '../engine/Stage.ts'
@@ -195,6 +196,8 @@ class Animator {
         clip = retime(rider, 1 / entry.speed)
       } else {
         clip = this.withProps(await this.cache.get(target.url, { inPlace: this.inPlace, mirror: this.mirror }), undefined, false)
+        // (a library clip or a rig test stands on the floor: its flat feet set it, src/engine/ground.ts)
+        clip = this.grounded(clip)
         this.unkeyed = null
         const idle = ride?.character.animations.find(a => a.name === 'Idle')
         if (ride !== null && idle !== undefined) horse = (await this.bake(ride.character, ride.view, ride.cache, ride.posable, idle, false)).clip
@@ -293,6 +296,35 @@ class Animator {
     } finally {
       if (token === this.token) this.loading = false
     }
+  }
+
+  /** Each of the selected character's entries (`names`, else all) stood on the floor by its flat feet: the lift each
+   * would take (src/engine/ground.ts), measured on the entry as it plays now (its scripts, its lift, its keys). */
+  async groundEntries (names?: string[]): Promise<Map<number, number>> {
+    const c = app.selected; const view = this.view; const cache = this.cache; const root = this.posableCopy()
+    const out = new Map<number, number>()
+    if (c === null || view === null || cache === null || root === null) return out
+    let body: THREE.SkinnedMesh | undefined
+    root.traverse(o => { if (body === undefined && (o as THREE.SkinnedMesh).isSkinnedMesh) body = o as THREE.SkinnedMesh })
+    if (body === undefined) return out
+    for (const [i, entry] of c.animations.entries()) {
+      if (names !== undefined && !names.includes(entry.name)) continue
+      const { clip } = await this.bake(c, view, cache, root, entry, false)
+      out.set(i, (entry.lift ?? 0) + groundFit(root, body, clip, view.height).lift)
+    }
+    return out
+  }
+
+  /** `clip` raised or lowered so its flat feet stand on the floor (its lowest point where it never plants one). */
+  private grounded (clip: THREE.AnimationClip): THREE.AnimationClip {
+    const view = this.view; const root = this.posableCopy()
+    if (view === null || root === null || view.rest === null) return clip
+    let body: THREE.SkinnedMesh | undefined
+    root.traverse(o => { if (body === undefined && (o as THREE.SkinnedMesh).isSkinnedMesh) body = o as THREE.SkinnedMesh })
+    const hips = view.rest.bones.get('Hips') ?? view.rest.bones.get('hips')
+    if (body === undefined || hips === undefined) return clip
+    const fit = groundFit(root, body, clip, view.height)
+    return applyLift(clip, hips.node.name, fit.lift, hips.localPosition)
   }
 
   /** A test of the rig (static/templates/tests.json): a library clip that works its joints hard, in place, looped. */
