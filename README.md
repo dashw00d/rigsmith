@@ -93,6 +93,10 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   the wrong ones and every joint follows live (as rigidly as it can, keeping the skeleton's shape), saved on letting
   go. A person's finger tips go on a view of each hand ("Place finger markers": from the back of the hand, along the
   fingers, cut to the hand; the other hand mirrored).
+- **Test rig** (Rig, Check deformation; `src/engine/romtest.ts`): one clip made for the rig in front of it that takes
+  every joint through its range (a person: arms sideways, forward and overhead, elbows, forearm twist, wrists, fists
+  closing and hands spreading while the arms move, spine, head, each leg lifted, a squat; a creature: each leg folded,
+  back, neck and head, tail), to see creases and skin left behind; pause and scrub it on the timeline.
 - A creature's hips under a root bone (the horse template's `root` is tilted) take their track in that bone's frame
   (`retarget.ts`; until 2026-10-26 written in world space, which crouched the caravan pony's walk).
 

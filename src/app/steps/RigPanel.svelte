@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ArrowRight, FlipHorizontal2, RotateCcw, Sparkles, TriangleAlert, Wrench } from '@lucide/svelte'
+  import { Activity, ArrowRight, FlipHorizontal2, RotateCcw, Sparkles, Square, TriangleAlert, Wrench } from '@lucide/svelte'
+  import { animator } from '../../state/animator.svelte.ts'
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { viewer } from '../../state/viewer.svelte.ts'
@@ -52,6 +53,7 @@
     }
   }
   const rigging = $derived(character.status === 'rigging' || job?.kind === 'rig')
+  const testing = $derived(animator.current?.clipId === 'test')
   $effect(() => { void character.template; void character.fingers; void markerBoard.load(character) })
   // (the legend: one row per marker; a pair once)
   // (a marker is missing when its joint isn't in the skeleton: a person's markers need the detected joints)
@@ -118,7 +120,11 @@
     <Button variant="primary" size="lg" block onclick={() => { app.step = 'animate' }}>Pick animations <ArrowRight size={15} /></Button>
   </Section>
   <Section title="Check deformation">
-    <p class="faint small">Switch the viewport to <strong>Weights</strong> to see each bone's area{human ? ', or click a joint name to see its influence' : ''}. Play an animation in the Animate step to check it in motion.</p>
+    <Button block variant={testing ? 'ghost' : 'primary'} onclick={() => { if (testing) animator.stop(); else animator.playTest() }}>
+      {#if testing}<Square size={13} /> Stop the test{:else}<Activity size={14} /> Test rig{/if}
+    </Button>
+    <p class="faint small">Every joint through its range: {human ? 'the arms raised sideways, forward and overhead, elbows bent, forearms twisted, wrists flexed, fists closing and hands spreading as the arms move; the spine bent and twisted, the head nodded and turned, each leg lifted, a squat' : 'each leg folded in turn, the back bent, the neck and head, the tail'}. Watch the joints for creases, candy-wrapping and skin left behind; pause and scrub on the timeline.</p>
+    <p class="faint small">Switch the viewport to <strong>Weights</strong> to see each bone's area{human ? ', or click a joint name to see its influence' : ''}.</p>
     <div class="bone-grid" class:hidden={!human}>
       {#each ['Head', 'Spine2', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand', 'Hips', 'LeftUpLeg', 'LeftLeg', 'LeftFoot'] as bone}
         <button class="bone-chip" onclick={() => { viewer.setMode('weights'); viewer.character?.setHighlightBone(bone) }}>{prettyBone(bone)}</button>

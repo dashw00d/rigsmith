@@ -88,7 +88,8 @@ class Viewer {
     this.syncEditor(character, step)
     await this.syncMount(character)
     void outfit.sync(step === 'outfit')
-    if (step !== 'animate' && step !== 'export' && step !== 'outfit' && animator.current !== null) animator.stop()
+    // (the rig test plays on in the Rig step)
+    if (step !== 'animate' && step !== 'export' && step !== 'outfit' && animator.current !== null && !(step === 'rig' && animator.current.clipId === 'test')) animator.stop()
   }
 
   private editorToken = 0

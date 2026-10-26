@@ -79,7 +79,7 @@
     </div>
   {/if}
 
-  {#if app.step === 'animate' || app.step === 'export' || app.step === 'outfit'}<Timeline />{/if}
+  {#if app.step === 'animate' || app.step === 'export' || app.step === 'outfit' || (app.step === 'rig' && animator.current?.clipId === 'test')}<Timeline />{/if}
   {#if painter.active && app.step === 'texture'}<MaskPainter />{/if}
   {#if markerBoard.open && app.step === 'rig' && app.selected && viewer.character && markerBoard.set && markerBoard.parents && markerBoard.setName}
     {#key `${app.selected.id}|${markerBoard.setName}`}
