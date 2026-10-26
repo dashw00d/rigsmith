@@ -213,17 +213,15 @@ export class PoseEditor {
   /** Which joints are held on a prop (see gripLock): their gizmo slides them along the prop and rolls them round it. */
   setGripLock (lock: ((bone: string) => { at: THREE.Vector3, axis: THREE.Vector3 } | null) | null): void { this.gripLock = lock; this.attachGizmo() }
 
-  /** A held joint dragged by its locked gizmo: slid along the prop's axis (moved), or turned about where it holds (any
-   * way: sideways to lay the palm on the prop, or rolled round it); its limb reaches after it. */
+  /** A held joint dragged by its gizmo (on the prop's axes): moved any way, its turn kept, or turned any way about where
+   * it holds (sideways to lay the palm on the prop, rolled round it); its limb reaches after it. */
   private moveHeld (name: string, from: NonNullable<PoseEditor['lockStart']>): void {
     const l = this.rig.limbs[name]; const end = this.view.bones.get(name)
     if (l === undefined || end === undefined) return
     const limb: Limb = { upper: this.view.bones.get(l.upper)!, lower: this.view.bones.get(l.lower)!, end: this.view.bones.get(l.end)! }
     const opts = { limits: this.limits ?? undefined, nameOf: this.nameOf }
     if (this.mode === 'move') {
-      const d = this.proxy.position.clone().sub(from.proxyAt).dot(from.axis)
-      this.proxy.position.copy(from.proxyAt).addScaledVector(from.axis, d)
-      reach(limb, from.wrist.clone().addScaledVector(from.axis, d), { ...opts, keepEnd: true })
+      reach(limb, from.wrist.clone().add(this.proxy.position.clone().sub(from.proxyAt)), { ...opts, keepEnd: true })
       setWorldQuaternion(end, from.turn)
     } else {
       // (the gizmo's turn since the drag began, about where the joint holds)
@@ -262,12 +260,11 @@ export class PoseEditor {
     }
     const b = this.selected === null ? undefined : this.view.bones.get(this.selected)
     if (b === undefined) { this.gizmo.detach(); return }
-    // (a joint held on a prop: the gizmo where it holds it, its X along the prop: moving slides it along the prop only;
-    // turning turns it any way about where it holds, so it stays on the prop)
+    // (a joint held on a prop: the gizmo where it holds it, its axes the prop's (X along it): moving moves it any way,
+    // turning turns it any way about where it holds)
     const lock = this.gripLock?.(b.name) ?? null
     const gz = this.gizmo as unknown as { showX: boolean, showY: boolean, showZ: boolean }
-    const along = lock !== null && this.mode === 'move'
-    gz.showX = true; gz.showY = !along; gz.showZ = !along
+    gz.showX = true; gz.showY = true; gz.showZ = true
     if (lock !== null) {
       this.placeOnLock(lock)
       this.gizmo.setMode(this.mode === 'move' ? 'translate' : 'rotate')

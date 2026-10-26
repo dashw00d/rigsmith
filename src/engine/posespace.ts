@@ -1746,7 +1746,7 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
       // (a hand's turn: exact with roll false; with give false only the roll round its grip line yields; by default it gives a little on every axis)
       // (a hand carrying a prop keeps its turn exactly: the prop rides it, so its turn is the prop's place)
       const hand = bones.get(`${g.hand}Hand`)
-      const carries = (g as { carrier?: boolean }).carrier === true || (opts.carrying ?? options.carrying)?.includes(g.hand) === true ||
+      const carries = (g as { carrier?: boolean }).carrier === true || g.exact === true || (opts.carrying ?? options.carrying)?.includes(g.hand) === true ||
         (hand?.children.some(c => (c as THREE.Bone).isBone !== true && c.children.length > 0) ?? false)
       const held = carries || hand === undefined ? undefined : g.grip
       const grip = options.roll === false || carries ? null : held?.axis ?? gripAxisOf(bones, g.hand)

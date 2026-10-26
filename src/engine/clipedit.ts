@@ -65,6 +65,8 @@ export interface Socket {
   name: string
   position: [number, number, number]
   rotation: [number, number, number, number]
+  /** Put where it is by hand (the hand's gizmo, or dragged on it): the hand holds it exactly, no give. */
+  placed?: boolean
 }
 
 /** A hand on a socket through the clip (the edit's). */
@@ -372,7 +374,7 @@ export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>,
       const sock = props.sockets[prop]?.find(x => x.id === a.socket)
       if (sock === undefined || used.has(a.hand)) continue
       used.add(a.hand)
-      goals.push({ hand: a.hand, ...handOn(place, sock), fingers: props.fingers[a.hand], grip: props.grips?.[a.hand] })
+      goals.push({ hand: a.hand, ...handOn(place, sock), fingers: props.fingers[a.hand], grip: props.grips?.[a.hand], exact: sock.placed === true })
     }
   }
   for (const a of props.attachments) {
@@ -382,7 +384,7 @@ export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>,
     if (node === undefined || sock === undefined) continue
     node.updateMatrixWorld(true)
     used.add(a.hand)
-    goals.push({ hand: a.hand, ...handOn(node.matrixWorld, sock), fingers: props.fingers[a.hand], grip: props.grips?.[a.hand] })
+    goals.push({ hand: a.hand, ...handOn(node.matrixWorld, sock), fingers: props.fingers[a.hand], grip: props.grips?.[a.hand], exact: sock.placed === true })
     // (the hand carrying an unlocked prop keeps it where the clip has it)
     const side = /^(Left|Right)Hand$/.exec(props.carriers[a.prop] ?? '')?.[1] as 'Left' | 'Right' | undefined
     const carrier = side === undefined ? undefined : bones.get(`${side}Hand`)

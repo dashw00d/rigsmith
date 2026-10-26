@@ -294,12 +294,11 @@ class ClipEdit {
     const bones = moved.filter(b => !attached.has(b))
     this.keyBones(next, bones, u)
     if (bones.length > 0) this.groups = [...this.groups.filter(g => !(near(g.u, u) && g.bones.some(b => bones.includes(b)))), { u, bones }]
-    // (a hand on a socket moved or turned: its socket goes where it is now)
+    // (a hand on a socket moved or turned: its socket goes exactly where it is now)
     for (const a of this.attachments) {
       if (!moved.includes(armOf(a.hand).end)) continue
-      const carries = this.props.find(p => p.name === a.prop)?.bone === `${a.hand}Hand`
-      const sock = this.socketAt(a.hand, a.prop, false, carries)
-      if (sock !== null) await this.saveSocket(a.prop, { ...sock, id: a.socket, name: this.props.find(p => p.name === a.prop)?.sockets.find(x => x.id === a.socket)?.name ?? sock.name })
+      const sock = this.socketAt(a.hand, a.prop, false, true)
+      if (sock !== null) await this.saveSocket(a.prop, { ...sock, id: a.socket, name: this.props.find(p => p.name === a.prop)?.sockets.find(x => x.id === a.socket)?.name ?? sock.name, placed: true })
     }
     if (snap !== null) {
       this.fists[snap.hand] ??= await animator.fistOf(snap.hand, GRIP_CLIP).catch(() => ({}))
@@ -458,25 +457,6 @@ class ClipEdit {
     const rest = animator.character?.rest
     return rest === null || rest === undefined ? null : handGrip(rest, hand)
   }
-  /** A socket's hold put back on the shaft's line for `hand`'s grip (a socket made for an older grip: the shaft at the
-   * front of the knuckles): its turn kept as it is (a hand turned on purpose stays so), its hold point moved onto the
-   * line. Null when it is on it already (or the prop has no shaft, the hand no grip). */
-  private alignSocket (hand: 'Left' | 'Right', prop: string, sock: Socket): Socket | null {
-    const node = animator.character?.root.getObjectByName(propNode(prop))
-    const shaft = this.shaftLocal(prop); const grip = this.gripOf(hand, prop)
-    if (node === undefined || shaft === null || grip === null) return null
-    node.updateMatrixWorld(true)
-    // (the socket is in the prop's node frame, its scale included; the grip in world units, in the hand's turn)
-    const scale = node.matrixWorld.getMaxScaleOnAxis() || 1
-    const q = new THREE.Quaternion(...sock.rotation); const p = new THREE.Vector3(...sock.position)
-    const dir = shaft.to.clone().sub(shaft.from).normalize()
-    const hold = p.clone().add(grip.fist.clone().applyQuaternion(q).divideScalar(scale))
-    const onLine = shaft.from.clone().addScaledVector(dir, hold.clone().sub(shaft.from).dot(dir))
-    if (onLine.distanceTo(hold) * scale < 0.001) return null
-    const r5 = (v: number[]): number[] => v.map(x => Math.round(x * 1e5) / 1e5)
-    return { ...sock, position: r5(p.clone().add(onLine.sub(hold)).toArray()) as Socket['position'] }
-  }
-
   private gripCache: Partial<Record<'Left' | 'Right', { fingers: Record<string, [number, number, number, number]>, radius: number, root: THREE.Object3D, grip: Grip }>> = {}
 
   /** The hand put on the prop where it is: its fist squarely round the shaft (the shaft through the closed fingers, square
@@ -566,17 +546,16 @@ class ClipEdit {
     this.show(animator.time)
   }
 
-  /** Put `hand` on a socket (its fingers closed round the prop); one socket a hand. The socket is put on the shaft for the
-   * hand's grip (its spot and roll kept) and slid just clear of any other hand on the prop; then, if the prop leads, the
-   * prop is fitted again (fitPath). `place: false` puts the hand on the socket as it is. */
+  /** Put `hand` on a socket (its fingers closed round the prop); one socket a hand. The socket is slid just clear of any
+   * other hand on the prop (else kept as it is: where the user put it); then, if the prop leads, the prop is fitted again
+   * (fitPath). `place: false` puts the hand on the socket as it is. */
   async attach (hand: 'Left' | 'Right', prop: string, socket: string, opts: { place?: boolean } = {}): Promise<void> {
     this.fists[hand] ??= await animator.fistOf(hand, GRIP_CLIP).catch(() => ({}))
     // (a socket made for another grip (an older one: the shaft at the front of the knuckles) put back on the shaft for this one, its spot and roll kept)
     const p = this.props.find(x => x.name === prop); const sock = p?.sockets.find(x => x.id === socket)
     this.attachments = [...this.attachments.filter(a => a.hand !== hand), { hand, prop, socket }]
     if (opts.place !== false && sock !== undefined && p?.bone !== `${hand}Hand`) {
-      const onShaft = this.alignSocket(hand, prop, sock) ?? sock
-      const clear = this.clearOfOthers(hand, prop, onShaft)
+      const clear = this.clearOfOthers(hand, prop, sock)
       if (clear !== sock) await this.saveSocket(prop, clear)
     }
     if (this.paths[prop]?.locked === true && this.natural) { await this.fitPath(prop); return }
