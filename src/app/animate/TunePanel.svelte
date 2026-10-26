@@ -16,7 +16,7 @@
 
   const current = $derived(tune.entry)
   const entry = $derived(current?.entry ?? null)
-  const frames = $derived(entry !== null && animator.duration > 0 ? Math.max(1, Math.round(animator.duration / entry.speed * KEY_FPS)) : 1)
+  const frames = $derived(entry !== null && animator.duration > 0 ? Math.max(1, Math.round(animator.duration / entry.speed / Math.max(1, animator.cycles) * KEY_FPS)) : 1)
   const view = $derived(animator.character)
   const bones = $derived(view?.rest?.order.filter(b => view.bones.has(b)) ?? [])
   const propNames = $derived((character.garments ?? []).filter(g => g.mode === 'rigid' && view?.root.getObjectByName(propNode(g.name)) !== undefined).map(g => g.name))
@@ -47,7 +47,7 @@
   }
   function go (k: ClipKey): void {
     animator.setPlaying(false)
-    animator.seek(k.u * animator.duration)
+    animator.seek(k.u * animator.duration / Math.max(1, animator.cycles))
   }
   async function zeroKey (): Promise<void> {
     if (tune.target === null) return

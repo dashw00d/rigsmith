@@ -77,6 +77,36 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
 - `game_import` fills in what a character lacks from the unit's last build (its record in the game's
   `assets/textures/models/<unit>/<unit>.json`: clips, scripts, ground, keys, gear) and touches nothing already there;
   `--replace` puts it back as built.
+- **Riding** (Outfit, Mount; `src/engine/mount.ts`): a character rides another (a horse on the horse template). "Rides"
+  seats him from the two bodies (`straddle`: the low point of the horse's back over the middle of its spine, his thighs
+  out round its barrel, the shins down its sides), then the gizmo moves the seat and shapes each held bone. His lower
+  body holds the seat; the rest of him plays his slots with his scripts, keys and gear. The horse plays its own slots
+  (the same names), fitted to his: loops by whole cycles (its gait leads), its Attack to his. The mount also picks the
+  horse's skin and which of its garments it wears (one horse, its clips tuned once, dressed per rider). In the game spec
+  the horse is the unit's `companion` with `ridden: true`; a unit still being made is a `draft` (built only when named).
+- A creature's hips under a root bone (the horse template's `root` is tilted) take their track in that bone's frame
+  (`retarget.ts`; until 2026-10-26 written in world space, which crouched the caravan pony's walk).
+
+## The journal, and the tools an agent uses
+
+Every change to a character is journaled with who made it (`server/journal.ts`, `characters/<id>/journal.jsonl`): the
+app's own as "app", a tool's under its `x-rigsmith-by` header. The History section under every step shows it, newest
+first, with notes either side can leave. `tools/rig.ts` reads and changes characters as the app does, through the same
+server (so open pages update and the journal names the change):
+
+```bash
+node tools/rig.ts list | show WHO [--json] | history WHO [N] | note WHO TEXT | get WHO [PATH] | set WHO FIELD JSON
+node tools/rig.ts slot WHO SLOT CLIP [speed=1] [loop|once] [inplace|moving]   # fill a slot
+node tools/rig.ts clips WHO QUERY [category]                                    # library clips for its rig
+node tools/rig.ts ride WHO HORSE|off                                            # the app's default seat
+node tools/rig.ts render WHO [clips=Idle,Walk] [at=0,.25,.5,.75] [views=right,front] [size=320]
+node tools/rig.ts check [UNIT ...]                                              # is the game's file current?
+```
+
+`render` exports the unit (its filled slots) to `workspace/renders/<id>/` and draws each clip in Blender
+(`tools/render.py`: orthographic, frames across, views down, a ground line under the feet). WHO is an id, a name or a
+game unit. The node tools share `tools/lib/node3d.ts` (three's loaders headless, a character's body as the viewer
+holds it); `npx tsc -p tools` type-checks them.
 
 ## Named animation library
 

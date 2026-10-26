@@ -8,6 +8,9 @@ import { humanSpec, JointEditor, templateSpec, type Joints, type SkeletonSpec } 
 import { loadTemplate } from '../engine/templates.ts'
 import type { FingerLevel } from '../engine/mixamo.ts'
 import { Stage } from '../engine/Stage.ts'
+import * as THREE from 'three'
+import { restFrame } from '../engine/garments.ts'
+import { riderScale, seatMatrix } from '../engine/mount.ts'
 
 class Viewer {
   stage: Stage | null = null
@@ -25,6 +28,15 @@ class Viewer {
 
   private loadedKey = ''
   private loadToken = 0
+  /** The horse the character on stage rides (its CharacterView), and the seat holding his rig on its back:
+   * horse bone -> its rest frame undone -> the seat (his placement, at his size) -> his root. */
+  horse = $state.raw<CharacterView | null>(null)
+  private horseKey = ''
+  private horseToken = 0
+  private seat: THREE.Group | null = null
+  private seatBone = ''
+  /** The game's heights for a rider and his horse (the spec), per character. */
+  private heights = new Map<string, Promise<{ rider: number | null, horse: number | null }>>()
 
   attach (container: HTMLElement): () => void {
     this.stage = new Stage(container)
@@ -72,6 +84,7 @@ class Viewer {
       }
     }
     this.syncEditor(character, step)
+    await this.syncMount(character)
     void outfit.sync(step === 'outfit')
     if (step !== 'animate' && step !== 'export' && step !== 'outfit' && animator.current !== null) animator.stop()
   }
@@ -130,8 +143,88 @@ class Viewer {
     if (this.character !== null) this.stage?.frame(this.character.box)
   }
 
+  /** Put the character on its horse (or take it off): load the horse beside it, seat its rig on the horse's bone at its
+   * placement and size, hand the horse to the animator. */
+  private async syncMount (character: Character | null): Promise<void> {
+    const stage = this.stage
+    const rider = this.character
+    if (stage === null) return
+    const m = character?.mount
+    const horseChar = m === undefined ? undefined : app.characters.find(c => c.id === m.character)
+    const url = horseChar === undefined ? null : fileUrl(horseChar, horseChar.files.rigged)
+    const key = url === null || rider === null ? '' : `${rider.root.uuid}|${url}`
+    if (key !== this.horseKey) {
+      this.horseKey = key
+      const token = ++this.horseToken
+      this.dropHorse()
+      if (url === null || rider === null) return
+      try {
+        const horse = await CharacterView.load(url)
+        if (token !== this.horseToken || this.character !== rider) { horse.dispose(stage); return }
+        stage.content.add(horse.root)
+        horse.setMode(this.mode)
+        this.horse = horse
+        animator.attachMount(horse)
+      } catch (error) {
+        this.loadError = `The horse didn't load: ${(error as Error).message}`
+        return
+      }
+    }
+    const horse = this.horse
+    if (horse === null || rider === null || m === undefined || horseChar === undefined) return
+    const bone = horse.bones.get(m.bone)
+    if (bone === undefined) return
+    if (this.seat === null || this.seatBone !== m.bone) {
+      this.seat?.parent?.removeFromParent()
+      const group = new THREE.Group()
+      group.name = 'mount_seat_frame'
+      group.applyMatrix4((restFrame(horse, m.bone) ?? bone.matrixWorld.clone()).invert())
+      this.seat = new THREE.Group()
+      this.seat.name = 'mount_seat'
+      group.add(this.seat)
+      bone.add(group)
+      this.seat.add(rider.root)
+      this.seatBone = m.bone
+    }
+    const h = await this.gameHeights(character!.id)
+    const k = riderScale(m, { game: h.rider, own: rider.height }, { game: h.horse, own: horse.height })
+    this.seat.matrix.identity()
+    seatMatrix(m, k).decompose(this.seat.position, this.seat.quaternion, this.seat.scale)
+  }
+
+  /** The seat holding the rider (for the outfit's gizmo), when he rides. */
+  get seatNode (): THREE.Group | null { return this.seat }
+
+  private async gameHeights (id: string): Promise<{ rider: number | null, horse: number | null }> {
+    let pending = this.heights.get(id)
+    if (pending === undefined) {
+      pending = fetch(`/api/characters/${id}/game`).then(async r => (r.ok ? await r.json() : null) as { height: number | null, companion?: { height: number | null } } | null)
+        .then(g => ({ rider: g?.height ?? null, horse: g?.companion?.height ?? null }), () => ({ rider: null, horse: null }))
+      this.heights.set(id, pending)
+    }
+    return await pending
+  }
+
+  /** The horse off stage; the rider back on the ground. */
+  private dropHorse (): void {
+    const stage = this.stage
+    if (this.character !== null && stage !== null && this.character.root.parent !== stage.content) {
+      stage.content.add(this.character.root)
+      this.character.root.position.set(0, 0, 0)
+      this.character.root.quaternion.identity()
+      this.character.root.scale.set(1, 1, 1)
+    }
+    this.seat = null
+    this.seatBone = ''
+    if (this.horse !== null && stage !== null) this.horse.dispose(stage)
+    this.horse = null
+    animator.attachMount(null)
+  }
+
   private clear (): void {
     if (this.stage === null) return
+    this.dropHorse()
+    this.horseKey = ''
     this.editor?.dispose()
     this.editor = null
     animator.detach()

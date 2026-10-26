@@ -25,6 +25,7 @@
     void c?.status
     void c?.props
     void c?.garments
+    void c?.mount
     void outfit.fitting
     void viewer.sync(c, app.step)
   })

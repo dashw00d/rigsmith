@@ -50,7 +50,33 @@ export interface Character {
   props?: PropAttachment[]
   /** The user's own meshes worn by the character (see src/engine/garments.ts). */
   garments?: Garment[]
+  /** A horse this character rides (src/engine/mount.ts): its clips play under his, he sits on its back. */
+  mount?: Mount
+  /** Other skins for this character: colour maps on its own UVs (a horse's coats), by name, files relative to the
+   * character folder. A rider's mount picks one. */
+  skins?: Array<{ name: string, file: string }>
   error?: string
+}
+
+/** Riding: the horse (a creature character), the bone he sits on and where, and his lower body held in a seated pose
+ * while the rest of him plays his clips (with his scripts, keys and gear, as on foot). */
+export interface Mount {
+  character: string
+  bone: string
+  /** His rest space placed in the horse's (his hips on its back), turned (XYZ degrees). His size against the horse is
+   * the game's (the two units' heights in the spec), else `scale`. */
+  position: Vec3
+  rotation: Vec3
+  scale?: number
+  /** The bones held still (his lower body) and their seated pose: local rotations [x, y, z, w]; the Hips' local
+   * position too. */
+  freeze: string[]
+  pose: Record<string, [number, number, number, number]>
+  hips?: Vec3
+  /** The horse's look for this rider: one of its skins (by name; unset: its own texture) and which of its garments it
+   * wears (by name: a harness, a saddle, barding). One horse, its clips tuned once, dressed per unit. */
+  skin?: string
+  gear?: string[]
 }
 
 export interface Garment {
@@ -145,15 +171,22 @@ const DEFAULT_SETTINGS: Settings = {
 
 /** The game's side of a character: the unit it is (or is the companion of) and the clip names the game plays for it, in
  * the spec's order. Null when the spec doesn't name it (or there is no spec). */
-export async function gameSlots (id: string): Promise<{ unit: string, role: 'unit' | 'companion', clips: string[], height: number | null, spec: string } | null> {
+export async function gameSlots (id: string): Promise<{ unit: string, role: 'unit' | 'companion', clips: string[], height: number | null, spec: string,
+  companion?: { character: string, height: number | null, ridden: boolean } } | null> {
   const spec = (await getSettings()).gameSpec
-  const json = await readJson<{ units?: Record<string, { character?: string, height?: number, clips?: string[] | Record<string, unknown>, companion?: { character?: string, height?: number } }> } | null>(spec, null)
-  for (const [unit, u] of Object.entries(json?.units ?? {})) {
-    const clips = Array.isArray(u.clips) ? u.clips : Object.keys(u.clips ?? {})
-    if (u.character === id) return { unit, role: 'unit', clips, height: u.height ?? null, spec }
-    if (u.companion?.character === id) return { unit, role: 'companion', clips, height: u.companion.height ?? null, spec }
+  const json = await readJson<{ units?: Record<string, { character?: string, height?: number, clips?: string[] | Record<string, unknown>,
+    companion?: { character?: string, height?: number, ridden?: boolean } }> } | null>(spec, null)
+  const units = Object.entries(json?.units ?? {})
+  const clipsOf = (u: { clips?: string[] | Record<string, unknown> }): string[] => Array.isArray(u.clips) ? u.clips : Object.keys(u.clips ?? {})
+  for (const [unit, u] of units) {
+    const companion = u.companion?.character !== undefined ? { character: u.companion.character, height: u.companion.height ?? null, ridden: u.companion.ridden === true } : undefined
+    if (u.character === id) return { unit, role: 'unit', clips: clipsOf(u), height: u.height ?? null, spec, companion }
   }
-  return null
+  // a companion several units share (one horse, dressed per rider): every name any of them plays
+  const with_ = units.filter(([, u]) => u.companion?.character === id)
+  if (with_.length === 0) return null
+  const clips = [...new Set(with_.flatMap(([, u]) => clipsOf(u)))]
+  return { unit: with_.map(([unit]) => unit).join(', '), role: 'companion', clips, height: with_[0][1].companion?.height ?? null, spec }
 }
 
 export async function ensureWorkspace (): Promise<void> {

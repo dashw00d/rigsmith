@@ -24,7 +24,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { MeshoptSimplifier } from 'meshoptimizer'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { compact, simplify } from '../src/engine/export/lods.ts'
@@ -32,25 +31,9 @@ import { garmentMatrix } from '../src/engine/placement.ts'
 import { captureRest, pelvisName, retarget } from '../src/engine/retarget.ts'
 import { applyScripts, retime, sample, stride, type ClipScript } from '../src/engine/scripts.ts'
 import { applyBoneKeys, applyLift, propTracks } from '../src/engine/keys.ts'
-import type { AnimationEntry, Garment } from '../server/workspace.ts'
-
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images in node') }
-// GLTFExporter reads its binary chunks with a FileReader.
-g.FileReader ??= class {
-  result: ArrayBuffer | string | null = null
-  onloadend: (() => void) | null = null
-  readAsArrayBuffer (blob: Blob): void { void blob.arrayBuffer().then(b => { this.result = b; this.onloadend?.() }) }
-  readAsDataURL (blob: Blob): void {
-    void blob.arrayBuffer().then(b => { this.result = `data:${blob.type};base64,${Buffer.from(b).toString('base64')}`; this.onloadend?.() })
-  }
-}
-const quiet = console.warn
-console.warn = (...a: unknown[]) => { if (!String(a[0]).includes('THREE.GLTFLoader')) quiet(...a) }
-
-const ROOT = path.resolve(import.meta.dirname, '..')
-const WORKSPACE = path.join(ROOT, 'workspace')
+import { fitRide, freezeClip, repeat, seatMatrix } from '../src/engine/mount.ts'
+import { entrySource, isBone, load, ROOT, WORKSPACE } from './lib/node3d.ts'
+import type { AnimationEntry, Garment, Mount } from '../server/workspace.ts'
 
 interface UnitSpec {
   character: string, height: number, budget: number, lods?: number[]
@@ -79,15 +62,9 @@ interface CompanionSpec {
   material: string
   /** The feet whose planted one paces its walk (default: a horse's four). */
   feet?: string[]
-}
-
-const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
-
-async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
-  const data = readFileSync(file)
-  return await new Promise((resolve, reject) => {
-    new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '', r => { resolve(r as never) }, reject)
-  })
+  /** The unit rides it (the character's mount in Rigsmith: its seat, held bones, the horse's skin and gear): the rider
+   * sits on its seat bone, the horse's gait leads the clips, the unit's stride is the horse's. */
+  ridden?: boolean
 }
 
 /** The first image embedded in a GLB: bytes and extension. */
@@ -151,48 +128,11 @@ function scalePositions (clip: THREE.AnimationClip, s: number, floor: number, hi
   return new THREE.AnimationClip(clip.name, clip.duration, tracks)
 }
 
-/** The clip played `times` times over (keys shifted a cycle each time; a key a cycle repeats is kept once). */
-function repeat (clip: THREE.AnimationClip, times: number): THREE.AnimationClip {
-  if (times === 1) return clip
-  const T = clip.duration
-  const tracks = clip.tracks.map(t => {
-    const size = t.getValueSize()
-    const keys: number[] = []; const values: number[] = []
-    for (let r = 0; r < times; r++) {
-      for (let i = 0; i < t.times.length; i++) {
-        const at = t.times[i] + r * T
-        if (keys.length > 0 && at <= keys[keys.length - 1] + 1e-6) continue
-        keys.push(at)
-        for (let j = 0; j < size; j++) values.push(t.values[i * size + j])
-      }
-    }
-    const Track = t.constructor as new (name: string, times: number[], values: number[]) => THREE.KeyframeTrack
-    return new Track(t.name, keys, values)
-  })
-  return new THREE.AnimationClip(clip.name, T * times, tracks)
-}
-
-/** Where an entry's clip comes from: a converted library clip, or one bundled with the app (url /animations/<file>#<name>). */
-async function entrySource (entry: { clipId: string, url?: string }): Promise<{ scene: THREE.Group, clip: THREE.AnimationClip }> {
-  if (entry.url !== undefined) {
-    const [file, hash] = entry.url.split('#')
-    if (!file.startsWith('/animations/')) throw new Error(`clip ${entry.clipId}: ${entry.url} is not a clip bundled with Rigsmith`)
-    const src = await load(path.join(ROOT, 'static', file))
-    const name = hash === undefined ? undefined : decodeURIComponent(hash)
-    const clip = name === undefined ? src.animations[0] : src.animations.find(a => a.name === name)
-    if (clip === undefined) throw new Error(`clip ${entry.clipId}: no ${name} in ${file}`)
-    return { scene: src.scene, clip }
-  }
-  const file = path.join(WORKSPACE, 'library', 'clips', `${entry.clipId}.glb`)
-  if (!existsSync(file)) throw new Error(`clip ${entry.clipId}: not in the library`)
-  const src = await load(file)
-  return { scene: src.scene, clip: src.animations[0] }
-}
-
 /** A companion character, its clips retargeted onto it and scaled to its height (placed later, under the root). */
-async function loadCompanion (unit: string, c: CompanionSpec, names: string[]): Promise<{ mesh: THREE.SkinnedMesh, top: THREE.Bone, geometry: THREE.BufferGeometry, floor: number, s: number, clips: Map<string, THREE.AnimationClip>, entries: Map<string, AnimationEntry>, file: string }> {
+async function loadCompanion (unit: string, c: CompanionSpec, names: string[]): Promise<{ mesh: THREE.SkinnedMesh, top: THREE.Bone, geometry: THREE.BufferGeometry, floor: number, s: number, clips: Map<string, THREE.AnimationClip>, entries: Map<string, AnimationEntry>, file: string,
+  dir: string, info: { garments?: Garment[], skins?: Array<{ name: string, file: string }> } }> {
   const dir = path.join(WORKSPACE, 'characters', c.character)
-  const info = JSON.parse(readFileSync(path.join(dir, 'character.json'), 'utf8')) as { files: { rigged?: string }, animations: AnimationEntry[] }
+  const info = JSON.parse(readFileSync(path.join(dir, 'character.json'), 'utf8')) as { files: { rigged?: string }, animations: AnimationEntry[], scripts?: ClipScript[], garments?: Garment[], skins?: Array<{ name: string, file: string }> }
   const file = path.join(dir, info.files.rigged ?? 'rigged.glb')
   const { scene } = await load(file)
   scene.updateMatrixWorld(true)
@@ -210,19 +150,37 @@ async function loadCompanion (unit: string, c: CompanionSpec, names: string[]): 
   geometry.computeBoundingBox()
   const floor = geometry.boundingBox!.min.y
   const s = c.height / (geometry.boundingBox!.max.y - floor)
-  const clips = new Map<string, THREE.AnimationClip>()
+  // its clips as the viewer plays them (its own scripts, ground and keys, in its own units), then at its game size
+  const baked = new Map<string, THREE.AnimationClip>()
   const entries = new Map<string, AnimationEntry>()
   for (const name of names) {
     const entry = info.animations.find(a => a.name === name)
     if (entry === undefined) continue
     const src = await entrySource(entry)
-    let clip = retarget(src.scene, captureRest(src.scene, isBone), src.clip, rest, { fps: 30, inPlace: true })
-    clip = retime(scalePositions(clip, s, floor, top.name), entry.speed)
+    const clip = retime(retarget(src.scene, captureRest(src.scene, isBone), src.clip, rest, { fps: 30, inPlace: entry.inPlace }), entry.speed)
     clip.name = name
-    clips.set(name, clip)
+    baked.set(name, clip)
     entries.set(name, entry)
   }
-  return { mesh, top, geometry, floor, s, clips, entries, file }
+  const { clips: scripted } = await applyScripts(scene, baked, info.scripts ?? [], async id => {
+    const src = await entrySource({ clipId: id })
+    return retarget(src.scene, captureRest(src.scene, isBone), src.clip, rest, { fps: 30, inPlace: true })
+  })
+  const restOf = (b: string): { q: THREE.Quaternion, p: THREE.Vector3 } | null => {
+    const r = rest.bones.get(b)
+    return r === undefined ? null : { q: r.localQuaternion.clone(), p: r.localPosition.clone() }
+  }
+  const hips = rest.bones.get('Hips') ?? rest.bones.get('hips')
+  const clips = new Map<string, THREE.AnimationClip>()
+  for (const [name, entry] of entries) {
+    let clip = scripted.get(name)!
+    if (hips !== undefined) clip = applyLift(clip, hips.name, entry.lift ?? 0, hips.localPosition)
+    clip = applyBoneKeys(clip, entry.keys?.bones, entry.loop, restOf)
+    clip = scalePositions(clip, s, floor, top.name)
+    clip.name = name
+    clips.set(name, clip)
+  }
+  return { mesh, top, geometry, floor, s, clips, entries, file, dir, info }
 }
 
 function triangles (geometry: THREE.BufferGeometry): number {
@@ -232,7 +190,7 @@ function triangles (geometry: THREE.BufferGeometry): number {
 async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, workDir: string): Promise<Record<string, unknown>> {
   const characterDir = path.join(WORKSPACE, 'characters', spec.character)
   const character = JSON.parse(readFileSync(path.join(characterDir, 'character.json'), 'utf8')) as {
-    name: string, rigReport?: { method?: string }, files: { rigged?: string }, animations: AnimationEntry[], scripts?: ClipScript[], garments?: Garment[], props?: Array<{ name: string }>
+    name: string, rigReport?: { method?: string }, files: { rigged?: string }, animations: AnimationEntry[], scripts?: ClipScript[], garments?: Garment[], props?: Array<{ name: string }>, mount?: Mount
   }
   if (!Array.isArray(spec.clips)) throw new Error(`${unit}: the spec's clips are the game's clip names (["Idle", "Walk", ...]); what plays under each is the character's set in Rigsmith`)
   const riggedFile = path.join(characterDir, character.files.rigged ?? 'rigged.glb')
@@ -285,6 +243,12 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   }
 
   const comp = spec.companion !== undefined ? await loadCompanion(unit, spec.companion, spec.clips) : null
+  // riding: the horse is the companion, the seat and the held bones the character's mount in Rigsmith
+  const ridden = spec.companion?.ridden === true
+  const mount = character.mount
+  if (ridden && (mount === undefined || mount.character !== spec.companion!.character)) {
+    throw new Error(`${unit}: rides ${spec.companion!.character} in the spec, but ${character.name}'s mount in Rigsmith is ${mount?.character ?? 'none'}`)
+  }
 
   // The game unit: root bone above Hips, the mesh baked to world, scaled, grounded.
   const out = new THREE.Group()
@@ -416,6 +380,25 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     }
   }
   for (const p of character.props ?? []) console.warn(`warning: ${unit}: catalog prop ${p.name} left out (not built by the game: AGENTS.md, every model starts in Blender)`)
+  // Riding: the rider's rig, body and gear onto the horse's seat bone: his game space into the horse's (his size over
+  // the horse's cancels: one rigid move), his Hips under the seat bone from there. His clips' Hips follow (below).
+  let seatA: THREE.Matrix4 | null = null
+  if (ridden && comp !== null && mount !== undefined) {
+    const c = spec.companion!
+    const seatBone = compBones.find(b => b.name === c.prefix + mount.bone)
+    if (seatBone === undefined) throw new Error(`${unit}: the horse has no bone ${mount.bone}`)
+    out.updateMatrixWorld(true)
+    const W = place.clone().multiply(seatMatrix(mount, s / comp.s))
+      .multiply(new THREE.Matrix4().makeTranslation(0, floor, 0)).multiply(new THREE.Matrix4().makeScale(1 / s, 1 / s, 1 / s))
+    seatA = seatBone.matrixWorld.clone().invert().multiply(W)
+    const local = seatA.clone().multiply(new THREE.Matrix4().compose(hips.position, hips.quaternion, new THREE.Vector3(1, 1, 1)))
+    seatBone.add(hips)
+    local.decompose(hips.position, hips.quaternion, hips.scale)
+    hips.scale.set(1, 1, 1)
+    geometry.applyMatrix4(W)
+    for (const part of parts) part.geometry.applyMatrix4(W)
+    out.updateMatrixWorld(true)
+  }
   // (parts with their own budget, the villager's gear and spare heads, don't eat into the body's)
   const partTris = parts.reduce((t, x) => t + (x.budget ? triangles(x.geometry) : 0), 0)
   const bodyBudget = spec.budget - partTris
@@ -481,7 +464,56 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     addLevels(c.material, lod0c, new THREE.MeshStandardMaterial({ name: `Atlas_${c.material}` }), levels)
     compReport.character = c.character
     compReport.triangles = { source: t0, budget: c.budget, lods: levels }
-    const img = embeddedImage(comp.file)
+    // a ridden horse's gear (the rider's mount picks its pieces from the horse's garments), riding the horse's bones
+    if (ridden && mount !== undefined) {
+      const worn: Record<string, unknown> = {}
+      for (const g of comp.info.garments ?? []) {
+        if (!(mount.gear ?? []).includes(g.name)) continue
+        if (g.status !== 'ready' || g.file === undefined || g.mode !== 'rigid') { worn[g.name] = { left: 'not a ready rigid garment' }; continue }
+        const index = bones.findIndex(b => b.name === c.prefix + g.bone)
+        if (index < 0) throw new Error(`${unit}: the horse's ${g.name} rides ${g.bone}, not in its skeleton`)
+        const file = path.join(comp.dir, g.file)
+        const { scene: gs } = await load(file)
+        gs.updateMatrixWorld(true)
+        const at = new THREE.Matrix4().multiplyMatrices(place, garmentMatrix(g))
+        const geos: THREE.BufferGeometry[] = []; const mats: THREE.Material[] = []
+        gs.traverse(o => {
+          const m = o as THREE.Mesh
+          if (m.isMesh !== true) return
+          const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(at, m.matrixWorld))
+          for (const name of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv'].includes(name)) geo.deleteAttribute(name)
+          geos.push(geo)
+          const loaded = Array.isArray(m.material) ? m.material[0] : m.material
+          mats.push(new THREE.MeshStandardMaterial({ name: /^Main(\.\d+)?$/.test(loaded.name) ? `Atlas_${c.material}` : loaded.name }))
+        })
+        if (geos.length === 0) continue
+        const geo = geos.length === 1 ? geos[0] : mergeGeometries(geos, true)
+        const n = geo.attributes.position.count
+        const si2 = new Uint16Array(n * 4); const sw2 = new Float32Array(n * 4)
+        for (let i = 0; i < n; i++) { si2[i * 4] = index; sw2[i * 4] = 1 }
+        geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si2, 4))
+        geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw2, 4))
+        const name = `${c.prefix}${g.name}`
+        if (mats.length === 1) addLevels(name, geo, mats[0], (partReport[name] = []))
+        else {
+          if (geo.attributes.uv !== undefined && geo.index !== null) geo.computeTangents()
+          const mesh = new THREE.SkinnedMesh(geo, mats)
+          mesh.name = name
+          out.add(mesh)
+          meshes.push(mesh)
+          partReport[name] = [triangles(geo)]
+        }
+        worn[g.name] = { bone: g.bone, position: g.position, rotation: g.rotation, scale: g.scale, mesh: createHash('sha256').update(readFileSync(file)).digest('hex') }
+      }
+      compReport.gear = worn
+    }
+    // its colour: the rider's pick of its skins, else its own texture
+    const skin = ridden && mount?.skin !== undefined ? comp.info.skins?.find(k => k.name === mount.skin) : undefined
+    if (ridden && mount?.skin !== undefined && skin === undefined) console.warn(`warning: ${unit}: the horse has no skin ${mount.skin}: its own texture`)
+    compReport.skin = skin?.name
+    const img = skin !== undefined
+      ? { bytes: readFileSync(path.join(comp.dir, skin.file)), ext: path.extname(skin.file).slice(1).replace('jpeg', 'jpg') }
+      : embeddedImage(comp.file)
     if (img !== null) {
       mkdirSync(srcDir, { recursive: true })
       writeFileSync(path.join(srcDir, `base_${c.material}.${img.ext}`), img.bytes)
@@ -533,6 +565,29 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
       t === undefined || Object.keys(t).length === 0 ? undefined : Object.fromEntries(Object.entries(t).map(([k, v]) => [k, v.length]))
     Object.assign(clipReport[clip.name] as object, { lift: entry.lift, keys: entry.keys === undefined ? undefined : { bones: counted(entry.keys.bones), props: counted(entry.keys.props) } })
   }
+  // Riding: his held bones still in their seat (game units), then his Hips' keys from the root's frame into the seat
+  // bone's (he hangs from it now).
+  if (ridden && mount !== undefined && seatA !== null) {
+    const toGame = (p: THREE.Vector3): THREE.Vector3 => new THREE.Vector3(p.x * s, (p.y - floor) * s, p.z * s)
+    const qA = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(seatA))
+    for (let i = 0; i < clips.length; i++) {
+      const frozen = freezeClip(clips[i], mount, b => restLocal.get(b) ?? null, toGame)
+      const tracks = frozen.tracks.map(t => {
+        if (t.name === 'Hips.position') {
+          const c2 = t.clone(); const v = new THREE.Vector3()
+          for (let j = 0; j < c2.values.length; j += 3) v.fromArray(c2.values, j).applyMatrix4(seatA!).toArray(c2.values, j)
+          return c2
+        }
+        if (t.name === 'Hips.quaternion') {
+          const c2 = t.clone(); const q = new THREE.Quaternion()
+          for (let j = 0; j < c2.values.length; j += 4) q.fromArray(c2.values, j).premultiply(qA).toArray(c2.values, j)
+          return c2
+        }
+        return t
+      })
+      clips[i] = new THREE.AnimationClip(frozen.name, frozen.duration, tracks)
+    }
+  }
   // (the build record keeps the keys themselves too: game_import restores a character from it)
   for (const name of spec.clips) {
     const entry = character.animations.find(a => a.name === name)!
@@ -549,6 +604,7 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   out.updateMatrixWorld(true)
   const restHips = new THREE.Vector3().setFromMatrixPosition(hips.matrixWorld).y / spec.height
   for (const clip of clips) {
+    if (ridden) break    // (a rider's feet are in the stirrups: his steps are the horse's, checked by its stride below)
     const stats = checkClip(out, clip, spec.height)
     if (STANDS.has(clip.name) && stats.hipsMedian < 0.8 * restHips) {
       throw new Error(`${unit}: clip ${clip.name}: the hips sit at ${stats.hipsMedian} x height (rest ${restHips.toFixed(3)}): not standing (a seated clip?)`)
@@ -556,10 +612,34 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     Object.assign(clipReport[clip.name] as object, stats)
   }
 
+  // Riding: the horse's clips under his, fitted as the viewer fits them (src/engine/mount.ts: loops by whole cycles, the
+  // horse's gait leading; its attack to his); the unit's stride is the horse's planted hoof.
+  if (comp !== null && ridden) {
+    const c = spec.companion!
+    const feet = (c.feet ?? ['front_leg_foot_l', 'front_leg_foot_r', 'back_leg_foot_l', 'back_leg_foot_r']).map(f => c.prefix + f)
+    const clipsOut: Record<string, unknown> = {}
+    for (let k = 0; k < clips.length; k++) {
+      const main = clips[k]
+      const other = comp.clips.get(main.name) ?? comp.clips.get('Idle')
+      if (other === undefined) continue
+      const e = comp.entries.get(main.name) ?? comp.entries.get('Idle')
+      const attack = scripts.some(x => x.enabled && x.kind === 'blow' && x.clip === main.name)
+      const fit = fitRide(main, other, character.animations.find(a => a.name === main.name)?.loop === true, attack)
+      clips[k] = new THREE.AnimationClip(main.name, Math.max(fit.rider.duration, fit.horse.duration), [...fit.rider.tracks, ...fit.horse.tracks])
+      clipsOut[main.name] = { clip: e?.clipId, url: e?.url, loop: e?.loop, inPlace: e?.inPlace, speed: e?.speed, ...fit.report, seconds: +clips[k].duration.toFixed(3) }
+    }
+    compReport.clips = clipsOut
+    exportSkeleton.pose()
+    out.updateMatrixWorld(true)
+    const walkC = clips.find(x => x.name === 'Walk')
+    compReport.walkStride = walkC !== undefined ? +stride(out, walkC, feet).toFixed(3) : null
+    const runC = clips.find(x => x.name === 'Run')
+    if (runC !== undefined) compReport.runStride = +stride(out, runC, feet).toFixed(3)
+  }
   // The companion's clips joined to the unit's under the same names. Its walk first takes the unit's pace (its
   // planted foot as fast as the unit's), then loops fit by whole cycles (m of the unit's against n of its own, the
   // closest within six); its attack fits the unit's (the blows together); anything else plays at its own length.
-  if (comp !== null) {
+  if (comp !== null && !ridden) {
     const c = spec.companion!
     const feet = (c.feet ?? ['front_leg_foot_l', 'front_leg_foot_r', 'back_leg_foot_l', 'back_leg_foot_r']).map(f => c.prefix + f)
     const clipsOut: Record<string, unknown> = {}
@@ -625,8 +705,10 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     scripts: scripts.map(x => ({ ...x, did: scriptReport[x.id] })),
     gear: gearReport,
     companion: comp !== null ? compReport : undefined,
-    walkStride: walkStride === null ? null : +walkStride.toFixed(3),
-    runStride: runStride === null ? undefined : +runStride.toFixed(3),
+    // (a rider's stride is his horse's)
+    walkStride: ridden ? compReport.walkStride : walkStride === null ? null : +walkStride.toFixed(3),
+    runStride: ridden ? compReport.runStride : runStride === null ? undefined : +runStride.toFixed(3),
+    mount: ridden ? mount : undefined,
     texture: image === null ? null : { file: `base.${image.ext}`, sha256: createHash('sha256').update(image.bytes).digest('hex') },
     rigged: { file: path.relative(WORKSPACE, riggedFile), sha256: createHash('sha256').update(readFileSync(riggedFile)).digest('hex') },
   }
@@ -642,6 +724,8 @@ if (specFile === undefined || modelsDir === undefined || workDir === undefined) 
 const spec = JSON.parse(readFileSync(specFile, 'utf8')) as { defaults?: Partial<UnitSpec>, units: Record<string, UnitSpec> }
 for (const [unit, unitSpec] of Object.entries(spec.units)) {
   if (only.length > 0 && !only.includes(unit)) continue
+  // (a draft is built only when named: the game keeps the unit it has till then)
+  if (only.length === 0 && (unitSpec as { draft?: boolean }).draft === true) { console.error(`${unit}: a draft, left out (name it to build it)`); continue }
   const merged = { ...spec.defaults, ...unitSpec } as UnitSpec
   const repo = path.resolve(path.dirname(specFile), '..', '..')
   const report = await exportUnit(unit, merged, merged.models_dir !== undefined ? path.join(repo, merged.models_dir) : modelsDir, workDir)

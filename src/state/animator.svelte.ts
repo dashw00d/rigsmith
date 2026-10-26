@@ -2,7 +2,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
-import type { AnimationEntry, LibraryClip } from './api.ts'
+import type { AnimationEntry, Character, LibraryClip } from './api.ts'
 import { app } from './app.svelte.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
 import { RetargetCache } from '../engine/clips.ts'
@@ -12,6 +12,7 @@ import { PreviewRenderer } from '../engine/PreviewRenderer.ts'
 import { applyScripts, fistPose, retime, type GripScript } from '../engine/scripts.ts'
 import { applyBoneKeys, applyLift, propTracks } from '../engine/keys.ts'
 import { garmentMatrix } from '../engine/placement.ts'
+import { fitRide, freezeClip } from '../engine/mount.ts'
 import type { Stage } from '../engine/Stage.ts'
 
 export interface NowPlaying {
@@ -64,6 +65,14 @@ class Animator {
   /** How the entry playing was cut by its blow timing (seconds of the clip before the cut, at its speed). */
   cut = $state<{ name: string, start: number, end: number, uncut: number, blow: number } | null>(null)
   private stageRef: Stage | null = null
+  /** How many of the rider's own cycles the clip playing holds (a ridden loop fitted to the horse's gait): a key's
+   * phase is within one. */
+  cycles = $state(1)
+  // The horse a mounted character rides (viewer.syncMount): its own player, retargeting and posable copy.
+  private horseView: CharacterView | null = null
+  private horsePlayer: Player | null = null
+  private horseCache: RetargetCache | null = null
+  private horsePosable: THREE.Object3D | null = null
 
   attach (view: CharacterView, stage: Stage): void {
     this.detach()
@@ -80,12 +89,43 @@ class Animator {
     this.offFrame = stage.onFrame(dt => {
       if (this.player === null || this.player.clip === null || this.holding) return
       this.player.update(dt)
+      if (this.horsePlayer?.clip != null) this.horsePlayer.update(dt)
       this.time = this.player.time
     })
     this.usePreviewSubject()
   }
 
+  /** The horse the character rides now (or none). */
+  attachMount (view: CharacterView | null): void {
+    this.horsePlayer?.dispose()
+    this.horsePlayer = null
+    this.horseCache = null
+    this.horsePosable = null
+    this.horseView = view
+    if (view === null || view.rest === null) return
+    this.horsePlayer = new Player(view.root)
+    this.horsePlayer.setSpeed(this.speed)
+    this.horsePlayer.setLoop(this.loop)
+    this.horsePlayer.setPlaying(this.playing)
+    this.horseCache = new RetargetCache(view.rest)
+  }
+
+  /** The horse on stage (the character rides it). */
+  get horse (): CharacterView | null { return this.horseView }
+
+  /** The local pose of `bones` at the first frame of a library clip on this character (a seat's legs), and the Hips'
+   * local position there. */
+  /** The mount playing under this character, when it rides one. */
+  private riding (): { character: Character, view: CharacterView, cache: RetargetCache, posable: THREE.Object3D } | null {
+    const m = app.selected?.mount
+    const horse = m === undefined ? undefined : app.characters.find(c => c.id === m.character)
+    if (m === undefined || horse === undefined || this.horseView === null || this.horseCache === null) return null
+    this.horsePosable ??= cloneSkinned(this.horseView.root)
+    return { character: horse, view: this.horseView, cache: this.horseCache, posable: this.horsePosable }
+  }
+
   detach (): void {
+    this.attachMount(null)
     this.offFrame?.()
     this.offFrame = null
     this.player?.dispose()
@@ -123,14 +163,47 @@ class Animator {
     if (options.loop !== undefined) this.setLoop(options.loop)
     try {
       const entry = target.entry !== null ? app.selected?.animations[target.entry] : undefined
-      // (an entry plays as the game gets it: its speed, scripts, ground and keys; a library preview as it comes, props at rest)
-      const clip = entry !== undefined && entry.clipId === target.clipId
-        ? await this.scripted(entry)
-        : this.withProps(await this.cache.get(target.url, { inPlace: this.inPlace, mirror: this.mirror }), undefined, false)
-      if (entry === undefined) this.unkeyed = null
+      // (an entry plays as the game gets it: its speed, scripts, ground and keys, seated on its horse if it rides one,
+      // the horse's clip of the same name under it; a library preview as it comes, props at rest, the horse idling)
+      let clip: THREE.AnimationClip
+      let horse: THREE.AnimationClip | null = null
+      const ride = this.riding()
+      this.cycles = 1
+      if (entry !== undefined && entry.clipId === target.clipId) {
+        const me = app.selected!
+        const built = await this.bake(me, this.view!, this.cache, this.posableCopy()!, entry, true)
+        let rider = built.clip
+        let unkeyed = built.unkeyed
+        if (ride !== null) {
+          const rest = restOf(this.view!)
+          rider = freezeClip(rider, me.mount!, rest)
+          unkeyed = freezeClip(unkeyed, me.mount!, rest)
+          const he = ride.character.animations.find(a => a.name === entry.name) ?? ride.character.animations.find(a => a.name === 'Idle')
+          if (he !== undefined) {
+            const hb = (await this.bake(ride.character, ride.view, ride.cache, ride.posable, he, false)).clip
+            const attack = (me.scripts ?? []).some(x => x.enabled && x.kind === 'blow' && x.clip === entry.name)
+            const fit = fitRide(rider, hb, entry.loop, attack)
+            this.cycles = Array.isArray(fit.report.cycles) ? (fit.report.cycles as number[])[0] : 1
+            unkeyed = fitRide(unkeyed, hb, entry.loop, attack).rider
+            rider = fit.rider
+            horse = retime(fit.horse, 1 / entry.speed)
+          }
+        }
+        this.unkeyed = retime(unkeyed, 1 / entry.speed)
+        clip = retime(rider, 1 / entry.speed)
+      } else {
+        clip = this.withProps(await this.cache.get(target.url, { inPlace: this.inPlace, mirror: this.mirror }), undefined, false)
+        this.unkeyed = null
+        const idle = ride?.character.animations.find(a => a.name === 'Idle')
+        if (ride !== null && idle !== undefined) horse = (await this.bake(ride.character, ride.view, ride.cache, ride.posable, idle, false)).clip
+      }
       if (token !== this.token || this.player === null) return
       if (this.player.clip?.name === 'Rest, fists closed') this.player.stop()   // (no closed fingers left over)
       this.player.play(clip, options.keepTime === true)
+      if (this.horsePlayer !== null) {
+        if (horse !== null) this.horsePlayer.play(horse, options.keepTime === true)
+        else this.horsePlayer.stop()
+      }
       this.duration = clip.duration
     } catch (error) {
       if (token === this.token) this.error = (error as Error).message
@@ -143,47 +216,44 @@ class Animator {
     void this.play({ clipId: entry.clipId, url: entryUrl(entry), name: entry.name, entry: index }, { inPlace: entry.inPlace, speed: entry.speed, loop: entry.loop, keepTime })
   }
 
-  /** An entry as the game export makes it: at its speed, the scripts applied (with the clips a pace needs), then
-   * played back at its speed again so the speed control keeps its meaning. */
-  private async scripted (entry: AnimationEntry): Promise<THREE.AnimationClip> {
-    const cache = this.cache!
-    const character = app.selected!
-    const scripts = character.scripts ?? []
-    this.posable ??= cloneSkinned(this.view!.root)
+  /** An entry of `c` as the game export makes it, at its speed (the timeline the export bakes): its scripts (with the
+   * clips a pace needs), its ground, its bone keys, its props. `record`: the character on stage (its cut kept for the
+   * blow's frame). Returns the clip and the same before its keys (what a new key is measured against). */
+  private async bake (c: Character, view: CharacterView, cache: RetargetCache, posable: THREE.Object3D, entry: AnimationEntry, record: boolean): Promise<{ clip: THREE.AnimationClip, unkeyed: THREE.AnimationClip }> {
+    const scripts = c.scripts ?? []
     const build = async (e: AnimationEntry): Promise<THREE.AnimationClip> =>
       retime(await cache.get(entryUrl(e), { inPlace: e.inPlace, mirror: this.mirror }), e.speed)
     const clips = new Map([[entry.name, await build(entry)]])
     for (const s of scripts) {
       if (s.enabled && s.kind === 'pace' && s.clip === entry.name) {
-        const like = character.animations.find(a => a.name === s.like)
+        const like = c.animations.find(a => a.name === s.like)
         if (like !== undefined) clips.set(like.name, await build(like))
       }
     }
-    const { clips: out, report } = await applyScripts(this.posable, clips, scripts, async id => await cache.get(clipUrl(id), { inPlace: true }))
-    const blow = Object.values(report).find(r => (r as { kind?: string, clip?: string }).kind === 'blow' && (r as { clip?: string }).clip === entry.name) as { kept: [number, number], uncut: number, blow: number } | undefined
-    this.cut = blow === undefined ? null : { name: entry.name, start: blow.kept[0], end: blow.kept[1], uncut: blow.uncut, blow: blow.blow }
-    const rest = this.view!.rest!
-    const hips = rest.bones.get('Hips')
+    const { clips: out, report } = await applyScripts(posable, clips, scripts, async id => await cache.get(clipUrl(id), { inPlace: true }))
+    if (record) {
+      const blow = Object.values(report).find(r => (r as { kind?: string, clip?: string }).kind === 'blow' && (r as { clip?: string }).clip === entry.name) as { kept: [number, number], uncut: number, blow: number } | undefined
+      this.cut = blow === undefined ? null : { name: entry.name, start: blow.kept[0], end: blow.kept[1], uncut: blow.uncut, blow: blow.blow }
+    }
+    const rest = view.rest!
+    const hips = rest.bones.get('Hips') ?? rest.bones.get('hips')
     let clip = out.get(entry.name)!
-    if (hips !== undefined) clip = applyLift(clip, 'Hips', entry.lift ?? 0, hips.localPosition)
-    this.unkeyed = retime(clip, 1 / entry.speed)
-    clip = applyBoneKeys(clip, entry.keys?.bones, entry.loop, bone => {
-      const b = rest.bones.get(bone)
-      return b === undefined ? null : { q: b.localQuaternion.clone(), p: b.localPosition.clone() }
-    })
-    return retime(this.withProps(clip, entry.keys?.props, entry.loop), 1 / entry.speed)
+    if (hips !== undefined) clip = applyLift(clip, hips.name, entry.lift ?? 0, hips.localPosition)
+    const unkeyed = clip
+    clip = applyBoneKeys(clip, entry.keys?.bones, entry.loop, restOf(view))
+    return { clip: this.withProps(clip, entry.keys?.props, entry.loop, c, view), unkeyed }
   }
 
   /** `clip` with a track for every prop on stage (its placement, then its keys if it has any), so a prop keyed in one
    * clip is back in place in the next. */
-  private withProps (clip: THREE.AnimationClip, props: Record<string, Array<{ u: number, q: [number, number, number, number], p?: [number, number, number] }>> | undefined, loop: boolean): THREE.AnimationClip {
-    const c = app.selected
-    if (c === null || this.view === null) return clip
+  private withProps (clip: THREE.AnimationClip, props: Record<string, Array<{ u: number, q: [number, number, number, number], p?: [number, number, number] }>> | undefined, loop: boolean,
+    c: Character | null = app.selected, view: CharacterView | null = this.view): THREE.AnimationClip {
+    if (c === null || view === null) return clip
     const tracks = [...clip.tracks]
     for (const g of c.garments ?? []) {
       if (g.mode !== 'rigid') continue
       const node = `${g.name.replace(/[^\w]+/g, '_')}_place`
-      if (this.view.root.getObjectByName(node) === undefined) continue    // (hidden: not on stage)
+      if (view.root.getObjectByName(node) === undefined) continue    // (hidden: not on stage)
       const position = new THREE.Vector3(); const quaternion = new THREE.Quaternion(); const scale = new THREE.Vector3()
       garmentMatrix(g).decompose(position, quaternion, scale)
       tracks.push(...propTracks(node, clip.duration, props?.[g.name], loop, { position, quaternion }, g.scale))
@@ -211,7 +281,10 @@ class Animator {
       }
       if (token !== this.token || this.player === null) return
       this.player.stop()
-      this.player.play(new THREE.AnimationClip('Rest, fists closed', 1, tracks))
+      this.horsePlayer?.stop()
+      const m = app.selected?.mount
+      const fists = new THREE.AnimationClip('Rest, fists closed', 1, tracks)
+      this.player.play(m !== undefined && this.horseView !== null ? freezeClip(fists, m, restOf(this.view)) : fists)
       this.duration = 1
     } catch (error) {
       if (token === this.token) this.error = (error as Error).message
@@ -242,15 +315,21 @@ class Animator {
   stop (): void {
     this.token++
     this.player?.stop()
+    this.horsePlayer?.stop()
+    // (a rider at rest still sits: his frozen bones at their seated pose)
+    const m = app.selected?.mount
+    if (m !== undefined && this.horseView !== null && this.view !== null && this.player !== null) {
+      this.player.play(freezeClip(new THREE.AnimationClip('Rest, seated', 1, []), m, restOf(this.view)))
+    }
     this.current = null
     this.duration = 0
     this.time = 0
   }
 
-  setPlaying (playing: boolean): void { this.playing = playing; this.player?.setPlaying(playing) }
-  setSpeed (speed: number): void { this.speed = speed; this.player?.setSpeed(speed) }
-  setLoop (loop: boolean): void { this.loop = loop; this.player?.setLoop(loop) }
-  seek (time: number): void { this.player?.seek(time); this.time = time }
+  setPlaying (playing: boolean): void { this.playing = playing; this.player?.setPlaying(playing); this.horsePlayer?.setPlaying(playing) }
+  setSpeed (speed: number): void { this.speed = speed; this.player?.setSpeed(speed); this.horsePlayer?.setSpeed(speed) }
+  setLoop (loop: boolean): void { this.loop = loop; this.player?.setLoop(loop); this.horsePlayer?.setLoop(loop) }
+  seek (time: number): void { this.player?.seek(time); this.horsePlayer?.seek(time); this.time = time }
 
   // ---- library previews ---------------------------------------------------------------------------
 
@@ -296,3 +375,11 @@ class Animator {
 }
 
 export const animator = new Animator()
+
+/** A character's bones at rest (local), for clips' keys and frozen bones the clip doesn't move. */
+function restOf (view: CharacterView): (bone: string) => { q: THREE.Quaternion, p: THREE.Vector3 } | null {
+  return bone => {
+    const b = view.rest?.bones.get(bone)
+    return b === undefined ? null : { q: b.localQuaternion.clone(), p: b.localPosition.clone() }
+  }
+}

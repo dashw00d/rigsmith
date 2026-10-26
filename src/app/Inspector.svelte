@@ -6,6 +6,7 @@
   import TexturePanel from './steps/TexturePanel.svelte'
   import AnimatePanel from './steps/AnimatePanel.svelte'
   import ExportPanel from './steps/ExportPanel.svelte'
+  import HistoryPanel from './HistoryPanel.svelte'
 </script>
 
 {#if app.selected === null}
@@ -24,6 +25,9 @@
   <AnimatePanel character={app.selected} />
 {:else}
   <ExportPanel character={app.selected} />
+{/if}
+{#if app.selected !== null}
+  <HistoryPanel character={app.selected} />
 {/if}
 
 <style>

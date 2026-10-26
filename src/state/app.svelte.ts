@@ -38,6 +38,8 @@ class AppState {
   toasts = $state<Toast[]>([])
   settings = $state<Settings | null>(null)
   connected = $state(false)
+  /** Bumped when a character's journal gains a note (its changes come with the character itself). */
+  journalBeat = $state(0)
 
   selected = $derived(this.characters.find(c => c.id === this.selectedId) ?? null)
   activeJobs = $derived(this.jobs.filter(j => j.status === 'queued' || j.status === 'running'))
@@ -65,6 +67,7 @@ class AppState {
       if (job.status === 'failed') this.toast('error', `${job.label} failed: ${job.error ?? 'unknown error'}`)
     })
     source.addEventListener('character', (e) => { this.upsert(JSON.parse((e as MessageEvent).data) as Character) })
+    source.addEventListener('journal', () => { this.journalBeat++ })
     source.addEventListener('removed', (e) => { this.forget(JSON.parse((e as MessageEvent).data) as string) })
     source.onerror = () => { this.connected = false }
   }

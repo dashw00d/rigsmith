@@ -310,6 +310,14 @@ function hipsHeight (skeleton: RestSkeleton): number {
   return Math.max(hips.worldPosition.y - Math.min(min, 0), 1e-4)
 }
 
+/** A joint's world matrix at rest, from its rig's parent down its chain of rest locals; `null` the frame above the top
+ * joint `child` hangs in. */
+function restWorld (skeleton: RestSkeleton, name: string | null, child: string): THREE.Matrix4 {
+  if (name === null) return (skeleton.parentWorld.get(child) ?? new THREE.Matrix4()).clone()
+  const b = skeleton.bones.get(name)!
+  return restWorld(skeleton, b.parent, name).multiply(new THREE.Matrix4().compose(b.localPosition, b.localQuaternion, b.localScale))
+}
+
 export function retarget (sourceRoot: THREE.Object3D, source: RestSkeleton, clip: THREE.AnimationClip, target: RestSkeleton, options: RetargetOptions = {}): THREE.AnimationClip {
   const fps = options.fps ?? 30
   // Single-frame pose clips have zero duration, which breaks looping; give them one frame of length.
@@ -388,7 +396,8 @@ export function retarget (sourceRoot: THREE.Object3D, source: RestSkeleton, clip
   const hips = target.bones.get(hipsName)
   if (hips !== undefined && hipsWorld.length === frames) {
     if (options.inPlace === true) removeTravel(hipsWorld)
-    const parentInverse = (target.parentWorld.get(hipsName) ?? new THREE.Matrix4()).clone().invert()
+    // (into the frame the hips hang in: the rig's own parent, or the joint above them, a creature's root bone)
+    const parentInverse = restWorld(target, hips.parent ?? null, hipsName).invert()
     const p = new THREE.Vector3()
     for (let f = 0; f < frames; f++) {
       p.copy(hips.worldPosition).add(hipsWorld[f]).applyMatrix4(parentInverse)

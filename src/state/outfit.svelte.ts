@@ -1,10 +1,11 @@
 // Props in the viewport: attaching the selected character's props, selection, and the gizmo.
 import * as THREE from 'three'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
-import { api, fileUrl, type Garment } from './api.ts'
+import { api, fileUrl, type Garment, type Mount } from './api.ts'
 import { app } from './app.svelte.ts'
-import type { CharacterView } from '../engine/CharacterView.ts'
+import { CharacterView } from '../engine/CharacterView.ts'
 import { attachGarments, garmentMatrix, restFrame } from '../engine/garments.ts'
+import { riderScale, straddle } from '../engine/mount.ts'
 import { animator } from './animator.svelte.ts'
 import {
   applyOffset, attachProps, CATALOG, defaultPlacement, defaultScale, readOffset, type PropAttachment, type Socket,
@@ -20,6 +21,8 @@ class Outfit {
   fitting = $state<string | null>(null)
   mode = $state<GizmoMode>('translate')
   busy = $state(false)
+  /** What the gizmo moves for a rider: his seat on the horse ('seat'), or one of his held bones ('bone:<name>'). */
+  mountTarget = $state<string | null>(null)
   private objects = new Map<string, THREE.Object3D>()
   private garmentObjects = new Map<string, THREE.Object3D>()
   private appliedGarments = ''
@@ -54,7 +57,8 @@ class Outfit {
         if ((e as unknown as { value: boolean }).value && animator.playing) animator.setPlaying(false)
         animator.holding = (e as unknown as { value: boolean }).value
         if (!(e as unknown as { value: boolean }).value) {
-          if (this.fitting !== null) this.commitFit()
+          if (this.mountTarget !== null) void this.commitMount()
+          else if (this.fitting !== null) this.commitFit()
           else this.commitGizmo()
         }
       })
@@ -100,14 +104,86 @@ class Outfit {
 
   private updateGizmo (show: boolean): void {
     if (this.gizmo === null) return
-    const object = this.fitting !== null ? this.garmentObjects.get(this.fitting) : this.selected === null ? undefined : this.objects.get(this.selected)
+    const object = this.mountTarget !== null ? this.mountObject() ?? undefined
+      : this.fitting !== null ? this.garmentObjects.get(this.fitting) : this.selected === null ? undefined : this.objects.get(this.selected)
     if (!show || object === undefined) {
       this.gizmo.detach()
       return
     }
     if (this.gizmo.object !== object) this.gizmo.attach(object)
-    this.gizmo.setMode(this.mode)
-    this.gizmo.setSpace(this.fitting !== null ? 'world' : 'local')
+    this.gizmo.setMode(this.mountTarget !== null && this.mountTarget !== 'seat' && this.mountTarget !== 'bone:Hips' ? 'rotate' : this.mode)
+    this.gizmo.setSpace(this.fitting !== null || this.mountTarget === 'seat' ? 'world' : 'local')
+  }
+
+  // ---- riding --------------------------------------------------------------------------------------------------
+
+  private mountObject (): THREE.Object3D | null {
+    const t = this.mountTarget
+    if (t === null || this.stage === null) return null
+    if (t === 'seat') return this.stage.scene.getObjectByName('mount_seat') ?? null
+    return t.startsWith('bone:') ? this.view?.bones.get(t.slice(5)) ?? null : null
+  }
+
+  aim (target: string | null): void {
+    this.mountTarget = target
+    if (target !== null) { this.fitting = null; this.selected = null }
+    this.updateGizmo(app.step === 'outfit')
+  }
+
+  async patchMount (change: Partial<Mount>): Promise<void> {
+    const c = app.selected
+    if (c === null || c.mount === undefined) return
+    await app.update(c.id, { mount: { ...c.mount, ...change } })
+    void animator.refresh(true)
+    if (animator.current === null) animator.stop()   // (at rest: seated again, as changed)
+  }
+
+  /** Ride `horseId` (a new seat worked out from the two bodies: src/engine/mount.ts straddle), or stop riding (null). */
+  async setMount (horseId: string | null): Promise<void> {
+    const c = app.selected
+    if (c === null) return
+    this.mountTarget = null
+    if (horseId === null) { await app.update(c.id, { mount: null as unknown as undefined }); return }
+    const horse = app.characters.find(x => x.id === horseId)
+    const url = horse === undefined ? null : fileUrl(horse, horse.files.rigged)
+    if (url === null || this.view === null) return
+    const hv = await CharacterView.load(url)
+    const heights = await fetch(`/api/characters/${c.id}/game`).then(async x => (x.ok ? await x.json() : null) as { height: number | null, companion?: { height: number | null } } | null).catch(() => null)
+    const k = riderScale({}, { game: heights?.height ?? null, own: this.view.height }, { game: heights?.companion?.height ?? null, own: hv.height })
+    const mount: Mount = { character: horseId, rotation: [0, 0, 0], ...straddle(hv, this.view, k) }
+    await app.update(c.id, { mount })
+  }
+
+  /** His held bones as they stand now (a seated clip paused on the right frame): the seat's new pose. */
+  async takeSeatPose (): Promise<void> {
+    const m = app.selected?.mount
+    if (m === undefined || this.view === null) return
+    const pose: Record<string, [number, number, number, number]> = {}
+    for (const b of m.freeze) {
+      const o = this.view.bones.get(b)
+      if (o !== undefined) pose[b] = o.quaternion.toArray().map(v => Math.round(v * 1e6) / 1e6) as [number, number, number, number]
+    }
+    const h = this.view.bones.get('Hips')
+    await this.patchMount({ pose, hips: h === undefined ? m.hips : h.position.toArray().map(v => Math.round(v * 1e5) / 1e5) as [number, number, number] })
+  }
+
+  private async commitMount (): Promise<void> {
+    const t = this.mountTarget
+    const m = app.selected?.mount
+    const object = this.mountObject()
+    if (t === null || m === undefined || object === null) return
+    const r = (v: number): number => Math.round(v * 10000) / 10000
+    if (t === 'seat') {
+      const e = new THREE.Euler().setFromQuaternion(object.quaternion)
+      await this.patchMount({
+        position: [r(object.position.x), r(object.position.y), r(object.position.z)],
+        rotation: [e.x, e.y, e.z].map(v => Math.round(THREE.MathUtils.radToDeg(v) * 10) / 10) as [number, number, number],
+      })
+      return
+    }
+    const bone = t.slice(5)
+    const pose = { ...m.pose, [bone]: object.quaternion.toArray().map(v => Math.round(v * 1e6) / 1e6) as [number, number, number, number] }
+    await this.patchMount(bone === 'Hips' ? { pose, hips: object.position.toArray().map(v => Math.round(v * 1e5) / 1e5) as [number, number, number] } : { pose })
   }
 
   setMode (mode: GizmoMode): void {

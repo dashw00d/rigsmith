@@ -8,6 +8,7 @@
   import Toggle from '../../ui/Toggle.svelte'
   import { app } from '../../state/app.svelte.ts'
   import { animator } from '../../state/animator.svelte.ts'
+  import { LOWER_BODY } from '../../engine/mount.ts'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
   import Segmented from '../../ui/Segmented.svelte'
@@ -40,6 +41,17 @@
   // (with its scripts, as the game plays it), paused at any frame from the timeline.
   const pose = $derived(animator.current === null ? 'rest' : animator.current.clipId === 'fists' ? 'fists'
     : animator.current.entry !== null ? String(animator.current.entry) : 'rest')
+  // Riding: the horses there are (rigged creatures), the one ridden, its bones (the seat's), his held bones.
+  const horses = $derived(app.characters.filter(c => c.id !== character.id && c.status === 'rigged' && (c.template ?? 'human') !== 'human'))
+  const mount = $derived(character.mount)
+  const horseBones = $derived(animator.horse?.rest?.order.filter(b => animator.horse!.bones.has(b)) ?? [])
+  const riderBones = $derived(animator.character?.rest?.order.filter(b => animator.character!.bones.has(b)) ?? [])
+  function toggleHeld (bone: string, on: boolean): void {
+    if (mount === undefined) return
+    const freeze = on ? [...new Set([...mount.freeze, bone])] : mount.freeze.filter(b => b !== bone)
+    void outfit.patchMount({ freeze })
+  }
+
   function setPose (value: string): void {
     if (value === 'rest') animator.stop()
     else if (value === 'fists') void animator.playFists()
@@ -71,6 +83,43 @@
     </select>
     <p class="faint small">Fit gear on a clip as the game plays it (its scripts too: a held fist stays closed). Pause on any frame
       (Space, or the timeline; , and . step a frame) and drag the gizmo there.</p>
+  </Section>
+
+  <Section title="Mount">
+    <div class="field">
+      <span>Rides</span>
+      <select value={mount?.character ?? ''} onchange={(e) => outfit.setMount((e.target as HTMLSelectElement).value || null)} aria-label="Horse">
+        <option value="">Nothing (on foot)</option>
+        {#each horses as h}<option value={h.id}>{h.name}</option>{/each}
+      </select>
+    </div>
+    {#if mount !== undefined}
+      <div class="field">
+        <span>Sits on</span>
+        <select value={mount.bone} onchange={(e) => outfit.patchMount({ bone: (e.target as HTMLSelectElement).value })} aria-label="Horse bone">
+          {#each horseBones.includes(mount.bone) ? horseBones : [mount.bone, ...horseBones] as b}<option value={b}>{b}</option>{/each}
+        </select>
+      </div>
+      <div class="row-buttons">
+        <button class:on={outfit.mountTarget === 'seat'} onclick={() => outfit.aim(outfit.mountTarget === 'seat' ? null : 'seat')}>Place him</button>
+        <button onclick={() => outfit.takeSeatPose()} title="His held bones as they stand now (play a seated clip, pause on the frame)">Take the legs from the pose playing</button>
+      </div>
+      <p class="faint small">Held still in the seat (the rest of him plays his clips, with his gear, keys and scripts, over the horse's
+        clip of the same name):</p>
+      <div class="held">
+        {#each riderBones.filter(b => LOWER_BODY.includes(b) || mount.freeze.includes(b)) as b}
+          <label class:on={mount.freeze.includes(b)}>
+            <input type="checkbox" checked={mount.freeze.includes(b)} onchange={(e) => toggleHeld(b, (e.target as HTMLInputElement).checked)} />
+            <button class="link" class:aimed={outfit.mountTarget === `bone:${b}`} disabled={!mount.freeze.includes(b)}
+              onclick={() => outfit.aim(outfit.mountTarget === `bone:${b}` ? null : `bone:${b}`)} title="Shape it with the gizmo">{b}</button>
+          </label>
+        {/each}
+      </div>
+      {#if outfit.mountTarget !== null}
+        <Segmented options={modes} bind:value={mode} onchange={(m) => outfit.setMode(m)} />
+        <p class="faint small">{outfit.mountTarget === 'seat' ? 'Drag him onto the horse.' : `Turn ${outfit.mountTarget.slice(5)} into the seat.`} Letting go saves it.</p>
+      {/if}
+    {/if}
   </Section>
 
   <Section title="Attached">
@@ -207,6 +256,15 @@
   .icon.show { margin-right: 0; }
   .icon.show:hover { color: var(--text-1); background: var(--bg-3); }
   li.hidden .name { color: var(--text-3); }
+  .row-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+  .row-buttons button { height: 26px; padding: 0 9px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg-2); color: var(--text-2); font-size: 12px; }
+  .row-buttons button.on { border-color: var(--accent); color: var(--accent-strong); }
+  .held { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin-bottom: 8px; }
+  .held label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-3); }
+  .held label.on { color: var(--text-1); }
+  .link { border: 0; background: transparent; padding: 0; color: inherit; font-size: 12px; text-align: left; }
+  .link:disabled { cursor: default; }
+  .link.aimed { color: var(--accent-strong); font-weight: 600; }
   .pose { width: 100%; height: 30px; border-radius: var(--r-1); border: 1px solid var(--line-strong); background: var(--bg-2); padding: 0 6px; margin-bottom: 6px; }
   .field { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .field span { color: var(--text-2); }

@@ -1,0 +1,6 @@
+{
+  "//": "Type-checks the node tools (npx tsc -p tools): the app's own files come in through what they import.",
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "types": ["node"] },
+  "include": ["*.ts", "lib/**/*.ts", "dev/tune_parity.ts", "dev/ground.ts"]
+}

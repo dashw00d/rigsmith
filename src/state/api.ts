@@ -1,9 +1,10 @@
 // Typed client for the local server (server/api.ts).
-import type { AnimationEntry, Character, ClipKey, ClipKeys, Garment, Settings, TextureImage, Vec3 } from '../../server/workspace.ts'
+import type { AnimationEntry, Character, ClipKey, ClipKeys, Garment, Mount, Settings, TextureImage, Vec3 } from '../../server/workspace.ts'
 import type { Job } from '../../server/jobs.ts'
+import type { JournalEntry } from '../../server/journal.ts'
 import type { CatalogStatus, Clip } from '../../server/library.ts'
 
-export type { AnimationEntry, Character, ClipKey, ClipKeys, Clip, Garment, Job, Settings, TextureImage, Vec3 }
+export type { AnimationEntry, Character, ClipKey, ClipKeys, Clip, Garment, Job, JournalEntry, Mount, Settings, TextureImage, Vec3 }
 
 export interface LibraryClip extends Clip { url: string }
 export interface LibraryPage {
@@ -33,6 +34,8 @@ export const api = {
   characters: async () => await call<Character[]>('GET', '/api/characters'),
   upload: async (file: File) => await call<Character>('POST', `/api/characters?name=${encodeURIComponent(file.name)}`, file),
   update: async (id: string, patch: Partial<Character>) => await call<Character>('PATCH', `/api/characters/${id}`, patch),
+  journal: async (id: string, last = 200) => await call<JournalEntry[]>('GET', `/api/characters/${id}/journal?last=${last}`),
+  addNote: async (id: string, note: string) => await call<{ ok: boolean }>('POST', `/api/characters/${id}/journal`, { note }),
   remove: async (id: string) => await call<{ ok: boolean }>('DELETE', `/api/characters/${id}`),
   rig: async (id: string) => await call<Job>('POST', `/api/characters/${id}/rig`),
   setTemplate: async (id: string, template: string, joints?: Record<string, Vec3>) => await call<Character>('POST', `/api/characters/${id}/template`, { template, joints }),

@@ -8,6 +8,7 @@ import path from 'node:path'
 import { enqueue, events, type Job, listJobs, runBlender, runCodex } from './jobs.ts'
 import { optimizeSkin, torchPython } from './skinopt.ts'
 import { queryLibrary } from './library.ts'
+import { journal, note as note_, record } from './journal.ts'
 import {
   type Character, characterDir, type Garment, type TextureImage, createCharacter, deleteCharacter, gameSlots, getCharacter, getSettings, listCharacters,
   ROOT, saveSettings, updateCharacter, type Vec3, WORKSPACE, writeJson,
@@ -25,6 +26,13 @@ class HttpError extends Error {
     super(message)
     this.status = status
   }
+}
+
+/** Who made a change: a tool names itself in the x-rigsmith-by header (an agent: "agent"); the app sends none. */
+const by = (req: IncomingMessage): string => {
+  const h = req.headers['x-rigsmith-by']
+  const who = (Array.isArray(h) ? h[0] : h)?.trim()
+  return who !== undefined && /^[\w .:-]{1,40}$/.test(who) ? who : 'app'
 }
 
 function send (res: ServerResponse, status: number, body: unknown): void {
@@ -215,13 +223,34 @@ route('GET', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
 
 route('PATCH', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
   const patch = await readJsonBody<Partial<Character>>(req)
-  const allowed: Array<keyof Character> = ['name', 'joints', 'jointsEdited', 'fingers', 'animations', 'scripts', 'props', 'garments', 'boneMap']
+  const allowed: Array<keyof Character> = ['name', 'joints', 'jointsEdited', 'fingers', 'animations', 'scripts', 'props', 'garments', 'mount', 'skins', 'boneMap']
+  let before: Character | null = null
   const character = await updateCharacter(id, c => {
-    for (const key of allowed) if (key in patch) (c as unknown as Record<string, unknown>)[key] = patch[key]
+    before = structuredClone(c)
+    for (const key of allowed) {
+      if (!(key in patch)) continue
+      // (null takes the field off: a mount given up)
+      if (patch[key] === null) delete (c as unknown as Record<string, unknown>)[key]
+      else (c as unknown as Record<string, unknown>)[key] = patch[key]
+    }
   })
+  // (in the journal, by who made it: the app, or a tool naming itself)
+  await record(id, by(req), before, character)
   // (every open page takes it: a page holding an older copy would otherwise save that back over it)
   events.emit('character', character)
   send(res, 200, character)
+})
+
+// The character's journal: every change, who made it, when (server/journal.ts); a note is a line anyone can add.
+route('GET', /^\/api\/characters\/([a-z0-9-]+)\/journal$/, async (req, res, [id], url) => {
+  send(res, 200, await journal(id, Number(url.searchParams.get('last') ?? 200)))
+})
+route('POST', /^\/api\/characters\/([a-z0-9-]+)\/journal$/, async (req, res, [id]) => {
+  const { note } = await readJsonBody<{ note?: string }>(req)
+  if (typeof note !== 'string' || note.trim() === '') throw new HttpError(400, 'A note is text')
+  await note_(id, by(req), note.trim(), true)
+  events.emit('journal', id)
+  send(res, 201, { ok: true })
 })
 
 // The game's side of a character (settings.gameSpec): its unit and the clip names the game plays for it.
@@ -401,6 +430,7 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/garments$/, async (req, res, [i
     mode: 'clothing', policy: 'body', bone: 'Head', position: [0, 0, 0], rotation: [0, 0, 0], scale: 1, hideBody: false,
   }
   await updateCharacter(id, c => { c.garments = [...(c.garments ?? []), garment] })
+  await note_(id, by(req), `gear ${garment.name}: imported from ${path.basename(name)}`)
   enqueue('garment', `Import ${garment.name}`, id, async (job, update) => {
     try {
       await runBlender('jobs/inspect.py', ['--input', source, '--out', dir], (progress, message) => { update({ progress, message }) })
@@ -445,7 +475,9 @@ route('GET', /^\/api\/events$/, async (req, res) => {
   events.on('job', onJob)
   events.on('removed', onRemoved)
   events.on('character', onCharacter)
-  req.on('close', () => { clearInterval(ping); events.off('job', onJob); events.off('removed', onRemoved); events.off('character', onCharacter) })
+  const onJournal = (id: string): void => { res.write(`event: journal\ndata: ${JSON.stringify(id)}\n\n`) }
+  events.on('journal', onJournal)
+  req.on('close', () => { clearInterval(ping); events.off('job', onJob); events.off('removed', onRemoved); events.off('character', onCharacter); events.off('journal', onJournal) })
 })
 
 route('GET', /^\/api\/library$/, async (req, res, _, url) => {

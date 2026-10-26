@@ -65,8 +65,10 @@ class Tune {
   phase (): number {
     const e = this.entry
     if (e === null || animator.duration <= 0) return 0
-    const frames = Math.max(1, Math.round(animator.duration / e.entry.speed * KEY_FPS))
-    const u = (animator.time % animator.duration) / animator.duration
+    // (a ridden loop holds several of the rider's cycles, fitted to the horse's gait: a key's phase is within one)
+    const cycles = Math.max(1, animator.cycles)
+    const frames = Math.max(1, Math.round(animator.duration / e.entry.speed / cycles * KEY_FPS))
+    const u = ((animator.time % animator.duration) / animator.duration * cycles) % 1
     return Math.round(u * frames) / frames
   }
 
