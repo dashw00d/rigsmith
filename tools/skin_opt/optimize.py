@@ -44,6 +44,7 @@ def main():
     p.add_argument('--w-rigid', type=float, default=1.0)
     p.add_argument('--no-mirror', action='store_true', help='let the two sides of the body differ')
     p.add_argument('--stretch-norm', default='rms', choices=['rms', 'abs'])
+    p.add_argument('--add-neighbors', action='store_true', help="let a vertex take its main bone's parent and children too")
     a = p.parse_args()
     started = time.time()
     meta, arr = load(a.prefix)
@@ -92,7 +93,7 @@ def main():
         have = list(np.flatnonzero(W0[i] > 1e-4)[np.argsort(-W0[i][W0[i] > 1e-4])])
         main = have[0]
         have = [b for b in have if b in within2[main]]
-        near = [meta['parents'][main]] + children[main]
+        near = [meta['parents'][main]] + children[main] if a.add_neighbors else []
         for b in near:
             if b >= 0 and deform[b] and b not in have:
                 have.append(b)

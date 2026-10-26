@@ -25,6 +25,12 @@ CAP_OUT = 0.015            # ...and hands over to the upper arm this far outside
 CAP_BELOW = 0.05           # shoulder cap reaches this far below the shoulder joint
 CLAVICLE_LOW = -0.18       # of the Spine2->Neck segment, relative to Spine2
 ARM_CLEARLY_NEARER = 0.5   # left over for the torso but at most this fraction of its spine distance from an arm
+# The torso's own outline: its width is measured on the front silhouette's pixels, and its outermost skin (the side of
+# the chest, a sash's edge) lies a pixel or two past it. Only skin this far past it counts as beside the torso: without
+# it the Archer's chest side, from the waist up to the armpit, went to the upper arm and then (the optimizer) the
+# collarbone and forearm, 52-67% / 20-39% / 9-20%, where Mixamo has it 95% spine, and his side followed his arms
+# (2026-10-26). Arm skin that close to the body is still found by facing away from the arm's axis.
+LATERAL_MARGIN = 0.015
 
 
 def _torso_half_widths(sil, joints, side):
@@ -123,7 +129,7 @@ def attach(verts, tris, names, heads, tails, joints):
     # Arms: lateral of the torso and beyond a plane just outside the shoulder joint.
     for side, prefix in ((1, 'Left'), (-1, 'Right')):
         widths, _ = _torso_half_widths(sil, joints, side)
-        lateral = side * (x - xc) > widths[rows]
+        lateral = side * (x - xc) > widths[rows] + LATERAL_MARGIN * H
         shoulder = joints[prefix + 'Arm']
         direction = joints[prefix + 'ForeArm'] - shoulder
         direction /= np.linalg.norm(direction)

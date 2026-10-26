@@ -125,6 +125,8 @@ def soft_shoulders(verts, tris, w, attach_to, distance, names, heat_value, band)
             continue
         arm_chain = [i for n, i in idx.items() if n.startswith(prefix) and ('Arm' in n or 'Hand' in n)]
         group = [idx[n] for n in (prefix + 'Arm', prefix + 'Shoulder', 'Spine2', 'Spine1', 'Spine') if n in idx]
+        # (the collarbone keeps to its own skin, the top of the shoulder: soft heat spread it down the chest's side)
+        clavicle = idx.get(prefix + 'Shoulder')
         # the border: where the arm (all of it) meets the rest of the body
         d = boundary_distance(verts, tris, np.isin(attach_to, arm_chain).astype(np.int64))
         near = np.isin(attach_to, group) & (d < band)
@@ -134,6 +136,8 @@ def soft_shoulders(verts, tris, w, attach_to, distance, names, heat_value, band)
         alpha = 1.0 - x * x * (3 - 2 * x)
         mine = np.zeros_like(soft[near])
         mine[:, group] = soft[near][:, group]
+        if clavicle is not None:
+            mine[attach_to[near] != clavicle, clavicle] = 0.0
         total = mine.sum(axis=1, keepdims=True)
         mine = np.divide(mine, total, out=np.zeros_like(mine), where=total > 0)
         alpha = np.where(total[:, 0] > 0, alpha, 0.0)
