@@ -1646,7 +1646,12 @@ export interface NaturalSolveOptions extends SolveOptions {
   soft?: NaturalGoal[]
 }
 export type BodySolver = (bones: Map<string, THREE.Bone>, goals: HandGoal[], opts: NaturalSolveOptions, prev: BodyState | null) => { state: BodyState, miss: number }
+/** The gaze: how hard the head is held to the turn the clip gives it (per 5 degrees off, soft). */
+export const GAZE = { weight: 1.5 }
+
 export interface BodySolverOptions {
+  /** The head kept facing where the clip has it look (GAZE; default on). */
+  gaze?: boolean
   /** May the hips shift (a lunge, a drop)? Default true: the bake must key the Hips position track. */
   hipsMove?: boolean
   /** The feet hard-locked (also per call: opts.planted). Default false: soft. */
@@ -1733,6 +1738,10 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
     const follow = opts.follow !== undefined && last !== undefined ? { ref: last, weight: opts.follow } : undefined
     // (a hand holding a shaft: the point it holds at is the goal's point on the bone, so its turn gives about that point and the hand stays on the shaft; the goal's place is that point's, `at` + the turn carrying it)
     const heldAt = new Map<HandGoal, THREE.Vector3>()
+    // (the gaze: the head kept facing where the clip has it look (its turn on this frame as the clip has it, softly), so a
+    // body turned side-on for its hands doesn't carry the head off its target: the neck turns it back as far as it can)
+    const head = bones.get('Head')
+    const gaze: NaturalGoal[] = head === undefined || options.gaze === false ? [] : [{ bone: 'Head', turn: wq(head), hard: false, weight: GAZE.weight }]
     const res = rig.solve([...goals.map((g): NaturalGoal => {
       // (a hand's turn: exact with roll false; with give false only the roll round its grip line yields; by default it gives a little on every axis)
       // (a hand carrying a prop keeps its turn exactly: the prop rides it, so its turn is the prop's place)
@@ -1748,7 +1757,7 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
       const place = g.at.clone().add(held.fist.clone().applyQuaternion(g.turn))
       heldAt.set(g, place)
       return { bone: `${g.hand}Hand`, at: held.fist.clone().divideScalar(scale), position: place, turn: g.turn, exact: true, ...turn }
-    }), ...(opts.soft ?? [])], {
+    }), ...gaze, ...(opts.soft ?? [])], {
       feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, smooth: follow, collide: options.collide ?? undefined, obstacles: opts.obstacles,
     })
     // (the fingers as asked; the miss as it stands: a hand holding a shaft by its hold point)
