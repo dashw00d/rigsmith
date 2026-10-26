@@ -93,7 +93,7 @@ export class PoseEditor {
   private prop: string | null = null
   /** A joint held on a prop (a hand on a socket): where it holds it (world) and the prop's long axis there; the gizmo
    * then only slides it along that axis and rolls it round it. Given by the caller; null: no joint is. */
-  private gripLock: ((bone: string) => { at: THREE.Vector3, axis: THREE.Vector3 } | null) | null = null
+  private gripLock: ((bone: string) => { at: THREE.Vector3, axis: THREE.Vector3, turn: THREE.Quaternion } | null) | null = null
   /** A locked drag: where it began (the hold, the axis, the joint's place and turn, the gizmo's). */
   private lockStart: { at: THREE.Vector3, axis: THREE.Vector3, wrist: THREE.Vector3, turn: THREE.Quaternion, proxyAt: THREE.Vector3, proxyTurn: THREE.Quaternion } | null = null
 
@@ -211,7 +211,7 @@ export class PoseEditor {
   get selectedProp (): string | null { return this.prop }
 
   /** Which joints are held on a prop (see gripLock): their gizmo slides them along the prop and rolls them round it. */
-  setGripLock (lock: ((bone: string) => { at: THREE.Vector3, axis: THREE.Vector3 } | null) | null): void { this.gripLock = lock; this.attachGizmo() }
+  setGripLock (lock: ((bone: string) => { at: THREE.Vector3, axis: THREE.Vector3, turn: THREE.Quaternion } | null) | null): void { this.gripLock = lock; this.attachGizmo() }
 
   /** A held joint dragged by its gizmo (on the prop's axes): moved any way, its turn kept, or turned any way about where
    * it holds (sideways to lay the palm on the prop, rolled round it); its limb reaches after it. */
@@ -287,10 +287,10 @@ export class PoseEditor {
 
   get selection (): string | null { return this.selected }
 
-  /** The gizmo's proxy where a held joint holds, its X along the prop. */
-  private placeOnLock (lock: { at: THREE.Vector3, axis: THREE.Vector3 }): void {
+  /** The gizmo's proxy where a held joint holds, turned as the prop is (its axes the prop's own: one along its length). */
+  private placeOnLock (lock: { at: THREE.Vector3, turn: THREE.Quaternion }): void {
     this.proxy.position.copy(lock.at)
-    this.proxy.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), lock.axis.clone().normalize())
+    this.proxy.quaternion.copy(lock.turn)
     this.proxy.updateMatrixWorld(true)
   }
 

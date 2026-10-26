@@ -172,6 +172,7 @@ class ClipEdit {
       this.attachments = []
       this.selected = null
       this.prop = null
+      this.axisCache.clear()
       // (each prop's node as the outfit places it on its bone: the edit keys a leading prop's node, this puts it back)
       this.propRest = Object.fromEntries(this.props.map(p => [p.name, view.root.getObjectByName(propNode(p.name))]).filter((x): x is [string, THREE.Object3D] => x[1] !== undefined)
         .map(([n, o]) => [n, { position: o.position.toArray() as [number, number, number], quaternion: o.quaternion.toArray() as [number, number, number, number] }]))
@@ -231,7 +232,7 @@ class ClipEdit {
 
   /** A hand on a socket (not the hand the prop rides): where its fist holds the prop and the prop's long axis there
    * (world): its gizmo slides it along the prop and rolls it round it, and letting go moves its socket (every frame). */
-  private gripHold (bone: string): { at: THREE.Vector3, axis: THREE.Vector3 } | null {
+  private gripHold (bone: string): { at: THREE.Vector3, axis: THREE.Vector3, turn: THREE.Quaternion } | null {
     const hand = /^(Left|Right)Hand$/.exec(bone)?.[1] as 'Left' | 'Right' | undefined
     // (a hand on a socket, or the hand carrying a leading prop: both hold it where they are put)
     const a = hand === undefined ? undefined : this.attachments.find(x => x.hand === hand)
@@ -246,7 +247,13 @@ class ClipEdit {
     node.updateMatrixWorld(true)
     const axis = local.to.clone().applyMatrix4(node.matrixWorld).sub(local.from.clone().applyMatrix4(node.matrixWorld)).normalize()
     const at = grip.fist.clone().applyQuaternion(b.getWorldQuaternion(new THREE.Quaternion())).add(b.getWorldPosition(new THREE.Vector3()))
-    return { at, axis }
+    // (the gizmo's axes: red along the prop, green up across it, blue sideways: dragging red slides the hand along the prop)
+    const up = new THREE.Vector3(0, 1, 0)
+    const across = up.clone().addScaledVector(axis, -up.dot(axis))
+    if (across.lengthSq() < 1e-6) across.set(1, 0, 0).addScaledVector(axis, -axis.x)
+    across.normalize()
+    const turn = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(axis, across, new THREE.Vector3().crossVectors(axis, across)))
+    return { at, axis, turn }
   }
   /** Each prop's node as the outfit places it on its bone (local position, turn), when the edit began. */
   private propRest: NonNullable<PropRig['rest']> = {}
@@ -441,24 +448,35 @@ class ClipEdit {
     const p = this.props.find(x => x.name === prop)
     if (view === null || node === undefined || p === undefined) return null
     node.updateMatrixWorld(true)
+    // (the prop's long axis: the main direction of its mesh's vertices (a box round it would only find its node's axes,
+    // and a prop may lie across them), from end to end of them along it, through their middle; in the node's frame)
     const inv = node.matrixWorld.clone().invert()
-    const box = new THREE.Box3()
+    const pts: THREE.Vector3[] = []
     node.traverse(o => {
       const m = o as THREE.Mesh
       if (m.isMesh !== true) return
-      const g = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld))
-      g.computeBoundingBox(); box.union(g.boundingBox!)
+      const pos = m.geometry.attributes.position as THREE.BufferAttribute
+      const to = new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld)
+      const step = Math.max(1, Math.floor(pos.count / 3000))
+      for (let i = 0; i < pos.count; i += step) pts.push(new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(to))
     })
-    if (box.isEmpty()) return null
-    const size = box.getSize(new THREE.Vector3()); const mid = box.getCenter(new THREE.Vector3())
-    const local = size.x >= size.y && size.x >= size.z ? new THREE.Vector3(1, 0, 0) : size.y >= size.z ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1)
-    const half = Math.max(size.x, size.y, size.z) / 2
-    const a = mid.clone().addScaledVector(local, -half).applyMatrix4(node.matrixWorld)
-    const b = mid.clone().addScaledVector(local, half).applyMatrix4(node.matrixWorld)
+    if (pts.length < 2) return null
+    const mid = pts.reduce((m, q) => m.add(q), new THREE.Vector3()).divideScalar(pts.length)
+    const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+    for (const q of pts) { const d = q.clone().sub(mid).toArray(); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i][j] += d[i] * d[j] }
+    // (power iteration, from the box's longest side)
+    const box = new THREE.Box3().setFromPoints(pts); const size = box.getSize(new THREE.Vector3())
+    let axis = size.x >= size.y && size.x >= size.z ? new THREE.Vector3(1, 0, 0) : size.y >= size.z ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1)
+    for (let it = 0; it < 50; it++) { const x = axis.toArray(); axis = new THREE.Vector3(C[0][0] * x[0] + C[0][1] * x[1] + C[0][2] * x[2], C[1][0] * x[0] + C[1][1] * x[1] + C[1][2] * x[2], C[2][0] * x[0] + C[2][1] * x[1] + C[2][2] * x[2]).normalize() }
+    let lo = Infinity; let hi = -Infinity
+    for (const q of pts) { const t = q.clone().sub(mid).dot(axis); lo = Math.min(lo, t); hi = Math.max(hi, t) }
+    const a = mid.clone().addScaledVector(axis, lo).applyMatrix4(node.matrixWorld)
+    const b = mid.clone().addScaledVector(axis, hi).applyMatrix4(node.matrixWorld)
     const c = view.bones.get(p.bone)?.getWorldPosition(new THREE.Vector3()) ?? mid.clone().applyMatrix4(node.matrixWorld)
     const [from, to] = a.distanceTo(c) < b.distanceTo(c) ? [a, b] : [b, a]
     return { from, to, dir: to.clone().sub(from).normalize() }
   }
+
 
   /** A socket for `hand` on `prop` where the hand is now (in the prop's frame). `snap`: its fist put on the prop's length,
    * the hand turned so the shaft runs through the fist (across the palm, thumb towards the far end), its roll kept. */
