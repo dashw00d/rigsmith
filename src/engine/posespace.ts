@@ -430,15 +430,16 @@ export const UPRIGHT = { weight: 3, slack: THREE.MathUtils.degToRad(3) }
  * The elbow's bow (how far it stands off the line from the shoulder to the hand, forward in the chest's frame: forward =
  * the shoulder line crossed with the chest's up) beyond what is allowed for the hand's height below the shoulder (world
  * up) costs `weight` per centimetre (of a Y Bot's size; squared, steepening). `table`: [the hand's height below the
- * shoulder, in upper arms; the bow allowed, in upper arms]: free (1: more than an arm can bow) at the shoulder's height
- * and above, then, from half an upper arm below, the 99th percentile of the bow over every frame of the library's 2,446
- * captures (both arms, 130,763 frames each: tools/posespace.ts's scan; so the rule leaves 1% of the library's own poses
- * over it, 0.6% overall), by the height of the hand (the arm hanging: almost none).
+ * shoulder, in upper arms; the bow allowed, in upper arms]. Anatomy's, not the library's (the library's own captures
+ * bow far forward: rifles held, its 99th percentile allowed 0.53 upper arms half an arm below): free at the shoulder's
+ * height and above (a raised arm's elbow leads its hand), still half an upper arm a quarter of an arm below, and from
+ * half an upper arm below only a slack: with the hand low the elbow points down, back or out, never forward (the
+ * designer).
  */
 export const ELBOW = {
-  weight: 3,
+  weight: 5,
   steep: 6,
-  table: [[0, 1], [0.625, 0.53], [0.875, 0.43], [1.125, 0.31], [1.375, 0.22], [1.625, 0.14], [1.875, 0.06], [2.2, 0.04]] as Array<[number, number]>,
+  table: [[0, 1], [0.25, 0.5], [0.5, 0.08], [0.75, 0.05]] as Array<[number, number]>,
 }
 /** The bow allowed (in upper arms) a hand `below` upper arms under its shoulder (world up), from ELBOW.table. */
 export function elbowAllowed (below: number): number {
