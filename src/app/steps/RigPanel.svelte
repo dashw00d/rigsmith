@@ -10,6 +10,7 @@
   import SkeletonMapping from './SkeletonMapping.svelte'
   import WeightPaintPanel from '../rig/WeightPaintPanel.svelte'
   import { markerBoard } from '../../state/markers.svelte.ts'
+  import { tooltip } from '../../ui/tooltip.ts'
   import { jointOf, keysOf } from '../../engine/markers.ts'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
@@ -113,6 +114,8 @@
   $effect(() => { if (character.id !== adjustingFor) { adjustingFor = character.id; viewer.adjusting = false } })
   $effect(() => { if (rigging) viewer.adjusting = false })
   function adjust (): void {
+    // (the body back at rest: the joints are placed on it as it was modelled)
+    animator.stop()
     viewer.adjusting = true
     viewer.resetEditor()
   }
@@ -178,7 +181,7 @@
     {#if markerBoard.set}
       <div class="legend">
         {#each legend.filter(l => l.def.view !== 'hand') as { def, placed }}
-          <button class="legend-row" class:active={markerBoard.selected === def.id} onclick={() => { markerBoard.selected = def.id; markerBoard.view = 'body'; markerBoard.open = true }}>
+          <button class="legend-row" class:active={markerBoard.selected === def.id} use:tooltip={def.hint ?? def.label} onclick={() => { markerBoard.selected = def.id; markerBoard.view = 'body'; markerBoard.open = true }}>
             <span class="swatch" style="background: {def.color}">{def.letter ?? ''}</span>{def.label}{#if !placed}<span class="faint"> · no joint</span>{/if}
           </button>
         {/each}

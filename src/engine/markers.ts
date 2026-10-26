@@ -12,6 +12,8 @@ export type Side = 'left' | 'right'
 export interface MarkerDef {
   id: string
   label: string
+  /** Where it goes on the body, for the tooltip. */
+  hint?: string
   color: string
   letter?: string
   /** The joint it pins: `{Side}` (Left/Right) or `{s}` (l/r) in a pair's name. */

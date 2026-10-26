@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import { Box, Bone, Focus, Grid2x2, Palette, ScanEye } from '@lucide/svelte'
   import * as THREE from 'three'
   import { app } from '../state/app.svelte.ts'
   import { viewer } from '../state/viewer.svelte.ts'
   import { prettyBone, side } from '../engine/mixamo.ts'
   import type { DisplayMode } from '../engine/CharacterView.ts'
+  import type { Joints } from '../engine/JointEditor.ts'
   import Segmented from '../ui/Segmented.svelte'
   import { tooltip } from '../ui/tooltip.ts'
   import Timeline from './animate/Timeline.svelte'
@@ -26,6 +27,8 @@
   $effect(() => {
     const on = (markerBoard.open && app.step === 'rig') || scaleRoom.open
     if (viewer.stage !== null) viewer.stage.covered = on
+    // (markers go on the body at rest: a clip playing stops)
+    if (markerBoard.open && app.step === 'rig') untrack(() => { if (animator.current !== null) animator.stop() })
   })
 
   $effect(() => {
@@ -38,6 +41,13 @@
     void c?.mount
     void outfit.fitting
     void viewer.sync(c, app.step)
+  })
+
+  // (the 3D joint editor shows the joints as saved: placed by markers, reset, or edited from the CLI)
+  $effect(() => {
+    const joints = app.selected?.joints
+    void viewer.editor
+    untrack(() => { viewer.followJoints(joints as Joints | undefined) })
   })
 
   const modes: Array<{ value: DisplayMode, label: string, icon: typeof Box }> = [

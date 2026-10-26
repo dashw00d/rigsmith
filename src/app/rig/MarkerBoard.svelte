@@ -302,6 +302,7 @@
   const near = (p: V3): boolean => set.view === 'front' || p[0] >= xCenter - 1e-4
 </script>
 
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape' && dragKey === null) markerBoard.open = false }} />
 <div class="board" class:dragging={dragKey !== null} bind:this={host} onpointermove={move} onpointerup={up} role="application" aria-label="Rig markers">
   <canvas bind:this={canvas}></canvas>
   <svg {width} {height}>
@@ -325,7 +326,7 @@
               <text dy="4">{k.def.letter ?? (k.side === 'right' ? 'A' : 'B')}</text>
             {/if}
             <!-- (its name, shown by the browser on hover: no code runs as the pointer moves) -->
-            <foreignObject class="tipbox" x="-170" y="-52" width="340" height="30"><div class="tip"><span class="tipdot" style="background: {k.def.color}"></span>{nameOf(k)}</div></foreignObject>
+            <foreignObject class="tipbox" x="-170" y="-110" width="340" height="88"><div class="tipwrap"><div class="tip"><span class="tipname"><span class="tipdot" style="background: {k.def.color}"></span>{nameOf(k)}</span>{#if k.def.hint}<span class="tiphint">{k.def.hint}</span>{/if}</div></div></foreignObject>
           </g>
         {/if}
       {/each}
@@ -338,7 +339,7 @@
       {/each}
     </div>
   {/if}
-  <div class="hint">{markerBoard.view === 'body' ? `Drag each marker onto its joint${set.view === 'side' ? ' (the near legs: the far ones follow)' : ''}.` : `Drag each letter onto the very end of its finger${markerBoard.mirror ? ' (the other hand follows, mirrored)' : ''}.`} The skeleton follows; letting go saves it.</div>
+  <div class="hint">{markerBoard.view === 'body' ? `Drag each marker onto its joint${set.view === 'side' ? ' (the near legs: the far ones follow)' : ''}.` : `Drag each letter onto the very end of its finger${markerBoard.mirror ? ' (the other hand follows, mirrored)' : ''}.`} The skeleton follows; letting go saves it. Esc closes.</div>
   <button class="close" onclick={() => { markerBoard.open = false }} aria-label="Close markers"><X size={16} /></button>
 </div>
 
@@ -357,7 +358,10 @@
   .marker .halo { fill: rgb(0 0 0 / 25%); stroke-width: 2; opacity: 0.9; }
   .marker .dot { stroke: rgb(0 0 0 / 45%); stroke-width: 1; }
   .marker.on .halo { stroke-width: 3.5; }
-  .tip { display: flex; align-items: center; justify-content: center; width: fit-content; margin: 0 auto; gap: 6px; padding: 4px 8px; border-radius: 6px; background: rgb(12 14 18 / 92%); border: 1px solid var(--line-strong); color: var(--text-1); font-size: 12px; white-space: nowrap; }
+  .tipwrap { display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+  .tip { display: flex; flex-direction: column; align-items: center; width: fit-content; max-width: 320px; margin: 0 auto; gap: 2px; padding: 4px 8px; border-radius: 6px; background: rgb(12 14 18 / 92%); border: 1px solid var(--line-strong); color: var(--text-1); font-size: 12px; text-align: center; }
+  .tipname { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .tiphint { color: var(--text-2, #aab); font-size: 11px; line-height: 1.3; }
   .tipdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .marker text { font-size: 11px; font-weight: 700; text-anchor: middle; fill: #111; pointer-events: none; }
   .hint { position: absolute; left: 14px; bottom: 12px; font-size: 12px; color: var(--text-3); pointer-events: none; }

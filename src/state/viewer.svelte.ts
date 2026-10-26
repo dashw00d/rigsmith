@@ -88,8 +88,8 @@ class Viewer {
     this.syncEditor(character, step)
     await this.syncMount(character)
     void outfit.sync(step === 'outfit')
-    // (the rig test plays on in the Rig step)
-    if (step !== 'animate' && step !== 'export' && step !== 'outfit' && animator.current !== null && !(step === 'rig' && animator.current.test === true)) animator.stop()
+    // (the rig test plays on in the Rig step, till the joints are back up to change)
+    if (step !== 'animate' && step !== 'export' && step !== 'outfit' && animator.current !== null && !(step === 'rig' && animator.current.test === true && !this.adjusting)) animator.stop()
   }
 
   private editorToken = 0
@@ -118,6 +118,15 @@ class Viewer {
       this.editor.setMirror(this.mirror)
       if (this.mode === 'shaded') this.setMode('xray')
     })
+  }
+
+  /** The character's joints changed (the marker board, the CLI, a reset): the 3D editor takes them up, so it never
+   * shows (or saves back) the joints from before. */
+  followJoints (joints: Joints | undefined): void {
+    if (this.editor === null || joints === undefined) return
+    const now = this.editor.value
+    const same = Object.keys(joints).length === Object.keys(now).length && Object.entries(joints).every(([k, p]) => now[k] !== undefined && p.every((x, i) => Math.abs(x - now[k][i]) < 1e-9))
+    if (!same) this.editor.setJoints(joints)
   }
 
   /** Rebuild the joint editor (finger level changed, joints reset). */
