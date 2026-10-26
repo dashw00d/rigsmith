@@ -24,6 +24,9 @@ export interface MarkerDef {
   attach?: string[]
   /** On the body's middle line. */
   mid?: boolean
+  /** keep: placing it sets only its height and side, the joint as deep in the body as it was (the chin: the head
+   * joint is inside the neck, behind the chin). */
+  depth?: 'keep'
   /** Placed on a flat view of each hand (finger tips), not the body's. */
   view?: 'hand'
 }

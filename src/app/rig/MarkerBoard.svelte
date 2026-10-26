@@ -10,7 +10,7 @@
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import type { CharacterView } from '../../engine/CharacterView.ts'
-  import { insideDepth, jointsFrom, keysOf, mirrorX, seed, type MarkerDef, type Markers, type MarkerSet, type SolveCache, type V3 } from '../../engine/markers.ts'
+  import { insideDepth, jointOf, jointsFrom, keysOf, mirrorX, seed, type MarkerDef, type Markers, type MarkerSet, type SolveCache, type V3 } from '../../engine/markers.ts'
   import { markerBoard } from '../../state/markers.svelte.ts'
 
   let { character, view, set, setName, parents }: { character: Character, view: CharacterView, set: MarkerSet, setName: string, parents: Record<string, string | null> } = $props()
@@ -144,7 +144,7 @@
       p = [q.x, q.y, q.z]
     } else if (set.view === 'front') {
       const flat = origin.clone()
-      p = [flat.x, flat.y, on?.z ?? keep?.[2] ?? 0]
+      p = [flat.x, flat.y, def.depth === 'keep' ? keep?.[2] ?? on?.z ?? 0 : on?.z ?? keep?.[2] ?? 0]
       if (def.mid) p[0] = xCenter
     } else {
       // a pair on the side view takes its depth from the mesh where the ray crosses a limb (a leg below the body),
@@ -221,6 +221,15 @@
     // (a plain copy: the character's own is the app's live state, which can't be cloned as it is)
     if (saved !== undefined && saved.set === setName && base !== undefined && Object.keys(base).every(k => saved.base[k] !== undefined)) markers = $state.snapshot(saved) as Markers
     else if (base !== undefined) markers = seed(setName, set, base, seedOwn)
+    // (a marker that keeps its joint's depth sits as deep as that joint: markers placed before it kept it move back)
+    if (markers !== null) {
+      const m = markers
+      for (const k of keysOf(set)) {
+        const j = jointOf(k.def, k.side)
+        const at = m.positions[k.key]
+        if (k.def.depth === 'keep' && j !== null && at !== undefined && m.base[j] !== undefined) at[2] = m.base[j][2]
+      }
+    }
     const fit = (): void => { width = host.clientWidth; height = host.clientHeight; place() }
     ro = new ResizeObserver(fit)
     ro.observe(host)
