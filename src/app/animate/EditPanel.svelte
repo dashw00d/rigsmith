@@ -85,7 +85,8 @@
             <button class="iconbtn" onclick={() => clipEdit.selectProp(null)} aria-label="Let go of the prop"><X size={13} /></button>
           </div>
           <span use:tooltip={'Leads: the hands on it follow its path, and the body follows the hands. Off: it rides the hand carrying it, as the clip moves that hand.'}><Toggle label="Leads (the body follows it)" checked={clipEdit.paths[p.name]?.locked ?? false} onchange={(on: boolean) => clipEdit.setLocked(p.name, on)} /></span>
-          <p class="faint small">Move or turn it with the gizmo to key its path at this frame (that makes it lead).</p>
+          {#if clipEdit.busy !== null}<p class="small busy">{clipEdit.busy}…</p>{/if}
+          <p class="faint small">Move or turn it with the gizmo to key its path at this frame (that makes it lead). Switching Leads on, or putting a second hand on a socket, fits the prop to the body once over the whole clip: it moves a little (the spear farther out), the hand's grip spot is chosen along the shaft; your keys after it are the authority.</p>
           {#if clipEdit.paths[p.name]?.locked && /^(Left|Right)Hand$/.test(p.bone)}
             <p class="faint small">The {p.bone.startsWith('Left') ? 'left' : 'right'} hand holds it where its placement has it (Outfit), unless it is on a socket.</p>
           {/if}
@@ -131,6 +132,7 @@
 
 <style>
   .small { font-size: 12px; margin: 0; }
+  .busy { color: var(--accent-strong); }
   .row { display: flex; gap: 6px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
   .field { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
   .propbox { display: flex; flex-direction: column; gap: 5px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent-soft); }
