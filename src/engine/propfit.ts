@@ -22,7 +22,7 @@ import { frameTimes, GRIP_CLEAR, handGoals, legsOf, onPath, propObstacles, type 
 import type { BodyState, bodyBones, solveBody } from './bodysolve.ts'
 import type { JointLimits } from './limits.ts'
 import type { PoseRig } from './PoseEditor.ts'
-import { BODY, FOLLOW, heading, type NaturalBodyState } from './posespace.ts'
+import { BODY, FOLLOW, heading, type NaturalBodyState, type ObjectiveTerms } from './posespace.ts'
 
 /** What src/engine/bodycollide.ts's collider gives (the body as the bones stand now); a stub that gives 0 stands in until it is passed. */
 export interface BodyColliderLike {
@@ -88,6 +88,10 @@ export interface Sample {
   prop: number
   /** The score of the frame on its own (no neighbours). */
   cost: number
+  /** The solver's score term by term; how far the chest turned (degrees) and the hips moved (cm) from the clip's pose to hold it. */
+  terms?: ObjectiveTerms
+  twist: number
+  shift: number
   /** The body joints' world positions (cm), BODY order. */
   pos: Float64Array
 }
@@ -198,6 +202,9 @@ export class FitLab {
     const { posable, props, prop, loop, height, limits, solver } = this.input
     this.evals++
     this.restore(i)
+    // (the body as the clip has it, before the solve: how far the solve turns and moves it to hold the prop)
+    const chest0 = this.bones.get('Spine2')?.getWorldQuaternion(new THREE.Quaternion()) ?? null
+    const hips0 = this.bones.get(this.input.rig.hips)?.getWorldPosition(new THREE.Vector3()) ?? null
     const t = this.times[i]; const u = this.keyed.duration > 0 ? t / this.keyed.duration : 0
     const rode = new Map(this.rode[i]); rode.set(prop, this.places[i])
     const rig: PropRig = { ...props, paths: { ...props.paths, [prop]: { locked: true, keys: [{ u: 0, q: [0, 0, 0, 1], p: offset.toArray() as [number, number, number] }] } }, sockets: opts.sockets === undefined ? props.sockets : { ...props.sockets, [prop]: opts.sockets } }
@@ -230,7 +237,12 @@ export class FitLab {
     const slack = Math.max(0, prp - FIT.propSlack)
     const over = Math.max(0, miss - FIT.missFree)
     const cost = (obj ?? 0) + FIT.miss * over * over + FIT.reach * reach + FIT.limit * out + FIT.self * self * self + FIT.prop * slack * slack
-    return { state: res?.state ?? null, obj, miss, reach, out, self, prop: prp, cost, pos }
+    const chest1 = this.bones.get('Spine2')?.getWorldQuaternion(new THREE.Quaternion()) ?? null
+    const hips1 = this.bones.get(this.input.rig.hips)?.getWorldPosition(new THREE.Vector3()) ?? null
+    const twist = chest0 === null || chest1 === null ? 0 : THREE.MathUtils.radToDeg(chest0.angleTo(chest1))
+    const shift = hips0 === null || hips1 === null ? 0 : hips0.distanceTo(hips1) * 100
+    const terms = (res?.state as NaturalBodyState | undefined)?.objective?.end
+    return { state: res?.state ?? null, obj, miss, reach, out, self, prop: prp, cost, pos, terms, twist, shift }
   }
 }
 
@@ -391,8 +403,23 @@ export function fewestKeys (want: Array<{ p: THREE.Vector3, q: THREE.Quaternion 
 
 // ---- grip auto-placement -----------------------------------------------------------------------------------------------
 
-/** The pull of a grip to where it was, in the score's units. */
-const GRIP = { slide: 4, roll: 0.3 }
+/** The pull of a grip to where it was (per cm slid, per degree rolled, squared), and what the body turning and moving to
+ * hold a grip costs (per 10 degrees the chest turns, per cm the hips move, squared). */
+const GRIP = { slide: 4, roll: 0.3, twist: 2, shift: 0.1 }
+
+/**
+ * A grip's score on a frame: how well the body holds it, not how near the clip's own pose it stays (a one-handed clip's
+ * free arm hangs where a second hand never goes, so nearness to it would pull the grip there): the hands' misses, the
+ * arms' reach, joints out of range, the elbow rule, balance and the feet, the body through itself and the prop through
+ * the body, and how far the body had to turn and move to hold it.
+ */
+export function gripCost (x: Sample): number {
+  const t = x.terms
+  const held = t === undefined ? 0 : t.hands + t.feet + t.balance + t.elbows + t.collide + t.limits
+  const over = Math.max(0, x.miss - FIT.missFree); const slack = Math.max(0, x.prop - FIT.propSlack)
+  return held + FIT.miss * over * over + FIT.reach * x.reach + FIT.limit * x.out + FIT.self * x.self * x.self + FIT.prop * slack * slack +
+    GRIP.twist * (x.twist / 10) ** 2 + GRIP.shift * x.shift ** 2
+}
 
 export interface GripInput extends FitInput {
   /** The hand to place, its socket (id) on the prop, and the hand's grip: the fist's middle and the grip line, in the hand's own frame. */
@@ -400,7 +427,7 @@ export interface GripInput extends FitInput {
   socket: string
   grip: { axis: THREE.Vector3, fist: THREE.Vector3 } | null
   /** The other hands on the prop: their fists' places along the shaft are kept a fist's width away. */
-  others?: Array<{ hand: 'Left' | 'Right', socket: Socket, grip: { fist: THREE.Vector3 } | null }>
+  others?: Array<{ hand: 'Left' | 'Right', socket: Socket, grip: { fist: THREE.Vector3 } | null, /** the hand carrying the prop: this one goes ahead of it, toward the far end (the head) */ carrier?: boolean }>
   /** The best spot whatever the socket had (no pull back to it), the roll round the shaft looked for all the way round first. */
   free?: boolean
 }
@@ -452,7 +479,10 @@ export async function placeGrip (input: GripInput, progress: (label: string) => 
   const wasRoll = 0
   const fist = input.height * FIT.fist
   const others = (input.others ?? []).map(o => fistAt(o.socket, o.grip))
-  const ok = (s: number): boolean => s >= 0.08 && s <= 0.85 && others.every(o => Math.abs(s - o) * length >= fist)
+  // (a front hand: ahead of the hand carrying the prop, toward its far end (a spear's head), never reaching back behind it)
+  const behind = (input.others ?? []).filter(o => o.carrier === true).map(o => fistAt(o.socket, o.grip))
+  const lowest = Math.max(0.08, ...behind.map(c => c + fist / length))
+  const ok = (s: number): boolean => s >= lowest && s <= 0.85 && others.every(o => Math.abs(s - o) * length >= fist)
   // (frames sampled: every third, always the last)
   const frames: number[] = []
   for (let i = 0; i < lab.n; i += 3) frames.push(i)
@@ -463,7 +493,7 @@ export async function placeGrip (input: GripInput, progress: (label: string) => 
     const cand = movedSocket(sock, d, (s - nowS) * length, roll, input.grip?.fist ?? null)
     const sockets = input.props.sockets[input.prop].map(x => (x.id === sock.id ? cand : x))
     let sum = 0
-    for (const i of frames) { const r = lab.solve(i, zero, { sockets }); sum += r.cost }
+    for (const i of frames) { const r = lab.solve(i, zero, { sockets }); sum += gripCost(r) }
     // (the grip stays where the user had it unless the clip is clearly easier elsewhere: a pull to it, per cm slid squared and per degree rolled squared; none when free)
     if (input.free === true) return sum
     return sum + GRIP.slide * ((s - nowS) * length * 100) ** 2 + GRIP.roll * THREE.MathUtils.radToDeg(roll) ** 2
@@ -476,7 +506,7 @@ export async function placeGrip (input: GripInput, progress: (label: string) => 
   // (free: the roll round the shaft first, all the way round in twelfths, where the grip is (or the middle, if it can't be there))
   let roll0 = 0
   if (input.free === true) {
-    const at = ok(nowS) ? nowS : 0.45
+    const at = ok(nowS) ? nowS : (lowest + 0.85) / 2
     for (let k = 1; k < 12; k++) {
       progress(`Placing the grip: rolled ${k * 30}°`)
       const c = score(at, k * Math.PI / 6)

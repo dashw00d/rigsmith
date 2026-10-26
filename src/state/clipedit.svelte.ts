@@ -559,7 +559,7 @@ class ClipEdit {
     if (view === null || view.rest === null || p === undefined || sock === undefined) return null
     const carrier = this.carrierSocket(prop)
     const others = [
-      ...(carrier !== null && carrier.hand !== hand ? [{ hand: carrier.hand, socket: carrier.socket }] : []),
+      ...(carrier !== null && carrier.hand !== hand ? [{ hand: carrier.hand, socket: carrier.socket, carrier: true }] : []),
       ...this.attachments.filter(a => a.prop === prop && a.hand !== hand && a.socket !== carrier?.socket.id).map(a => ({ hand: a.hand, socket: p.sockets.find(x => x.id === a.socket) })).filter((o): o is { hand: 'Left' | 'Right', socket: Socket } => o.socket !== undefined),
     ]
     if (others.length === 0) return null
