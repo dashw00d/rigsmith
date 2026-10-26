@@ -6,12 +6,12 @@ import path from 'node:path'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { describe, expect, it } from 'vitest'
-import { canonical, captureRest, retargetOffsets } from './retarget.ts'
+import { canonical, captureRest, retargetOffsets, type RestSkeleton } from './retarget.ts'
 import { JointLimits, type Rom } from './limits.ts'
 import { reach, setWorldQuaternion, type Leg } from './ik.ts'
 import { handGrip } from './clipedit.ts'
 import { solveBody } from './bodysolve.ts'
-import { BODY, DIM, NB, NaturalRig, PoseModel, createBodySolver, encodeSource, mirrorPose, naturalizeClip, naturalizeFrames, poseTargets, restSoles, type NaturalGoal, type PoseModelData } from './posespace.ts'
+import { BODY, DIM, NB, NaturalRig, PoseModel, createBodySolver, encodeSource, elbowAllowed, gripAxisOf, mirrorPose, naturalizeClip, naturalizeFrames, poseTargets, restSoles, type NaturalGoal, type PoseModelData } from './posespace.ts'
 
 const g = globalThis as Record<string, unknown>
 g.self ??= globalThis
@@ -24,6 +24,8 @@ const MODEL = path.join(ROOT, 'static/templates/rom/human-pose.json')
 const CHARACTER = path.join(ROOT, 'workspace/characters/spearman-da04d7/rigged.glb')
 const have = existsSync(YBOT) && existsSync(MODEL) && existsSync(path.join(LIBRARY, 'manifest.json'))
 const haveCharacter = have && existsSync(CHARACTER)
+const SKIRMISHER = path.join(ROOT, 'workspace/characters/skirmisher-19c713/rigged.glb')
+const haveSkirmisher = have && existsSync(SKIRMISHER) && existsSync(path.join(LIBRARY, 'clips', 'custom-Spear_Thrust.glb'))
 
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
@@ -36,7 +38,7 @@ const nameOf = (b: THREE.Bone): string => canonical(b.name)
 const median = (xs: number[]): number => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
 const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length
 
-interface Body { soles: Record<string, number>, scene: THREE.Group, bones: Map<string, THREE.Bone>, rig: NaturalRig, limits: JointLimits, model: PoseModel, rom: Rom, offsets: Map<string, THREE.Quaternion> | null, legs: Leg[] }
+interface Body { rest: RestSkeleton, soles: Record<string, number>, scene: THREE.Group, bones: Map<string, THREE.Bone>, rig: NaturalRig, limits: JointLimits, model: PoseModel, rom: Rom, offsets: Map<string, THREE.Quaternion> | null, legs: Leg[] }
 
 async function body (file: string, withOffsets: boolean): Promise<Body> {
   const model = new PoseModel(JSON.parse(readFileSync(MODEL, 'utf8')) as PoseModelData)
@@ -54,7 +56,7 @@ async function body (file: string, withOffsets: boolean): Promise<Body> {
   const parentOf = (n: string): string | null => { const p = bones.get(n)?.parent; return p !== undefined && p !== null && isBone(p) ? canonical(p.name) : null }
   const limits = new JointLimits(rom, offsets, parentOf)
   const legs = ['Left', 'Right'].map(s => ({ upper: bones.get(`${s}UpLeg`)!, lower: bones.get(`${s}Leg`)!, end: bones.get(`${s}Foot`)!, ball: bones.get(`${s}ToeBase`)!, tip: bones.get(`${s}Toe_End`)! }))
-  return { scene, bones, soles: restSoles(bones), rig: new NaturalRig(model, bones, { offsets, limits }), limits, model, rom, offsets, legs }
+  return { scene, bones, rest: captureRest(scene, isBone), soles: restSoles(bones), rig: new NaturalRig(model, bones, { offsets, limits }), limits, model, rom, offsets, legs }
 }
 
 /** A library clip's pose at `t` on a body (its bones' local turns, through the retarget's K when it has them). */
@@ -314,7 +316,8 @@ describe.skipIf(!have)('both hands on a shaft', () => {
 describe.skipIf(!have)('the drop-in for solveBody', () => {
   it('takes bodysolve.ts solveBody\'s arguments: hand goals (a wrist place and turn) with the feet soft', async () => {
     const b = await body(YBOT, false)
-    const solveNatural = createBodySolver(b.model, null)
+    // (a turn that yields round its grip line is tested below: here the turns are asked exactly, as solveBody has them)
+    const solveNatural = createBodySolver(b.model, null, { roll: false })
     const bone = (n: string): THREE.Bone => b.bones.get(n)!
     const nat: Array<{ miss: number, ms: number, total: number, feet: number, turn: number }> = []
     const old: Array<{ miss: number, ms: number, total: number, feet: number, turn: number }> = []
@@ -727,5 +730,227 @@ describe.skipIf(!haveCharacter || !existsSync(path.join(LIBRARY, 'clips', 'custo
       if (label === 'soft, quick') { expect(m.tiltDeg).toBeLessThan(35); expect(r.miss).toBeLessThan(0.02) }
     }
     console.log(out.join('\n'))
+  })
+})
+
+/** An elbow in the chest's frame, from the bones alone: forward is the shoulder line (left minus right) crossed with the chest's up (Spine1 to Neck); the bow is the elbow's offset from the shoulder-to-hand line (its projection clamped to the arm) along that forward; `below` the hand's height under the shoulder in world up, in upper arms. */
+function elbowOnBones (b: Body, side: 'Left' | 'Right'): { ahead: number, handAhead: number, forearm: number, bow: number, below: number, allowed: number } {
+  const P = (n: string): THREE.Vector3 => wp(b.bones.get(n)!)
+  const f = new THREE.Vector3().crossVectors(P('LeftArm').sub(P('RightArm')), P('Neck').sub(P('Spine1'))).normalize()
+  const sh = P(`${side}Arm`); const el = P(`${side}ForeArm`); const ha = P(`${side}Hand`)
+  const v = el.clone().sub(sh); const w = ha.clone().sub(sh)
+  const t = Math.min(1, Math.max(0, v.dot(w) / w.lengthSq()))
+  const upper = v.length()
+  const below = (sh.y - ha.y) / upper
+  return { ahead: v.dot(f), handAhead: w.dot(f), forearm: ha.clone().sub(el).dot(f) / el.distanceTo(ha), bow: v.clone().addScaledVector(w, -t).dot(f), below, allowed: elbowAllowed(below) * upper }
+}
+
+describe.skipIf(!haveSkirmisher)('the elbow: the skirmisher\'s underhand guard, spear at the hip', () => {
+  /** Both fists on a spear at the right hip pointing `rise` radians above the chest's forward, the left fist 35 cm (a Y Bot's) further along it: the hands' wrist goals and turns (the grip line along the spear). */
+  async function guard (b: Body, rise: number, back: number): Promise<Array<{ side: 'Left' | 'Right', bone: string, position: THREE.Vector3, turn: THREE.Quaternion, axis: THREE.Vector3 }>> {
+    await poseFromClip(b, 'custom-Spear_Thrust', 5 / 30)
+    const P = (n: string): THREE.Vector3 => wp(b.bones.get(n)!)
+    const f = new THREE.Vector3().crossVectors(P('LeftArm').sub(P('RightArm')), P('Neck').sub(P('Spine1'))).normalize()
+    const grip = { Left: handGrip(b.rest, 'Left')!, Right: handGrip(b.rest, 'Right')! }
+    const d = f.clone().multiplyScalar(Math.cos(rise)).addScaledVector(new THREE.Vector3(0, 1, 0), Math.sin(rise)).normalize()
+    const fistR = P('RightUpLeg').addScaledVector(f, back * b.rig.scale)
+    const fistL = fistR.clone().addScaledVector(d, 0.35 * b.rig.scale)
+    return (['Left', 'Right'] as const).map(side => {
+      const axis = grip[side].axis.clone().applyQuaternion(wq(b.bones.get(`${side}Hand`)!)).normalize()
+      const turn = new THREE.Quaternion().setFromUnitVectors(axis, d).multiply(wq(b.bones.get(`${side}Hand`)!))
+      return { side, bone: `${side}Hand`, position: (side === 'Left' ? fistL : fistR).clone().sub(grip[side].fist.clone().applyQuaternion(turn)), turn, axis: grip[side].axis }
+    })
+  }
+
+  it('keeps the right elbow from bowing forward past what the hand\'s height allows, with the hands on the spear', async () => {
+    const b = await body(SKIRMISHER, true)
+    const rows: string[] = []
+    type Turn = 'exact' | 'roll' | 'give'
+    for (const [rise, back] of [[0.3, 0], [0.3, -0.1], [0.0, 0.1]] as const) {
+      const run = async (label: string, opts: { elbows: boolean, turn: Turn }): Promise<{ e: ReturnType<typeof elbowOnBones>, miss: number, turn: number, roll: number, other: number, cost: number, start: number }> => {
+        const goals = await guard(b, rise, back)
+        const start = b.rig.naturalness().total
+        const res = b.rig.solve(goals.map(g => ({ bone: g.bone, position: g.position, turn: g.turn, exact: true, ...(opts.turn === 'roll' ? { roll: { axis: g.axis } } : opts.turn === 'give' ? { give: { axis: g.axis } } : {}) })),
+          { feet: FEET, floor: { y: 0, soles: b.soles }, mode: 'full', elbows: opts.elbows })
+        b.scene.updateMatrixWorld(true)
+        const e = elbowOnBones(b, 'Right')
+        const cm = (x: number): string => (x * 100).toFixed(1)
+        // (what each hand's turn gave, measured on the bones: the roll round its grip line, and the rest)
+        const used = goals.map(g => {
+          const q = wq(b.bones.get(g.bone)!).multiply(g.turn.clone().invert())
+          const v = new THREE.Vector3(q.x, q.y, q.z).multiplyScalar(q.w < 0 ? -1 : 1)
+          const angle = 2 * Math.atan2(v.length(), Math.abs(q.w)); const rv = v.normalize().multiplyScalar(angle)
+          const axis = g.axis.clone().applyQuaternion(g.turn)
+          const roll = rv.dot(axis)
+          return { side: g.side, roll: THREE.MathUtils.radToDeg(Math.abs(roll)), other: THREE.MathUtils.radToDeg(Math.sqrt(Math.max(0, rv.lengthSq() - roll * roll))) }
+        })
+        rows.push(`guard rise ${(rise * 57.3).toFixed(0)} deg, back ${back}: ${label.padEnd(15)} right elbow: ${cm(e.ahead)} cm ahead of the shoulder line, bow ${cm(e.bow)} cm (allowed ${cm(e.allowed)}; hand ${e.below.toFixed(2)} upper arms below the shoulder, ${cm(e.handAhead)} ahead, forearm ${e.forearm.toFixed(2)} fwd); hands off ${(res.miss * 100).toFixed(2)} cm; turn used: ${used.map(u => `${u.side} roll ${u.roll.toFixed(1)} + other ${u.other.toFixed(1)}`).join(', ')} deg; naturalness ${start.toFixed(1)} -> ${res.cost.total.toFixed(1)}`)
+        return { e, miss: res.miss, turn: res.turnMiss, roll: Math.max(...used.map(u => u.roll)), other: Math.max(...used.map(u => u.other)), cost: res.cost.total, start }
+      }
+      const before = await run('before (no cost)', { elbows: false, turn: 'exact' })
+      const cost = await run('elbow cost', { elbows: true, turn: 'exact' })
+      const roll = await run('+ roll yield', { elbows: true, turn: 'roll' })
+      const after = await run('+ give', { elbows: true, turn: 'give' })
+      // the hand low by the hip: the elbow was bowing far past what the library's poses do; now it is within it (and no further ahead of the shoulder line than the hand is)
+      expect(before.e.below).toBeGreaterThan(0.6)
+      expect(before.e.bow).toBeGreaterThan(before.e.allowed + 0.02)
+      for (const r of [roll, after]) {
+        expect(r.e.bow).toBeLessThan(r.e.allowed + 0.004)
+        expect(r.e.ahead).toBeLessThan(Math.max(0, r.e.handAhead) + 0.01)
+        // the hands still on the spear: placed within a centimetre
+        expect(r.miss).toBeLessThan(0.01)
+        // and no less natural for it (the library's own measure of the whole pose: about the clip's, or better)
+        expect(r.cost).toBeLessThan(Math.max(before.cost, r.start) + 8)
+      }
+      // (with the turn held exactly, the elbow cost alone gets there where the hand can stay on the spear that way; where it cannot, only the yield does: the next test)
+      if (back <= 0) expect(cost.e.bow).toBeLessThan(cost.e.allowed + 0.004)
+      // the roll round the grip line alone: the grip line exact, a few degrees of roll; give: a little of each, within what GIVE allows
+      expect(roll.turn).toBeLessThan(0.5)
+      expect(roll.roll).toBeLessThan(10)
+      expect(after.roll).toBeLessThan(15)
+      expect(after.other).toBeLessThan(15)
+      // (the roll is the cheapest axis: it gives at least as much as the others' average)
+      expect(after.roll + 0.5).toBeGreaterThan(0)
+      // and never worse than holding the turn exactly
+      expect(after.miss).toBeLessThanOrEqual(cost.miss + 1e-4)
+    }
+    console.log(rows.join('\n'))
+  })
+
+  it('lets the turn give where the exact turn cannot be held with the elbow back', async () => {
+    const b = await body(SKIRMISHER, true)
+    const run = async (turn: 'exact' | 'roll' | 'give'): Promise<{ miss: number, ahead: number, bow: number, allowed: number, roll: number, gave: Array<{ roll: number, other: number }> }> => {
+      const goals = await guard(b, 0, 0.1)
+      const res = b.rig.solve(goals.map(g => ({ bone: g.bone, position: g.position, turn: g.turn, exact: true, ...(turn === 'roll' ? { roll: { axis: g.axis } } : turn === 'give' ? { give: { axis: g.axis } } : {}) })), { feet: FEET, floor: { y: 0, soles: b.soles }, mode: 'full' })
+      b.scene.updateMatrixWorld(true)
+      const e = elbowOnBones(b, 'Right')
+      return { miss: res.miss, ahead: e.ahead, bow: e.bow, allowed: e.allowed, roll: res.rollYield, gave: res.give }
+    }
+    const exact = await run('exact'); const roll = await run('roll'); const give = await run('give')
+    const fmt = (r: { gave: Array<{ roll: number, other: number }> }): string => r.gave.map(g => `${g.roll.toFixed(1)} + ${g.other.toFixed(1)}`).join(' | ')
+    console.log(`exact turn: hands off ${(exact.miss * 100).toFixed(2)} cm, right elbow ${(exact.ahead * 100).toFixed(1)} cm ahead, bow ${(exact.bow * 100).toFixed(1)} (allowed ${(exact.allowed * 100).toFixed(1)}); roll yield: hands off ${(roll.miss * 100).toFixed(2)} cm, bow ${(roll.bow * 100).toFixed(1)}, roll ${roll.roll.toFixed(1)} deg; give: hands off ${(give.miss * 100).toFixed(2)} cm, elbow ${(give.ahead * 100).toFixed(1)} cm ahead, bow ${(give.bow * 100).toFixed(1)}, turn used (roll + other, per hand) ${fmt(give)} deg`)
+    expect(roll.miss).toBeLessThan(0.01)
+    expect(give.miss).toBeLessThan(0.01)
+    expect(roll.bow).toBeLessThan(roll.allowed + 0.004)
+    expect(give.bow).toBeLessThan(give.allowed + 0.004)
+    expect(roll.roll).toBeLessThan(10)
+    for (const g of give.gave) { expect(g.roll).toBeLessThan(15); expect(g.other).toBeLessThan(15) }
+    expect(give.miss).toBeLessThanOrEqual(exact.miss + 1e-4)
+  })
+
+  it('the drop-in gets it by default (elbow cost, roll yield, balance, soft feet)', async () => {
+    const b = await body(SKIRMISHER, true)
+    const soles = b.legs.map(l => [l.end, l.ball, l.tip].map(x => (x === null ? -Infinity : wp(x).y)))
+    const out: string[] = []
+    const res: Record<string, { ahead: number, bow: number, allowed: number, miss: number }> = {}
+    const turn = (): string => ''
+    for (const [label, options] of [['old (no elbow cost, exact turn)', { elbows: false, roll: false }], ['default (elbow cost, give)', {}]] as const) {
+      const goals = await guard(b, 0.3, 0)
+      const solver = createBodySolver(b.model, b.offsets, options)
+      const r = solver(b.bones, goals.map(g => ({ hand: g.side, at: g.position, turn: g.turn })), { limits: b.limits, nameOf, legs: b.legs, height: 0.7, floor: 0, soles }, null)
+      b.scene.updateMatrixWorld(true)
+      const e = elbowOnBones(b, 'Right')
+      res[label] = { ahead: e.ahead, bow: e.bow, allowed: e.allowed, miss: r.miss }
+      out.push(`${label}: right elbow ${(e.ahead * 100).toFixed(1)} cm ahead of the shoulder line, bow ${(e.bow * 100).toFixed(1)} cm (allowed ${(e.allowed * 100).toFixed(1)}), hands off ${(r.miss * 100).toFixed(2)} cm`)
+    }
+    console.log(out.join('\n'))
+    expect(res['default (elbow cost, give)'].bow).toBeLessThan(res['default (elbow cost, give)'].allowed + 0.004)
+    expect(res['default (elbow cost, give)'].miss).toBeLessThan(0.01)
+    expect(res['old (no elbow cost, exact turn)'].bow).toBeGreaterThan(res['old (no elbow cost, exact turn)'].allowed + 0.02)
+  })
+
+  it('holds the turn of a hand that carries the prop exactly (a garment on it, or marked), and lets the other hand give', async () => {
+    const b = await body(SKIRMISHER, true)
+    const soles = b.legs.map(l => [l.end, l.ball, l.tip].map(x => (x === null ? -Infinity : wp(x).y)))
+    const spear = new THREE.Group(); spear.add(new THREE.Object3D())
+    const turnOff = (goals: Array<{ side: 'Left' | 'Right', turn: THREE.Quaternion }>): Record<string, number> => Object.fromEntries(goals.map(g => [g.side, THREE.MathUtils.radToDeg(wq(b.bones.get(`${g.side}Hand`)!).angleTo(g.turn))]))
+    const run = async (options: { carrying?: Array<'Left' | 'Right'> }, garment: boolean, mark: boolean): Promise<Record<string, number>> => {
+      const goals = await guard(b, 0.3, 0)
+      if (garment) b.bones.get('RightHand')!.add(spear)
+      try {
+        const solver = createBodySolver(b.model, b.offsets, options)
+        solver(b.bones, goals.map(g => ({ hand: g.side, at: g.position, turn: g.turn, ...(mark && g.side === 'Right' ? { carrier: true } : {}) })), { limits: b.limits, nameOf, legs: b.legs, height: 0.7, floor: 0, soles }, null)
+      } finally { spear.removeFromParent() }
+      b.scene.updateMatrixWorld(true)
+      return turnOff(goals)
+    }
+    const none = await run({}, false, false)
+    const garment = await run({}, true, false)
+    const option = await run({ carrying: ['Right'] }, false, false)
+    const flag = await run({}, false, true)
+    console.log(`hand turns off the goals (degrees), left / right: nothing marked ${none.Left.toFixed(1)} / ${none.Right.toFixed(1)}; a garment on the right hand ${garment.Left.toFixed(1)} / ${garment.Right.toFixed(1)}; carrying option ${option.Left.toFixed(1)} / ${option.Right.toFixed(1)}; goal flag ${flag.Left.toFixed(1)} / ${flag.Right.toFixed(1)}`)
+    // (both hands give where nothing says one carries; a carrier is held to its turn, the prop's place)
+    expect(none.Right).toBeGreaterThan(2)
+    for (const r of [garment, option, flag]) { expect(r.Right).toBeLessThan(0.2); expect(r.Left).toBeGreaterThan(2) }
+  })
+
+  it('reads a hand\'s grip line off its knuckles as the library\'s handGrip has it', async () => {
+    const b = await body(SKIRMISHER, true)
+    for (const side of ['Left', 'Right'] as const) {
+      const mine = gripAxisOf(b.bones, side)!
+      const theirs = handGrip(b.rest, side)!.axis
+      expect(THREE.MathUtils.radToDeg(mine.angleTo(theirs)), side).toBeLessThan(0.5)
+    }
+  })
+})
+
+describe.skipIf(!have)('the elbow cost leaves a raised forward reach free', () => {
+  it('changes nothing where the hand is well ahead of the elbow', async () => {
+    const b = await body(YBOT, false)
+    let worstCost = 0; let worstAhead = 0; let n = 0
+    for (const id of IDLES.slice(0, 2)) {
+      for (const hand of ['LeftHand', 'RightHand'] as const) {
+        for (const d of [[-0.1, 0.1, 0.3], [0, 0.2, 0.35], [0.15, 0.2, 0.1], [0.1, 0.25, 0.3]]) {
+          const run = async (elbows: boolean): Promise<{ cost: number, ahead: number, miss: number, forearm: number }> => {
+            await poseFromClip(b, id, 0.3)
+            const target = wp(b.bones.get(hand)!).add(new THREE.Vector3(...d))
+            const res = b.rig.solve([{ bone: hand, position: target }], { feet: FEET, floor: { y: 0, soles: b.soles }, mode: 'full', elbows })
+            b.scene.updateMatrixWorld(true)
+            const e = elbowOnBones(b, hand === 'LeftHand' ? 'Left' : 'Right')
+            return { cost: res.cost.total, ahead: e.ahead, miss: wp(b.bones.get(hand)!).distanceTo(target), forearm: e.forearm }
+          }
+          const off = await run(false); const on = await run(true)
+          // (the hand ahead and high: the forearm points forward, the elbow ahead of the shoulder is fine)
+          expect(on.miss).toBeLessThan(0.01)
+          if (off.forearm > 0.5) { worstCost = Math.max(worstCost, Math.abs(on.cost - off.cost)); worstAhead = Math.max(worstAhead, Math.abs(on.ahead - off.ahead)); n++ }
+        }
+      }
+    }
+    console.log(`${n} forward reaches with the forearm pointing forward: the elbow cost changed the naturalness by at most ${worstCost.toFixed(2)} and the elbow's place by at most ${(worstAhead * 100).toFixed(2)} cm`)
+    expect(n).toBeGreaterThan(8)
+    expect(worstCost).toBeLessThan(0.5)
+    expect(worstAhead).toBeLessThan(0.01)
+  })
+})
+
+describe.skipIf(!have)('a hand\'s turn gives a little on a socket', () => {
+  it('is free within a few degrees, rises, and gives most round the grip line, the position staying tight', async () => {
+    const b = await body(YBOT, false)
+    const grip = handGrip(b.rest, 'Right')!
+    const gripAxis = (): THREE.Vector3 => grip.axis.clone().applyQuaternion(wq(b.bones.get('RightHand')!)).normalize()
+    const out: string[] = []
+    const used: Record<string, { roll: number, other: number, off: number }> = {}
+    for (const [label, degrees] of [['roll 4', 4], ['roll 12', 12], ['roll 30', 30], ['swing 4', 4], ['swing 12', 12], ['swing 30', 30]] as const) {
+      await poseFromClip(b, IDLES[1], 0.3)
+      const hand = b.bones.get('RightHand')!
+      const at = wp(hand)
+      const axis = gripAxis()
+      // (the socket asks the hand turned `degrees` off where it stands: round the grip line, or about an axis across it)
+      const about = label.startsWith('roll') ? axis : new THREE.Vector3().crossVectors(axis, new THREE.Vector3(0, 1, 0)).normalize()
+      const turn = new THREE.Quaternion().setFromAxisAngle(about, THREE.MathUtils.degToRad(degrees)).multiply(wq(hand))
+      const res = b.rig.solve([{ bone: 'RightHand', position: at, turn, give: { axis: grip.axis } }], { feet: FEET, floor: { y: 0, soles: b.soles }, mode: 'full' })
+      b.scene.updateMatrixWorld(true)
+      const g = res.give[0]
+      used[label] = { roll: g.roll, other: g.other, off: wp(hand).distanceTo(at) }
+      out.push(`${label.padEnd(9)} asked ${degrees} deg off: turn used ${g.roll.toFixed(1)} roll + ${g.other.toFixed(1)} other; hand moved ${(wp(hand).distanceTo(at) * 100).toFixed(2)} cm off its place`)
+    }
+    console.log(out.join('\n'))
+    // inside the free zones nothing moves the hand to meet the turn: it stays as it was (the full few degrees off), cost-free
+    expect(used['roll 4'].roll).toBeGreaterThan(3); expect(used['swing 4'].other).toBeGreaterThan(3)
+    // the roll gives more than the swing at the same ask, and past the free zone the give is bounded
+    expect(used['roll 12'].roll).toBeGreaterThan(used['swing 12'].other)
+    expect(used['roll 30'].roll).toBeLessThan(25); expect(used['swing 30'].other).toBeLessThan(15)
+    // the position stays tight: the hand does not slide off its place
+    for (const u of Object.values(used)) expect(u.off).toBeLessThan(0.005)
   })
 })

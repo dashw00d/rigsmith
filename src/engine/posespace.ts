@@ -31,6 +31,17 @@
 // linear, steep past a stride), so the body lunges (hips forward and down, a foot stepping, flat) rather than folding
 // over its goal.
 //
+// Elbows (ELBOW): the elbow's BOW is how far it stands off the line from its shoulder to its hand, forward in the chest's
+// frame (forward = the shoulder line crossed with the chest's up): an arm reaching forward and down lies on that line
+// (no bow, free), an elbow pointing forward bows. What may bow depends on how low the hand is below the shoulder in WORLD
+// up, in upper arms (so no turning of the chest or swinging of the forearm changes it): free with the hand at the
+// shoulder's height or above, down to the library's own 99th percentile of the bow (ELBOW.table, measured on every
+// frame of the library) from half an upper arm below, and past it the cost is steep. A hand goal may also yield a few
+// degrees of roll round its grip line (NaturalGoal.roll; the prop's line stays exact), which is what lets a hand be held
+// on a prop with the elbow back; or, on a socket, give a little on every axis (NaturalGoal.give, GIVE: free within about
+// 5 degrees, rising, steep from about 15; the roll round the grip line the cheapest, the position as tight as ever). A hand
+// that carries the prop (it rides the hand) keeps its turn exactly: the turn is the prop's place.
+//
 // A whole clip: naturalizeFrames / naturalizeClip solve every frame this way with the corrections between neighbouring
 // frames pulled together (swept forward and back), so the pass is smooth over time and the edit's own motion stays.
 import * as THREE from 'three'
@@ -50,6 +61,8 @@ export const PARENT = [-1, 0, 1, 2, 3, 4, 3, 6, 7, 8, 3, 10, 11, 12, 0, 14, 15, 
 /** The bone on the other side (itself for the middle ones). */
 export const MIRROR = [0, 1, 2, 3, 4, 5, 10, 11, 12, 13, 6, 7, 8, 9, 18, 19, 20, 21, 14, 15, 16, 17]
 const INDEX = new Map<string, number>(BODY.map((n, i) => [n, i]))
+/** BODY indices the elbow terms read. */
+const E = { leftArm: BODY.indexOf('LeftArm'), rightArm: BODY.indexOf('RightArm'), spine1: BODY.indexOf('Spine1'), neck: BODY.indexOf('Neck') }
 
 // ---- the model -----------------------------------------------------------------------------------------------------
 
@@ -232,7 +245,23 @@ export interface NaturalGoal {
   hard?: boolean
   /** The turn is put on the bone exactly at the end (a hand's on its prop), its range or not. */
   exact?: boolean
+  /**
+   * The turn yields round one axis: `axis` (in the bone's own frame: a hand's grip line, the prop's) must run exactly
+   * along where the goal turn puts it, but the roll round it may give a few degrees (at `weight`, per 5 degrees; it
+   * costs steeply past about 10) when holding it exactly forces an unnatural arm.
+   */
+  roll?: { axis: THREE.Vector3 | [number, number, number], weight?: number }
+  /**
+   * The turn gives a little on every axis (a hand on a socket is not a death grip): each of the three axes of the turn's
+   * error is free within a few degrees, then costs, then steeply (GIVE: `roll` round the grip line `axis`, the cheapest;
+   * `other`: the two axes the grip line swings about). Without an `axis` all three count as `other`. The position stays as
+   * tight as the goal's weight makes it; the turn is NOT put back exactly at the end (the prop's place is the caller's).
+   */
+  give?: { axis?: THREE.Vector3 | [number, number, number], roll?: Partial<GiveAxis>, other?: Partial<GiveAxis> }
 }
+
+/** An axis of a turn's give: free to `free` degrees, rising to `steep` degrees, then steeply; `weight` per 5 degrees past the free. */
+export interface GiveAxis { free: number, steep: number, weight: number }
 
 export interface NaturalOptions {
   /** Bones that keep their world position and turn (the feet, the hand carrying a prop). */
@@ -255,6 +284,8 @@ export interface NaturalOptions {
   planted?: boolean
   /** The floor (world y) and each sole point's rest height above it (restSoles): no sole point goes under its height. */
   floor?: { y: number, soles: Record<string, number> }
+  /** The anatomical elbow cost (default on): an elbow bowing forward (in the chest's frame) off the line from its shoulder to its hand more than the hand's height allows (ELBOW). */
+  elbows?: boolean
   /** How many times the usual number of search steps (default 1 in quick mode, 2 in full). */
   effort?: number
   /** Balance and upright (default on when soft `feet` are given, off with `planted`: the first solver's behaviour): the centre of mass over the standing feet's support, the trunk no more bent than the start had it. `false`: lean anywhere. */
@@ -288,6 +319,25 @@ export interface NaturalResult {
   softMiss: number
   /** The standing feet's balance as the bones stand now (only with `feet`). */
   balance: Balance | null
+  /** The most a goal's turn gave round its roll axis (degrees; 0 without `roll` or `give`). */
+  rollYield: number
+  /** What each goal with a `give` turned off its asked turn (degrees): the roll round its grip line, and the rest (the swing of the line). */
+  give: Array<{ bone: string, roll: number, other: number }>
+}
+
+/** An arm's elbow in the chest's frame (forward from the shoulders' line; the shoulder line's left to right). */
+export interface Elbow {
+  /** How far the elbow is ahead of the shoulder line (metres; negative: behind it). */
+  ahead: number
+  /** How far the hand is ahead of the shoulder line. */
+  handAhead: number
+  /** The forearm's forward part, from the elbow to the hand (-1 pointing back, 1 forward). */
+  forearm: number
+  /** The elbow's bow off the shoulder-to-hand line, forward (metres), and the most the hand's height allows (ELBOW.table, metres). */
+  bow: number
+  allowed: number
+  /** How far the hand is below the shoulder, in world up, in upper arms (negative: above). */
+  below: number
 }
 
 /** The centre of mass over the floor against the support, and the trunk's tilt. */
@@ -340,6 +390,47 @@ const STRIDE = { max: 45, weight: 2 }
 export const BALANCE = { weight: 3, steep: 6, ramp: 0.06 }
 /** Upright: the trunk's (hips to neck) tilt from the vertical beyond what the start pose has plus `slack` (radians), per 5 degrees, steepening past 20. */
 export const UPRIGHT = { weight: 3, slack: THREE.MathUtils.degToRad(3) }
+/**
+ * The elbow's bow (how far it stands off the line from the shoulder to the hand, forward in the chest's frame: forward =
+ * the shoulder line crossed with the chest's up) beyond what is allowed for the hand's height below the shoulder (world
+ * up) costs `weight` per centimetre (of a Y Bot's size; squared, steepening). `table`: [the hand's height below the
+ * shoulder, in upper arms; the bow allowed, in upper arms]: free (1: more than an arm can bow) at the shoulder's height
+ * and above, then, from half an upper arm below, the 99th percentile of the bow over every frame of the library's 2,446
+ * captures (both arms, 130,763 frames each: tools/posespace.ts's scan; so the rule leaves 1% of the library's own poses
+ * over it, 0.6% overall), by the height of the hand (the arm hanging: almost none).
+ */
+export const ELBOW = {
+  weight: 3,
+  steep: 6,
+  table: [[0, 1], [0.625, 0.53], [0.875, 0.43], [1.125, 0.31], [1.375, 0.22], [1.625, 0.14], [1.875, 0.06], [2.2, 0.04]] as Array<[number, number]>,
+}
+/** The bow allowed (in upper arms) a hand `below` upper arms under its shoulder (world up), from ELBOW.table. */
+export function elbowAllowed (below: number): number {
+  const t = ELBOW.table
+  if (below <= t[0][0]) return t[0][1]
+  for (let i = 1; i < t.length; i++) {
+    if (below <= t[i][0]) return t[i - 1][1] + (t[i][1] - t[i - 1][1]) * (below - t[i - 1][0]) / (t[i][0] - t[i - 1][0])
+  }
+  return t[t.length - 1][1]
+}
+/** A turn that yields round its roll axis: per 5 degrees (boosted goals do not harden it). */
+export const ROLL = { weight: 0.6 }
+/**
+ * How much a hand's turn gives on a socket (degrees; the weight per 5 degrees past the free): the roll round the grip line
+ * the cheapest (free to 8, rising to 20, then steeply), the swing of the line costlier (free to 5, rising to 15, then steeply). Not boosted: only
+ * the position of a goal hardens.
+ */
+export const GIVE: { roll: GiveAxis, other: GiveAxis } = { roll: { free: 8, steep: 20, weight: 2.5 }, other: { free: 5, steep: 15, weight: 4 } }
+
+/** One component of a turn's error (radians) through an axis's give: nothing within `free`, then rising, then steeply. */
+function giveResidual (c: number, g: Float64Array, o: number): number {
+  const m = Math.abs(c) - g[o]
+  if (m <= 0) return 0
+  const u = m / FIVE
+  const k = u / Math.max(0.5, (g[o + 1] - g[o]) / FIVE)
+  const r = g[o + 2] * u * (1 + k * k)
+  return c < 0 ? -r : r
+}
 /** The body's segments: [bone, the bone whose joint ends the segment (null: the joint itself), share of the mass]. */
 const SEGMENTS: Array<[string, string | null, number]> = [
   ['Hips', 'Spine', 0.14], ['Spine', 'Spine1', 0.11], ['Spine1', 'Spine2', 0.11], ['Spine2', 'Neck', 0.14], ['Neck', 'Head', 0.02], ['Head', null, 0.07],
@@ -400,6 +491,13 @@ interface Compiled {
   floorY: number | null
   exact: boolean
   hard: boolean
+  /** The roll axis in the goal bone's frame and where the goal puts it (world), and its weight. */
+  rollLocal: Float64Array | null
+  rollWorld: Float64Array | null
+  rollW: number
+  /** A turn with give: [roll free, steep (radians), weight, other free, steep, weight], and the two axes perpendicular to the roll axis (world; the roll axis is rollWorld, or none). */
+  give: Float64Array | null
+  giveB: Float64Array | null
   /** 0: always; 1: only while the feet are held (the first stage); 2: only once they are released (soft feet, the floor). */
   phase: 0 | 1 | 2
 }
@@ -546,6 +644,50 @@ export class NaturalRig {
     return inside ? -depth : near
   }
 
+  /**
+   * An arm's elbow in the chest's frame, from the FK in this.P: [how far the elbow is ahead of the shoulder line (metres),
+   * the hand ahead of it, the forearm's forward part (-1..1), the elbow's bow off the shoulder-to-hand line (metres, forward),
+   * the hand's height below the shoulder in WORLD up (upper arms), the bow allowed at that height (metres)]. Forward is the
+   * shoulder line (left minus right) crossed with the chest's up (Spine1 to Neck); the bow is the elbow's offset from the
+   * line S->H (its projection t on it clamped to the arm: an extended arm has its elbow on it) along that forward.
+   */
+  private elbowTerms (side: number, out: Float64Array, shoulderY?: number): void {
+    const P = this.P
+    const la = E.leftArm * 3; const ra = E.rightArm * 3; const sp = E.spine1 * 3; const nk = E.neck * 3
+    const sx = P[la] - P[ra]; const sy = P[la + 1] - P[ra + 1]; const sz = P[la + 2] - P[ra + 2]
+    const ux = P[nk] - P[sp]; const uy = P[nk + 1] - P[sp + 1]; const uz = P[nk + 2] - P[sp + 2]
+    let fx = sy * uz - sz * uy; let fy = sz * ux - sx * uz; let fz = sx * uy - sy * ux
+    const fl = Math.hypot(fx, fy, fz) || 1
+    fx /= fl; fy /= fl; fz /= fl
+    const o = side === 0 ? E.leftArm : E.rightArm
+    const sh = o * 3; const el = (o + 1) * 3; const ha = (o + 2) * 3
+    const vx = P[el] - P[sh]; const vy = P[el + 1] - P[sh + 1]; const vz = P[el + 2] - P[sh + 2]
+    const wx = P[ha] - P[sh]; const wy = P[ha + 1] - P[sh + 1]; const wz = P[ha + 2] - P[sh + 2]
+    const ahead = vx * fx + vy * fy + vz * fz
+    const hx = P[ha] - P[el]; const hy = P[ha + 1] - P[el + 1]; const hz = P[ha + 2] - P[el + 2]
+    const len = Math.hypot(hx, hy, hz) || 1
+    const w2 = wx * wx + wy * wy + wz * wz
+    const t = w2 > 1e-12 ? Math.min(1, Math.max(0, (vx * wx + vy * wy + vz * wz) / w2)) : 0
+    const upper = Math.hypot(vx, vy, vz) || 1
+    // (the hand's height under the shoulder: the START pose's shoulder when given, so that crouching or leaning to lower the shoulder does not widen what may bow)
+    const below = shoulderY === undefined ? -wy / upper : (shoulderY - P[ha + 1]) / upper
+    out[0] = ahead
+    out[1] = wx * fx + wy * fy + wz * fz
+    out[2] = (hx * fx + hy * fy + hz * fz) / len
+    out[3] = (vx - t * wx) * fx + (vy - t * wy) * fy + (vz - t * wz) * fz
+    out[4] = below
+    out[5] = elbowAllowed(below) * upper
+  }
+
+  /** Both elbows as the bones stand now (left, right). */
+  elbowsOf (): { left: Elbow, right: Elbow } {
+    const pose = this.encode()
+    this.fk(pose.p, pose.yaw, pose.hips.x, pose.hips.y, pose.hips.z)
+    const out = new Float64Array(6)
+    const read = (side: number): Elbow => { this.elbowTerms(side, out); return { ahead: out[0], handAhead: out[1], forearm: out[2], bow: out[3], below: out[4], allowed: out[5] } }
+    return { left: read(0), right: read(1) }
+  }
+
   /** The standing feet's balance as the bones stand now: the centre of mass, how far inside the support it is, the trunk's tilt. */
   balanceOf (feet: string[] = ['LeftFoot', 'RightFoot']): Balance {
     const pose = this.encode()
@@ -643,7 +785,7 @@ export class NaturalRig {
   private compile (goals: NaturalGoal[], opts: NaturalOptions): Compiled[] {
     const out: Compiled[] = []
     const v = (x: THREE.Vector3 | number[] | undefined): Float64Array | null => (x === undefined ? null : Float64Array.from(x instanceof THREE.Vector3 ? x.toArray() : x))
-    const base = { slide: null, axisLocal: null, axisWorld: null, either: false, soft: false, wy: 1, turnRatio: 1, tiltK: 1, floorY: null, exact: false, hard: true, phase: 0 as 0 | 1 | 2 }
+    const base = { slide: null, axisLocal: null, axisWorld: null, either: false, soft: false, wy: 1, turnRatio: 1, tiltK: 1, floorY: null, exact: false, hard: true, phase: 0 as 0 | 1 | 2, rollLocal: null as Float64Array | null, rollWorld: null as Float64Array | null, rollW: 0, give: null as Float64Array | null, giveB: null as Float64Array | null }
     for (const g of goals) {
       const att = this.attach(g.bone, g.at instanceof THREE.Vector3 ? g.at.toArray() : g.at)
       out.push({
@@ -652,6 +794,20 @@ export class NaturalRig {
         axisLocal: g.axis === undefined ? null : Float64Array.from((g.axis.local instanceof THREE.Vector3 ? g.axis.local.clone() : new THREE.Vector3(...g.axis.local)).normalize().toArray()),
         axisWorld: g.axis === undefined ? null : Float64Array.from(g.axis.world.clone().normalize().toArray()),
         either: g.axis?.either === true, weight: g.weight ?? 1, keep: false, boost: g.hard !== false, hard: g.hard !== false, exact: g.exact === true,
+        ...(g.give !== undefined && g.turn !== undefined ? (() => {
+          const deg = THREE.MathUtils.degToRad
+          const r = { ...GIVE.roll, ...g.give.roll }; const o = { ...GIVE.other, ...g.give.other }
+          const params = Float64Array.from([deg(r.free), deg(r.steep), r.weight, deg(o.free), deg(o.steep), o.weight])
+          if (g.give.axis === undefined) return { give: params }
+          const local = (g.give.axis instanceof THREE.Vector3 ? g.give.axis.clone() : new THREE.Vector3(...g.give.axis)).normalize()
+          const a = local.clone().applyQuaternion(g.turn.clone().normalize())
+          const helper = Math.abs(a.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
+          const b1 = new THREE.Vector3().crossVectors(a, helper).normalize(); const b2 = new THREE.Vector3().crossVectors(a, b1).normalize()
+          return { give: params, giveB: Float64Array.from([...b1.toArray(), ...b2.toArray()]), rollLocal: Float64Array.from(local.toArray()), rollWorld: Float64Array.from(a.toArray()) }
+        })() : g.roll !== undefined && g.turn !== undefined ? (() => {
+          const local = (g.roll.axis instanceof THREE.Vector3 ? g.roll.axis.clone() : new THREE.Vector3(...g.roll.axis)).normalize()
+          return { rollLocal: Float64Array.from(local.toArray()), rollWorld: Float64Array.from(local.clone().applyQuaternion(g.turn.clone().normalize()).toArray()), rollW: g.roll.weight ?? ROLL.weight }
+        })() : {}),
       })
     }
     // the feet that stand: planted (kept hard, as the first solver did) or soft
@@ -774,7 +930,15 @@ export class NaturalRig {
       tiltTh = Math.max(bal[1], 0) + UPRIGHT.slack
     }
 
-    const nRows = rows.length * 9 + 3 + DIM
+    const useElbows = opts.elbows !== false
+    // (each shoulder's height at the start)
+    const shoulderY0 = [0, 0]
+    if (useElbows) {
+      this.fk(start.p, start.yaw, start.hips.x, start.hips.y, start.hips.z)
+      shoulderY0[0] = this.P[E.leftArm * 3 + 1]; shoulderY0[1] = this.P[E.rightArm * 3 + 1]
+    }
+    const elb = new Float64Array(6)
+    const nRows = rows.length * 9 + 6 + DIM
     const f = new Float64Array(nRows); const f2 = new Float64Array(nRows)
     const J = new Float64Array(nRows * n)
     const p = new Float64Array(DIM); const pj = new Float64Array(DIM)
@@ -819,6 +983,7 @@ export class NaturalRig {
           out[r++] = dx * s; out[r++] = dy * s * c.wy; out[r++] = dz * s
         } else { stride = 0; out[r++] = 0; out[r++] = 0; out[r++] = 0 }
         // (the turn: the error as a rotation vector)
+        let rollRes = 0
         if (c.turn !== null) {
           mul(t, 4, Q, ao, c.rel, 0)
           // error = bone * target^-1 (world), as its log
@@ -828,8 +993,25 @@ export class NaturalRig {
           if (ew < 0) { ex = -ex; ey = -ey; ez = -ez; ew = -ew }
           const sn = Math.sqrt(ex * ex + ey * ey + ez * ez)
           const k = sn < 1e-9 ? 2 : 2 * Math.atan2(sn, ew) / sn
-          const s = w * c.turnRatio / FIVE * k
-          out[r++] = ex * s * c.tiltK; out[r++] = ey * s; out[r++] = ez * s * c.tiltK
+          let vx = ex * k; let vy = ey * k; let vz = ez * k
+          if (c.give !== null) {
+            // (a turn with give: each axis of the error free within its few degrees, then costing; none of it boosted)
+            if (c.rollWorld !== null && c.giveB !== null) {
+              out[r++] = giveResidual(vx * c.rollWorld[0] + vy * c.rollWorld[1] + vz * c.rollWorld[2], c.give, 0)
+              out[r++] = giveResidual(vx * c.giveB[0] + vy * c.giveB[1] + vz * c.giveB[2], c.give, 3)
+              out[r++] = giveResidual(vx * c.giveB[3] + vy * c.giveB[4] + vz * c.giveB[5], c.give, 3)
+            } else { out[r++] = giveResidual(vx, c.give, 3); out[r++] = giveResidual(vy, c.give, 3); out[r++] = giveResidual(vz, c.give, 3) }
+          } else {
+          // (a turn that yields round its roll axis: the swing stays at the goal's weight, the roll has its own, unboosted)
+          if (c.rollWorld !== null) {
+            const roll = vx * c.rollWorld[0] + vy * c.rollWorld[1] + vz * c.rollWorld[2]
+            const u = roll / FIVE
+            rollRes = c.rollW * u * (1 + Math.abs(u) / 2)
+            vx -= roll * c.rollWorld[0]; vy -= roll * c.rollWorld[1]; vz -= roll * c.rollWorld[2]
+          }
+          const s = w * c.turnRatio / FIVE
+          out[r++] = vx * s * c.tiltK; out[r++] = vy * s; out[r++] = vz * s * c.tiltK
+          }
         } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
         // (the axis)
         if (c.axisLocal !== null && c.axisWorld !== null) {
@@ -840,7 +1022,7 @@ export class NaturalRig {
           const dx = c.axisWorld[0]; const dy = c.axisWorld[1]; const dz = c.axisWorld[2]
           const s = w * c.turnRatio / FIVE
           if (c.either) { out[r++] = (ay * dz - az * dy) * s; out[r++] = (az * dx - ax * dz) * s; out[r++] = (ax * dy - ay * dx) * s } else { out[r++] = (ax - dx) * s; out[r++] = (ay - dy) * s; out[r++] = (az - dz) * s }
-        } else if (stride > 0) { out[r++] = stride; out[r++] = 0; out[r++] = 0 } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
+        } else if (stride > 0) { out[r++] = stride; out[r++] = 0; out[r++] = 0 } else if (rollRes !== 0) { out[r++] = rollRes; out[r++] = 0; out[r++] = 0 } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
       }
       // (balance: the centre of mass past the support; upright: the trunk bent past the start's)
       if (useBalance) {
@@ -849,6 +1031,15 @@ export class NaturalRig {
         out[r++] = BALANCE.weight * ub * (1 + ub / BALANCE.steep)
         const ut = Math.max(0, bal[1] - tiltTh) / FIVE
         out[r++] = UPRIGHT.weight * ut * (1 + ut / 4)
+        out[r++] = 0
+      } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
+      // (the elbows: ahead of the shoulder line while the hand is not well ahead of them)
+      if (useElbows) {
+        for (let side = 0; side < 2; side++) {
+          this.elbowTerms(side, elb, shoulderY0[side])
+          const ue = Math.max(0, elb[3] - elb[5]) / unit
+          out[r++] = ELBOW.weight * ue * (1 + ue / ELBOW.steep)
+        }
         out[r++] = 0
       } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
       // (the limits: a joint out of its range pulled to the nearest turn in it, as chosen at the iteration's start)
@@ -1010,15 +1201,15 @@ export class NaturalRig {
     // (a bake goes on while a goal is still over a millimetre off: a long reach with balance and upright asks for more steps)
     const finish = (): void => {
       meet()
-      for (let more = 0; !quick && more < 4 && goalMiss() > 0.001; more++) { iterate(Math.round(20 * effort)); meet() }
+      for (let more = 0; more < (quick ? 2 : 4) && goalMiss() > (quick ? 0.003 : 0.001); more++) { iterate(Math.round((quick ? 5 : 20) * effort)); meet() }
     }
-    iterate(Math.round((soften ? (quick ? 4 : 15) : (quick ? 5 : 15)) * effort))
+    iterate(Math.round((soften ? (quick ? 6 : 15) : (quick ? 8 : 15)) * effort))
     finish()
     // the feet let go: from the stance the goals were met in, what is cheaper (a pivot, a slide, a tilt) is taken
     if (soften) {
       phase = 2
       r = evalRows(p, z, f); c = cost(f, r, z)
-      iterate(Math.round((quick ? 3 : 12) * effort))
+      iterate(Math.round((quick ? 4 : 12) * effort))
       finish()
     }
     // the floor: switched on if a sole point is left under its height, then the search goes on from there
@@ -1033,7 +1224,7 @@ export class NaturalRig {
       if (under > 5e-4) {
         floorOn = true
         r = evalRows(p, z, f); c = cost(f, r, z)
-        iterate(Math.round((quick ? 4 : 20) * effort))
+        iterate(Math.round((quick ? 5 : 20) * effort))
       }
     }
     // ---- put it on the bones ----
@@ -1076,7 +1267,12 @@ export class NaturalRig {
     // the turns asked exactly
     for (const row of rows) {
       const bone = this.byName.get(row.bone)
-      if (row.exact && row.turn !== null && bone !== undefined) setWorldQuaternion(bone, new THREE.Quaternion(row.turn[0], row.turn[1], row.turn[2], row.turn[3]))
+      if (!row.exact || row.turn === null || bone === undefined || row.give !== null) continue
+      if (row.rollLocal !== null && row.rollWorld !== null) {
+        // (the roll yielded stays; the roll axis goes exactly where the goal puts it: the swing, the shortest way)
+        const now = new THREE.Vector3(...row.rollLocal).applyQuaternion(wq(bone))
+        setWorldQuaternion(bone, new THREE.Quaternion().setFromUnitVectors(now, new THREE.Vector3(...row.rollWorld)).multiply(wq(bone)))
+      } else setWorldQuaternion(bone, new THREE.Quaternion(row.turn[0], row.turn[1], row.turn[2], row.turn[3]))
     }
     // the floor, the one hard thing of a soft foot: a leg whose sole point is left under its height reaches its foot up by that much
     if (opts.floor !== undefined && opts.planted !== true) {
@@ -1110,7 +1306,8 @@ export class NaturalRig {
 
   private measure (rows: Compiled[], startCost: NaturalCost, start: NaturalPose, ms: number, iterations: number, feet: string[]): NaturalResult {
     this.bones[0].updateMatrixWorld(true)
-    let miss = 0; let keepMiss = 0; let turnMiss = 0; let softMiss = 0; let floorMiss = 0
+    let miss = 0; let keepMiss = 0; let turnMiss = 0; let softMiss = 0; let floorMiss = 0; let rollYield = 0
+    const gave: Array<{ bone: string, roll: number, other: number }> = []
     const moved = { slide: 0, lift: 0, twist: 0, tilt: 0 }
     const goalOf = (row: Compiled): { at: THREE.Vector3, q: THREE.Quaternion } => {
       const b = this.bones[row.a]
@@ -1136,7 +1333,27 @@ export class NaturalRig {
         if (row.slide !== null) { const s = new THREE.Vector3(...row.slide); d.addScaledVector(s, -d.dot(s)) }
         if (row.keep) keepMiss = Math.max(keepMiss, d.length()); else if (row.hard) miss = Math.max(miss, d.length()); else softMiss = Math.max(softMiss, d.length())
       }
-      if (row.turn !== null && (row.hard || row.keep)) turnMiss = Math.max(turnMiss, THREE.MathUtils.radToDeg(q.angleTo(new THREE.Quaternion(...row.turn))))
+      if (row.turn !== null && row.give !== null) {
+        // (a turn with give: what it gave, as the roll round its grip line and the rest)
+        const e = q.clone().multiply(new THREE.Quaternion(...row.turn).invert())
+        const rv = [0, 0, 0]
+        logTo(e, rv, 0)
+        const all = Math.hypot(rv[0], rv[1], rv[2])
+        const roll = row.rollWorld === null ? 0 : rv[0] * row.rollWorld[0] + rv[1] * row.rollWorld[1] + rv[2] * row.rollWorld[2]
+        const other = Math.sqrt(Math.max(0, all * all - roll * roll))
+        gave.push({ bone: row.bone, roll: THREE.MathUtils.radToDeg(Math.abs(roll)), other: THREE.MathUtils.radToDeg(other) })
+        rollYield = Math.max(rollYield, THREE.MathUtils.radToDeg(Math.abs(roll)))
+      } else if (row.turn !== null && (row.hard || row.keep)) {
+        if (row.rollWorld !== null) {
+          // (a turn that yields round its roll axis: the axis's miss is the turn's miss; the roll is what it gave)
+          const e = q.clone().multiply(new THREE.Quaternion(...row.turn).invert())
+          const rv = [0, 0, 0]
+          logTo(e, rv, 0)
+          const roll = rv[0] * row.rollWorld[0] + rv[1] * row.rollWorld[1] + rv[2] * row.rollWorld[2]
+          const swing = Math.hypot(rv[0] - roll * row.rollWorld[0], rv[1] - roll * row.rollWorld[1], rv[2] - roll * row.rollWorld[2])
+          turnMiss = Math.max(turnMiss, THREE.MathUtils.radToDeg(swing)); rollYield = Math.max(rollYield, THREE.MathUtils.radToDeg(Math.abs(roll)))
+        } else turnMiss = Math.max(turnMiss, THREE.MathUtils.radToDeg(q.angleTo(new THREE.Quaternion(...row.turn))))
+      }
     }
     const now = this.encode()
     const delta = new Float64Array(DIM + EXTRA)
@@ -1145,7 +1362,7 @@ export class NaturalRig {
     delta[DIM + 1] = now.hips.x - start.hips.x
     delta[DIM + 2] = now.hips.y - start.hips.y
     delta[DIM + 3] = now.hips.z - start.hips.z
-    return { miss, keepMiss, turnMiss, cost: this.model.cost(now.p), startCost, pose: now, delta, iterations, ms, floorMiss: Math.max(0, floorMiss), feetMoved: moved, softMiss, balance: feet.length > 0 ? this.balanceOf(feet) : null }
+    return { miss, keepMiss, turnMiss, cost: this.model.cost(now.p), startCost, pose: now, delta, iterations, ms, floorMiss: Math.max(0, floorMiss), feetMoved: moved, softMiss, balance: feet.length > 0 ? this.balanceOf(feet) : null, rollYield, give: gave }
   }
 }
 
@@ -1196,7 +1413,11 @@ export function restSoles (bones: Map<string, THREE.Bone>, floorY = 0): Record<s
 /** What the drop-in hands back as the frame's state: bodysolve's four numbers (as they came out, for show and for a rule-based next frame) and this solver's own warm start. */
 export type NaturalBodyState = BodyState & { warm?: Float64Array }
 /** solveBody's options, and: `planted` (the feet hard-locked, the first solver's behaviour), the `floor` (world y) and `soles` (each leg's [ankle, ball, tip] rest heights above it, as ik.ts keepOffFloor takes them) that keep every sole point from going under it. */
-export interface NaturalSolveOptions extends SolveOptions { planted?: boolean, floor?: number, soles?: number[][] }
+export interface NaturalSolveOptions extends SolveOptions {
+  planted?: boolean, floor?: number, soles?: number[][]
+  /** The hands carrying a prop (it rides the hand: its turn is the prop's, held exactly; the other hands' turns give). A goal marked `carrier: true` counts too, and so does a hand with a non-bone object (a garment) on it. */
+  carrying?: Array<'Left' | 'Right'>
+}
 export type BodySolver = (bones: Map<string, THREE.Bone>, goals: HandGoal[], opts: NaturalSolveOptions, prev: BodyState | null) => { state: BodyState, miss: number }
 export interface BodySolverOptions {
   /** May the hips shift (a lunge, a drop)? Default true: the bake must key the Hips position track. */
@@ -1205,6 +1426,34 @@ export interface BodySolverOptions {
   planted?: boolean
   /** Balance and upright (the centre of mass over the feet's support, the trunk no more bent than the clip has it): default true with soft feet (off with `planted`); false lets the body lean anywhere. */
   balance?: boolean
+  /** The anatomical elbow cost (an elbow bowing forward off its shoulder-to-hand line more than the hand's height allows): default true. */
+  elbows?: boolean
+  /** The hands carrying a prop (see NaturalSolveOptions.carrying): their turns are held exactly, whatever give says. */
+  carrying?: Array<'Left' | 'Right'>
+  /** A hand's turn yields at all: false asks every hand's turn exactly. Default true. */
+  roll?: boolean
+  /** A hand's turn gives a little on every axis (GIVE: the roll round its grip line the cheapest, then the swing of the line), the position staying tight; false: only the roll yields (the grip line exact). Default true. */
+  give?: boolean
+}
+
+/**
+ * A hand's grip line in the hand's own frame, from its knuckles (as src/engine/clipedit.ts handGrip has it: across the
+ * knuckles from the little finger's to the index's, leaning 25 degrees toward the heel of the hand): the line a shaft takes
+ * through the fist. Null for a hand without fingers.
+ */
+export function gripAxisOf (bones: Map<string, THREE.Bone>, hand: 'Left' | 'Right'): THREE.Vector3 | null {
+  const wrist = bones.get(`${hand}Hand`)
+  const index = bones.get(`${hand}HandIndex1`); const middle = bones.get(`${hand}HandMiddle1`) ?? index
+  const little = bones.get(`${hand}HandPinky1`) ?? bones.get(`${hand}HandRing1`) ?? bones.get(`${hand}HandMiddle1`)
+  if (wrist === undefined || index === undefined || little === undefined || middle === undefined) return null
+  wrist.updateMatrixWorld(true)
+  const h = wp(wrist)
+  const f = wp(middle).sub(h).normalize()
+  const k = wp(index).sub(wp(little))
+  if (k.length() < 1e-9) return null
+  k.addScaledVector(f, -k.dot(f)).normalize()
+  const lean = THREE.MathUtils.degToRad(25)
+  return k.multiplyScalar(Math.cos(lean)).addScaledVector(f, -Math.sin(lean)).normalize().applyQuaternion(wq(wrist).invert())
 }
 
 /** The bones the natural solve moves (to bake their tracks): the whole body's, and the fingers a goal closes. (The Hips' position track too, when the hips may move.) */
@@ -1251,8 +1500,17 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
     const lateral = wp(bones.get('LeftArm')!).sub(wp(bones.get('RightArm')!)); lateral.y = 0
     lateral.normalize()
     const warm = opts.quick === true ? undefined : (prev as NaturalBodyState | null)?.warm
-    const res = rig.solve(goals.map(g => ({ bone: `${g.hand}Hand`, position: g.at, turn: g.turn, exact: true })), {
-      feet, planted: opts.planted ?? options.planted, balance: options.balance, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, warm,
+    const res = rig.solve(goals.map(g => {
+      // (a hand's turn: exact with roll false; with give false only the roll round its grip line yields; by default it gives a little on every axis)
+      // (a hand carrying a prop keeps its turn exactly: the prop rides it, so its turn is the prop's place)
+      const hand = bones.get(`${g.hand}Hand`)
+      const carries = (g as { carrier?: boolean }).carrier === true || (opts.carrying ?? options.carrying)?.includes(g.hand) === true ||
+        (hand?.children.some(c => (c as THREE.Bone).isBone !== true && c.children.length > 0) ?? false)
+      const grip = options.roll === false || carries ? null : gripAxisOf(bones, g.hand)
+      const turn = options.roll === false || carries ? {} : options.give === false ? (grip === null ? {} : { roll: { axis: grip } }) : { give: grip === null ? {} : { axis: grip } }
+      return { bone: `${g.hand}Hand`, position: g.at, turn: g.turn, exact: true, ...turn }
+    }), {
+      feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, warm,
     })
     // (the fingers as asked; the miss as it stands)
     let miss = 0
