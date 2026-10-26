@@ -427,7 +427,7 @@ export interface GripInput extends FitInput {
   socket: string
   grip: { axis: THREE.Vector3, fist: THREE.Vector3 } | null
   /** The other hands on the prop: their fists' places along the shaft are kept a fist's width away. */
-  others?: Array<{ hand: 'Left' | 'Right', socket: Socket, grip: { fist: THREE.Vector3 } | null, /** the hand carrying the prop: this one goes ahead of it, toward the far end (the head) */ carrier?: boolean }>
+  others?: Array<{ hand: 'Left' | 'Right', socket: Socket, grip: { fist: THREE.Vector3 } | null }>
   /** The best spot whatever the socket had (no pull back to it), the roll round the shaft looked for all the way round first. */
   free?: boolean
 }
@@ -479,10 +479,7 @@ export async function placeGrip (input: GripInput, progress: (label: string) => 
   const wasRoll = 0
   const fist = input.height * FIT.fist
   const others = (input.others ?? []).map(o => fistAt(o.socket, o.grip))
-  // (a front hand: ahead of the hand carrying the prop, toward its far end (a spear's head), never reaching back behind it)
-  const behind = (input.others ?? []).filter(o => o.carrier === true).map(o => fistAt(o.socket, o.grip))
-  const lowest = Math.max(0.08, ...behind.map(c => c + fist / length))
-  const ok = (s: number): boolean => s >= lowest && s <= 0.85 && others.every(o => Math.abs(s - o) * length >= fist)
+  const ok = (s: number): boolean => s >= 0.08 && s <= 0.85 && others.every(o => Math.abs(s - o) * length >= fist)
   // (frames sampled: every third, always the last)
   const frames: number[] = []
   for (let i = 0; i < lab.n; i += 3) frames.push(i)
@@ -506,7 +503,7 @@ export async function placeGrip (input: GripInput, progress: (label: string) => 
   // (free: the roll round the shaft first, all the way round in twelfths, where the grip is (or the middle, if it can't be there))
   let roll0 = 0
   if (input.free === true) {
-    const at = ok(nowS) ? nowS : (lowest + 0.85) / 2
+    const at = ok(nowS) ? nowS : 0.45
     for (let k = 1; k < 12; k++) {
       progress(`Placing the grip: rolled ${k * 30}°`)
       const c = score(at, k * Math.PI / 6)

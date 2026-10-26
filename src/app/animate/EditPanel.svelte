@@ -86,7 +86,7 @@
           </div>
           <span use:tooltip={'Leads: the hands on it follow its path, and the body follows the hands. Off: it rides the hand carrying it, as the clip moves that hand.'}><Toggle label="Leads (the body follows it)" checked={clipEdit.paths[p.name]?.locked ?? false} onchange={(on: boolean) => clipEdit.setLocked(p.name, on)} /></span>
           {#if clipEdit.busy !== null}<p class="small busy">{clipEdit.busy}…</p>{/if}
-          <p class="faint small">Move or turn it with the gizmo to key its path at this frame (that makes it lead). Switching Leads on, or putting a second hand on a socket, fits the prop to the body once over the whole clip: it moves a little (the spear farther out), the hand's grip spot is chosen along the shaft; your keys after it are the authority.</p>
+          <p class="faint small">Move or turn it with the gizmo to key its path at this frame (that makes it lead). Switching Leads on, or putting a hand on a socket, fits the prop to the body once over the whole clip (it moves a little: the spear farther out); a hand on a socket sits on the shaft at the socket's spot, clear of the other hand.</p>
           {#if clipEdit.paths[p.name]?.locked && /^(Left|Right)Hand$/.test(p.bone)}
             <p class="faint small">The {p.bone.startsWith('Left') ? 'left' : 'right'} hand holds it where its placement has it (Outfit), unless it is on a socket.</p>
           {/if}
@@ -109,7 +109,7 @@
             <span class="muted small">Grip it</span>
             {#each ['Left', 'Right'] as const as hand}
               {#if p.bone !== `${hand}Hand`}
-                <span use:tooltip={`The ${hand.toLowerCase()} hand on the shaft where it holds it best: its fist squarely round it (the shaft through the closed fingers, square to the palm, the thumb toward the far end), slid along and rolled round to where the whole clip is easiest when another hand holds it too; saved as the hand's socket.`}><Button size="sm" disabled={clipEdit.busy !== null} onclick={() => clipEdit.grip(hand, p.name)}><Hand size={12} /> {hand}</Button></span>
+                <span use:tooltip={`The ${hand.toLowerCase()} hand on the shaft where it is: its fist squarely round it (the shaft through the closed fingers, square to the palm) at the nearest spot, kept a fist's width from the other hand; saved as the hand's socket.`}><Button size="sm" disabled={clipEdit.busy !== null} onclick={() => clipEdit.grip(hand, p.name)}><Hand size={12} /> {hand}</Button></span>
               {/if}
             {/each}
           </div>
