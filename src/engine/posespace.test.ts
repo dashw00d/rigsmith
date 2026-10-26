@@ -518,7 +518,7 @@ async function editedClip (b: Body, id: string, n: number, move: (t: number) => 
 }
 
 describe.skipIf(!have)('naturalizing a whole clip', () => {
-  it('meets the hands on every frame, smooths the corrections, holds the floor and beats the plain edit', async () => {
+  it('meets the hands on every frame, smooths the corrections, holds the floor and beats the plain edit', { timeout: 30000 }, async () => {
     const b = await body(YBOT, false)
     const N = 40
     // the edit: both hands carried on a prop that swings 20 cm out and across, and leads 20 cm forward

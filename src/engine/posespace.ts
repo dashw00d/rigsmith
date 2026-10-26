@@ -292,6 +292,8 @@ export interface NaturalOptions {
   balance?: boolean
   /** A pull of the whole pose toward the model's mean, per whitened unit squared (default 0: the pose stays as near the start as the goals allow; more drifts every joint toward the most natural pose too). */
   pull?: number
+  /** The same pull on the part of the pose outside the model's subspace only (the joint combinations people don't make: an arm raised with the collarbone still): default `pull`. */
+  pullOutside?: number
   /** A pull of the correction (p - start, the result's `delta` shape) toward `ref` (its neighbours' in a clip), `weight` per radian squared. */
   smooth?: { ref: Float64Array, weight: number }
 }
@@ -915,7 +917,9 @@ export class NaturalRig {
     for (let a = 0; a < 3; a++) prior[DIM + 1 + a] = opts.hipsMove === false ? 1e8 : PRIOR.hips
 
     // (smooth: a pull of the correction toward its neighbours', in plain angle for the pose, the springs' own units for the rest)
-    const pullW = opts.pull ?? 0
+    // (the pull toward the mean: on the subspace's components, and on the part outside it)
+    const pullW = new Float64Array(DIM)
+    for (let j = 0; j < DIM; j++) pullW[j] = j < model.k ? opts.pull ?? 0 : opts.pullOutside ?? opts.pull ?? 0
     const sdiag = new Float64Array(n); const zref = new Float64Array(n)
     zref.set(z0)
     if (opts.smooth !== undefined) {
@@ -1075,7 +1079,7 @@ export class NaturalRig {
       for (let j = 0; j < n; j++) {
         const dz = zz[j] - (j < DIM ? z0[j] : 0)
         const ds = zz[j] - zref[j]
-        s += prior[j] * dz * dz + sdiag[j] * ds * ds + (j < DIM ? pullW * zz[j] * zz[j] : 0)
+        s += prior[j] * dz * dz + sdiag[j] * ds * ds + (j < DIM ? pullW[j] * zz[j] * zz[j] : 0)
       }
       const e = PRIOR.natural * lessNatural(zz)
       return s + e * e
@@ -1135,7 +1139,7 @@ export class NaturalRig {
       let near = 0; let springs = 0
       for (let j = 0; j < n; j++) {
         const dz = zz[j] - (j < DIM ? z0[j] : 0)
-        const v = prior[j] * dz * dz + sdiag[j] * (zz[j] - zref[j]) ** 2 + (j < DIM ? pullW * zz[j] * zz[j] : 0)
+        const v = prior[j] * dz * dz + sdiag[j] * (zz[j] - zref[j]) ** 2 + (j < DIM ? pullW[j] * zz[j] * zz[j] : 0)
         if (j < DIM) near += v; else springs += v
       }
       const e = PRIOR.natural * lessNatural(zz)
@@ -1191,8 +1195,8 @@ export class NaturalRig {
         }
         for (let a = 0; a < n; a++) {
           const dz = z[a] - (a < DIM ? z0[a] : 0)
-          H[a * n + a] += prior[a] + sdiag[a] + (a < DIM ? pullW : 0)
-          g[a] += prior[a] * dz + sdiag[a] * (z[a] - zref[a]) + (a < DIM ? pullW * z[a] : 0)
+          H[a * n + a] += prior[a] + sdiag[a] + (a < DIM ? pullW[a] : 0)
+          g[a] += prior[a] * dz + sdiag[a] * (z[a] - zref[a]) + (a < DIM ? pullW[a] * z[a] : 0)
         }
         // (the natural hinge: a row w e with e = |z| - |z0| while positive, its gradient w z / |z|)
         const excess = lessNatural(z)
@@ -1612,10 +1616,13 @@ export interface NaturalizeOptions {
   hipsMove?: boolean
   /** 'full' (default) or 'quick' per frame. */
   mode?: 'quick' | 'full'
-  /** A pull of every frame toward the model's mean pose (NaturalOptions.pull; default 0: only what the goals need moves). */
+  /** A pull of every frame toward the model's mean pose (NaturalOptions.pull; default 0: only what the goals need moves), and on the part outside the model's subspace only (pullOutside: the joint combinations people don't make). */
   pull?: number
+  pullOutside?: number
   /** How hard the correction of a frame is held to its neighbours' (per radian squared; default 40: a 6 degree jump between frames costs about 0.4 per joint). */
   smooth?: number
+  /** How hard a frame's pose itself is pulled to the middle of its neighbours' (per radian squared; default 0): jerks smoothed out, a steady motion untouched (its middle is where it is). */
+  smoothMotion?: number
   /** Passes over the clip, alternating forward and backward (default 2; the last one is the result). */
   sweeps?: number
   progress?: (done: number, total: number) => void
@@ -1640,12 +1647,15 @@ export interface NaturalizedFrame {
  * Adjust every frame of an edited clip toward the most natural pose: each frame is solved as `rig.solve` does (its goals
  * met, its pose as near the edit as the model's joint couplings allow), and the corrections (what each frame moved from
  * the edited one) are held smooth over time by a pull of each toward its neighbours', swept forward and back. The feet
- * are soft and the floor held; the edit's own motion between frames is untouched (only the corrections are smoothed).
+ * are soft and the floor held. With `smoothMotion` the motion itself is smoothed too (each pose pulled to the middle of
+ * its neighbours'); with `pull` / `pullOutside` every frame edges toward the model's natural poses.
  */
 export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): NaturalizedFrame[] {
   const n = o.frames
   const sweeps = Math.max(1, o.sweeps ?? 2)
   const deltas: Array<Float64Array | null> = new Array<Float64Array | null>(n).fill(null)
+  // (each frame's pose as the edit has it: what its correction is from)
+  const starts: Array<NaturalPose | undefined> = new Array<NaturalPose | undefined>(n)
   const out: NaturalizedFrame[] = new Array<NaturalizedFrame>(n)
   let done = 0
   for (let s = 0; s < sweeps; s++) {
@@ -1653,14 +1663,31 @@ export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): Natura
     for (let k = 0; k < n; k++) {
       const i = s % 2 === 0 ? k : n - 1 - k
       o.pose(i)
+      starts[i] ??= rig.encode()
       const near = [deltas[i - 1], deltas[i + 1]].filter((d): d is Float64Array => d !== null && d !== undefined)
       let smooth: NaturalOptions['smooth']
       if (near.length > 0) {
+        // the corrections held to their neighbours'
         const ref = new Float64Array(DIM + EXTRA)
         for (const d of near) for (let j = 0; j < ref.length; j++) ref[j] += d[j] / near.length
-        smooth = { ref, weight: (o.smooth ?? 40) * near.length }
+        let weight = (o.smooth ?? 40) * near.length
+        // and the pose itself pulled to the middle of its neighbours' (only between two: a clip's ends are left their own)
+        const wm = (o.smoothMotion ?? 0) * 2
+        const a = deltas[i - 1]; const b = deltas[i + 1]
+        if (wm > 0 && a !== null && a !== undefined && b !== null && b !== undefined) {
+          const sa = starts[i - 1]!; const sb = starts[i + 1]!; const si = starts[i]!
+          const mid = new Float64Array(DIM + EXTRA)
+          for (let d = 0; d < DIM; d++) mid[d] = (sa.p[d] + a[d] + sb.p[d] + b[d]) / 2 - si.p[d]
+          const wrap = (x: number): number => Math.atan2(Math.sin(x), Math.cos(x))
+          mid[DIM] = (wrap(sa.yaw + a[DIM] - si.yaw) + wrap(sb.yaw + b[DIM] - si.yaw)) / 2
+          const ha = [sa.hips.x, sa.hips.y, sa.hips.z]; const hb = [sb.hips.x, sb.hips.y, sb.hips.z]; const hi = [si.hips.x, si.hips.y, si.hips.z]
+          for (let k = 0; k < 3; k++) mid[DIM + 1 + k] = (ha[k] + a[DIM + 1 + k] + hb[k] + b[DIM + 1 + k]) / 2 - hi[k]
+          for (let j = 0; j < ref.length; j++) ref[j] = (ref[j] * weight + mid[j] * wm) / (weight + wm)
+          weight += wm
+        }
+        smooth = { ref, weight }
       }
-      const res = rig.solve(o.goals(i), { keep: o.keep, feet: o.feet, planted: o.planted, floor: o.floor, hipsMove: o.hipsMove ?? true, mode: o.mode ?? 'full', pull: o.pull, warm: deltas[i] ?? undefined, smooth })
+      const res = rig.solve(o.goals(i), { keep: o.keep, feet: o.feet, planted: o.planted, floor: o.floor, hipsMove: o.hipsMove ?? true, mode: o.mode ?? 'full', pull: o.pull, pullOutside: o.pullOutside, warm: deltas[i] ?? undefined, smooth })
       deltas[i] = res.delta
       if (last) {
         const q = new Float32Array(NB * 4)

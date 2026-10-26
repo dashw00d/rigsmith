@@ -28,6 +28,9 @@ const IDENTITY: ClipKey['q'] = [0, 0, 0, 1]
 /** Naturalize: how hard a keyed bone is pulled to the edit at its key, and over how many frames that fades out. */
 const PULL_WEIGHT = 4
 const PULL_FRAMES = 3
+/** Naturalize, each press: the pull toward the library's poses (per whitened unit squared: the whole, and the part of a
+ * pose outside what people do together), and the pull of each pose to the middle of its neighbours' (per radian squared). */
+const NATURALIZE = { pull: 0.05, outside: 0.5, motion: 15 }
 const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-4
 const isAnchor = (k: ClipKey): boolean => k.p === undefined && Math.abs(k.q[3]) > 1 - 1e-9
 
@@ -530,7 +533,10 @@ class ClipEdit {
   /** Naturalize the edit: every frame moved toward the most natural pose the library knows (src/engine/posespace.ts),
    * smooth through time, the feet free to pivot or slide (never under the floor), the hands kept on their sockets and
    * every keyed bone pulled to where the edit has it. Shown and saved until the next change. */
-  async naturalize (): Promise<void> {
+  /** Naturalize the edit: every frame edged toward how people's bodies move (the part of each pose people don't make
+   * pulled out, the whole a little toward the library's poses) and the motion smoothed (jerks pulled to the middle of
+   * their neighbours), the hands kept on their props, keyed bones held near their keys. Each press goes a little further. */
+  async naturalize (amount: { pull: number, outside: number, motion: number } = NATURALIZE): Promise<void> {
     const view = animator.character; const root = this.posable()
     if (view === null || view.rest === null || root === null || this.model === null || this.edited === null) { app.toast('error', 'Naturalize works on a person (the library\'s pose model)'); return }
     this.busy = 'Naturalizing every frame'
@@ -539,8 +545,10 @@ class ClipEdit {
       const bones = new Map<string, THREE.Bone>()
       root.traverse(o => { if ((o as THREE.Bone).isBone === true) bones.set(o.name, o as THREE.Bone) })
       const rig = new NaturalRig(this.model, bones, { offsets: this.offsets, limits: this.limitsOn ? this.limits : null, nameOf: b => b.name })
-      const attachedHands = this.attachments.map(a => `${a.hand}Hand`)
-      const held = new Set(this.attachments.flatMap(a => Object.values(armOf(a.hand))))
+      // (the hands on props: on a socket, or carrying a prop that leads; the prop rides the hand carrying it, so it is held too)
+      const holds = this.propRig().attachments
+      const attachedHands = [...new Set(holds.map(a => `${a.hand}Hand`))]
+      const held = new Set(holds.flatMap(a => Object.values(armOf(a.hand))))
       const keyed = Object.keys(this.keys).filter(b => !held.has(b) && bones.has(b))
       // (a keyed bone is pulled to where the edit has it at its keys, fading out over PULL_FRAMES frames: between keys the pass is free)
       const duration = this.edited.duration
@@ -568,6 +576,7 @@ class ClipEdit {
         feet: ['LeftFoot', 'RightFoot'].filter(n => bones.has(n)),
         floor: { y: 0, soles },
         hipsMove: true,
+        pull: amount.pull, pullOutside: amount.outside, smoothMotion: amount.motion, sweeps: 3,
       })
       this.edited = out.clip
       this.naturalized = true

@@ -116,7 +116,7 @@
     {/if}
     {#if clipEdit.natural}
       <div class="row">
-        <span use:tooltip={'Every frame moved toward the most natural pose the library knows: smooth through time, the feet free to pivot or slide (never under the floor), the hands kept on their sockets, your keyed joints pulled to where you put them. Do it when the clip is mostly right; any change after builds it again from your keys.'}><Button size="sm" disabled={clipEdit.busy !== null} onclick={() => clipEdit.naturalize()}><Wand2 size={13} /> Naturalize</Button></span>
+        <span use:tooltip={'Every frame edged toward how the library\'s bodies move (joints working together), and the motion smoothed; the feet free to pivot or slide (never under the floor), the hands kept on their props, your keyed frames held near where you put them. Each press goes a little further; any change after builds it again from your keys.'}><Button size="sm" disabled={clipEdit.busy !== null} onclick={() => clipEdit.naturalize()}><Wand2 size={13} /> Naturalize</Button></span>
         {#if clipEdit.naturalized}<span class="faint small">naturalized (saved as it is)</span>{/if}
       </div>
     {/if}
