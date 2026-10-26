@@ -85,7 +85,9 @@ function human (rest: RestSkeleton): { motions: Motion[], duration: number } {
   }
   for (const [side, s] of [['Left', 1], ['Right', -1]] as const) {
     const arm = `${side}Arm`; const fore = `${side}ForeArm`; const hand = `${side}Hand`
-    // arms: sideways to overhead, then forward and up
+    // arms: sideways to overhead (turning out as they rise, as a shoulder does: palms up at shoulder height, in
+    // overhead; a swing alone leaves the arm twisted), then forward and up
+    add(arm, dir(rest, arm, fore), -120 * s, 0, 2.4)
     add(arm, Z, 125 * s, 0, 2.4)
     add(arm, X, -150, 2.4, 4.8)
     // held forward while the elbow bends and the forearm twists (twice)
@@ -98,8 +100,9 @@ function human (rest: RestSkeleton): { motions: Motion[], duration: number } {
     const along = dir(rest, hand, `${side}HandMiddle1`) ?? dir(rest, hand, `${side}HandIndex1`) ?? forearm
     const a = rest.bones.get(`${side}HandIndex1`)?.worldPosition; const p = rest.bones.get(`${side}HandPinky1`)?.worldPosition ?? rest.bones.get(`${side}HandThumb1`)?.worldPosition
     const across = a !== undefined && p !== undefined && along !== null ? a.clone().sub(p).addScaledVector(along, -a.clone().sub(p).dot(along)).normalize() : null
-    // (toward the palm: the palm faces this way, on either hand)
-    const palm = across !== null && along !== null ? across.clone().cross(along).multiplyScalar(s).normalize() : null
+    // (toward the palm, on either hand and in any pose: from the fingers' line and the index finger's side, the
+    // thumb's: palm = side x (along x across))
+    const palm = across !== null && along !== null ? along.clone().cross(across).multiplyScalar(s).normalize() : null
     if (palm !== null && along !== null) {
       add(hand, along.clone().cross(palm), 60, 8.6, 10.0, { cycles: 2 })
       add(hand, palm, 25 * s, 10.0, 11.2, { cycles: 2 })
@@ -113,8 +116,9 @@ function human (rest: RestSkeleton): { motions: Motion[], duration: number } {
         const curl = d.clone().cross(palm)
         const deg = finger === 'Thumb' ? 45 : i === 1 ? 70 : 90
         for (const [from, to] of [[0, 1.2], [1.2, 2.4], [2.4, 3.6], [3.6, 4.8], [5.8, 7.4], [8.6, 9.8], [11.4, 12.4]]) add(bone, curl, deg, from, to)
-        if (i === 1 && finger !== 'Thumb') add(bone, palm, ({ Index: -14, Middle: -4, Ring: 6, Pinky: 16 } as Record<string, number>)[finger] * s, 12.4, 13.6)
-        if (i === 1 && finger === 'Thumb') add(bone, palm, -30 * s, 12.4, 13.6)
+        // spread: each away from the middle finger (about the palm's axis, +s turning toward the index side)
+        if (i === 1 && finger !== 'Thumb') add(bone, palm, ({ Index: 14, Middle: 3, Ring: -7, Pinky: -16 } as Record<string, number>)[finger] * s, 12.4, 13.6)
+        if (i === 1 && finger === 'Thumb') add(bone, palm, 30 * s, 12.4, 13.6)
       }
     }
     // legs: each lifted (hip and knee), then out to the side, the ankle flexed
