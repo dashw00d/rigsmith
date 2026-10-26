@@ -5,6 +5,9 @@
 //           the mean of its neighbours, the skin round the area held): skin pulled by a wrong bone goes with what
 //           surrounds it
 //   add / remove / smooth   a chosen bone's weight under the brush, by hand
+// Mirror (on by default): each stroke lands on the other side too, on each point's mirror twin with its bones swapped
+// for the other side's (LeftArm for RightArm), and a point on the middle line is evened between its sides; "Copy a
+// side" sets the whole other side from one. Twins are found at rest, across the hips.
 // At most four bones a vertex, normalized. Edits are kept by vertex and bone name, to save and to re-apply after a
 // re-rig (the source mesh, and so its vertex order, stays).
 import * as THREE from 'three'
@@ -15,6 +18,12 @@ interface Part {
   mesh: THREE.SkinnedMesh
   /** vertex -> its point (the first vertex at that position) */
   point: Int32Array
+  /** point -> its mirror twin across the body's middle (itself on the middle line); none when it has none */
+  twin: Map<number, number>
+  /** bone index -> the other side's (itself for a bone in the middle) */
+  swap: Int32Array
+  /** point -> which side of the middle it is on at rest (+1 the body's left, -1 its right, 0 the middle) */
+  side: Map<number, number>
   /** point -> its vertices */
   members: Map<number, number[]>
   /** point -> neighbouring points */
@@ -31,6 +40,8 @@ export class WeightPainter {
   /** Points changed since the last save, per part. */
   readonly edited: Array<Set<number>> = []
   private undo: Array<Array<{ part: number, point: number, weights: Weights }>> = []
+  /** Strokes land on both sides. */
+  mirror = true
 
   constructor (meshes: THREE.SkinnedMesh[]) {
     for (const mesh of meshes) {
@@ -60,7 +71,10 @@ export class WeightPainter {
         const a = index !== null ? index.getX(t) : t; const b = index !== null ? index.getX(t + 1) : t + 1; const c = index !== null ? index.getX(t + 2) : t + 2
         link(a, b); link(b, c); link(c, a)
       }
-      this.parts.push({ mesh, point, members, adj, rest: Float32Array.from(pos.array as ArrayLike<number>) })
+      const { twin, side } = twins(mesh, members, tol)
+      const names = mesh.skeleton.bones.map(b => b.name)
+      const swap = Int32Array.from(names.map((n, i) => { const j = names.indexOf(n.replace(/Left|Right/g, m => m === 'Left' ? 'Right' : 'Left')); return j >= 0 ? j : i }))
+      this.parts.push({ mesh, point, members, adj, rest: Float32Array.from(pos.array as ArrayLike<number>), twin, swap, side })
       this.area.push(new Map())
       this.edited.push(new Set())
     }
@@ -97,6 +111,47 @@ export class WeightPainter {
     this.edited[part].add(p)
   }
 
+  /** A point's weights as its twin should have them: each bone for the other side's. */
+  private swapped (part: number, w: Weights): Weights {
+    const swap = this.parts[part].swap
+    const out: Weights = new Map()
+    for (const [b, x] of w) out.set(swap[b], (out.get(swap[b]) ?? 0) + x)
+    return out
+  }
+
+  /** The other side follows these points (Mirror): each twin gets their weights, swapped; a middle point is evened. */
+  private follow (part: number, points: Iterable<number>): void {
+    if (!this.mirror) return
+    const { twin } = this.parts[part]
+    for (const p of points) {
+      const q = twin.get(p)
+      if (q === undefined) continue
+      const w = this.weights(part, p)
+      if (q === p) {
+        const even: Weights = new Map()
+        for (const [b, x] of w) even.set(b, (even.get(b) ?? 0) + x / 2)
+        for (const [b, x] of this.swapped(part, w)) even.set(b, (even.get(b) ?? 0) + x / 2)
+        this.set(part, p, even, this.log)
+      } else this.set(part, q, this.swapped(part, w), this.log)
+    }
+  }
+
+  /** The whole other side set from one (`from`: the body's left, +1, or its right, -1): one undo step. Returns the
+   * points set. */
+  copySide (from: 1 | -1): number {
+    this.begin()
+    let n = 0
+    this.parts.forEach(({ twin, side }, part) => {
+      const mirror = this.mirror
+      this.mirror = true
+      const source = [...twin.keys()].filter(p => side.get(p) === from || twin.get(p) === p)
+      this.follow(part, source)
+      this.mirror = mirror
+      n += source.length
+    })
+    return n
+  }
+
   /** Where each point of a part is now (the body as it stands, in world space). */
   private posed (part: number): Map<number, THREE.Vector3> {
     const { mesh, members } = this.parts[part]
@@ -126,9 +181,12 @@ export class WeightPainter {
 
   mark (part: number, points: Map<number, number>, on = true): void {
     const a = this.area[part]
+    const { twin } = this.parts[part]
     for (const [p, f] of points) {
-      if (on) a.set(p, Math.max(a.get(p) ?? 0, f))
-      else a.delete(p)
+      for (const x of this.mirror && twin.has(p) ? [p, twin.get(p)!] : [p]) {
+        if (on) a.set(x, Math.max(a.get(x) ?? 0, f))
+        else a.delete(x)
+      }
     }
   }
   clearArea (): void { for (const a of this.area) a.clear() }
@@ -143,6 +201,7 @@ export class WeightPainter {
       w.set(bone, now)
       this.set(part, p, w, this.log)
     }
+    this.follow(part, points.keys())
   }
 
   remove (part: number, points: Map<number, number>, bone: number, strength: number): void {
@@ -158,6 +217,7 @@ export class WeightPainter {
       w.set(bone, now)
       this.set(part, p, w, this.log)
     }
+    this.follow(part, points.keys())
   }
 
   private average (part: number, p: number): Weights {
@@ -177,6 +237,7 @@ export class WeightPainter {
       next.set(p, out)
     }
     for (const [p, w] of next) this.set(part, p, w, this.log)
+    this.follow(part, next.keys())
   }
 
   /** Heal the marked area: its weights filled in smoothly from the skin round it (each point the mean of its
@@ -215,6 +276,9 @@ export class WeightPainter {
         this.set(part, p, out, this.log)
         fixed++
       }
+      // (both sides were marked and healed: the body's left sets its right, so they match exactly)
+      const { side } = this.parts[part]
+      this.follow(part, R.filter(p => side.get(p) !== -1))
     }
     return fixed
   }
@@ -241,4 +305,46 @@ export class WeightPainter {
   }
 
   saved (): void { for (const e of this.edited) e.clear(); this.undo = [] }
+}
+
+/** Each point's mirror twin across the body's middle (the hips' x at rest, in the mesh's own space), within `tol`
+ * of where its mirror image falls; a point on the middle line is its own. And which side each point is on. */
+function twins (mesh: THREE.SkinnedMesh, members: Map<number, number[]>, tol: number): { twin: Map<number, number>, side: Map<number, number> } {
+  const pos = mesh.geometry.attributes.position
+  const bones = mesh.skeleton.bones
+  const hips = bones.findIndex(b => /(^|:)Hips$/.test(b.name))
+  let xc: number
+  if (hips >= 0) {
+    const at = new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().copy(mesh.skeleton.boneInverses[hips]).invert())
+    xc = at.applyMatrix4(new THREE.Matrix4().copy(mesh.bindMatrixInverse)).x
+  } else {
+    const box = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute)
+    xc = 0.5 * (box.min.x + box.max.x)
+  }
+  const box = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute)
+  const near = 0.002 * Math.max(box.max.y - box.min.y, box.max.z - box.min.z, 1e-6)
+  const cell = Math.max(near, tol)
+  const grid = new Map<string, number[]>()
+  const key = (x: number, y: number, z: number): string => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`
+  for (const p of members.keys()) { const k = key(pos.getX(p), pos.getY(p), pos.getZ(p)); (grid.get(k) ?? grid.set(k, []).get(k)!).push(p) }
+  const twin = new Map<number, number>()
+  const side = new Map<number, number>()
+  for (const p of members.keys()) {
+    const x = pos.getX(p) - xc
+    side.set(p, Math.abs(x) <= near ? 0 : Math.sign(x))
+    if (Math.abs(x) <= near) { twin.set(p, p); continue }
+    const mx = xc - x; const y = pos.getY(p); const z = pos.getZ(p)
+    const cx = Math.floor(mx / cell); const cy = Math.floor(y / cell); const cz = Math.floor(z / cell)
+    let best = -1; let bd = near
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let c = -1; c <= 1; c++) {
+      for (const q of grid.get(`${cx + a},${cy + b},${cz + c}`) ?? []) {
+        const d = Math.hypot(pos.getX(q) - mx, pos.getY(q) - y, pos.getZ(q) - z)
+        if (d < bd) { bd = d; best = q }
+      }
+    }
+    if (best >= 0) twin.set(p, best)
+  }
+  // (only twins that are each other's)
+  for (const [p, q] of twin) if (twin.get(q) !== p) twin.delete(p)
+  return { twin, side }
 }

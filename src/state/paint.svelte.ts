@@ -17,6 +17,8 @@ class Paint {
   /** Brush radius, a share of the body's height. */
   radius = $state(0.05)
   strength = $state(0.5)
+  /** Strokes land on both sides of the body (each point's mirror twin, its bones swapped for the other side's). */
+  mirror = $state(true)
   edited = $state(0)
   marked = $state(0)
   busy = $state(false)
@@ -42,6 +44,7 @@ class Paint {
     if (stage === null || view === null || view.skinned.length === 0) { this.active = false; return }
     if (this.view !== view) {
       this.painter = new WeightPainter(view.skinned)
+      this.painter.mirror = this.mirror
       this.view = view
       this.edited = 0; this.marked = 0
     }
@@ -160,6 +163,26 @@ class Paint {
       this.busyText = null
     }
   }
+  setMirror (on: boolean): void {
+    this.mirror = on
+    if (this.painter !== null) this.painter.mirror = on
+  }
+
+  /** The whole other side set from one: `from` the body's left (+1) or its right (-1). */
+  copySide (from: 1 | -1): void {
+    if (this.painter === null) return
+    this.busy = true
+    this.busyText = 'Mirroring the weights'
+    try {
+      const n = this.painter.copySide(from)
+      this.redraw()
+      app.toast('ok', `${from === 1 ? 'Left' : 'Right'} side copied onto the ${from === 1 ? 'right' : 'left'} (${n} points); Save to keep it`)
+    } finally {
+      this.busy = false
+      this.busyText = null
+    }
+  }
+
   clearArea (): void { this.painter?.clearArea(); this.redraw() }
   undo (): void { if (this.painter?.stepBack() === true) this.redraw() }
 

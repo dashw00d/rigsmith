@@ -2,7 +2,7 @@
   // Fix weights: paint on the body as it stands (pause a test clip on the frame that shows the problem).
   // src/state/paint.svelte.ts, src/engine/weightpaint.ts.
   import { onDestroy } from 'svelte'
-  import { Brush, Eraser, Paintbrush, RotateCcw, Save, Sparkles, Waves } from '@lucide/svelte'
+  import { Brush, Eraser, FlipHorizontal2, Paintbrush, RotateCcw, Save, Sparkles, Waves } from '@lucide/svelte'
   import type { Character } from '../../state/api.ts'
   import { api } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
@@ -10,6 +10,7 @@
   import { viewer } from '../../state/viewer.svelte.ts'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
+  import Toggle from '../../ui/Toggle.svelte'
   import { tooltip } from '../../ui/tooltip.ts'
 
   let { character }: { character: Character } = $props()
@@ -51,6 +52,7 @@
         </select>
       </label>
     {/if}
+    <Toggle label="Mirror left and right" checked={paint.mirror} onchange={(on: boolean) => paint.setMirror(on)} />
     <label class="field">Brush <input type="range" min="0.01" max="0.15" step="0.005" bind:value={paint.radius} /></label>
     {#if paint.tool !== 'area'}<label class="field">Strength <input type="range" min="0.05" max="1" step="0.05" bind:value={paint.strength} /></label>{/if}
     {#if paint.tool === 'area'}
@@ -59,6 +61,10 @@
         <Button size="sm" variant="ghost" disabled={paint.marked === 0} onclick={() => paint.clearArea()}>Clear</Button>
       </div>
     {/if}
+    <div class="row">
+      <span use:tooltip={"Set the whole right side from the left (each point from its mirror twin, LeftArm for RightArm), the middle evened between them"}><Button size="sm" variant="ghost" disabled={paint.busy} onclick={() => paint.copySide(1)}><FlipHorizontal2 size={13} /> Left → right</Button></span>
+      <span use:tooltip={'Set the whole left side from the right'}><Button size="sm" variant="ghost" disabled={paint.busy} onclick={() => paint.copySide(-1)}><FlipHorizontal2 size={13} /> Right → left</Button></span>
+    </div>
     <div class="row">
       <Button size="sm" variant="ghost" onclick={() => paint.undo()}><RotateCcw size={13} /> Undo</Button>
       <Button size="sm" variant="primary" disabled={paint.edited === 0 || paint.busy} onclick={() => paint.save()}><Save size={13} /> Save {paint.edited > 0 ? `${paint.edited} points` : ''}</Button>

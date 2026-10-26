@@ -102,6 +102,9 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   clip on the frame that shows the problem and paint on the body as it stands. *Heal*: mark the problem skin, Heal
   refills its weights smoothly from the good skin round it (skin pulled by a wrong bone goes with what surrounds it);
   *Add*, *Remove*, *Smooth* a chosen bone by hand. Seams never part (their vertices are one point), four bones a vertex.
+  *Mirror left and right* (on): every stroke lands on the other side too, each point's twin taking the other side's
+  bone (LeftArm for RightArm), the middle line evened; *Left → right* / *Right → left* set the whole other side from
+  one (skin with no twin, a sash across one shoulder, stays as it is).
   Save writes them into the rig and keeps them (`weight_edits.json`): every re-rig puts them back; Forget drops them.
 - **Test the rig** (Rig, Check deformation; `static/templates/tests.json`): library clips picked for how hard they
   work the joints, per body type (a person: arm stretching, jumping jacks, an air squat, a fist pump, grab and slam,
@@ -199,8 +202,13 @@ tips) lose detail; best for messy generator output and for LODs.
 
 ### Pose-optimized weights
 
-After Blender rigs a humanoid, `server/skinopt.ts` poses it through 256 library poses
-(`tools/skin_opt/pose_set.ts`), fits the weights on the GPU for minimal stretch, wobble and volume loss
+Blender's weights are sharp at every joint but the shoulders, which bend over a tenth of the height
+(`blender/autorig/weights.py` soft_shoulders: an arm raised overhead turns ~125° from an A pose, and sharp weights put
+all of it in the armpit's first rows of triangles). After Blender rigs a humanoid, `server/skinopt.ts` poses it
+through 256 poses (`tools/skin_opt/pose_set.ts`): the unit's own clips and the Rig step's tests always, six each, the
+rest a random library draw; fits the weights on the GPU for minimal stretch (its root mean square, which spreads a
+stretch out: the mean gathered it into one hard band at the armpit), wobble and volume loss, one set of weights for
+each point and its mirror twin, so the two sides match
 (`tools/skin_opt/optimize.py`, PyTorch from the repo's `.venv` via `npm run setup:python`, or
 `RIGSMITH_TORCH_PYTHON`) and writes them into the GLB (`tools/skin_opt/apply.ts`). ~10–15 s on the GPU,
 ~60 s on the CPU when the GPU is busy; skipped (with a warning) without PyTorch. Creatures keep their heat weights:
