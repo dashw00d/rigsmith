@@ -27,7 +27,8 @@ const loud = console.error
 console.error = (...a: unknown[]) => { if (!String(a[0]).includes("THREE.GLTFLoader: Couldn't load texture")) loud(...a) }
 
 export const ROOT = path.resolve(import.meta.dirname, '..', '..')
-export const WORKSPACE = path.join(ROOT, 'workspace')
+// (RIGSMITH_WORKSPACE: another workspace, as the server and the library tools take it)
+export const WORKSPACE = path.resolve(process.env.RIGSMITH_WORKSPACE ?? path.join(ROOT, 'workspace'))
 
 export const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 

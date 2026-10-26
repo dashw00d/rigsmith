@@ -105,6 +105,13 @@ def enumerate_sources(selected=None):
     saved_path = os.path.join(OUT, "work", "sources.json")
     saved = json.loads(Path(saved_path).read_text()) if os.path.exists(saved_path) else []
     items = list({i["id"]: i for i in saved + items}.values())
+    # (a clip made by a script, `make`, from library sources, `inputs`: remade when the script or a source changes)
+    for it in items:
+        if it.get("make"):
+            h = hashlib.sha256(open(os.path.join(REPO, it["make"]), "rb").read())
+            for path in it.get("inputs", []):
+                h.update(open(path, "rb").read())
+            it["sha256"] = h.hexdigest()
     if selected:
         items = [i for i in items if i["source"] in selected or (i["kind"] == "mannequin" and "mannequin" in selected)]
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -218,7 +225,17 @@ def cmd_convert(args):
     for f in glob.glob(os.path.join(fdir, "*.jsonl")):
         os.remove(f)
     t0 = time.time()
-    crashes = run_shards(todo, args.procs) if todo else []
+    made = [i for i in todo if i.get("make")]
+    todo_fbx = [i for i in todo if not i.get("make")]
+    crashes = run_shards(todo_fbx, args.procs) if todo_fbx else []
+    for it in made:
+        # a made clip: its script writes it (clip, meta, cache, its sources line) with the converter's own code
+        log(f"making {it['id']} ({it['make']})")
+        r = subprocess.run([BLENDER, "-b", "--factory-startup", "--python-exit-code", "1", "--python",
+                            os.path.join(REPO, it["make"]), "--", "--library", OUT], capture_output=True, text=True)
+        if r.returncode != 0:
+            crashes.append({"id": it["id"], "sourcePath": it["sourcePath"], "source": it["source"],
+                            "error": f"{it['make']} failed: {(r.stdout + r.stderr)[-600:]}"})
     dt = time.time() - t0
     failures = []
     for f in sorted(glob.glob(os.path.join(fdir, "*.jsonl"))):

@@ -32,7 +32,7 @@ import type { JournalEntry } from '../server/journal.ts'
 import { describe as describeScript } from '../src/engine/scripts.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
-const WORKSPACE = path.join(ROOT, 'workspace')
+const WORKSPACE = path.resolve(process.env.RIGSMITH_WORKSPACE ?? path.join(ROOT, 'workspace'))
 const SERVER = process.env.RIGSMITH_URL ?? 'http://127.0.0.1:5180'
 const BY = process.env.RIGSMITH_BY ?? 'agent'
 

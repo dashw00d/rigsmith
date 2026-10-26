@@ -155,6 +155,15 @@ Mixamo names, descriptions and motion IDs. The app reports completeness against 
 `catalog-verification.json` records the full integrity check. Some publisher CSV frame counts are stale;
 playback uses the actual FBX timing, and the report records those differences. The FBXs retain their source terms.
 
+**Made clips** (`blender/clips/`): motions none of the libraries have, made by a script from library sources and
+written into the library by its own converter (`convert.py convert_clip`, run on the source's armature as Blender
+holds it, so the clip keeps that source's exact rest skeleton). Each one's line in `work/sources.json` names its
+script (`make`) and sources (`inputs`): `build.py convert` remakes it when either changes; `build.py aggregate`
+lists it. `custom-Spear_Thrust` (`spear_thrust.py`): a one-handed underhand thrust behind a shield, from Stabbing 2
+(the body, retimed to a 1.25 s jab) and Sword And Shield Idle 4 (the shield arm, held before him against the torso's
+twist); the spear arm solved so the fist runs on one straight line and the shaft lies along it (the spear's axis in
+the hand measured on the Spearman's spear).
+
 The original hashed pack is not a reliable filename-to-name index for this collection. Saved sets
 must be checked and migrated before retiring it. Rebuilding keeps cached clips even if their old
 Downloads folder is gone, and retains recovered names when the separate names file is unavailable.
