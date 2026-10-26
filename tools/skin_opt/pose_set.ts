@@ -1,10 +1,12 @@
 // Export what the weight optimizer needs for one rigged GLB: rest vertices, triangles, current skin,
 // and world-space skinning matrices for a set of training poses retargeted from the library.
 // node tools/skin_opt/pose_set.ts <rig.glb> <out prefix> [--poses 256] [--exclude id,id] [--seed 1]
-//     [--from clips.glb [--only Name,Name | --skip Name,Name]]
+//     [--from clips.glb [--only Name,Name | --skip Name,Name]] [--with id,id [--with-poses 6]]
 // --from samples a GLB's own clips (creature templates) instead of the humanoid library.
+// --with: library clips always trained on (the unit's own clips, the Rig step's tests), --with-poses evenly spaced
+//   poses each, before the random draw fills the rest (held-out clips too: asked for by name).
 //   writes <prefix>.json (layout) and <prefix>.bin (float32 / uint32 arrays, offsets in the json)
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
@@ -31,7 +33,7 @@ async function load (file: string): Promise<{ scene: THREE.Group, animations: TH
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 
 // Training clips: a template's own clips (--from), or a random draw from the humanoid library.
-interface Source { scene: THREE.Group, clip: THREE.AnimationClip, poses: number }
+interface Source { scene: THREE.Group, clip: THREE.AnimationClip, poses: number, even?: boolean }
 const fromFile = flag('--from')
 const picks: string[] = []
 async function sources (): Promise<Source[]> {
@@ -44,16 +46,25 @@ async function sources (): Promise<Source[]> {
     return clips.map(clip => ({ scene: gltf.scene, clip, poses: Math.ceil(poseCount / Math.max(clips.length, 1)) }))
   }
   const manifest = JSON.parse(readFileSync(path.join(LIBRARY, 'manifest.json'), 'utf8')) as { clips: Array<{ id: string, file: string, duplicateOf?: string | null, rig?: string | null, frames?: number }> }
-  const pool = manifest.clips.filter(c => (c.duplicateOf === null || c.duplicateOf === undefined) && (c.rig === null || c.rig === undefined || c.rig === 'mixamo') && !exclude.has(c.id) && (c.frames ?? 0) > 1)
-  const clipCount = Math.ceil(poseCount / 2)
-  while (picks.length < Math.min(clipCount, pool.length)) {
-    const c = pool[Math.floor(random() * pool.length)]
-    if (!picks.includes(c.id)) picks.push(c.id)
-  }
   const out: Source[] = []
-  for (const id of picks) {
+  const always = (flag('--with') ?? '').split(',').filter(id => id !== '' && existsSync(path.join(LIBRARY, 'clips', `${id}.glb`)))
+  const each = Number(flag('--with-poses') ?? 6)
+  for (const id of always) {
+    if (picks.includes(id)) continue
     const clip = await load(path.join(LIBRARY, 'clips', `${id}.glb`))
-    out.push({ scene: clip.scene, clip: clip.animations[0], poses: 2 })
+    picks.push(id)
+    out.push({ scene: clip.scene, clip: clip.animations[0], poses: each, even: true })
+  }
+  const fixed = out.reduce((n, s) => n + s.poses, 0)
+  const pool = manifest.clips.filter(c => (c.duplicateOf === null || c.duplicateOf === undefined) && (c.rig === null || c.rig === undefined || c.rig === 'mixamo') && !exclude.has(c.id) && !picks.includes(c.id) && (c.frames ?? 0) > 1)
+  const clipCount = Math.min(picks.length + Math.ceil(Math.max(poseCount - fixed, 0) / 2), picks.length + pool.length)
+  while (picks.length < clipCount) {
+    const c = pool[Math.floor(random() * pool.length)]
+    if (!picks.includes(c.id)) {
+      picks.push(c.id)
+      const clip = await load(path.join(LIBRARY, 'clips', `${c.id}.glb`))
+      out.push({ scene: clip.scene, clip: clip.animations[0], poses: 2 })
+    }
   }
   return out
 }
@@ -105,7 +116,7 @@ for (const src of await sources()) {
   const baked = retarget(src.scene, source, src.clip, target, { fps: 30, inPlace: true })
   const mixer = new THREE.AnimationMixer(rig.scene)
   mixer.clipAction(baked).play()
-  for (const t of Array.from({ length: src.poses }, () => random())) {
+  for (const t of Array.from({ length: src.poses }, (_, k) => src.even === true ? (k + 0.5) / src.poses : random())) {
     if (poses >= poseCount) break
     mixer.setTime(baked.duration * t)
     rig.scene.updateMatrixWorld(true)

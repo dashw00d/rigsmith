@@ -101,6 +101,14 @@ async function templateAnimations (template: string): Promise<string | undefined
   }
 }
 
+/** The clips a person's weights are always trained on: the unit's own (what the game plays) and the Rig step's tests
+ * (arms over the head, a squat, fists: what shows a bad rig), whatever the library draw. */
+async function trainedClips (character: Character): Promise<string[]> {
+  const tests = JSON.parse(await readFile(path.join(ROOT, 'static', 'templates', 'tests.json'), 'utf8')) as Record<string, Array<{ id: string, url?: string }>>
+  const own = (character.animations ?? []).map(a => a.clipId)
+  return [...new Set([...own, ...(tests.human ?? []).filter(t => t.url === undefined).map(t => t.id)])]
+}
+
 async function runRig (id: string, update: Update): Promise<void> {
   const character = (await getCharacter(id))!
   const dir = characterDir(id)
@@ -125,7 +133,7 @@ async function runRig (id: string, update: Update): Promise<void> {
   const r = result as { joints: Record<string, Vec3>, seconds: number, method: string, warnings: string[] }
   if (optimize) {
     try {
-      await optimizeSkin(path.join(dir, 'rigged.glb'), (progress, message) => { update({ progress: share + (1 - share) * progress, message }) }, templateClips)
+      await optimizeSkin(path.join(dir, 'rigged.glb'), (progress, message) => { update({ progress: share + (1 - share) * progress, message }) }, templateClips, await trainedClips(character))
       r.method += '+pose-optimized'
     } catch (error) {
       // The heat weights are a complete rig on their own; keep them and say what happened.

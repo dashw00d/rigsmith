@@ -16,6 +16,9 @@ MAX_INFLUENCES = 4
 HEAT = float(os.environ.get('RIG_HEAT', 32))
 LOCALIZE_HOPS = int(os.environ.get('RIG_LOCALIZE', 0))
 BAND = float(os.environ.get('RIG_BAND', 0.04))
+# The shoulders: a softer heat across the arm's border with the body, over this share of the height (soft_shoulders).
+SHOULDER_HEAT = float(os.environ.get('RIG_SHOULDER_HEAT', 4.0))
+SHOULDER_BAND = float(os.environ.get('RIG_SHOULDER_BAND', 0.10))
 # Creatures: the heat that shapes the bend at a joint, the bend band per unit of the body's thickness there, its
 # bounds (fractions of the height).
 CREATURE_HEAT = 4.0
@@ -102,6 +105,42 @@ def band_blend(verts, tris, w, attach_to, band):
     return alpha[:, None] * w + (1.0 - alpha[:, None]) * onehot
 
 
+def soft_shoulders(verts, tris, w, attach_to, distance, names, heat_value, band):
+    """The shoulders bend over a wide band; every other joint stays sharp.
+
+    An arm raised over the head turns some 125 degrees from an A pose, and with sharp weights the skin at the
+    armpit takes all of that turn in one or two rows of triangles. Softer heat across the arm's border with the
+    body (the armpit, the deltoid, the side of the chest and back) spreads it over a hand's width of skin. Only
+    the arm's own bone and the body's take part, so no forearm or neck bleeds in. (2026-10-26, heat 4 over a
+    tenth of the height: the Archer at the top of a jumping jack, his worst armpit triangle 7.7 -> 3.2 times
+    its area and the share stretched past 1.3 times halved; over nine clips the skin stretched past 1.3 times
+    fell 27% on the Huntress, 18% on the Archer, 1% on the Spearman, and rose 5% on the Bearguard, whose fur
+    mantle over the shoulders now follows the arms a little more. Heat 2 over 0.12, or 0.08: the Bearguard
+    worse, the rest about the same.)"""
+    idx = {n: i for i, n in enumerate(names)}
+    soft = heat.diffuse(verts, tris, attach_to, distance, len(names), heat=heat_value)
+    out = w.copy()
+    for prefix in ('Left', 'Right'):
+        if prefix + 'Arm' not in idx:
+            continue
+        arm_chain = [i for n, i in idx.items() if n.startswith(prefix) and ('Arm' in n or 'Hand' in n)]
+        group = [idx[n] for n in (prefix + 'Arm', prefix + 'Shoulder', 'Spine2', 'Spine1', 'Spine') if n in idx]
+        # the border: where the arm (all of it) meets the rest of the body
+        d = boundary_distance(verts, tris, np.isin(attach_to, arm_chain).astype(np.int64))
+        near = np.isin(attach_to, group) & (d < band)
+        if not near.any():
+            continue
+        x = np.clip(d[near] / band, 0.0, 1.0)
+        alpha = 1.0 - x * x * (3 - 2 * x)
+        mine = np.zeros_like(soft[near])
+        mine[:, group] = soft[near][:, group]
+        total = mine.sum(axis=1, keepdims=True)
+        mine = np.divide(mine, total, out=np.zeros_like(mine), where=total > 0)
+        alpha = np.where(total[:, 0] > 0, alpha, 0.0)
+        out[near] = alpha[:, None] * mine + (1.0 - alpha[:, None]) * w[near]
+    return out
+
+
 def weight_matrix(meshes, bone_names):
     """Dense (total_vertices, bones) weights for the given meshes, in order."""
     blocks = []
@@ -167,6 +206,8 @@ def skin(meshes, armature, verts, tris, steer=True, method='regions'):
             w = localize(w, attach_to, armature, deform, LOCALIZE_HOPS)
         if BAND > 0:
             w = band_blend(verts, tris, w, attach_to, BAND * float(np.ptp(verts[:, 2])))
+        if SHOULDER_HEAT > 0:
+            w = soft_shoulders(verts, tris, w, attach_to, distance, deform, SHOULDER_HEAT, SHOULDER_BAND * float(np.ptp(verts[:, 2])))
     else:
         tree = BVHTree.FromPolygons([tuple(v) for v in verts], [tuple(t) for t in tris], all_triangles=True)
 

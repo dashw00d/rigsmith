@@ -34,23 +34,24 @@ async function run (command: string, args: string[], onLine?: (line: string) => 
 let queue: Promise<unknown> = Promise.resolve()
 
 /** Optimize the skin of a rigged GLB in place. Returns false when no PyTorch is available. */
-/** clips: train on this GLB's own animations (creature templates) instead of the humanoid library. */
-export async function optimizeSkin (glb: string, onProgress: (progress: number, message: string) => void, clips?: string): Promise<boolean> {
+/** clips: train on this GLB's own animations (creature templates) instead of the humanoid library. always: library
+ * clip ids trained on whatever the draw (the unit's own clips, the Rig step's tests). */
+export async function optimizeSkin (glb: string, onProgress: (progress: number, message: string) => void, clips?: string, always: string[] = []): Promise<boolean> {
   const python = torchPython()
   if (python === null) return false
   onProgress(0, 'Waiting for the GPU')
-  const turn = queue.then(async () => await optimizeNow(python, glb, onProgress, clips))
+  const turn = queue.then(async () => await optimizeNow(python, glb, onProgress, clips, always))
   queue = turn.catch(() => {})
   return await turn
 }
 
-async function optimizeNow (python: string, glb: string, onProgress: (progress: number, message: string) => void, clips?: string): Promise<boolean> {
+async function optimizeNow (python: string, glb: string, onProgress: (progress: number, message: string) => void, clips?: string, always: string[] = []): Promise<boolean> {
   const work = path.join(os.tmpdir(), 'rigsmith-skinopt', path.basename(path.dirname(glb)) + '-' + Date.now())
   await mkdir(work, { recursive: true })
   const prefix = path.join(work, 'skin')
   try {
     onProgress(0, clips === undefined ? 'Posing the rig through 256 library poses' : 'Posing the rig through its animations')
-    await run(process.execPath, [path.join(TOOLS, 'pose_set.ts'), glb, prefix, '--poses', '256', ...(clips === undefined ? [] : ['--from', clips])])
+    await run(process.execPath, [path.join(TOOLS, 'pose_set.ts'), glb, prefix, '--poses', '256', ...(clips === undefined ? [] : ['--from', clips]), ...(clips === undefined && always.length > 0 ? ['--with', always.join(',')] : [])])
     onProgress(0.3, 'Optimizing weights on the GPU')
     let device = 'GPU'
     await run(python, [path.join(TOOLS, 'optimize.py'), prefix, '--iters', '300'], line => {

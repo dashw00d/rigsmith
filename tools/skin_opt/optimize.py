@@ -42,6 +42,8 @@ def main():
     p.add_argument('--w-stretch', type=float, default=1.0)
     p.add_argument('--w-volume', type=float, default=1.0)
     p.add_argument('--w-rigid', type=float, default=1.0)
+    p.add_argument('--no-mirror', action='store_true', help='let the two sides of the body differ')
+    p.add_argument('--stretch-norm', default='rms', choices=['rms', 'abs'])
     a = p.parse_args()
     started = time.time()
     meta, arr = load(a.prefix)
@@ -98,6 +100,43 @@ def main():
         cand[i, :len(have)] = have
         mask[i, :len(have)] = True
 
+    # The body's two sides: a vertex and its mirror twin share one set of weights (each bone swapped for its other
+    # side's), so the optimizer can't make them differ (the Archer's sides were 2.8% apart before it, 6.5% after);
+    # a vertex on the middle line is averaged with its own mirror at the end. Twins: within 0.2% of the height.
+    bi_ = {n_: i for i, n_ in enumerate(names)}
+    swap_b = np.arange(B)
+    for b, n_ in enumerate(names):
+        other = 'Right' + n_[4:] if n_.startswith('Left') else 'Left' + n_[5:] if n_.startswith('Right') else n_
+        swap_b[b] = bi_.get(other, b)
+    src = np.arange(n)
+    middle = np.zeros(n, dtype=bool)
+    if not a.no_mirror and 'Hips' in bi_:
+        xc = float(np.array(meta['heads'])[bi_['Hips']][0])
+        tol = 0.002 * H
+        cell = np.floor(V / tol).astype(np.int64)
+        grid = {}
+        for i, c in enumerate(map(tuple, cell)):
+            grid.setdefault(c, []).append(i)
+        middle = np.abs(V[:, 0] - xc) <= tol
+        pairs = 0
+        for i in np.flatnonzero(V[:, 0] > xc + tol):
+            m = V[i].copy(); m[0] = 2 * xc - m[0]
+            c = np.floor(m / tol).astype(np.int64)
+            best, bd = -1, tol
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        for j in grid.get((c[0] + dx, c[1] + dy, c[2] + dz), ()):
+                            d = float(np.linalg.norm(V[j] - m))
+                            if d < bd and V[j, 0] < xc - tol and src[j] == j:
+                                best, bd = j, d
+            if best >= 0:
+                src[best] = i
+                cand[best] = swap_b[cand[i]]
+                mask[best] = mask[i]
+                pairs += 1
+        print(f'mirror: {pairs} twin pairs, {int(middle.sum())} on the middle line', flush=True)
+
     # Edges and cotangent-free (uniform) one-rings, normalized by height.
     E = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
     E = np.unique(np.sort(E, axis=1), axis=0)
@@ -119,6 +158,10 @@ def main():
 
     mask_t = t(mask, torch.bool)
     init = np.take_along_axis(W0, cand, 1)
+    twins = np.flatnonzero(src != np.arange(n))
+    init[src[twins]] = 0.5 * (init[src[twins]] + init[twins])
+    init[twins] = init[src[twins]]
+    src_t = t(src, torch.int64)
     logits = torch.log(t(init) + 1e-3).masked_fill(~mask_t, -1e9).requires_grad_(True)
     W0c = t(init)
     opt = torch.optim.Adam([logits], lr=a.lr)
@@ -213,7 +256,11 @@ def main():
         Xs = X if poses is None else X[poses]
         Xp = torch.einsum('nk,pnki->pni', W, Xs)
         posed = (Xp[:, Ei] - Xp[:, Ej]).norm(dim=-1)
-        stretch = torch.sqrt(torch.log(posed.clamp_min(1e-9) / rest_len.clamp_min(1e-9)) ** 2 + 1e-6).mean()
+        log_ratio = torch.log(posed.clamp_min(1e-9) / rest_len.clamp_min(1e-9))
+        # rms: the root of the mean square, which spreads a stretch over many edges. The mean of |log| (abs) is
+        # cheaper with it gathered on a few: at an armpit it undid the soft shoulders into one hard band that
+        # stretched to 2.5-14 times its area with the arms up (the Archer, 2026-10-26).
+        stretch = (log_ratio ** 2).mean().clamp_min(1e-12).sqrt() if a.stretch_norm == 'rms' else torch.sqrt(log_ratio ** 2 + 1e-6).mean()
         vol = ((volume(Xp) / V0 - 1) ** 2).mean().clamp_min(1e-12).sqrt()
         rig = torch.stack([rigid_residual(Xp, g_) for g_ in groups_t]).mean() if groups_t else torch.zeros((), device=dev)
         return a.w_stretch * stretch * 10 + a.w_volume * vol * 10 + a.w_rigid * rig * 100, (stretch.item(), vol.item(), rig.item())
@@ -225,11 +272,11 @@ def main():
 
     objective = (lambda W: energy(W)) if a.objective == 'arap' else quality
     with torch.no_grad():
-        e0, parts0 = objective(torch.softmax(logits, 1))
+        e0, parts0 = objective(torch.softmax(logits[src_t], 1))
     print('start', parts0 if a.objective == 'quality' else '', f'{len(groups)} rigid groups')
     generator = torch.Generator(device='cpu').manual_seed(0)
     for it in range(a.iters):
-        W = torch.softmax(logits, 1)
+        W = torch.softmax(logits[src_t], 1)
         if a.objective == 'quality' and a.batch < P:
             e, parts = quality(W, torch.randperm(P, generator=generator)[:a.batch].to(dev))
         else:
@@ -245,13 +292,17 @@ def main():
             print(f'it {it:4d}  objective {e.item():.4f} {parts if a.objective == "quality" else ""}  smooth {smooth.item():.4f}  prior {prior.item():.4f}', flush=True)
 
     with torch.no_grad():
-        W = torch.softmax(logits, 1)
+        W = torch.softmax(logits[src_t], 1)
+        e1, _ = objective(W)
+        dense = full(W)
+        mid = t(middle, torch.bool)
+        swap_t = t(swap_b, torch.int64)
+        dense[mid] = 0.5 * (dense[mid] + dense[mid][:, swap_t])
         # Godot skins with 4 influences: keep the top 4, drop slivers, renormalize.
-        top = torch.topk(W, 4, dim=1)
+        top = torch.topk(dense, 4, dim=1)
         w4 = torch.where(top.values < 0.01, torch.zeros_like(top.values), top.values)
         w4 = w4 / w4.sum(1, keepdim=True)
-        idx4 = torch.gather(cand_t, 1, top.indices)
-        e1, _ = objective(W)
+        idx4 = top.indices
     w_out = w4.cpu().numpy()[inverse].astype(np.float32)
     i_out = idx4.cpu().numpy()[inverse].astype(np.uint32)
     out = np.concatenate([i_out.view(np.uint8).reshape(len(i_out), -1), w_out.view(np.uint8).reshape(len(w_out), -1)], 1)
