@@ -222,8 +222,29 @@
     try { (e.target as Element).setPointerCapture(e.pointerId) } catch { /* (a pointer that can't be captured still drags over the board) */ }
     e.preventDefault()
   }
+  /** The marker under the pointer (the nearest within its halo), by where the markers are drawn. */
+  function markerAt (x: number, y: number): string | null {
+    if (markers === null) return null
+    let best: string | null = null; let d = 16
+    for (const k of shown) {
+      const at = markers.positions[k.key]
+      if (at === undefined) continue
+      const p = toScreen(at)
+      const e = Math.hypot(p.x - x, p.y - y)
+      if (e < d) { d = e; best = k.key }
+    }
+    return best
+  }
+
   function move (e: PointerEvent): void {
-    if (dragging === null || markers === null) return
+    if (dragging === null) {
+      // (the marker the pointer is on, as the click would take it; else the nearest within its halo)
+      const on = (e.target as Element | null)?.closest?.('g.marker')?.getAttribute('data-key') ?? null
+      const r = host.getBoundingClientRect()
+      hovered = on ?? markerAt(e.clientX - r.left, e.clientY - r.top)
+      return
+    }
+    if (markers === null) return
     const k = keys.find(x => x.key === dragging)
     if (k === undefined) return
     const r = host.getBoundingClientRect()
@@ -257,7 +278,7 @@
   const near = (p: V3): boolean => set.view === 'front' || p[0] >= xCenter - 1e-4
 </script>
 
-<div class="board" bind:this={host} onpointermove={move} onpointerup={up} role="application" aria-label="Rig markers">
+<div class="board" class:over={hovered !== null} class:dragging={dragKey !== null} bind:this={host} onpointermove={move} onpointerup={up} onpointerleave={() => { hovered = null }} role="application" aria-label="Rig markers">
   <canvas bind:this={canvas}></canvas>
   <svg {width} {height}>
     {#each bones as [a, b]}
@@ -273,7 +294,7 @@
         {@const at = markers.positions[k.key]}
         {#if at !== undefined}
           {@const p = toScreen(at)}
-          <g class="marker" class:on={markerBoard.selected === k.def.id} transform="translate({p.x},{p.y})" onpointerdown={(e) => down(e, k.key)} onpointerenter={() => { hovered = k.key }} onpointerleave={() => { if (hovered === k.key) hovered = null }} role="button" tabindex="-1" aria-label={nameOf(k)}>
+          <g class="marker" class:on={markerBoard.selected === k.def.id} transform="translate({p.x},{p.y})" onpointerdown={(e) => down(e, k.key)} data-key={k.key} role="button" tabindex="-1" aria-label={nameOf(k)}>
             <circle r="13" class="halo" style="stroke: {k.def.color}" />
             <circle r="9" style="fill: {k.def.color}" class="dot" />
             {#if k.def.letter ?? (k.def.pair && set.view === 'front')}
@@ -310,7 +331,9 @@
   line.far { stroke: rgb(142 162 255 / 30%); stroke-dasharray: 3 3; }
   .joint { fill: #8ea2ff; }
   .joint.far { fill: rgb(142 162 255 / 35%); }
-  .marker { cursor: grab; }
+  /* (a pointing hand over a marker, the grabbing one while it is dragged: the board says which, by where the pointer is) */
+  .board.over { cursor: pointer; }
+  .board.dragging { cursor: grabbing; }
   .marker .halo { fill: rgb(0 0 0 / 25%); stroke-width: 2; opacity: 0.9; }
   .marker .dot { stroke: rgb(0 0 0 / 45%); stroke-width: 1; }
   .marker.on .halo { stroke-width: 3.5; }
