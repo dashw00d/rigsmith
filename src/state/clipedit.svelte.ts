@@ -458,9 +458,9 @@ class ClipEdit {
     const rest = animator.character?.rest
     return rest === null || rest === undefined ? null : handGrip(rest, hand)
   }
-  /** A socket put on the shaft for `hand`'s grip: its spot along the shaft and its roll round it kept, its hold point
-   * moved onto the shaft's line and its grip line turned along it (the shortest way, so a grip held thumb toward the butt
-   * stays so). Null when it is on it already (or the prop has no shaft, the hand no grip). */
+  /** A socket's hold put back on the shaft's line for `hand`'s grip (a socket made for an older grip: the shaft at the
+   * front of the knuckles): its turn kept as it is (a hand turned on purpose stays so), its hold point moved onto the
+   * line. Null when it is on it already (or the prop has no shaft, the hand no grip). */
   private alignSocket (hand: 'Left' | 'Right', prop: string, sock: Socket): Socket | null {
     const node = animator.character?.root.getObjectByName(propNode(prop))
     const shaft = this.shaftLocal(prop); const grip = this.gripOf(hand, prop)
@@ -470,14 +470,11 @@ class ClipEdit {
     const scale = node.matrixWorld.getMaxScaleOnAxis() || 1
     const q = new THREE.Quaternion(...sock.rotation); const p = new THREE.Vector3(...sock.position)
     const dir = shaft.to.clone().sub(shaft.from).normalize()
-    const axis = grip.axis.clone().applyQuaternion(q).normalize()
-    const q2 = new THREE.Quaternion().setFromUnitVectors(axis, axis.dot(dir) >= 0 ? dir : dir.clone().negate()).multiply(q).normalize()
     const hold = p.clone().add(grip.fist.clone().applyQuaternion(q).divideScalar(scale))
     const onLine = shaft.from.clone().addScaledVector(dir, hold.clone().sub(shaft.from).dot(dir))
-    const p2 = onLine.sub(grip.fist.clone().applyQuaternion(q2).divideScalar(scale))
-    if (p2.distanceTo(p) * scale < 0.001 && q2.angleTo(q) < THREE.MathUtils.degToRad(0.5)) return null
+    if (onLine.distanceTo(hold) * scale < 0.001) return null
     const r5 = (v: number[]): number[] => v.map(x => Math.round(x * 1e5) / 1e5)
-    return { ...sock, position: r5(p2.toArray()) as Socket['position'], rotation: r5(q2.toArray()) as Socket['rotation'] }
+    return { ...sock, position: r5(p.clone().add(onLine.sub(hold)).toArray()) as Socket['position'] }
   }
 
   private gripCache: Partial<Record<'Left' | 'Right', { fingers: Record<string, [number, number, number, number]>, radius: number, root: THREE.Object3D, grip: Grip }>> = {}

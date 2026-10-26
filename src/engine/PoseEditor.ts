@@ -213,8 +213,8 @@ export class PoseEditor {
   /** Which joints are held on a prop (see gripLock): their gizmo slides them along the prop and rolls them round it. */
   setGripLock (lock: ((bone: string) => { at: THREE.Vector3, axis: THREE.Vector3 } | null) | null): void { this.gripLock = lock; this.attachGizmo() }
 
-  /** A held joint dragged by its locked gizmo: slid along the prop's axis (moved), or rolled round it about where it holds
-   * (turned: the roll only, whatever handle turned the gizmo); its limb reaches after it. */
+  /** A held joint dragged by its locked gizmo: slid along the prop's axis (moved), or turned about where it holds (any
+   * way: sideways to lay the palm on the prop, or rolled round it); its limb reaches after it. */
   private moveHeld (name: string, from: NonNullable<PoseEditor['lockStart']>): void {
     const l = this.rig.limbs[name]; const end = this.view.bones.get(name)
     if (l === undefined || end === undefined) return
@@ -226,13 +226,10 @@ export class PoseEditor {
       reach(limb, from.wrist.clone().addScaledVector(from.axis, d), { ...opts, keepEnd: true })
       setWorldQuaternion(end, from.turn)
     } else {
-      // (the gizmo's turn since the drag began, its roll round the axis only)
-      const delta = this.proxy.quaternion.clone().multiply(from.proxyTurn.clone().invert())
-      const angle = 2 * Math.atan2(delta.x * from.axis.x + delta.y * from.axis.y + delta.z * from.axis.z, delta.w)
-      const roll = new THREE.Quaternion().setFromAxisAngle(from.axis, angle)
-      this.proxy.quaternion.copy(roll.clone().multiply(from.proxyTurn))
-      reach(limb, from.wrist.clone().sub(from.at).applyQuaternion(roll).add(from.at), { ...opts, keepEnd: false })
-      setWorldQuaternion(end, roll.clone().multiply(from.turn))
+      // (the gizmo's turn since the drag began, about where the joint holds)
+      const turn = this.proxy.quaternion.clone().multiply(from.proxyTurn.clone().invert()).normalize()
+      reach(limb, from.wrist.clone().sub(from.at).applyQuaternion(turn).add(from.at), { ...opts, keepEnd: false })
+      setWorldQuaternion(end, turn.clone().multiply(from.turn))
     }
     end.updateMatrixWorld(true)
     for (const b of [limb.upper, limb.lower, limb.end]) this.gizmoMoved.add(b.name)
@@ -265,10 +262,12 @@ export class PoseEditor {
     }
     const b = this.selected === null ? undefined : this.view.bones.get(this.selected)
     if (b === undefined) { this.gizmo.detach(); return }
-    // (a joint held on a prop: the gizmo where it holds it, its X along the prop: slide along it, or roll round it)
+    // (a joint held on a prop: the gizmo where it holds it, its X along the prop: moving slides it along the prop only;
+    // turning turns it any way about where it holds, so it stays on the prop)
     const lock = this.gripLock?.(b.name) ?? null
     const gz = this.gizmo as unknown as { showX: boolean, showY: boolean, showZ: boolean }
-    gz.showX = true; gz.showY = lock === null; gz.showZ = lock === null
+    const along = lock !== null && this.mode === 'move'
+    gz.showX = true; gz.showY = !along; gz.showZ = !along
     if (lock !== null) {
       this.placeOnLock(lock)
       this.gizmo.setMode(this.mode === 'move' ? 'translate' : 'rotate')
