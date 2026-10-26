@@ -2,7 +2,7 @@
   // The scale room: the character at the height it plays at, among the game's own models as the game draws them (its
   // units at the game's unit scale, buildings and props as modelled), to set its height by eye. Saving the height
   // changes Rigsmith's unit only; the game gets it on Export. The game's files are read, never written.
-  import { onDestroy, onMount } from 'svelte'
+  import { onDestroy, onMount, untrack } from 'svelte'
   import * as THREE from 'three'
   import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
   import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
@@ -173,7 +173,8 @@
   })
   onDestroy(() => { scaleRoom.busy = null; ro?.disconnect(); controls?.dispose(); renderer?.dispose() })
 
-  $effect(() => { void height; fitMe(); render() })
+  // (on a change of height only: the drawing writes its labels, so it runs untracked)
+  $effect(() => { void height; untrack(() => { fitMe(); render() }) })
 
   async function loading (what: string, run: () => Promise<void>): Promise<void> {
     scaleRoom.busy = what

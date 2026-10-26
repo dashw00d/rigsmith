@@ -4,7 +4,7 @@
   // (src/engine/markers.ts). A marker's depth comes from the mesh: the middle of the body where it sits (a pair on
   // a side view: the near leg, mirrored onto the far one). Finger tips go on a view of each hand of their own (its
   // back, along the fingers, cut to the hand). Letting go saves the markers and the joints.
-  import { onDestroy, onMount } from 'svelte'
+  import { onDestroy, onMount, untrack } from 'svelte'
   import * as THREE from 'three'
   import { X } from '@lucide/svelte'
   import type { Character } from '../../state/api.ts'
@@ -296,7 +296,9 @@
   // (not a creature's root: it sits on the ground under the body, holding it, not a bone of it)
   const inView = (name: string): boolean => markerBoard.view === 'body' || name.startsWith(`${handPrefix}Hand`)
   const bones = $derived(Object.entries(parents).flatMap(([c, p]) => p !== null && p !== 'root' && inView(c) && joints[c] !== undefined && joints[p] !== undefined ? [[joints[p], joints[c]] as [V3, V3]] : []))
-  $effect(() => { void markerBoard.view; place() })
+  // (on a change of view only: place() bumps `frame`, which it also reads, so it runs untracked; in the effect itself
+  // it set itself off again, a thousand times over, freezing the board)
+  $effect(() => { void markerBoard.view; untrack(place) })
   const near = (p: V3): boolean => set.view === 'front' || p[0] >= xCenter - 1e-4
 </script>
 
