@@ -155,8 +155,13 @@ export class Stage {
     if (reshaped && this.framedBox !== null) this.frame(this.framedBox, true)
   }
 
+  /** Something covers the whole stage (the marker board, the scale room): it neither draws nor runs its frame
+   * callbacks, so the page keeps its frame rate (and its pointer events) for what is on top. */
+  covered = false
+
   private tick (): void {
     const dt = Math.min(this.clock.getDelta(), 0.1)
+    if (this.covered) return
     if (this.framing !== null) {
       const f = this.framing
       f.t = Math.min(1, f.t + dt * 2.2)

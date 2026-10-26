@@ -85,7 +85,8 @@ export class JointEditor {
 
     const canvas = stage.renderer.domElement
     const down = (e: PointerEvent): void => { this.onDown(e) }
-    const move = (e: PointerEvent): void => { this.onMove(e) }
+    // (not under something covering the stage: the marker board takes the pointer then)
+    const move = (e: PointerEvent): void => { if (!this.stage.covered) this.onMove(e) }
     const up = (e: PointerEvent): void => { this.onUp(e) }
     canvas.addEventListener('pointerdown', down, { capture: true })
     window.addEventListener('pointermove', move)

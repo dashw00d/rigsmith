@@ -22,6 +22,11 @@
   let container: HTMLDivElement
 
   onMount(() => viewer.attach(container))
+  // (the stage rests while the marker board or the scale room covers it)
+  $effect(() => {
+    const on = (markerBoard.open && app.step === 'rig') || scaleRoom.open
+    if (viewer.stage !== null) viewer.stage.covered = on
+  })
 
   $effect(() => {
     // Re-sync whenever the selected character (or its files/status) or the step changes.
