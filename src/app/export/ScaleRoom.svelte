@@ -160,18 +160,27 @@
     me = cloneSkinned(view.root)
     me.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh === true) { m.castShadow = true; m.frustumCulled = false } })
     scene.add(me)
-    models = await api.gameModels()
-    shown = playerUnits.filter(u => ['warrior', 'spearman', 'archer', 'villager', 'raider', 'caravan', 'bearguard'].includes(u))
-    fitMe()
-    await sync()
+    scaleRoom.busy = "Loading the game's units"
+    try {
+      models = await api.gameModels()
+      shown = playerUnits.filter(u => ['warrior', 'spearman', 'archer', 'villager', 'raider', 'caravan', 'bearguard'].includes(u))
+      fitMe()
+      await sync()
+    } finally {
+      scaleRoom.busy = null
+    }
     render()
   })
-  onDestroy(() => { ro?.disconnect(); controls?.dispose(); renderer?.dispose() })
+  onDestroy(() => { scaleRoom.busy = null; ro?.disconnect(); controls?.dispose(); renderer?.dispose() })
 
   $effect(() => { void height; fitMe(); render() })
 
-  function toggleUnit (u: string): void { shown = shown.includes(u) ? shown.filter(x => x !== u) : [...shown, u]; void sync() }
-  function addExtra (key: string): void { if (key === '' || extra.includes(key)) return; extra = [...extra, key]; void sync() }
+  async function loading (what: string, run: () => Promise<void>): Promise<void> {
+    scaleRoom.busy = what
+    try { await run() } finally { scaleRoom.busy = null }
+  }
+  function toggleUnit (u: string): void { shown = shown.includes(u) ? shown.filter(x => x !== u) : [...shown, u]; void loading(`Loading ${u}`, sync) }
+  function addExtra (key: string): void { if (key === '' || extra.includes(key)) return; extra = [...extra, key]; void loading(`Loading ${key.split('/')[1]}`, sync) }
   async function save (): Promise<void> {
     const h = Math.round(height * 100) / 100
     const next: UnitSpec = companion ? { ...entry, companion: { ...entry.companion!, height: h } } : { ...entry, height: h }

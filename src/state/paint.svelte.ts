@@ -20,6 +20,8 @@ class Paint {
   edited = $state(0)
   marked = $state(0)
   busy = $state(false)
+  /** What the painter is busy with (the viewport's spinner), or null. */
+  busyText = $state<string | null>(null)
   private painter: WeightPainter | null = null
   private view: CharacterView | null = null
   private ring: THREE.Mesh | null = null
@@ -147,6 +149,7 @@ class Paint {
   heal (): void {
     if (this.painter === null) return
     this.busy = true
+    this.busyText = 'Healing the marked skin'
     try {
       const n = this.painter.heal()
       this.painter.clearArea()
@@ -154,6 +157,7 @@ class Paint {
       app.toast('ok', n > 0 ? `Healed ${n} points from the skin round them` : 'Mark the problem area first')
     } finally {
       this.busy = false
+      this.busyText = null
     }
   }
   clearArea (): void { this.painter?.clearArea(); this.redraw() }
@@ -165,6 +169,7 @@ class Paint {
     const edits = this.painter.edits()
     if (edits.length === 0) return
     this.busy = true
+    this.busyText = 'Saving the weights into the rig'
     try {
       const r = await api.saveWeights(c.id, edits)
       this.painter.saved()
@@ -175,6 +180,7 @@ class Paint {
       app.toast('error', (error as Error).message)
     } finally {
       this.busy = false
+      this.busyText = null
     }
   }
 }

@@ -168,29 +168,56 @@
     joints = jointsFrom(set, markers, parents, xCenter)
   }
 
-  onMount(() => {
+  let ro: ResizeObserver | null = null
+  onMount(async () => {
+    // (the spinner shows before the board is built: building it takes a moment on a big mesh)
+    markerBoard.busy = 'Placing markers'
+    await new Promise(r => setTimeout(r, 30))
+    try {
+      setUp()
+    } catch (error) {
+      app.toast('error', `The markers didn't open: ${(error as Error).message}`)
+    } finally {
+      markerBoard.busy = null
+    }
+  })
+
+  function setUp (): void {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
     build()
     const saved = character.markers
     const base = character.joints as Record<string, V3> | undefined
     // the character's own markers if they still belong to its skeleton, else seeded from its joints
-    if (saved !== undefined && saved.set === setName && base !== undefined && Object.keys(base).every(k => saved.base[k] !== undefined)) markers = structuredClone(saved) as Markers
+    // (a plain copy: the character's own is the app's live state, which can't be cloned as it is)
+    if (saved !== undefined && saved.set === setName && base !== undefined && Object.keys(base).every(k => saved.base[k] !== undefined)) markers = $state.snapshot(saved) as Markers
     else if (base !== undefined) markers = seed(setName, set, base, seedOwn)
     const fit = (): void => { width = host.clientWidth; height = host.clientHeight; place() }
-    const ro = new ResizeObserver(fit)
+    ro = new ResizeObserver(fit)
     ro.observe(host)
     fit()
     solveNow()
-    return () => ro.disconnect()
-  })
+  }
   onDestroy(() => {
+    ro?.disconnect()
+    markerBoard.busy = null
     renderer?.dispose()
     for (const m of meshes) m.geometry.dispose()
   })
 
+  /** A marker's name as the tooltip gives it: what it marks, and which side ("Elbow · right (A)", "Front knee"). */
+  function nameOf (k: { def: MarkerDef, side: 'left' | 'right' | null }): string {
+    const what = k.def.letter === 'F' ? `Front ${k.def.label.toLowerCase()}` : k.def.letter === 'H' ? `Hind ${k.def.label.toLowerCase()}` : k.def.label.replace(/s$/, '')
+    if (!k.def.pair) return what
+    if (set.view === 'front') return `${what} · ${k.side === 'right' ? 'right (A)' : 'left (B)'}`
+    return `${what} · near ${k.def.letter !== undefined ? 'leg' : 'side'} (the far one mirrored)`
+  }
+  let hovered = $state<string | null>(null)
+  let dragKey = $state<string | null>(null)
+
   function down (e: PointerEvent, key: string): void {
     dragging = key
+    dragKey = key
     markerBoard.selected = key.replace(/_[lr]$/, '')
     try { (e.target as Element).setPointerCapture(e.pointerId) } catch { /* (a pointer that can't be captured still drags over the board) */ }
     e.preventDefault()
@@ -212,8 +239,14 @@
   async function up (): Promise<void> {
     if (dragging === null || markers === null) return
     dragging = null
+    dragKey = null
     solveNow()
-    await app.update(character.id, { markers: $state.snapshot(markers), joints: $state.snapshot(joints), jointsEdited: true })
+    markerBoard.busy = 'Saving the markers'
+    try {
+      await app.update(character.id, { markers: $state.snapshot(markers), joints: $state.snapshot(joints), jointsEdited: true })
+    } finally {
+      markerBoard.busy = null
+    }
   }
 
   // the skeleton as lines: each bone from its parent (on a hand's view, that hand's alone)
@@ -240,7 +273,7 @@
         {@const at = markers.positions[k.key]}
         {#if at !== undefined}
           {@const p = toScreen(at)}
-          <g class="marker" class:on={markerBoard.selected === k.def.id} transform="translate({p.x},{p.y})" onpointerdown={(e) => down(e, k.key)} role="button" tabindex="-1" aria-label={k.def.label}>
+          <g class="marker" class:on={markerBoard.selected === k.def.id} transform="translate({p.x},{p.y})" onpointerdown={(e) => down(e, k.key)} onpointerenter={() => { hovered = k.key }} onpointerleave={() => { if (hovered === k.key) hovered = null }} role="button" tabindex="-1" aria-label={nameOf(k)}>
             <circle r="13" class="halo" style="stroke: {k.def.color}" />
             <circle r="9" style="fill: {k.def.color}" class="dot" />
             {#if k.def.letter ?? (k.def.pair && set.view === 'front')}
@@ -251,6 +284,14 @@
       {/each}
     {/if}
   </svg>
+  {#if markers !== null && (hovered ?? dragKey) !== null}
+    {@const k = keys.find(x => x.key === (hovered ?? dragKey))}
+    {@const at = k === undefined ? undefined : markers.positions[k.key]}
+    {#if k !== undefined && at !== undefined}
+      {@const p = toScreen(at)}
+      <div class="tip" style="transform: translate({p.x}px, {p.y - 22}px)"><span class="dot" style="background: {k.def.color}"></span>{nameOf(k)}</div>
+    {/if}
+  {/if}
   {#if hasHands}
     <div class="tabs">
       {#each [['body', 'Body'], ['right', 'Right hand (A)'], ['left', 'Left hand (B)']] as [v, label]}
@@ -273,6 +314,8 @@
   .marker .halo { fill: rgb(0 0 0 / 25%); stroke-width: 2; opacity: 0.9; }
   .marker .dot { stroke: rgb(0 0 0 / 45%); stroke-width: 1; }
   .marker.on .halo { stroke-width: 3.5; }
+  .tip { position: absolute; left: 0; top: 0; translate: -50% -100%; display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; background: rgb(12 14 18 / 92%); border: 1px solid var(--line-strong); color: var(--text-1); font-size: 12px; white-space: nowrap; pointer-events: none; z-index: 2; }
+  .tip .dot { width: 8px; height: 8px; border-radius: 50%; }
   .marker text { font-size: 11px; font-weight: 700; text-anchor: middle; fill: #111; pointer-events: none; }
   .hint { position: absolute; left: 14px; bottom: 12px; font-size: 12px; color: var(--text-3); pointer-events: none; }
   .tabs { position: absolute; top: 10px; left: 10px; display: flex; gap: 4px; }

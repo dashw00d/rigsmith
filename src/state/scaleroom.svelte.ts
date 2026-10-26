@@ -6,6 +6,8 @@ class ScaleRoomState {
   unit = $state<string | null>(null)
   entry = $state<UnitSpec | null>(null)
   companion = $state(false)
+  /** What the room is busy with (the viewport's spinner), or null. */
+  busy = $state<string | null>(null)
 
   show (unit: string, entry: UnitSpec, companion: boolean): void {
     this.unit = unit; this.entry = entry; this.companion = companion; this.open = true

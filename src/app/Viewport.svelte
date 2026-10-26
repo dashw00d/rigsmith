@@ -17,6 +17,7 @@
   import { markerBoard } from '../state/markers.svelte.ts'
   import ScaleRoom from './export/ScaleRoom.svelte'
   import { scaleRoom } from '../state/scaleroom.svelte.ts'
+  import { paint } from '../state/paint.svelte.ts'
 
   let container: HTMLDivElement
 
@@ -96,10 +97,10 @@
 
   {#if animator.error}<div class="busy error">{animator.error}</div>{/if}
 
-  {#if job || viewer.loading || animator.loading || outfit.busy || painter.busy}
+  {#if job || viewer.loading || animator.loading || outfit.busy || painter.busy || markerBoard.busy || scaleRoom.busy || paint.busyText}
     <div class="busy">
       <div class="ring"></div>
-      <span>{job ? job.message : viewer.loading ? 'Loading model' : painter.busy ?? (outfit.busy ? 'Fitting clothes' : 'Retargeting animation')}</span>
+      <span>{job ? job.message : viewer.loading ? 'Loading model' : markerBoard.busy ?? scaleRoom.busy ?? paint.busyText ?? painter.busy ?? (outfit.busy ? 'Fitting clothes' : 'Retargeting animation')}</span>
       {#if job?.status === 'running'}<div class="bar"><div style="width: {Math.round(job.progress * 100)}%"></div></div>{/if}
     </div>
   {/if}
@@ -157,6 +158,7 @@
   .joint-label.right { border-left-color: var(--side-right); }
   .busy {
     position: absolute;
+    z-index: 10;
     left: 50%;
     top: 12px;
     transform: translateX(-50%);
