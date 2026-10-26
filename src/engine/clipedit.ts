@@ -8,7 +8,7 @@ import type { ClipKey } from '../../server/workspace.ts'
 import { applyBoneKeys, KEY_FPS, sampleKeys } from './keys.ts'
 import { keepOffFloor, reach, setWorldQuaternion, type Leg } from './ik.ts'
 import { bodyBones, solveBody, type BodyState, type HandGoal } from './bodysolve.ts'
-import type { Obstacle } from './posespace.ts'
+import { FOLLOW, type Obstacle } from './posespace.ts'
 import type { JointLimits } from './limits.ts'
 import { pelvisName, retargetOffsets, type RestSkeleton } from './retarget.ts'
 import type { PoseRig } from './PoseEditor.ts'
@@ -87,6 +87,8 @@ export interface PropRig {
   /** By leading prop: its shaft (the end by the hand carrying it and the far end, in its node's frame) and its radius: the
    * body is kept clear of it, but where the hands hold it (propObstacles). */
   shafts?: Record<string, { from: [number, number, number], to: [number, number, number], radius: number }>
+  /** By hand: where it holds the shaft it is on (Grip; the carrying hand has none: its turn is held exactly). The solver keeps this point on the shaft while the hand's turn gives. */
+  grips?: Partial<Record<'Left' | 'Right', Grip>>
 }
 
 /** How much of a shaft either side of a fist on it is left out of what the body must stay clear of (a share of the
@@ -173,15 +175,49 @@ export function handGrip (rest: RestSkeleton, hand: 'Left' | 'Right'): { axis: T
   return { axis: axis.applyQuaternion(inv), fist: fist.sub(h).applyQuaternion(inv) }
 }
 
+/** A hand's grip: the line a shaft runs along (`axis`) and the point on it that the hand holds (`fist`), in the hand's own turn, from the wrist, in world units. */
+export interface Grip { axis: THREE.Vector3, fist: THREE.Vector3 }
+
+/** Where a shaft lies across the palm: this share of the way from the wrist to the middle finger's knuckle (the middle of the
+ * palm, toward the knuckle line: the base of the fingers, which close round it). */
+export const PALM_ALONG = 0.65
+/** The shaft's skin: a gap kept between it and the palm's surface (a share of its radius). */
+export const PALM_SKIN = 0.08
+
 /**
- * A hand's grip from its fist closed round a shaft (`fingers`: the fist's local turns, on the hand of `root`): the line
- * the curled fingers wrap round (through each finger's curl, the circle through its three joints, little finger to
- * index), squared to the palm (at right angles to the line from the wrist to the middle finger's knuckle), and the
- * fist's middle on it; both in the hand's own turn, from the wrist, in world units (as handGrip gives them). A shaft
- * along `axis` through `fist` runs through the closed fingers, the thumb's side toward where `axis` points. Null when
- * the hand hasn't the fingers.
+ * How far the palm's surface is off the wrist-to-knuckle plane at `at` (world), out along `normal` (world): the first
+ * surface the ray from inside the hand meets, on the meshes of `root`. Null where it meets none (a skeleton without a
+ * skin).
  */
-export function fistGrip (root: THREE.Object3D, hand: 'Left' | 'Right', fingers: Record<string, [number, number, number, number]>): { axis: THREE.Vector3, fist: THREE.Vector3 } | null {
+function palmDepth (root: THREE.Object3D, at: THREE.Vector3, normal: THREE.Vector3, far: number): number | null {
+  const meshes: THREE.SkinnedMesh[] = []
+  root.traverse(o => { if ((o as THREE.SkinnedMesh).isSkinnedMesh === true) meshes.push(o as THREE.SkinnedMesh) })
+  if (meshes.length === 0) return null
+  const originals = meshes.map(m => m.material)
+  const doubled = (m: THREE.Material): THREE.Material => { const c = m.clone(); c.side = THREE.DoubleSide; return c }
+  const ray = new THREE.Raycaster(at, normal, 0, far)
+  let best: number | null = null
+  try {
+    // (from inside the hand: the faces seen are the inside of its skin, whichever side the material draws)
+    meshes.forEach((m, i) => { const o = originals[i]; m.material = Array.isArray(o) ? o.map(doubled) : doubled(o); m.computeBoundingSphere() })
+    best = ray.intersectObjects(meshes, false)[0]?.distance ?? null
+  } finally {
+    meshes.forEach((m, i) => { const c = m.material; m.material = originals[i]; for (const x of Array.isArray(c) ? c : [c]) x.dispose(); m.computeBoundingSphere() })
+  }
+  return best
+}
+
+/**
+ * A hand's grip from its fist closed round a shaft of `radius` (`fingers`: the fist's local turns, on the hand of `root`).
+ * The line is the one the curled fingers wrap round (through each finger's curl, the circle through its three joints,
+ * little finger to index), squared to the palm (at right angles to the line from the wrist to the middle finger's
+ * knuckle). The point it holds is the shaft's middle across the middle of the palm: PALM_ALONG of the way from the wrist
+ * to the middle knuckle, out of the palm (toward where the fingers close) by the palm's skin (the hand's mesh, measured)
+ * plus the shaft's radius. Both in the hand's own turn, from the wrist, in world units (as handGrip gives them). A shaft
+ * along `axis` through `fist` lies on the palm, the thumb's side toward where `axis` points. Null when the hand hasn't
+ * the fingers.
+ */
+export function fistGrip (root: THREE.Object3D, hand: 'Left' | 'Right', fingers: Record<string, [number, number, number, number]>, radius = 0): Grip | null {
   const bones = new Map<string, THREE.Bone>()
   root.traverse(o => { if ((o as THREE.Bone).isBone === true) bones.set(o.name, o as THREE.Bone) })
   const wrist = bones.get(`${hand}Hand`)
@@ -189,8 +225,8 @@ export function fistGrip (root: THREE.Object3D, hand: 'Left' | 'Right', fingers:
   // (the fingers closed, to read; put back after)
   const saved = [...bones.values()].filter(b => b.name.startsWith(`${hand}Hand`) && b !== wrist).map(b => [b, b.quaternion.clone()] as const)
   for (const [name, q] of Object.entries(fingers)) bones.get(name)?.quaternion.set(...q)
-  wrist.updateMatrixWorld(true)
-  const w = wrist.getWorldPosition(new THREE.Vector3()); const inv = wrist.getWorldQuaternion(new THREE.Quaternion()).invert()
+  root.updateMatrixWorld(true)
+  const w = wrist.getWorldPosition(new THREE.Vector3()); const turn = wrist.getWorldQuaternion(new THREE.Quaternion()); const inv = turn.clone().invert()
   const at = (n: string): THREE.Vector3 | null => { const b = bones.get(`${hand}Hand${n}`); return b === undefined ? null : b.getWorldPosition(new THREE.Vector3()).sub(w).applyQuaternion(inv) }
   const centres: THREE.Vector3[] = []
   for (const f of ['Index', 'Middle', 'Ring', 'Pinky']) {
@@ -204,15 +240,13 @@ export function fistGrip (root: THREE.Object3D, hand: 'Left' | 'Right', fingers:
     centres.push(centre)
   }
   const index = at('Index1'); const little = at('Pinky1') ?? at('Ring1'); const middle = at('Middle1') ?? index
-  for (const [b, q] of saved) b.quaternion.copy(q)
-  wrist.updateMatrixWorld(true)
-  if (centres.length < 2 || index === null || little === null || middle === null) return null
-  const fist = centres.reduce((m, c) => m.add(c), new THREE.Vector3()).divideScalar(centres.length)
+  if (centres.length < 2 || index === null || little === null || middle === null) { for (const [b, q] of saved) b.quaternion.copy(q); root.updateMatrixWorld(true); return null }
+  const curl = centres.reduce((m, c) => m.add(c), new THREE.Vector3()).divideScalar(centres.length)
   // (the line through the curl centres: their main direction, little finger to index)
   let axis = centres[0].clone().sub(centres[centres.length - 1])
   if (centres.length > 2) {
     const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
-    for (const c of centres) { const d = c.clone().sub(fist).toArray(); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i][j] += d[i] * d[j] }
+    for (const c of centres) { const d = c.clone().sub(curl).toArray(); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i][j] += d[i] * d[j] }
     let v = axis.clone().normalize()
     for (let it = 0; it < 30; it++) { const x = v.toArray(); v = new THREE.Vector3(C[0][0] * x[0] + C[0][1] * x[1] + C[0][2] * x[2], C[1][0] * x[0] + C[1][1] * x[1] + C[1][2] * x[2], C[2][0] * x[0] + C[2][1] * x[1] + C[2][2] * x[2]).normalize() }
     axis = v
@@ -221,7 +255,15 @@ export function fistGrip (root: THREE.Object3D, hand: 'Left' | 'Right', fingers:
   // (square to the palm: at right angles to the wrist's line to the middle finger's knuckle)
   const palm = middle.clone().normalize()
   axis.addScaledVector(palm, -axis.dot(palm)).normalize()
-  return { axis, fist }
+  // (out of the palm: at right angles to both, to the side the fingers close to)
+  const out = new THREE.Vector3().crossVectors(palm, axis).normalize()
+  if (curl.clone().sub(middle).dot(out) < 0) out.negate()
+  // (the shaft across the middle of the palm: the skin's depth measured on the mesh, else a share of the knuckles' width)
+  const centre = middle.clone().multiplyScalar(PALM_ALONG)
+  const skin = palmDepth(root, centre.clone().applyQuaternion(turn).add(w), out.clone().applyQuaternion(turn), index.distanceTo(little)) ?? 0.3 * index.distanceTo(little)
+  for (const [b, q] of saved) b.quaternion.copy(q)
+  root.updateMatrixWorld(true)
+  return { axis, fist: centre.addScaledVector(out, skin + radius * (1 + PALM_SKIN)) }
 }
 
 /** The arm a hand belongs to. */
@@ -245,7 +287,7 @@ export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>,
       const sock = props.sockets[prop]?.find(x => x.id === a.socket)
       if (sock === undefined || used.has(a.hand)) continue
       used.add(a.hand)
-      goals.push({ hand: a.hand, ...handOn(place, sock), fingers: props.fingers[a.hand] })
+      goals.push({ hand: a.hand, ...handOn(place, sock), fingers: props.fingers[a.hand], grip: props.grips?.[a.hand] })
     }
   }
   for (const a of props.attachments) {
@@ -255,7 +297,7 @@ export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>,
     if (node === undefined || sock === undefined) continue
     node.updateMatrixWorld(true)
     used.add(a.hand)
-    goals.push({ hand: a.hand, ...handOn(node.matrixWorld, sock), fingers: props.fingers[a.hand] })
+    goals.push({ hand: a.hand, ...handOn(node.matrixWorld, sock), fingers: props.fingers[a.hand], grip: props.grips?.[a.hand] })
     // (the hand carrying an unlocked prop keeps it where the clip has it)
     const side = /^(Left|Right)Hand$/.exec(props.carriers[a.prop] ?? '')?.[1] as 'Left' | 'Right' | undefined
     const carrier = side === undefined ? undefined : bones.get(`${side}Hand`)
@@ -319,7 +361,7 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
       const goals = handGoals(posable, bones, props!, u, loop, rode)
       // (the leading props' shafts, where their paths put them: the body kept clear of them but where the hands hold them)
       const obstacles = propObstacles(props!, prop => { const node = posable.getObjectByName(props!.node(prop)); const was = rode?.get(prop) ?? node?.matrixWorld; return was === undefined ? null : onPath(was, props!.paths[prop], u, loop) }, GRIP_CLEAR * height)
-      if (goals.length > 0) state = solver.solve(bones, goals, { limits, nameOf, legs, height, floor, soles, obstacles } as Parameters<typeof solveBody>[2], state).state
+      if (goals.length > 0) state = solver.solve(bones, goals, { limits, nameOf, legs, height, floor, soles, obstacles, follow: FOLLOW.weight } as Parameters<typeof solveBody>[2], state).state
     }
     const now = sunk(legs, soles, floor)
     // (only what the edit sank: lift the leg by that, from where it stands)

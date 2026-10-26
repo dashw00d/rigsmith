@@ -467,6 +467,9 @@ export const ROLL = { weight: 0.6 }
  */
 export const GIVE: { roll: GiveAxis, other: GiveAxis } = { roll: { free: 8, steep: 20, weight: 2.5 }, other: { free: 5, steep: 15, weight: 4 } }
 
+/** A clip's frames solved in turn pull each frame's correction toward the last one's (NaturalSolveOptions.follow): per radian squared (the hips' metres count four times). */
+export const FOLLOW = { weight: 100 }
+
 /** One component of a turn's error (radians) through an axis's give: nothing within `free`, then rising, then steeply. */
 function giveResidual (c: number, g: Float64Array, o: number): number {
   const m = Math.abs(c) - g[o]
@@ -1571,6 +1574,8 @@ export interface NaturalSolveOptions extends SolveOptions {
   carrying?: Array<'Left' | 'Right'>
   /** Things the body must stay clear of on this frame (a leading prop's shaft, but where the hands hold it): with the solver's `collide`. */
   obstacles?: Obstacle[]
+  /** Follow the previous frame: its correction (the state's `warm`) is where this frame's is pulled to, at this weight (per radian squared; FOLLOW). A clip's frames are solved in turn, so a choice the goals leave open (which foot steps, how deep the hips drop, where the elbow points) is made the same way on neighbouring frames, not one way on one and the other on the next. */
+  follow?: number
 }
 export type BodySolver = (bones: Map<string, THREE.Bone>, goals: HandGoal[], opts: NaturalSolveOptions, prev: BodyState | null) => { state: BodyState, miss: number }
 export interface BodySolverOptions {
@@ -1656,24 +1661,34 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
     const lateral = wp(bones.get('LeftArm')!).sub(wp(bones.get('RightArm')!)); lateral.y = 0
     lateral.normalize()
     const warm = opts.quick === true ? undefined : (prev as NaturalBodyState | null)?.warm
+    const follow = opts.follow !== undefined && warm !== undefined ? { ref: warm, weight: opts.follow } : undefined
+    // (a hand holding a shaft: the point it holds at is the goal's point on the bone, so its turn gives about that point and the hand stays on the shaft; the goal's place is that point's, `at` + the turn carrying it)
+    const heldAt = new Map<HandGoal, THREE.Vector3>()
     const res = rig.solve(goals.map(g => {
       // (a hand's turn: exact with roll false; with give false only the roll round its grip line yields; by default it gives a little on every axis)
       // (a hand carrying a prop keeps its turn exactly: the prop rides it, so its turn is the prop's place)
       const hand = bones.get(`${g.hand}Hand`)
       const carries = (g as { carrier?: boolean }).carrier === true || (opts.carrying ?? options.carrying)?.includes(g.hand) === true ||
         (hand?.children.some(c => (c as THREE.Bone).isBone !== true && c.children.length > 0) ?? false)
-      const grip = options.roll === false || carries ? null : gripAxisOf(bones, g.hand)
+      const held = carries || hand === undefined ? undefined : g.grip
+      const grip = options.roll === false || carries ? null : held?.axis ?? gripAxisOf(bones, g.hand)
       const turn = options.roll === false || carries ? {} : options.give === false ? (grip === null ? {} : { roll: { axis: grip } }) : { give: grip === null ? {} : { axis: grip } }
-      return { bone: `${g.hand}Hand`, position: g.at, turn: g.turn, exact: true, ...turn }
+      if (held === undefined || hand === undefined) return { bone: `${g.hand}Hand`, position: g.at, turn: g.turn, exact: true, ...turn }
+      // (the grip's offset is in world units, the goal's point in the bone's own: its world scale undone)
+      const scale = hand.getWorldScale(new THREE.Vector3()).x || 1
+      const place = g.at.clone().add(held.fist.clone().applyQuaternion(g.turn))
+      heldAt.set(g, place)
+      return { bone: `${g.hand}Hand`, at: held.fist.clone().divideScalar(scale), position: place, turn: g.turn, exact: true, ...turn }
     }), {
-      feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, warm, collide: options.collide ?? undefined, obstacles: opts.obstacles,
+      feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, warm, smooth: follow, collide: options.collide ?? undefined, obstacles: opts.obstacles,
     })
-    // (the fingers as asked; the miss as it stands)
+    // (the fingers as asked; the miss as it stands: a hand holding a shaft by its hold point)
     let miss = 0
     for (const g of goals) {
       const hand = bones.get(`${g.hand}Hand`)!
       for (const [name, q] of Object.entries(g.fingers ?? {})) { const b = bones.get(name); if (b !== undefined) { b.quaternion.set(...q); b.updateMatrixWorld(true) } }
-      miss = Math.max(miss, wp(hand).distanceTo(g.at))
+      const place = heldAt.get(g)
+      miss = Math.max(miss, place === undefined ? wp(hand).distanceTo(g.at) : wp(hand).add(g.grip!.fist.clone().applyQuaternion(wq(hand))).distanceTo(place))
     }
     // (for show: how far the chest turned and leaned, the hips shifted)
     const rv = [0, 0, 0]

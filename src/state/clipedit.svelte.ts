@@ -12,7 +12,7 @@ import type { ClipKey } from './api.ts'
 import { app } from './app.svelte.ts'
 import { animator, restOf, type NowPlaying } from './animator.svelte.ts'
 import { loadSource } from '../engine/clips.ts'
-import { armOf, buildEdit, fistGrip, GRIP_CLEAR, handGrip, handOn, keyFor, legsOf, propObstacles, unretarget, type Attachment, type PropPath, type PropRig, type Socket } from '../engine/clipedit.ts'
+import { armOf, buildEdit, fistGrip, GRIP_CLEAR, handGrip, handOn, keyFor, legsOf, propObstacles, unretarget, type Attachment, type Grip, type PropPath, type PropRig, type Socket } from '../engine/clipedit.ts'
 import { propNode } from './tune.svelte.ts'
 import { clipGlb, framesClip } from '../engine/clipexport.ts'
 import { library } from './library.svelte.ts'
@@ -345,7 +345,7 @@ class ClipEdit {
     let turn = end.getWorldQuaternion(new THREE.Quaternion())
     let wrist = end.getWorldPosition(new THREE.Vector3())
     const shaft = this.shaftOf(prop)
-    const grip = this.gripOf(hand)
+    const grip = this.gripOf(hand, prop)
     // (exact: where the hand is, as it is: the hand carrying the prop holds it there by its placement)
     if (shaft !== null && grip !== null && !exact) {
       // (always on the shaft: a snap turns the hand onto it; a move keeps the turn and slides the fist along it)
@@ -367,17 +367,23 @@ class ClipEdit {
     }
   }
 
-  /** A hand's grip (the line a shaft runs along through its fist, and the fist's middle, in the hand's own frame): from
-   * its fist closed round a shaft when it has one (fistGrip), else the rest hand's estimate (handGrip). */
-  private gripOf (hand: 'Left' | 'Right'): { axis: THREE.Vector3, fist: THREE.Vector3 } | null {
+  /** A hand's grip (the line a shaft runs along and the point it holds it at, in the hand's own frame): from its fist
+   * closed round a shaft of `prop`'s radius when it has one (fistGrip: the shaft across the middle of the palm), else the
+   * rest hand's estimate (handGrip). Kept until the character's fist or the radius changes. */
+  private gripOf (hand: 'Left' | 'Right', prop?: string): Grip | null {
     const fingers = this.fists[hand]; const root = this.posable()
+    const view = animator.character
+    const radius = (prop === undefined ? undefined : this.shaftLocal(prop)?.radius) ?? 0.011 * (view?.height ?? 1)
     if (fingers !== undefined && Object.keys(fingers).length > 0 && root !== null) {
-      const g = fistGrip(root, hand, fingers)
-      if (g !== null) return g
+      const held = this.gripCache[hand]
+      if (held !== undefined && held.fingers === fingers && held.radius === radius && held.root === root) return held.grip
+      const g = fistGrip(root, hand, fingers, radius)
+      if (g !== null) { this.gripCache[hand] = { fingers, radius, root, grip: g }; return g }
     }
     const rest = animator.character?.rest
     return rest === null || rest === undefined ? null : handGrip(rest, hand)
   }
+  private gripCache: Partial<Record<'Left' | 'Right', { fingers: Record<string, [number, number, number, number]>, radius: number, root: THREE.Object3D, grip: Grip }>> = {}
 
   /** The hand put on the prop where it holds it best: its fist squarely round the shaft (the shaft through the closed
    * fingers, square to the palm, the thumb toward the far end), and, when another hand holds the prop too, slid along it
@@ -526,7 +532,7 @@ class ClipEdit {
       const input = this.fitInput(prop)
       const rest = view.rest
       if (input !== null) {
-        placed = await placeGrip({ ...input, hand, socket, grip: this.gripOf(hand), others: others.map(o => ({ ...o, grip: this.gripOf(o.hand) ?? handGrip(rest, o.hand) })), free: opts.free }, label => { this.busy = label })
+        placed = await placeGrip({ ...input, hand, socket, grip: this.gripOf(hand, prop), others: others.map(o => ({ ...o, grip: this.gripOf(o.hand, prop) ?? handGrip(rest, o.hand) })), free: opts.free }, label => { this.busy = label })
         if (placed !== null) await this.saveSocket(prop, { ...placed.socket, id: socket, name: sock.name })
       }
     } catch (error) {
@@ -660,7 +666,14 @@ class ClipEdit {
       const shaft = path.locked ? this.shaftLocal(prop) : null
       if (shaft !== null) shafts[prop] = { from: shaft.from.toArray() as [number, number, number], to: shaft.to.toArray() as [number, number, number], radius: shaft.radius }
     }
-    return { node: propNode, paths, attachments, sockets, carriers: Object.fromEntries(this.props.map(p => [p.name, p.bone])), fingers: this.fists, shafts }
+    // (where each hand on a socket holds the shaft: the carrying hand has none, its turn is held exactly)
+    const grips: NonNullable<PropRig['grips']> = {}
+    for (const a of attachments) {
+      if (a.socket.startsWith('carrier:')) continue
+      const grip = this.gripOf(a.hand, a.prop)
+      if (grip !== null) grips[a.hand] = grip
+    }
+    return { node: propNode, paths, attachments, sockets, carriers: Object.fromEntries(this.props.map(p => [p.name, p.bone])), fingers: this.fists, shafts, grips }
   }
 
   /** Clear every key. */

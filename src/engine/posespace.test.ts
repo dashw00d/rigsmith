@@ -11,7 +11,7 @@ import { JointLimits, type Rom } from './limits.ts'
 import { reach, setWorldQuaternion, type Leg } from './ik.ts'
 import { handGrip } from './clipedit.ts'
 import { solveBody } from './bodysolve.ts'
-import { BODY, DIM, NB, NaturalRig, PoseModel, createBodySolver, encodeSource, elbowAllowed, gripAxisOf, mirrorPose, naturalizeClip, naturalizeFrames, poseTargets, restSoles, type NaturalGoal, type PoseModelData } from './posespace.ts'
+import { BODY, DIM, FOLLOW, NB, NaturalRig, PoseModel, createBodySolver, encodeSource, elbowAllowed, gripAxisOf, mirrorPose, naturalizeClip, naturalizeFrames, poseTargets, restSoles, type NaturalGoal, type PoseModelData } from './posespace.ts'
 
 const g = globalThis as Record<string, unknown>
 g.self ??= globalThis
@@ -730,6 +730,36 @@ describe.skipIf(!haveCharacter || !existsSync(path.join(LIBRARY, 'clips', 'custo
       if (label === 'soft, quick') { expect(m.tiltDeg).toBeLessThan(35); expect(r.miss).toBeLessThan(0.02) }
     }
     console.log(out.join('\n'))
+  })
+
+  it('a run of frames solved in turn follows the last one\'s correction: the hips and feet move smoothly, the hands still met', async () => {
+    const b = await body(CHARACTER, true)
+    const duration = (await load(path.join(LIBRARY, 'clips', 'custom-Spear_Thrust.glb'))).animations[0].duration
+    const soles = b.legs.map(l => [l.end, l.ball, l.tip].map(x => (x === null ? -Infinity : wp(x).y)))
+    const frames = Array.from({ length: 14 }, (_, i) => (0.2 + i * 0.03) * duration)
+    const run = async (follow: number | undefined): Promise<{ bend: number, miss: number }> => {
+      const solver = createBodySolver(b.model, b.offsets, {})
+      let state: ReturnType<typeof solver>['state'] | null = null
+      const track: THREE.Vector3[][] = []; let miss = 0
+      for (const t of frames) {
+        await poseFromClip(b, 'custom-Spear_Thrust', t)
+        // (both hands asked 25 cm further forward than the clip has them, the way a leading spear is)
+        const goals = (['Left', 'Right'] as const).map(hand => ({ hand, at: wp(b.bones.get(`${hand}Hand`)!).add(new THREE.Vector3(0, 0, 0.25)), turn: wq(b.bones.get(`${hand}Hand`)!) }))
+        const r = solver(b.bones, goals, { limits: b.limits, nameOf, legs: b.legs, height: 0.7, floor: 0, soles, follow } as Parameters<typeof solver>[2], state)
+        state = r.state; miss = Math.max(miss, r.miss)
+        b.scene.updateMatrixWorld(true)
+        track.push(['Hips', 'LeftFoot', 'RightFoot'].map(n => wp(b.bones.get(n)!)))
+      }
+      // (how much the hips' and feet's paths bend: the second difference per frame, in metres, summed)
+      let bend = 0
+      for (let i = 1; i < track.length - 1; i++) for (let k = 0; k < 3; k++) bend += track[i - 1][k].clone().sub(track[i][k].clone().multiplyScalar(2)).add(track[i + 1][k]).length()
+      return { bend, miss }
+    }
+    const alone = await run(undefined)
+    const following = await run(FOLLOW.weight)
+    console.log(`bend of the hips and feet: ${(alone.bend * 100).toFixed(1)} cm alone, ${(following.bend * 100).toFixed(1)} cm following; hands off ${(alone.miss * 100).toFixed(2)} / ${(following.miss * 100).toFixed(2)} cm`)
+    expect(following.miss).toBeLessThan(0.01)
+    expect(following.bend).toBeLessThanOrEqual(alone.bend * 1.05)
   })
 })
 

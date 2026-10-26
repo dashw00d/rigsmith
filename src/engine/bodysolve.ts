@@ -14,6 +14,8 @@ export interface HandGoal {
   turn: THREE.Quaternion
   /** The hand's fingers (local turns) while it holds. */
   fingers?: Record<string, [number, number, number, number]>
+  /** Where the hand holds a shaft (src/engine/clipedit.ts Grip: the hold point and the shaft's line through it, in the wrist's own turn, from the wrist, world units). The natural solver keeps this point on its goal (`at` + `turn` carrying it), and lets the turn give about it. */
+  grip?: { axis: THREE.Vector3, fist: THREE.Vector3 }
 }
 
 export interface BodyState { yaw: number, lean: number, forward: number, drop: number }
