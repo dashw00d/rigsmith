@@ -111,10 +111,12 @@ async function runRig (id: string, update: Update): Promise<void> {
     args.push('--joints', jointsFile)
   }
   if (creature) args.push('--template', path.join(ROOT, 'static', 'templates', `${character.template!}.json`))
-  // Pose-optimized weights after Blender (when PyTorch is around): humanoids train on the library,
-  // creatures on their template's own clips. Blender is the first 60%.
+  // Pose-optimized weights after Blender (when PyTorch is around), for humanoids (trained on the library). Not for
+  // creatures: on a horse trained on its template's own clips it lowered its own objective while the walk got worse
+  // (mean worst stretch 0.20 -> 0.31, 40 -> 189 vertices past double length) and tore flaps at the front legs and the
+  // flank (2026-10-26); their heat weights stay. RIGSMITH_OPTIMIZE_CREATURES=1 brings it back to try.
   const templateClips = creature ? await templateAnimations(character.template!) : undefined
-  const optimize = torchPython() !== null && (!creature || templateClips !== undefined)
+  const optimize = torchPython() !== null && (!creature || (process.env.RIGSMITH_OPTIMIZE_CREATURES === '1' && templateClips !== undefined))
   const share = optimize ? 0.6 : 1
   const started = Date.now()
   const { result } = await runBlender('autorig/rig.py', args, (progress, message) => { update({ progress: progress * share, message }) })

@@ -177,6 +177,7 @@ After Blender rigs a humanoid, `server/skinopt.ts` poses it through 256 library 
 (`tools/skin_opt/pose_set.ts`), fits the weights on the GPU for minimal stretch, wobble and volume loss
 (`tools/skin_opt/optimize.py`, PyTorch from the repo's `.venv` via `npm run setup:python`, or
 `RIGSMITH_TORCH_PYTHON`) and writes them into the GLB (`tools/skin_opt/apply.ts`). ~10–15 s on the GPU,
-~60 s on the CPU when the GPU is busy; skipped (with a warning) without PyTorch.
+~60 s on the CPU when the GPU is busy; skipped (with a warning) without PyTorch. Creatures keep their heat weights:
+trained on a template's own clips the optimizer tore a horse's chest and flank (`server/api.ts` runRig).
 
 Started from [Mesh2Motion](https://github.com/scottpetrovic/mesh2motion-app) (MIT code, CC0 assets).
