@@ -337,14 +337,21 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/rig$/, async (req, res, [id]) =
 
 // Choose the skeleton template. Re-rigging an imported rigged model turns it back into a mesh to rig.
 route('POST', /^\/api\/characters\/([a-z0-9-]+)\/template$/, async (req, res, [id]) => {
-  const body = await readJsonBody<{ template: string, joints?: Record<string, Vec3> }>(req)
+  const body = await readJsonBody<{ template: string, joints?: Record<string, Vec3>, fingers?: Character['fingers'] }>(req)
   if (!/^[a-z]+$/.test(body.template)) throw new HttpError(400, 'Bad template')
   const character = await updateCharacter(id, c => {
     // A different skeleton family can't play the previous set's clips.
     if ((c.template ?? 'human') !== body.template) c.animations = []
     c.template = body.template
-    if (c.kind === 'rigged') { c.kind = 'mesh'; c.files.rigged = undefined; c.status = 'ready' }
-    if (body.template === 'human') {
+    // (a rigged import becomes a mesh for Rigsmith's own rig: its skin and weights go, its skeleton placed the joints)
+    if (c.kind === 'rigged') { c.kind = 'mesh'; c.files.rigged = undefined; c.status = 'ready'; c.rigPreset = undefined }
+    if (body.fingers !== undefined) c.fingers = body.fingers
+    if (body.template === 'human' && body.joints !== undefined) {
+      // a person's joints read off its original rig: where its joints start, and where Reset takes them back to
+      c.joints = body.joints
+      c.autoJoints = body.joints
+      c.jointsEdited = true
+    } else if (body.template === 'human') {
       c.joints = c.autoJoints
       c.jointsEdited = false
     } else if (body.joints !== undefined) {

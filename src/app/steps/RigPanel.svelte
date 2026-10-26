@@ -4,7 +4,7 @@
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { viewer } from '../../state/viewer.svelte.ts'
-  import { groups, prettyBone, type FingerLevel } from '../../engine/mixamo.ts'
+  import { groups, hierarchy, prettyBone, type FingerLevel } from '../../engine/mixamo.ts'
   import { BODY_TYPES, fitTemplate, loadTemplate } from '../../engine/templates.ts'
   import { api } from '../../state/api.ts'
   import SkeletonMapping from './SkeletonMapping.svelte'
@@ -42,12 +42,37 @@
         // Fit along the mesh's own skeleton (legs on their columns, tail along the tail); the plain
         // bounding-box fit when the mesh doesn't read as that kind of body.
         joints = (await api.fitTemplate(character.id, id).catch(() => null))?.joints ?? fitTemplate(await loadTemplate(id), box)
-      } else if (character.autoJoints === undefined && character.kind !== 'mesh') {
-        throw new Error('Humanoid re-rigging of an already rigged import is not supported yet; pick a creature template or re-import the unrigged mesh')
+      } else if (character.kind === 'rigged') {
+        await convert()
+        choosing = false
+        return
       }
       app.upsert(await api.setTemplate(character.id, id, joints))
       choosing = false
       viewer.resetEditor()
+    } catch (error) {
+      app.toast('error', (error as Error).message)
+    }
+  }
+  /** A rigged import onto Rigsmith's own rig: the joints read off its skeleton (Mixamo names, or the mapping's), the
+   * finger level it has, then the mesh flow (markers, Rig). */
+  async function convert (): Promise<void> {
+    try {
+      const rest = viewer.character?.rest
+      if (rest == null) throw new Error('The model is still loading')
+      const joints: Record<string, [number, number, number]> = {}
+      for (const [b] of hierarchy('full')) {
+        const r = rest.bones.get(b)
+        if (r !== undefined) joints[b] = r.worldPosition.toArray().map(v => Math.round(v * 1e5) / 1e5) as [number, number, number]
+      }
+      const core = ['Hips', 'Spine', 'Neck', 'Head', 'LeftArm', 'LeftForeArm', 'LeftHand', 'RightArm', 'RightForeArm', 'RightHand', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'RightUpLeg', 'RightLeg', 'RightFoot']
+      const missing = core.filter(b => joints[b] === undefined)
+      if (missing.length > 0) throw new Error(`Its skeleton doesn't name ${missing.join(', ')}: map them above first`)
+      const has = (f: string): boolean => ['Left', 'Right'].every(side => [1, 2, 3].every(i => joints[`${side}Hand${f}${i}`] !== undefined))
+      const level: FingerLevel = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'].every(has) ? 'full' : has('Thumb') && has('Index') ? 'two' : has('Index') ? 'one' : 'none'
+      app.upsert(await api.setTemplate(character.id, 'human', joints, level))
+      viewer.resetEditor()
+      app.toast('ok', `${character.name}: joints from its skeleton (${Object.keys(joints).length}); place the markers, then Rig character`)
     } catch (error) {
       app.toast('error', (error as Error).message)
     }
@@ -96,22 +121,16 @@
   <Section><p class="muted">This file only contains an animation. Add it to the library from the Animate step.</p></Section>
 {:else if character.kind === 'rigged'}
   <Section title="Skeleton">
-    <div class="ok-card">
-      <strong>{character.rigPreset === 'mixamo' ? 'Mixamo skeleton detected' : 'Existing skeleton kept'}</strong>
-      <span class="muted">{character.stats?.bones ?? 0} bones. Its skin weights are preserved exactly as imported.</span>
+    <div class="warn-card">
+      <strong>Rigged elsewhere{character.rigPreset === 'mixamo' ? ' (Mixamo)' : ''}: convert it to the Rigsmith rig</strong>
+      <span class="muted">{character.stats?.bones ?? 0} bones. Its weights don't match Rigsmith's; converting keeps the mesh, takes the joints from its skeleton (where they start, and what Reset goes back to), then you place the markers and rig it here.</span>
     </div>
-    {#if character.rigPreset !== 'mixamo'}
-      <SkeletonMapping {character} />
-      <p class="faint small">Not a humanoid, or the mapping can't fit? Re-rig it with a template instead.</p>
-      {#if choosing}
-        <div class="bodies">
-          {#each BODY_TYPES.filter(b => b.id !== 'human') as b}<button class="bone-chip" onclick={() => chooseBody(b.id)}>{b.label}</button>{/each}
-        </div>
-      {:else}
-        <Button block onclick={() => { choosing = true }}>Re-rig with a template</Button>
-      {/if}
-    {/if}
-    <Button variant="primary" size="lg" block onclick={() => { app.step = 'animate' }}>Pick animations <ArrowRight size={15} /></Button>
+    {#if character.rigPreset !== 'mixamo'}<SkeletonMapping {character} />{/if}
+    <Button variant="primary" size="lg" block onclick={convert}><Sparkles size={15} /> Convert to the Rigsmith rig</Button>
+    <p class="faint small">Not a person? Rig it with a template instead:</p>
+    <div class="bodies">
+      {#each BODY_TYPES.filter(b => b.id !== 'human') as b}<button class="bone-chip" onclick={() => chooseBody(b.id)}>{b.label}</button>{/each}
+    </div>
   </Section>
 {:else if character.status === 'rigged' && !rigging && !viewer.adjusting}
   <Section title="Rig">
@@ -225,6 +244,9 @@
   .ok-card { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: var(--r-2); background: var(--ok-soft); border: 1px solid rgb(95 211 154 / 20%); }
   .ok-card strong { color: var(--ok); font-weight: 600; }
   .ok-card span { font-size: 12px; }
+  .warn-card { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: var(--r-2); background: var(--warn-soft, rgb(255 190 90 / 10%)); border: 1px solid rgb(255 190 90 / 25%); }
+  .warn-card strong { color: var(--warn); font-weight: 600; }
+  .warn-card span { font-size: 12px; }
   .warn { display: flex; gap: 8px; align-items: flex-start; color: var(--warn); font-size: 12.5px; }
   .warn :global(svg) { flex: none; margin-top: 2px; }
   .groups { display: flex; flex-direction: column; gap: 10px; }
