@@ -232,7 +232,7 @@ def cmd_convert(args):
         # a made clip: its script writes it (clip, meta, cache, its sources line) with the converter's own code
         log(f"making {it['id']} ({it['make']})")
         r = subprocess.run([BLENDER, "-b", "--factory-startup", "--python-exit-code", "1", "--python",
-                            os.path.join(REPO, it["make"]), "--", "--library", OUT], capture_output=True, text=True)
+                            os.path.join(REPO, it["make"]), "--", *it.get("args", []), "--library", OUT], capture_output=True, text=True)
         if r.returncode != 0:
             crashes.append({"id": it["id"], "sourcePath": it["sourcePath"], "source": it["source"],
                             "error": f"{it['make']} failed: {(r.stdout + r.stderr)[-600:]}"})

@@ -21,21 +21,20 @@ them) and is in every way a library clip: clips/custom-Spear_Thrust.glb, its met
 work/sources.json (with `make`: this script, and `inputs`: its sources, for the build to remake it); then
 `python3 blender/library/build.py aggregate` lists it.
 """
-import hashlib
-import json
 import math
 import os
 import sys
 
 import bpy
 import numpy as np
-from mathutils import Matrix
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(REPO, 'blender', 'library'))
+sys.path.insert(0, HERE)
 import convert as C  # noqa: E402
+import common  # noqa: E402
 
 WORKSPACE = os.environ.get('RIGSMITH_WORKSPACE', os.path.join(REPO, 'workspace'))
 SOURCES = os.path.join(WORKSPACE, 'library', 'sources')
@@ -95,10 +94,7 @@ def sample(arm, frames):
 
 
 def fk(L, parents):
-    W = np.empty_like(L)
-    for b, p in enumerate(parents):
-        W[b] = L[b] if p is None else W[p] @ L[b]
-    return W
+    return common.fk(L, parents)
 
 
 def quat(R):
@@ -285,78 +281,21 @@ def main():
                 Lw[idx[name]] = L[idx[name]]
         poses.append(fk(Lw, parents))
     print(f'SPEAR wrist bend: max {max(wrist):.0f} deg, mean {sum(wrist) / len(wrist):.0f}')
-    write(arm, names, parents, xf, poses, act.name)
-    into_library(arm, library)
+    common.key_poses(arm, names, parents, xf, poses, FPS, 'Spear Thrust')
+    common.into_library(arm, library, job())
     print(f'SPEAR wrote {ID} into {library} ({n} frames, {DURATION} s)')
 
 
 # --------------------------------------------------------------------------- back onto the FBX skeleton
 
-def write(arm, names, parents, xf, poses, action_name):
-    """Key the armature with canonical world poses: pose matrix (armature space) = the converter's map, inverted."""
-    A3, At, RA = xf
-    A3i = np.linalg.inv(A3)
-    pb = arm.pose.bones
-    rest = {n: np.array(arm.data.bones[n].matrix_local, dtype=np.float64) for n in names}
-    act = bpy.data.actions.new('Spear Thrust')
-    arm.animation_data.action = act
-    scene = bpy.context.scene
-    scene.render.fps = FPS
-    scene.frame_start = 0
-    scene.frame_end = len(poses) - 1
-    for p in pb:
-        p.rotation_mode = 'QUATERNION'
-    for k, W in enumerate(poses):
-        P = {}
-        for b, name in enumerate(names):
-            M = np.eye(4)
-            M[:3, :3] = RA.T @ W[b, :3, :3]
-            M[:3, 3] = A3i @ (W[b, :3, 3] - At)
-            P[name] = M
-        for b, name in enumerate(names):
-            parent = parents[b]
-            B = rest[name]
-            if parent is None:
-                basis = np.linalg.inv(B) @ P[name]
-            else:
-                pn = names[parent]
-                basis = np.linalg.inv(np.linalg.inv(rest[pn]) @ B) @ (np.linalg.inv(P[pn]) @ P[name])
-            bone = pb[name]
-            bone.matrix_basis = Matrix(basis.tolist())
-            bone.keyframe_insert('rotation_quaternion', frame=k)
-            bone.keyframe_insert('location', frame=k)
-
-
 def job():
-    """The clip's line in the library's sources: made by this script from its inputs (sha256 over both)."""
-    h = hashlib.sha256(open(os.path.abspath(__file__), 'rb').read())
-    for path in (STAB, SHIELD):
-        h.update(open(path, 'rb').read())
-    return {'id': ID, 'sha256': h.hexdigest(), 'kind': 'clip', 'source': 'custom', 'sourcePath': os.path.abspath(__file__),
-            'make': os.path.relpath(os.path.abspath(__file__), REPO), 'inputs': [STAB, SHIELD],
-            'sourceName': 'Spear_Thrust', 'name': 'Spear Thrust', 'originalName': 'Spear Thrust',
+    """The clip's line in the library's sources: made by this script from its inputs."""
+    make = os.path.relpath(os.path.abspath(__file__), REPO)
+    inputs = [STAB, SHIELD, common.COMMON]
+    return {'id': ID, 'sha256': common.sha_of(make, inputs), 'kind': 'clip', 'source': 'custom', 'sourcePath': os.path.abspath(__file__),
+            'make': make, 'inputs': inputs, 'sourceName': 'Spear_Thrust', 'name': 'Spear Thrust', 'originalName': 'Spear Thrust',
             'description': 'One-handed underhand spear thrust behind a shield: the fist on one straight line, the shaft along it (made from Stabbing 2 and Sword And Shield Idle 4 by blender/clips/spear_thrust.py).',
             'tags': ['spear', 'thrust', 'attack', 'one-handed', 'shield', 'melee']}
-
-
-def into_library(arm, library):
-    """The library's converter on this armature as it is (its rest, the new action), then its meta and sources line."""
-    import time
-    j = job()
-    for d in ('clips', 'meta', 'cache', 'work'):
-        os.makedirs(os.path.join(library, d), exist_ok=True)
-    C.import_fbx = lambda path: arm   # (convert_clip reads the armature this way: it is already here)
-    res = C.convert_clip(j, library)
-    meta = {k: j[k] for k in ('id', 'sha256', 'kind', 'source', 'sourcePath', 'sourceName', 'name', 'tags', 'description', 'originalName')}
-    meta.update({'converterVersion': C.CONVERTER_VERSION, 'convertedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'make': j['make']})
-    meta.update(res)
-    with open(os.path.join(library, 'meta', ID + '.json'), 'w') as fh:
-        json.dump(meta, fh, separators=(',', ':'))
-    sources_path = os.path.join(library, 'work', 'sources.json')
-    sources = json.load(open(sources_path)) if os.path.exists(sources_path) else []
-    sources = [x for x in sources if x.get('id') != ID] + [j]
-    with open(sources_path, 'w') as fh:
-        json.dump(sources, fh, indent=1)
 
 
 if __name__ == '__main__':

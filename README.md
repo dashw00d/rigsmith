@@ -71,6 +71,20 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   the Hips also move) and props (moves and turns about where they are held). Pause on a frame and drag the gizmo: letting
   go keys it there. Keys sit at a phase of the clip, blend between, wrap round a loop and hold at a one-shot's ends. A
   keyed prop gets its own bone in the game file (`Prop_<part>`) that the clips move.
+- **Edit animation** (Animate, top; `src/state/clipedit.svelte.ts`, `src/engine/PoseEditor.ts`, `ik.ts`, `limits.ts`,
+  `clipedit.ts`): *Edit* the clip playing (it plays as it is, the timeline empty) or make a *New clip from this frame*
+  (that pose held, its length set). Scrub, then drag a joint: a hand, a foot or the head reaches its limb there; any
+  other joint swings the bone above it; the diamond at the hips crouches and jumps (the feet stay where they stand, the
+  legs bend; Shift moves it anyhow); click a joint and turn it with the gizmo. Letting go keys every bone the drag
+  moved, at that frame (a turn from where the clip had it; on a clip with motion of its own a bone's first key also
+  pins it at the ends, so the change eases in and out). Keys tween smoothly (Catmull-Rom); every joint is held within
+  its range of motion as measured on real motion (`tools/rom.ts` -> `static/templates/rom/`: the library's 2,446 Mixamo
+  captures for a person, its template's clips for a horse); no foot goes under the floor further than the clip had it.
+  The timeline shows the keyed frames (diamonds; the selected bone's pink); Delete takes the frame's keys off. *Save as
+  a new clip* takes the edit back off the character onto the base clip's own skeleton (the retarget undone) and writes
+  it into the library as `custom-<Name>`, tagged custom, in the base clip's category (`POST /api/library/edits`,
+  `server/clipedits.ts` -> `workspace/library/sources/custom/<id>.edit.json`, made by `blender/clips/edit.py` through
+  the library's build). Creatures edit, but their clips aren't saved anywhere yet (they aren't library clips).
 - **Clip scripts** (Animate; `src/engine/scripts.ts`): switchable changes on top of the library motion: *Hold fist*,
   *Blow timing* (an attack cut so its blow lands at a share of it, or to a window around the blow), *Pace*.
 - The order, the same in the viewer (`animator.scripted`) and the export: the clip at its speed, then the scripts, then the

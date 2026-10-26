@@ -1,6 +1,7 @@
 <script lang="ts">
   import { FlipHorizontal2, Footprints, Pause, Play, Repeat } from '@lucide/svelte'
   import { animator } from '../../state/animator.svelte.ts'
+  import { clipEdit } from '../../state/clipedit.svelte.ts'
   import { tooltip } from '../../ui/tooltip.ts'
 
   let scrubbing = $state(false)
@@ -42,6 +43,13 @@
         onpointermove={(e) => { if (scrubbing) seekFrom(e, e.currentTarget as HTMLElement) }}
         onpointerup={() => { scrubbing = false; if (wasPlaying) animator.setPlaying(true) }}>
         <div class="fill" style="width: {progress * 100}%"></div>
+        {#if clipEdit.active}
+          <!-- (the frames keyed: a diamond each, the selected bone's bright; press one to go there) -->
+          {#each clipEdit.phases as u (u)}
+            <button class="key" class:mine={clipEdit.selectedPhases.some(x => Math.abs(x - u) < 1e-4)} style="left: {u * 100}%" aria-label="Key at frame {Math.round(u * animator.duration * fps)}"
+              onpointerdown={(e) => { e.stopPropagation(); animator.setPlaying(false); animator.seek(u * animator.duration) }}></button>
+          {/each}
+        {/if}
         <div class="knob" style="left: {progress * 100}%"></div>
       </div>
     </div>
@@ -82,6 +90,8 @@
   .bar { position: relative; height: 14px; cursor: pointer; touch-action: none; }
   .bar::before { content: ''; position: absolute; left: 0; right: 0; top: 6px; height: 3px; border-radius: 2px; background: var(--bg-4); }
   .fill { position: absolute; left: 0; top: 6px; height: 3px; border-radius: 2px; background: var(--accent); }
+  .key { position: absolute; top: 2px; width: 9px; height: 9px; margin-left: -4.5px; padding: 0; border: 1px solid rgb(0 0 0 / 50%); background: var(--warn, #f5c45e); transform: rotate(45deg); border-radius: 1px; cursor: pointer; z-index: 1; }
+  .key.mine { background: #ff7ab8; }
   .knob { position: absolute; top: 2px; width: 11px; height: 11px; margin-left: -5.5px; border-radius: 50%; background: var(--text-1); box-shadow: 0 1px 4px rgb(0 0 0 / 50%); }
   .flags { display: flex; gap: 2px; align-items: center; }
   .flags button { width: 28px; height: 28px; border-radius: 7px; border: 0; background: transparent; color: var(--text-3); display: grid; place-items: center; }

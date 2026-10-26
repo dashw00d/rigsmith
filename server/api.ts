@@ -8,6 +8,7 @@ import path from 'node:path'
 import { enqueue, events, type Job, listJobs, runBlender, runCodex } from './jobs.ts'
 import { optimizeSkin, torchPython } from './skinopt.ts'
 import { queryLibrary } from './library.ts'
+import { newId, saveEdit, type SavedEdit } from './clipedits.ts'
 import { journal, note as note_, record } from './journal.ts'
 import { exportUnits, gameSlots, gameStatus, saveUnits, units, type UnitSpec } from './game.ts'
 import { dropWeightEdits, keepWeightEdits, weightEdits, writeWeights, type WeightEdit } from './weights.ts'
@@ -595,6 +596,18 @@ route('GET', /^\/api\/library$/, async (req, res, _, url) => {
     page: Number(url.searchParams.get('page') ?? 0),
     pageSize: Number(url.searchParams.get('size') ?? 24),
   }))
+})
+
+// A clip made in the animation editor: into the library as a new clip (server/clipedits.ts), as a job.
+route('POST', /^\/api\/library\/edits$/, async (req, res) => {
+  const body = await readJsonBody<SavedEdit & { characterId?: string }>(req)
+  if (typeof body.name !== 'string' || body.name.trim() === '') throw new HttpError(400, 'Name the clip')
+  const id = await newId(body.name)
+  const character = typeof body.characterId === 'string' && /^[a-z0-9-]+$/.test(body.characterId) ? body.characterId : undefined
+  const job = enqueue('clip', `Save ${body.name.trim()} to the library`, character, async (job, update) => {
+    await saveEdit(id, body, (progress, message) => { update({ progress, message }) })
+  })
+  send(res, 202, { id, job: job.id })
 })
 
 route('GET', /^\/api\/settings$/, async (req, res) => { send(res, 200, await getSettings()) })

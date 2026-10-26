@@ -88,9 +88,10 @@ export function soleHeights (leg: Leg): number[] {
  * foot, the foot keeping its turn (flat stays flat). Lowered past where the legs can fold, the hips stop there; raised
  * past where they reach, the feet leave the floor with them (a jump). Returns how far the hips went.
  */
-export function moveHips (hips: THREE.Bone, delta: THREE.Vector3, legs: Leg[], opts: { limits?: JointLimits, nameOf: NameOf, floor?: number, soles?: number[][] }): THREE.Vector3 {
+export function moveHips (hips: THREE.Bone, delta: THREE.Vector3, legs: Leg[], opts: { limits?: JointLimits, nameOf: NameOf, floor?: number, soles?: number[][], planted?: Array<{ at: THREE.Vector3, turn: THREE.Quaternion }> }): THREE.Vector3 {
   hips.updateMatrixWorld(true)
-  const planted = legs.map(l => ({ at: worldP(l.end), turn: worldQ(l.end) }))
+  // (where the feet stand: as they are now, or where a drag found them)
+  const planted = opts.planted ?? plantedFeet(legs)
   const start = worldP(hips)
   const put = (d: THREE.Vector3): number => {
     const world = start.clone().add(d)
@@ -120,6 +121,11 @@ export function moveHips (hips: THREE.Bone, delta: THREE.Vector3, legs: Leg[], o
   }
   if (opts.floor !== undefined) keepOffFloor(legs, opts.floor, opts.soles ?? legs.map(soleHeights), opts)
   return d
+}
+
+/** Where each leg's foot is and how it is turned (to keep it there through a crouch). */
+export function plantedFeet (legs: Leg[]): Array<{ at: THREE.Vector3, turn: THREE.Quaternion }> {
+  return legs.map(l => ({ at: worldP(l.end), turn: worldQ(l.end) }))
 }
 
 /** No foot below the floor: a leg whose ankle, ball or toes dip under their heights above the floor at rest

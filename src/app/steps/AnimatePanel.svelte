@@ -6,6 +6,7 @@
   import { slots } from '../../state/slots.svelte.ts'
   import ScriptsPanel from '../animate/ScriptsPanel.svelte'
   import TunePanel from '../animate/TunePanel.svelte'
+  import EditPanel from '../animate/EditPanel.svelte'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
   import { tooltip } from '../../ui/tooltip.ts'
@@ -78,6 +79,7 @@
     <Button variant="primary" block onclick={() => { app.step = 'rig' }}>Go to Rig</Button>
   </Section>
 {:else}
+  <EditPanel />
   {#if game}
     <Section title="In the game: {game.unit}{game.role === 'companion' ? ' (its companion)' : ''}">
       <p class="faint small">The clips the game plays. Fill one from the library: arm it (<Crosshair size={11} />) and press a card's

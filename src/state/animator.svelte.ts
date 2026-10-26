@@ -61,6 +61,8 @@ class Animator {
   private lastKey = ''
   /** A posable copy of the character, for scripts to measure clips on without moving the one on stage. */
   private posable: THREE.Object3D | null = null
+  /** The lift the library clip playing was stood on the floor by (its hips raised by it: grounded). */
+  lift = 0
   /** While a tweak is being dragged: the clip stops driving the bones (the gizmo does). */
   holding = false
   /** The entry playing, as it plays before its keys (on the timeline played): what a new key is measured against. */
@@ -217,6 +219,18 @@ class Animator {
     }
   }
 
+  /** Show a clip built elsewhere (the animation editor's), paused at `time`. */
+  showClip (clip: THREE.AnimationClip, now: NowPlaying, time: number): void {
+    if (this.player === null) return
+    this.token++
+    this.current = now
+    this.holding = false
+    this.player.play(clip)
+    this.duration = clip.duration
+    this.setPlaying(false)
+    this.seek(Math.min(Math.max(time, 0), clip.duration))
+  }
+
   playEntry (entry: AnimationEntry, index: number, keepTime = false): void {
     void this.play({ clipId: entry.clipId, url: entryUrl(entry), name: entry.name, entry: index }, { inPlace: entry.inPlace, speed: entry.speed, loop: entry.loop, keepTime })
   }
@@ -324,6 +338,7 @@ class Animator {
     const hips = view.rest.bones.get('Hips') ?? view.rest.bones.get('hips')
     if (body === undefined || hips === undefined) return clip
     const fit = groundFit(root, body, clip, view.height)
+    this.lift = fit.lift
     return applyLift(clip, hips.node.name, fit.lift, hips.localPosition)
   }
 
@@ -416,7 +431,7 @@ class Animator {
 export const animator = new Animator()
 
 /** A character's bones at rest (local), for clips' keys and frozen bones the clip doesn't move. */
-function restOf (view: CharacterView): (bone: string) => { q: THREE.Quaternion, p: THREE.Vector3 } | null {
+export function restOf (view: CharacterView): (bone: string) => { q: THREE.Quaternion, p: THREE.Vector3 } | null {
   return bone => {
     const b = view.rest?.bones.get(bone)
     return b === undefined ? null : { q: b.localQuaternion.clone(), p: b.localPosition.clone() }
