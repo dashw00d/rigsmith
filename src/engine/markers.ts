@@ -126,7 +126,7 @@ function bestTurn (from: THREE.Vector3[], to: THREE.Vector3[], warm: THREE.Quate
   const shift = N.flat().reduce((s, v) => s + Math.abs(v), 0) + 1e-12
   // (w, x, y, z), from the last turn: the top eigenvector of N + shift I
   let q = [warm.w, warm.x, warm.y, warm.z]
-  for (let it = 0; it < 60; it++) {
+  for (let it = 0; it < 24; it++) {
     const n = [0, 1, 2, 3].map(r => N[r][0] * q[0] + N[r][1] * q[1] + N[r][2] * q[2] + N[r][3] * q[3] + shift * q[r])
     const len = Math.hypot(...n)
     if (len < 1e-20) break
@@ -160,12 +160,17 @@ function choleskySolve (l: Float64Array, n: number, b: Float64Array): Float64Arr
 /** Every node of `base` moved so the pinned ones sit at their pins and the rest follow as rigidly as they can (each
  * node's edges turned as one: as-rigid-as-possible). A chain pulled longer between its pins shares the stretch
  * evenly; past its last pin (a hoof's tip, an ear) it keeps its lengths. */
-export function solve (base: Record<string, V3>, edges: Array<[string, string]>, pins: Map<string, V3>, iterations = 16): Record<string, V3> {
+/** What one solve leaves the next with, while a marker is dragged: the factored system (the same skeleton and
+ * pins) and each node's turn, to start from. */
+export interface SolveCache { key?: string, L?: Float64Array, turn?: THREE.Quaternion[] }
+
+export function solve (base: Record<string, V3>, edges: Array<[string, string]>, pins: Map<string, V3>, iterations = 16, cache?: SolveCache): Record<string, V3> {
   const names = Object.keys(base)
   const index = new Map(names.map((n, i) => [n, i]))
   const n = names.length
   const pinned = [...pins.keys()].filter(k => index.has(k))
   if (pinned.length === 0) return { ...base }
+  const key = `${names.join(',')}|${pinned.join(',')}|${edges.length}`
   const T = names.map(k => new THREE.Vector3(...base[k]))
   const nbr: number[][] = names.map(() => [])
   for (const [a, b] of edges) {
@@ -174,15 +179,21 @@ export function solve (base: Record<string, V3>, edges: Array<[string, string]>,
     nbr[i].push(j); nbr[j].push(i)
   }
   const pinW = 1e4
-  const L = new Float64Array(n * n)
-  for (let i = 0; i < n; i++) {
-    for (const j of nbr[i]) { L[i * n + i] += 1; L[i * n + j] -= 1 }
+  let L: Float64Array
+  if (cache?.key === key && cache.L !== undefined) L = cache.L
+  else {
+    L = new Float64Array(n * n)
+    for (let i = 0; i < n; i++) {
+      for (const j of nbr[i]) { L[i * n + i] += 1; L[i * n + j] -= 1 }
+    }
+    // (a node joined to nothing pinned stays put: a tiny pull to its own place keeps the system solvable)
+    for (let i = 0; i < n; i++) L[i * n + i] += 1e-6
+    for (const k of pinned) { const i = index.get(k)!; L[i * n + i] += pinW }
+    cholesky(L, n)
+    if (cache !== undefined) { cache.key = key; cache.L = L; cache.turn = undefined }
   }
-  // (a node joined to nothing pinned stays put: a tiny pull to its own place keeps the system solvable)
-  for (let i = 0; i < n; i++) L[i * n + i] += 1e-6
-  for (const k of pinned) { const i = index.get(k)!; L[i * n + i] += pinW }
-  cholesky(L, n)
-  const turn = names.map(() => new THREE.Quaternion())
+  // (from the last solve's turns while dragging: a few rounds then reach what many would from rest)
+  const turn = cache?.turn?.length === n ? cache.turn.map(q => q.clone()) : names.map(() => new THREE.Quaternion())
   let X = T.map(v => v.clone())
   const e = new THREE.Vector3(); const f = new THREE.Vector3()
   for (let it = 0; it < iterations; it++) {
@@ -212,6 +223,7 @@ export function solve (base: Record<string, V3>, edges: Array<[string, string]>,
       turn[i] = from.length === 1 ? new THREE.Quaternion().setFromUnitVectors(from[0].clone().normalize(), to[0].clone().normalize()) : bestTurn(from, to, turn[i])
     }
   }
+  if (cache !== undefined) cache.turn = turn
   const out: Record<string, V3> = {}
   names.forEach((k, i) => { out[k] = [X[i].x, X[i].y, X[i].z] })
   // the pins exactly (the solve holds them within its stiffness)
@@ -220,8 +232,8 @@ export function solve (base: Record<string, V3>, edges: Array<[string, string]>,
 }
 
 /** The skeleton the markers give: `base` moved by them, its joints only. */
-export function jointsFrom (set: MarkerSet, m: Markers, parents: Record<string, string | null>, xCenter: number): Record<string, V3> {
-  const solved = solve(m.base, edgesOf(set, parents, m.base), pinsOf(set, m, xCenter))
+export function jointsFrom (set: MarkerSet, m: Markers, parents: Record<string, string | null>, xCenter: number, iterations = 16, cache?: SolveCache): Record<string, V3> {
+  const solved = solve(m.base, edgesOf(set, parents, m.base), pinsOf(set, m, xCenter), iterations, cache)
   return Object.fromEntries(Object.entries(solved).filter(([k]) => !k.startsWith('marker:')))
 }
 

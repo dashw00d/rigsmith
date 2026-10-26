@@ -10,7 +10,7 @@
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import type { CharacterView } from '../../engine/CharacterView.ts'
-  import { insideDepth, jointsFrom, keysOf, mirrorX, seed, type MarkerDef, type Markers, type MarkerSet, type V3 } from '../../engine/markers.ts'
+  import { insideDepth, jointsFrom, keysOf, mirrorX, seed, type MarkerDef, type Markers, type MarkerSet, type SolveCache, type V3 } from '../../engine/markers.ts'
   import { markerBoard } from '../../state/markers.svelte.ts'
 
   let { character, view, set, setName, parents }: { character: Character, view: CharacterView, set: MarkerSet, setName: string, parents: Record<string, string | null> } = $props()
@@ -26,8 +26,13 @@
   const meshes: THREE.Mesh[] = []
   const box = new THREE.Box3()
   let xCenter = 0
-  let markers = $state<Markers | null>(null)
-  let joints = $state<Record<string, V3>>({})
+  // (plain values, replaced whole: the solver reads them many times a frame)
+  let markers = $state.raw<Markers | null>(null)
+  let joints = $state.raw<Record<string, V3>>({})
+  // the drag: the last pointer move waiting for the next frame (the solver's work kept for the next solve)
+  const live: SolveCache = {}
+  let pendingMove: { x: number, y: number } | null = null
+  let frameRequest = 0
   let dragging: string | null = null
   let frame = $state(0)   // (bumped when the camera changes: the overlay re-projects)
   const key = new THREE.DirectionalLight(0xffffff, 1.4)
@@ -163,9 +168,33 @@
     return hit !== undefined && hit.point.y < hips[1] ? [xCenter, hit.point.y, hips[2]] : null
   }
 
-  function solveNow (): void {
+  function solveNow (rounds = 16): void {
     if (markers === null) return
-    joints = jointsFrom(set, markers, parents, xCenter)
+    joints = jointsFrom(set, markers, parents, xCenter, rounds, live)
+  }
+
+  /** While dragging: the screen point in the view's plane at the marker's own depth (its depth from the mesh comes on
+   * letting go: toBody). */
+  function inPlane (x: number, y: number, def: MarkerDef, keep: V3 | undefined): V3 {
+    ray.setFromCamera(new THREE.Vector2(x / width * 2 - 1, 1 - y / height * 2), camera)
+    const o = ray.ray.origin; const d = ray.ray.direction
+    if (markerBoard.view !== 'body') {
+      const q = o.clone().addScaledVector(d, keep !== undefined ? new THREE.Vector3(...keep).sub(o).dot(d) : (camera.far - camera.near) / 2)
+      return [q.x, q.y, q.z]
+    }
+    if (set.view === 'front') return [def.mid ? xCenter : o.x, o.y, keep?.[2] ?? 0]
+    return [def.mid ? xCenter : keep?.[0] ?? xCenter, o.y, o.z]
+  }
+
+  /** A marker moved (and, on a front view, its pair's other side mirrored). */
+  function moveMarker (key: string, def: MarkerDef, p: V3): void {
+    if (markers === null) return
+    const positions = { ...markers.positions, [key]: p }
+    if (def.pair && set.view === 'front' && markerBoard.mirror) {
+      const other = key.endsWith('_l') ? `${def.id}_r` : `${def.id}_l`
+      if (positions[other] !== undefined) positions[other] = mirrorX(p, xCenter)
+    }
+    markers = { ...markers, positions }
   }
 
   let ro: ResizeObserver | null = null
@@ -212,7 +241,6 @@
     if (set.view === 'front') return `${what} · ${k.side === 'right' ? 'right (A)' : 'left (B)'}`
     return `${what} · near ${k.def.letter !== undefined ? 'leg' : 'side'} (the far one mirrored)`
   }
-  let hovered = $state<string | null>(null)
   let dragKey = $state<string | null>(null)
 
   function down (e: PointerEvent, key: string): void {
@@ -222,49 +250,43 @@
     try { (e.target as Element).setPointerCapture(e.pointerId) } catch { /* (a pointer that can't be captured still drags over the board) */ }
     e.preventDefault()
   }
-  /** The marker under the pointer (the nearest within its halo), by where the markers are drawn. */
-  function markerAt (x: number, y: number): string | null {
-    if (markers === null) return null
-    let best: string | null = null; let d = 16
-    for (const k of shown) {
-      const at = markers.positions[k.key]
-      if (at === undefined) continue
-      const p = toScreen(at)
-      const e = Math.hypot(p.x - x, p.y - y)
-      if (e < d) { d = e; best = k.key }
-    }
-    return best
-  }
 
+  // (a pointer move only asks for the next frame: however fast the mouse, one update a frame)
   function move (e: PointerEvent): void {
-    if (dragging === null) {
-      // (the marker the pointer is on, as the click would take it; else the nearest within its halo)
-      const on = (e.target as Element | null)?.closest?.('g.marker')?.getAttribute('data-key') ?? null
-      const r = host.getBoundingClientRect()
-      hovered = on ?? markerAt(e.clientX - r.left, e.clientY - r.top)
-      return
-    }
-    if (markers === null) return
+    if (dragging === null) return
+    const r = host.getBoundingClientRect()
+    pendingMove = { x: e.clientX - r.left, y: e.clientY - r.top }
+    if (frameRequest === 0) frameRequest = requestAnimationFrame(dragFrame)
+  }
+  function dragFrame (): void {
+    frameRequest = 0
+    const at = pendingMove; pendingMove = null
+    if (at === null || dragging === null || markers === null) return
     const k = keys.find(x => x.key === dragging)
     if (k === undefined) return
-    const r = host.getBoundingClientRect()
-    const p = toBody(e.clientX - r.left, e.clientY - r.top, k.def, markers.positions[k.key])
-    markers.positions[k.key] = p
-    // (a pair on a front view: the other side follows, mirrored)
-    if (k.def.pair && set.view === 'front' && markerBoard.mirror) {
-      const other = k.key.endsWith('_l') ? `${k.def.id}_r` : `${k.def.id}_l`
-      if (markers.positions[other] !== undefined) markers.positions[other] = mirrorX(p, xCenter)
-    }
-    solveNow()
+    // (only the dot moves while it is dragged: the skeleton follows when it is let go)
+    moveMarker(k.key, k.def, inPlane(at.x, at.y, k.def, markers.positions[k.key]))
   }
-  async function up (): Promise<void> {
+  async function up (e: PointerEvent): Promise<void> {
     if (dragging === null || markers === null) return
+    const k = keys.find(x => x.key === dragging)
     dragging = null
     dragKey = null
-    solveNow()
-    markerBoard.busy = 'Saving the markers'
+    if (frameRequest !== 0) { cancelAnimationFrame(frameRequest); frameRequest = 0 }
+    pendingMove = null
+    markerBoard.busy = 'Fitting the skeleton'
+    // (the spinner shows before the work starts)
+    await new Promise(r => setTimeout(r, 0))
     try {
+      if (k !== undefined) {
+        // where it was let go, its depth now from the mesh
+        const r = host.getBoundingClientRect()
+        moveMarker(k.key, k.def, toBody(e.clientX - r.left, e.clientY - r.top, k.def, markers.positions[k.key]))
+      }
+      solveNow()
       await app.update(character.id, { markers: $state.snapshot(markers), joints: $state.snapshot(joints), jointsEdited: true })
+    } catch (error) {
+      app.toast('error', `The markers didn't save: ${(error as Error).message}`)
     } finally {
       markerBoard.busy = null
     }
@@ -278,7 +300,7 @@
   const near = (p: V3): boolean => set.view === 'front' || p[0] >= xCenter - 1e-4
 </script>
 
-<div class="board" class:over={hovered !== null} class:dragging={dragKey !== null} bind:this={host} onpointermove={move} onpointerup={up} onpointerleave={() => { hovered = null }} role="application" aria-label="Rig markers">
+<div class="board" class:dragging={dragKey !== null} bind:this={host} onpointermove={move} onpointerup={up} role="application" aria-label="Rig markers">
   <canvas bind:this={canvas}></canvas>
   <svg {width} {height}>
     {#each bones as [a, b]}
@@ -294,25 +316,19 @@
         {@const at = markers.positions[k.key]}
         {#if at !== undefined}
           {@const p = toScreen(at)}
-          <g class="marker" class:on={markerBoard.selected === k.def.id} transform="translate({p.x},{p.y})" onpointerdown={(e) => down(e, k.key)} data-key={k.key} role="button" tabindex="-1" aria-label={nameOf(k)}>
+          <g class="marker" class:on={markerBoard.selected === k.def.id} class:held={dragKey === k.key} transform="translate({p.x},{p.y})" onpointerdown={(e) => down(e, k.key)} role="button" tabindex="-1" aria-label={nameOf(k)}>
             <circle r="13" class="halo" style="stroke: {k.def.color}" />
             <circle r="9" style="fill: {k.def.color}" class="dot" />
             {#if k.def.letter ?? (k.def.pair && set.view === 'front')}
               <text dy="4">{k.def.letter ?? (k.side === 'right' ? 'A' : 'B')}</text>
             {/if}
+            <!-- (its name, shown by the browser on hover: no code runs as the pointer moves) -->
+            <foreignObject class="tipbox" x="-170" y="-52" width="340" height="30"><div class="tip"><span class="tipdot" style="background: {k.def.color}"></span>{nameOf(k)}</div></foreignObject>
           </g>
         {/if}
       {/each}
     {/if}
   </svg>
-  {#if markers !== null && (hovered ?? dragKey) !== null}
-    {@const k = keys.find(x => x.key === (hovered ?? dragKey))}
-    {@const at = k === undefined ? undefined : markers.positions[k.key]}
-    {#if k !== undefined && at !== undefined}
-      {@const p = toScreen(at)}
-      <div class="tip" style="transform: translate({p.x}px, {p.y - 22}px)"><span class="dot" style="background: {k.def.color}"></span>{nameOf(k)}</div>
-    {/if}
-  {/if}
   {#if hasHands}
     <div class="tabs">
       {#each [['body', 'Body'], ['right', 'Right hand (A)'], ['left', 'Left hand (B)']] as [v, label]}
@@ -331,14 +347,16 @@
   line.far { stroke: rgb(142 162 255 / 30%); stroke-dasharray: 3 3; }
   .joint { fill: #8ea2ff; }
   .joint.far { fill: rgb(142 162 255 / 35%); }
-  /* (a pointing hand over a marker, the grabbing one while it is dragged: the board says which, by where the pointer is) */
-  .board.over { cursor: pointer; }
-  .board.dragging { cursor: grabbing; }
+  /* (a pointing hand over a marker, the grabbing one while it is dragged) */
+  .marker { cursor: pointer; }
+  .board.dragging, .board.dragging .marker { cursor: grabbing; }
+  .tipbox { visibility: hidden; pointer-events: none; overflow: visible; }
+  .marker:hover .tipbox, .marker.held .tipbox { visibility: visible; }
   .marker .halo { fill: rgb(0 0 0 / 25%); stroke-width: 2; opacity: 0.9; }
   .marker .dot { stroke: rgb(0 0 0 / 45%); stroke-width: 1; }
   .marker.on .halo { stroke-width: 3.5; }
-  .tip { position: absolute; left: 0; top: 0; translate: -50% -100%; display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; background: rgb(12 14 18 / 92%); border: 1px solid var(--line-strong); color: var(--text-1); font-size: 12px; white-space: nowrap; pointer-events: none; z-index: 2; }
-  .tip .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .tip { display: flex; align-items: center; justify-content: center; width: fit-content; margin: 0 auto; gap: 6px; padding: 4px 8px; border-radius: 6px; background: rgb(12 14 18 / 92%); border: 1px solid var(--line-strong); color: var(--text-1); font-size: 12px; white-space: nowrap; }
+  .tipdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .marker text { font-size: 11px; font-weight: 700; text-anchor: middle; fill: #111; pointer-events: none; }
   .hint { position: absolute; left: 14px; bottom: 12px; font-size: 12px; color: var(--text-3); pointer-events: none; }
   .tabs { position: absolute; top: 10px; left: 10px; display: flex; gap: 4px; }
