@@ -22,9 +22,8 @@ import { HORSE_RIG, HUMAN_RIG, PoseEditor, type PoseRig } from '../engine/PoseEd
 import { retargetOffsets, type RestSkeleton } from '../engine/retarget.ts'
 import { reach, setWorldQuaternion } from '../engine/ik.ts'
 import { bodyBones, solveBody } from '../engine/bodysolve.ts'
-import { solidsOf } from '../engine/bodycollide.ts'
+import { bodyColliderFor, solidsOf } from '../engine/bodycollide.ts'
 import { bodyBonesNatural, createBodySolver, loadPoseModel, naturalizeClip, NaturalRig, poseTargets, type NaturalGoal, type PoseModel, type PoseModelData } from '../engine/posespace.ts'
-import { bodyColliderFor } from '../engine/bodycollide.ts'
 import { fitProp, placeGrip, type FitResult, type GripResult } from '../engine/propfit.ts'
 
 const IDENTITY: ClipKey['q'] = [0, 0, 0, 1]
