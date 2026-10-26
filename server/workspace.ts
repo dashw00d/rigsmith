@@ -102,6 +102,16 @@ export interface Garment {
   hidden?: boolean
   /** Brought in by a tool rather than added by hand (tools/game_import.py: "emberhold:<unit>/<part>"). */
   from?: string
+  /** A rigid one's grips (the animation editor's: a hand put on one holds it there; src/engine/clipedit.ts Socket). */
+  sockets?: GarmentSocket[]
+}
+
+/** A grip on a rigid garment: where a hand's wrist goes and how the hand turns, in the garment's own placed frame. */
+export interface GarmentSocket {
+  id: string
+  name: string
+  position: [number, number, number]
+  rotation: [number, number, number, number]
 }
 
 export interface PropAttachment {

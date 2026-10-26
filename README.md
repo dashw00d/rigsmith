@@ -87,11 +87,15 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   the library's build). A creature's clip (a horse's: not a Mixamo clip) is saved as a .glb on its template's skeleton
   into `workspace/library/creatures/<rig>/`, listed beside the bundled ones (`creatures/index.json`). The library's
   *Custom* chip shows the clips made here (a badge on each card). The gizmo moves a joint (G; the limb follows) or
-  turns its bone (R; its own axes or the world's). *Hands on a prop*: put a hand on a prop (the other hand's spear)
-  and Lock: the fist is snapped onto the prop's length, turned so the shaft runs through it, the fingers closed (the
-  Hold fist pose), and held there on every frame; with both hands on one prop the whole body turns and leans to it
-  (`src/engine/twohand.ts`: the hips and spine share the turn, the feet kept, the carrying hand put back on the prop,
-  the turn searched for the arms' ease), the carrying hand giving way only if the grip is still out of reach.
+  turns its bone (R; its own axes or the world's). *Props*: click one (a weapon) to select it; moving or turning it
+  keys its path at that frame and makes it lead (the hands on it follow its path, the body follows the hands); its
+  sockets (grips, kept on the garment: `GarmentSocket`) take a hand each (a new one is made where the hand is, its fist
+  snapped on the shaft and closed round it; moving or turning a hand on a socket changes the socket). Each frame the
+  body solves for its hands' goals (`src/engine/posespace.ts`, the library's natural-pose model: 66 numbers a pose,
+  PCA over the 131k frames, soft feet that pivot, slide or step, never under the floor, the hips free; for creatures
+  the rule search in `src/engine/bodysolve.ts`). *Naturalize* runs the model over the whole edited clip (smooth through
+  time, the hands kept on their sockets, the keyed joints pulled to where they were put). `src/engine/twohandpose.ts`
+  finds real two-handed grips in the library (`tools/twohand_poses.ts`: mostly close-handed, golf and baseball).
 - **Clip scripts** (Animate; `src/engine/scripts.ts`): switchable changes on top of the library motion: *Hold fist*,
   *Blow timing* (an attack cut so its blow lands at a share of it, or to a window around the blow), *Pace*.
 - The order, the same in the viewer (`animator.scripted`) and the export: the clip at its speed, then the scripts, then the

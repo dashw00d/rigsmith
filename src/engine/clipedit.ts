@@ -5,9 +5,9 @@
 // library.
 import * as THREE from 'three'
 import type { ClipKey } from '../../server/workspace.ts'
-import { applyBoneKeys, KEY_FPS } from './keys.ts'
+import { applyBoneKeys, KEY_FPS, sampleKeys } from './keys.ts'
 import { keepOffFloor, reach, setWorldQuaternion, type Leg } from './ik.ts'
-import { holdTwoHanded, twoHandBones, type BodyTurn, type TwoHandHold } from './twohand.ts'
+import { bodyBones, solveBody, type BodyState, type HandGoal } from './bodysolve.ts'
 import type { JointLimits } from './limits.ts'
 import { pelvisName, retargetOffsets, type RestSkeleton } from './retarget.ts'
 import type { PoseRig } from './PoseEditor.ts'
@@ -57,18 +57,54 @@ function sunk (legs: Leg[], soles: number[][], floor: number): number[] {
   return legs.map((l, i) => Math.max(0, ...[l.end, l.ball, l.tip].map((b, k) => (b === null || !Number.isFinite(soles[i][k]) ? 0 : floor + soles[i][k] - b.getWorldPosition(v).y))))
 }
 
-/** A hand held on a prop through the clip (src/engine/twohand.ts TwoHandHold): its fist's middle on the prop and the
- * prop's length, in the frame of the bone the prop rides (a prop rides its bone rigidly: held to the bone is held to the
- * prop), the hand's turn there, where its fist is in it, its fingers closed. */
-export interface Hold extends TwoHandHold {
-  /** The prop (a rigid garment's name), for the panel. */
-  prop: string
+/** A grip on a prop (a rigid garment): where a hand's wrist goes and how the hand is turned, in the prop's own frame
+ * (its placed node's). Kept on the garment (server/workspace.ts GarmentSocket): every clip can use it. */
+export interface Socket {
+  id: string
+  name: string
+  position: [number, number, number]
+  rotation: [number, number, number, number]
 }
 
-/** Both hands on one prop: the prop rides the other hand (a spear); the whole body takes part. */
-export function twoHanded (h: Hold): boolean {
-  const side = /^(Left|Right)Hand$/.exec(h.bone)?.[1]
-  return side !== undefined && side !== h.hand
+/** A hand on a socket through the clip (the edit's). */
+export interface Attachment { hand: 'Left' | 'Right', prop: string, socket: string }
+
+/** A prop's path through the clip: locked, it leads (the hands on it follow it, the body follows the hands); its keys are
+ * moves and turns from where it rode in the clip (in the world, about its own origin). */
+export interface PropPath { locked: boolean, keys: ClipKey[] }
+
+/** What the props do in an edit: their paths, the hands on them, their sockets and fingers. */
+export interface PropRig {
+  /** By prop: its node in the posed copy is found by this name (src/state/tune.svelte.ts propNode). */
+  node: (prop: string) => string
+  paths: Record<string, PropPath>
+  attachments: Attachment[]
+  sockets: Record<string, Socket[]>
+  /** The bone each prop rides. */
+  carriers: Record<string, string>
+  fingers: Partial<Record<'Left' | 'Right', Record<string, [number, number, number, number]>>>
+}
+
+/** A matrix from a socket (its wrist place and turn). */
+export function socketMatrix (s: Socket): THREE.Matrix4 {
+  return new THREE.Matrix4().compose(new THREE.Vector3(...s.position), new THREE.Quaternion(...s.rotation), new THREE.Vector3(1, 1, 1))
+}
+
+/** Where a hand on `socket` of a prop placed at `prop` (world) goes: its wrist and turn. */
+export function handOn (prop: THREE.Matrix4, socket: Socket): { at: THREE.Vector3, turn: THREE.Quaternion } {
+  const m = prop.clone().multiply(socketMatrix(socket))
+  const at = new THREE.Vector3(); const turn = new THREE.Quaternion(); const scale = new THREE.Vector3()
+  m.decompose(at, turn, scale)
+  return { at, turn }
+}
+
+/** A prop's world place on its path at phase `u`: where it rode (`base`), then its keys' move and turn. */
+export function onPath (base: THREE.Matrix4, path: PropPath, u: number, loop: boolean): THREE.Matrix4 {
+  if (path.keys.length === 0) return base.clone()
+  const { q, p } = sampleKeys(path.keys, u, loop)
+  const at = new THREE.Vector3(); const turn = new THREE.Quaternion(); const scale = new THREE.Vector3()
+  base.decompose(at, turn, scale)
+  return new THREE.Matrix4().compose(at.add(p), q.multiply(turn), scale)
 }
 
 /**
@@ -104,41 +140,42 @@ export function armOf (hand: 'Left' | 'Right'): { upper: string, lower: string, 
   return { upper: `${hand}Arm`, lower: `${hand}ForeArm`, end: `${hand}Hand` }
 }
 
-/** Put each held hand on its prop, as the body stands now (`prev`: each two-handed hold's last turn, kept near; `quick`:
- * a drag, live). A hand on a prop the other hand carries: the whole body turns to it (src/engine/twohand.ts); on any
- * other prop: its arm reaches it. Returns each hold's turn (for the next frame) and the worst miss. */
-export function applyHolds (bones: Map<string, THREE.Bone>, holds: Hold[], limits: JointLimits | null, legs: Leg[] = [], prev: Array<BodyTurn | null> = [], quick = false): { turns: Array<BodyTurn | null>, miss: number } {
-  const nameOf = (b: THREE.Bone): string => b.name
-  let worst = 0
-  const turns = holds.map((h, i) => {
-    // (a drag, live: the hand just reaches its grip; the body's turn is the bake's, after)
-    if (twoHanded(h) && !quick) {
-      const r = holdTwoHanded(bones, h, { limits, nameOf, legs, quick }, prev[i] ?? null)
-      worst = Math.max(worst, r.miss)
-      return r.turn
+/** The hands' goals on a frame (the body as it stands): each attached hand on its socket of its prop, the prop where its
+ * path has it (locked: `base` gives where it rode before the edit, by prop) or as it rides now; a prop's carrying hand
+ * with no socket keeps it where it is. */
+export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>, props: PropRig, u: number, loop: boolean, base: Map<string, THREE.Matrix4> | null): HandGoal[] {
+  const goals: HandGoal[] = []
+  const used = new Set<string>()
+  for (const [prop, path] of Object.entries(props.paths)) {
+    if (!path.locked) continue
+    const node = root.getObjectByName(props.node(prop))
+    const was = base?.get(prop) ?? node?.matrixWorld
+    if (node === undefined || was === undefined) continue
+    const place = onPath(was, path, u, loop)
+    for (const a of props.attachments.filter(x => x.prop === prop)) {
+      const sock = props.sockets[prop]?.find(x => x.id === a.socket)
+      if (sock === undefined || used.has(a.hand)) continue
+      used.add(a.hand)
+      goals.push({ hand: a.hand, ...handOn(place, sock), fingers: props.fingers[a.hand] })
     }
-    const carrier = bones.get(h.bone); const a = armOf(h.hand)
-    const upper = bones.get(a.upper); const lower = bones.get(a.lower); const end = bones.get(a.end)
-    if (carrier === undefined || upper === undefined || lower === undefined || end === undefined) return null
-    carrier.updateMatrixWorld(true)
-    const turn = carrier.getWorldQuaternion(new THREE.Quaternion()).multiply(new THREE.Quaternion(...h.turn))
-    const fist = new THREE.Vector3(...h.fist).applyMatrix4(carrier.matrixWorld)
-    worst = Math.max(worst, reach({ upper, lower, end }, fist.sub(new THREE.Vector3(...h.fistOffset).applyQuaternion(turn)), { limits: limits ?? undefined, nameOf, keepEnd: false }))
-    setWorldQuaternion(end, turn)
-    for (const [name, q] of Object.entries(h.fingers ?? {})) { const b = bones.get(name); if (b !== undefined) { b.quaternion.set(...q); b.updateMatrixWorld(true) } }
-    return null
-  })
-  return { turns, miss: worst }
-}
-
-/** The bones the hold alone drives (never keyed): the held hand's arm and fingers. */
-export function heldBy (h: Hold): string[] {
-  return [...Object.values(armOf(h.hand)), ...Object.keys(h.fingers ?? {})]
-}
-
-/** The bones a hold moves (their tracks baked). */
-export function holdBones (h: Hold, legs: Leg[] = []): string[] {
-  return twoHanded(h) ? twoHandBones(h, legs) : [...Object.values(armOf(h.hand)), ...Object.keys(h.fingers ?? {})]
+  }
+  for (const a of props.attachments) {
+    if (used.has(a.hand) || props.paths[a.prop]?.locked === true) continue
+    const node = root.getObjectByName(props.node(a.prop))
+    const sock = props.sockets[a.prop]?.find(x => x.id === a.socket)
+    if (node === undefined || sock === undefined) continue
+    node.updateMatrixWorld(true)
+    used.add(a.hand)
+    goals.push({ hand: a.hand, ...handOn(node.matrixWorld, sock), fingers: props.fingers[a.hand] })
+    // (the hand carrying an unlocked prop keeps it where the clip has it)
+    const side = /^(Left|Right)Hand$/.exec(props.carriers[a.prop] ?? '')?.[1] as 'Left' | 'Right' | undefined
+    const carrier = side === undefined ? undefined : bones.get(`${side}Hand`)
+    if (side !== undefined && carrier !== undefined && !used.has(side)) {
+      used.add(side)
+      goals.push({ hand: side, at: carrier.getWorldPosition(new THREE.Vector3()), turn: carrier.getWorldQuaternion(new THREE.Quaternion()) })
+    }
+  }
+  return goals
 }
 
 /**
@@ -147,9 +184,11 @@ export function holdBones (h: Hold, legs: Leg[] = []): string[] {
  * had it reaches its foot back up.
  */
 export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipKey[]>, loop: boolean, rest: (bone: string) => { q: THREE.Quaternion, p: THREE.Vector3 } | null,
-  posable: THREE.Object3D, rig: PoseRig, floor: number, limits: JointLimits | null, holds: Hold[] = []): THREE.AnimationClip {
+  posable: THREE.Object3D, rig: PoseRig, floor: number, limits: JointLimits | null, props: PropRig | null = null, height = 1,
+  solver: { solve: typeof solveBody, bones: typeof bodyBones } = { solve: solveBody, bones: bodyBones }): THREE.AnimationClip {
   const keyed = applyBoneKeys(base, keys, loop, rest)
-  if (Object.keys(keys).length === 0 && holds.length === 0) return keyed
+  const active = props !== null && (props.attachments.length > 0 || Object.values(props.paths).some(p => p.locked))
+  if (Object.keys(keys).length === 0 && !active) return keyed
   const bones = bonesOf(posable)
   const legs = legsOf(bones, rig)
   // (the soles' heights at rest above the floor)
@@ -163,20 +202,33 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
   const pose = (clip: THREE.AnimationClip, t: number): void => {
     mixer.stopAllAction()
     const a = mixer.clipAction(clip)
+    // (once and held at the end: at its very end a looping action wraps round to its first frame)
+    a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true
     a.reset(); a.play()
     mixer.setTime(t)
     posable.updateMatrixWorld(true)
   }
-  const held = holds.flatMap(h => holdBones(h, legs).map(n => bones.get(n)).filter((b): b is THREE.Bone => b !== undefined))
-  let turns: Array<BodyTurn | null> = []
-  const touched = [...new Set([...legs.flatMap(l => [l.upper, l.lower, l.end]), ...held])]
+  const hands = active ? (['Left', 'Right'] as const).filter(h => props!.attachments.some(a => a.hand === h) || Object.entries(props!.paths).some(([p, x]) => x.locked && props!.carriers[p] === `${h}Hand`)) : []
+  const held = solver.bones(hands.map(hand => ({ hand, fingers: props?.fingers[hand] })), legs).map(n => bones.get(n)).filter((b): b is THREE.Bone => b !== undefined)
+  // (also the carrying arms of unlocked props a hand holds: they may be turned to keep the prop)
+  const touched = [...new Set([...legs.flatMap(l => [l.upper, l.lower, l.end]), ...held, ...(active ? ['LeftArm', 'LeftForeArm', 'LeftHand', 'RightArm', 'RightForeArm', 'RightHand'].map(n => bones.get(n)).filter((b): b is THREE.Bone => b !== undefined) : [])])]
   const values = new Map(touched.map(b => [b.name, [] as number[]]))
-  let changed = holds.length > 0
+  // (the body's solve may move the hips: a lunge, a drop)
+  const hipsBone = bones.get(rig.hips)
+  const hipsAt: number[] = []
+  let changed = active
+  let state: BodyState | null = null
+  const nameOf = (b: THREE.Bone): string => b.name
   for (const t of times) {
     pose(base, t)
     const was = sunk(legs, soles, floor)
+    // (where each locked prop rode before the edit)
+    const rode = active ? new Map(Object.keys(props!.paths).filter(p => props!.paths[p].locked).map(p => [p, posable.getObjectByName(props!.node(p))?.matrixWorld.clone()]).filter((x): x is [string, THREE.Matrix4] => x[1] !== undefined)) : null
     pose(keyed, t)
-    if (holds.length > 0) turns = applyHolds(bones, holds, limits, legs, turns).turns
+    if (active) {
+      const goals = handGoals(posable, bones, props!, keyed.duration > 0 ? t / keyed.duration : 0, loop, rode)
+      if (goals.length > 0) state = solver.solve(bones, goals, { limits, nameOf, legs, height, floor, soles } as Parameters<typeof solveBody>[2], state).state
+    }
     const now = sunk(legs, soles, floor)
     // (only what the edit sank: lift the leg by that, from where it stands)
     const lift = legs.map((_, i) => now[i] - was[i])
@@ -188,14 +240,16 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
       })
     }
     for (const b of touched) values.get(b.name)!.push(...b.quaternion.toArray())
+    if (hipsBone !== undefined) hipsAt.push(...hipsBone.position.toArray())
   }
   mixer.stopAllAction()
   mixer.uncacheRoot(posable)
   for (const [b, p, q] of saved) { b.position.copy(p); b.quaternion.copy(q) }
   posable.updateMatrixWorld(true)
   if (!changed) return keyed
-  const tracks = keyed.tracks.filter(t => !touched.some(b => t.name === `${b.name}.quaternion`))
+  const tracks = keyed.tracks.filter(t => !touched.some(b => t.name === `${b.name}.quaternion`) && !(active && hipsBone !== undefined && t.name === `${hipsBone.name}.position`))
   for (const b of touched) tracks.push(new THREE.QuaternionKeyframeTrack(`${b.name}.quaternion`, times, values.get(b.name)!))
+  if (active && hipsBone !== undefined) tracks.push(new THREE.VectorKeyframeTrack(`${hipsBone.name}.position`, times, hipsAt))
   return new THREE.AnimationClip(keyed.name, keyed.duration, tracks)
 }
 

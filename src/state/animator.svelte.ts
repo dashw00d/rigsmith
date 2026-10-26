@@ -149,9 +149,10 @@ class Animator {
   /** The clip playing (as built: speed, scripts, ground, keys). */
   get clip (): THREE.AnimationClip | null { return this.player?.clip ?? null }
   get stage (): Stage | null { return this.stageRef }
-  /** A posable copy of the character (for measuring clips off stage). */
-  posableCopy (): THREE.Object3D | null {
+  /** A posable copy of the character (for measuring clips off stage); `fresh`: copied again (props added since). */
+  posableCopy (fresh = false): THREE.Object3D | null {
     if (this.view === null) return null
+    if (fresh) this.posable = null
     this.posable ??= cloneSkinned(this.view.root)
     return this.posable
   }
