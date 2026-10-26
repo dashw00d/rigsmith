@@ -1,5 +1,5 @@
 {
-  "_doc": "The markers of the Rig step (src/engine/markers.ts): a few points placed on one flat view of the model, from which every joint follows. Per body type: the view (front: the model seen from +Z, its right on the left; side: from +X, its head on the left), and its markers: a joint each ({Side} Left/Right, {s} l/r for a pair), or a point of its own tied to joints (attach). A pair on a front view is placed on both sides; on a side view on the near side (its left) and mirrored. mid: on the body's middle line.",
+  "_doc": "The markers of the Rig step (src/engine/markers.ts): a few points placed on one flat view of the model, from which every joint follows. Per body type: the view (front: the model seen from +Z, its right on the left; side: from +X, its head on the left), and its markers: a joint each ({Side} Left/Right, {s} l/r for a pair), or a point of its own tied to joints (attach). A pair on a front view is placed on both sides; on a side view on the near side (its left) and mirrored. mid: on the body's middle line. view hand: placed on a flat view of each hand (its back, along the fingers), not the body's.",
   "human": {
     "view": "front",
     "markers": [
@@ -9,7 +9,12 @@
       { "id": "wrist", "label": "Wrists", "color": "#e85cc8", "joint": "{Side}Hand", "pair": true },
       { "id": "groin", "label": "Groin", "color": "#ffffff", "attach": ["Hips", "LeftUpLeg", "RightUpLeg"], "mid": true },
       { "id": "knee", "label": "Knees", "color": "#f08a3c", "joint": "{Side}Leg", "pair": true },
-      { "id": "ankle", "label": "Ankles", "color": "#b7e34a", "joint": "{Side}Foot", "pair": true }
+      { "id": "ankle", "label": "Ankles", "color": "#b7e34a", "joint": "{Side}Foot", "pair": true },
+      { "id": "thumb_tip", "label": "Thumb tip", "letter": "T", "color": "#ff7a7a", "joint": "{Side}HandThumb4", "pair": true, "view": "hand" },
+      { "id": "index_tip", "label": "Index tip", "letter": "I", "color": "#f2d14b", "joint": "{Side}HandIndex4", "pair": true, "view": "hand" },
+      { "id": "middle_tip", "label": "Middle tip", "letter": "M", "color": "#5fd36a", "joint": "{Side}HandMiddle4", "pair": true, "view": "hand" },
+      { "id": "ring_tip", "label": "Ring tip", "letter": "R", "color": "#3fd0e0", "joint": "{Side}HandRing4", "pair": true, "view": "hand" },
+      { "id": "pinky_tip", "label": "Pinky tip", "letter": "P", "color": "#a77bff", "joint": "{Side}HandPinky4", "pair": true, "view": "hand" }
     ]
   },
   "horse": {

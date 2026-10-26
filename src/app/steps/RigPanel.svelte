@@ -56,6 +56,8 @@
   // (the legend: one row per marker; a pair once)
   // (a marker is missing when its joint isn't in the skeleton: a person's markers need the detected joints)
   const legend = $derived(markerBoard.set === null ? [] : markerBoard.set.markers.map(def => ({ def, placed: def.joint === undefined || keysOf(markerBoard.set!).some(k => k.def.id === def.id && character.joints?.[jointOf(def, k.side) ?? ''] !== undefined) })))
+  // (finger tips: a person's at a finger level with fingers; the ones its level has)
+  const fingerMarkers = $derived(legend.filter(l => l.def.view === 'hand' && l.placed))
   async function resetMarkers (): Promise<void> {
     markerBoard.open = false
     await app.update(character.id, { markers: null as unknown as undefined })
@@ -140,17 +142,28 @@
     {#if markerBoard.missing}<p class="faint small">{markerBoard.missing}</p>{/if}
     {#if markerBoard.set}
       <div class="legend">
-        {#each legend as { def, placed }}
-          <button class="legend-row" class:active={markerBoard.selected === def.id} onclick={() => { markerBoard.selected = def.id; markerBoard.open = true }}>
+        {#each legend.filter(l => l.def.view !== 'hand') as { def, placed }}
+          <button class="legend-row" class:active={markerBoard.selected === def.id} onclick={() => { markerBoard.selected = def.id; markerBoard.view = 'body'; markerBoard.open = true }}>
             <span class="swatch" style="background: {def.color}">{def.letter ?? ''}</span>{def.label}{#if !placed}<span class="faint"> · no joint</span>{/if}
           </button>
         {/each}
       </div>
       {#if markerBoard.set.view === 'front'}<Toggle label="Mirror left and right" bind:checked={markerBoard.mirror} />{/if}
       <div class="row">
-        <Button variant={markerBoard.open ? 'ghost' : 'primary'} block onclick={() => { markerBoard.open = !markerBoard.open }}>{markerBoard.open ? 'Done with markers' : 'Place markers'}</Button>
+        <Button variant={markerBoard.open && markerBoard.view === 'body' ? 'ghost' : 'primary'} block onclick={() => { const on = !(markerBoard.open && markerBoard.view === 'body'); markerBoard.view = 'body'; markerBoard.open = on }}>{markerBoard.open && markerBoard.view === 'body' ? 'Done with markers' : 'Place markers'}</Button>
         {#if character.markers}<Button size="sm" variant="ghost" onclick={resetMarkers}><RotateCcw size={13} /> Start again</Button>{/if}
       </div>
+      {#if fingerMarkers.length > 0}
+        <span class="group-label">Finger tips, on a view of each hand</span>
+        <div class="legend">
+          {#each fingerMarkers as { def, placed }}
+            <button class="legend-row" class:active={markerBoard.selected === def.id} onclick={() => { markerBoard.selected = def.id; markerBoard.view = markerBoard.view === 'left' ? 'left' : 'right'; markerBoard.open = true }}>
+              <span class="swatch" style="background: {def.color}">{def.letter ?? ''}</span>{def.label}{#if !placed}<span class="faint"> · no joint</span>{/if}
+            </button>
+          {/each}
+        </div>
+        <Button block variant={markerBoard.open && markerBoard.view !== 'body' ? 'ghost' : undefined} onclick={() => { const on = !(markerBoard.open && markerBoard.view !== 'body'); markerBoard.view = 'right'; markerBoard.open = on }}>{markerBoard.open && markerBoard.view !== 'body' ? 'Done with fingers' : 'Place finger markers'}</Button>
+      {/if}
     {/if}
   </Section>
 

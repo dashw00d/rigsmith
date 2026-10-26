@@ -2,7 +2,8 @@
   // The Rig step's marker board: the model drawn flat (front for a person, side for a four-legged body), a few
   // coloured markers on it (static/templates/markers.json), the skeleton they give drawn live as you drag
   // (src/engine/markers.ts). A marker's depth comes from the mesh: the middle of the body where it sits (a pair on
-  // a side view: the near leg, mirrored onto the far one). Letting go saves the markers and the joints.
+  // a side view: the near leg, mirrored onto the far one). Finger tips go on a view of each hand of their own (its
+  // back, along the fingers, cut to the hand). Letting go saves the markers and the joints.
   import { onDestroy, onMount } from 'svelte'
   import * as THREE from 'three'
   import { X } from '@lucide/svelte'
@@ -29,8 +30,13 @@
   let joints = $state<Record<string, V3>>({})
   let dragging: string | null = null
   let frame = $state(0)   // (bumped when the camera changes: the overlay re-projects)
+  const key = new THREE.DirectionalLight(0xffffff, 1.4)
 
   const keys = $derived(keysOf(set))
+  const hasHands = $derived(set.markers.some(d => d.view === 'hand') && keys.some(k => k.def.view === 'hand' && character.joints?.[`${k.side === 'right' ? 'Right' : 'Left'}HandIndex1`] !== undefined))
+  // the markers this view shows: the body's, or one hand's finger tips
+  const shown = $derived(keys.filter(k => markerBoard.view === 'body' ? k.def.view !== 'hand' : k.def.view === 'hand' && k.side === markerBoard.view))
+  const handPrefix = $derived(markerBoard.view === 'right' ? 'Right' : 'Left')
 
   function build (): void {
     const toLocal = new THREE.Matrix4().copy(view.root.matrixWorld).invert()
@@ -47,29 +53,67 @@
     }
     xCenter = 0.5 * (box.min.x + box.max.x)
     scene.add(new THREE.HemisphereLight(0xffffff, 0x3a3d46, 1.6))
-    const key = new THREE.DirectionalLight(0xffffff, 1.4)
-    key.position.set(set.view === 'front' ? 0.6 : 3, 2, set.view === 'front' ? 3 : 0.6)
-    scene.add(key)
+    scene.add(key, key.target)
+  }
+
+  /** A hand's view: from the back of the hand (away from the body), the fingers up, cut to a slab around the hand. */
+  function handView (prefix: string): { center: THREE.Vector3, normal: THREE.Vector3, up: THREE.Vector3, size: number } | null {
+    const J = Object.keys(joints).length > 0 ? joints : character.joints as Record<string, V3> | undefined
+    const at = (n: string): THREE.Vector3 | null => J?.[`${prefix}${n}`] !== undefined ? new THREE.Vector3(...J[`${prefix}${n}`]) : null
+    const wrist = at('Hand'); const tip = at('HandMiddle4') ?? at('HandIndex4')
+    if (wrist === null || tip === null) return null
+    const up = tip.clone().sub(wrist)
+    const length = up.length()
+    up.normalize()
+    const a = at('HandIndex1'); const b = at('HandPinky1') ?? at('HandThumb1')
+    const across = a !== null && b !== null ? a.clone().sub(b) : new THREE.Vector3(1, 0, 0)
+    across.addScaledVector(up, -across.dot(up)).normalize()
+    const normal = new THREE.Vector3().crossVectors(across, up).normalize()
+    // (looking at its back: from out beside the body)
+    const out = wrist.clone().sub(box.getCenter(new THREE.Vector3())); out.y = 0
+    if (normal.dot(out) < 0) normal.negate()
+    return { center: wrist.clone().lerp(tip, 0.5), normal, up, size: length }
   }
 
   function place (): void {
     if (width === 0 || height === 0) return
+    const aspect = width / height
+    const hand = markerBoard.view === 'body' ? null : handView(handPrefix)
+    if (hand !== null) {
+      const half = Math.max(hand.size * 0.68, hand.size * 0.68 / aspect)
+      camera.left = -half * aspect; camera.right = half * aspect; camera.top = half; camera.bottom = -half
+      const d = hand.size * 3
+      camera.position.copy(hand.center).addScaledVector(hand.normal, d)
+      camera.up.copy(hand.up)
+      // (a slab around the hand: the leg beside it neither shows nor takes the rays)
+      camera.near = d - hand.size * 0.4; camera.far = d + hand.size * 0.4
+      camera.lookAt(hand.center)
+      key.position.copy(hand.center).addScaledVector(hand.normal, 2).addScaledVector(hand.up, 1)
+      key.target.position.copy(hand.center)
+    } else {
+      placeBody(aspect)
+    }
+    camera.updateProjectionMatrix()
+    camera.updateMatrixWorld()
+    renderer?.setSize(width, height, false)
+    renderer?.render(scene, camera)
+    frame++
+  }
+
+  function placeBody (aspect: number): void {
     const c = box.getCenter(new THREE.Vector3())
     const size = box.getSize(new THREE.Vector3())
     const across = set.view === 'front' ? size.x : size.z
-    const aspect = width / height
     const half = Math.max(size.y / 2, across / 2 / aspect) * 1.12
     camera.left = -half * aspect; camera.right = half * aspect; camera.top = half; camera.bottom = -half
     const far = size.length() * 2 + 1
     if (set.view === 'front') camera.position.set(c.x, c.y, box.max.z + far)
     else camera.position.set(box.max.x + far, c.y, c.z)
     camera.near = 0.001; camera.far = far * 3
+    camera.up.set(0, 1, 0)
     camera.lookAt(c.x, c.y, c.z)
-    camera.updateProjectionMatrix()
-    camera.updateMatrixWorld()
-    renderer?.setSize(width, height, false)
-    renderer?.render(scene, camera)
-    frame++
+    key.position.set(c.x + (set.view === 'front' ? 0.6 : 3), c.y + 2, c.z + (set.view === 'front' ? 3 : 0.6))
+    key.target.position.copy(c)
   }
 
   const toScreen = (p: V3): { x: number, y: number } => {
@@ -82,12 +126,18 @@
   function toBody (x: number, y: number, def: MarkerDef, keep: V3 | undefined): V3 {
     const ndc = new THREE.Vector2(x / width * 2 - 1, 1 - y / height * 2)
     ray.setFromCamera(ndc, camera)
+    ray.near = 0; ray.far = camera.far - camera.near
     const hits = ray.intersectObjects(meshes, false).map(h => h.distance)
+    ray.far = Infinity
     const along = insideDepth(hits)
     const origin = ray.ray.origin; const dir = ray.ray.direction
     const on = along !== null ? origin.clone().addScaledVector(dir, along) : null
     let p: V3
-    if (set.view === 'front') {
+    if (markerBoard.view !== 'body') {
+      // a finger tip: in the middle of the finger under it, else as deep as it was
+      const q = on ?? origin.clone().addScaledVector(dir, keep !== undefined ? new THREE.Vector3(...keep).sub(origin).dot(dir) : (camera.far - camera.near) / 2)
+      p = [q.x, q.y, q.z]
+    } else if (set.view === 'front') {
       const flat = origin.clone()
       p = [flat.x, flat.y, on?.z ?? keep?.[2] ?? 0]
       if (def.mid) p[0] = xCenter
@@ -166,9 +216,11 @@
     await app.update(character.id, { markers: $state.snapshot(markers), joints: $state.snapshot(joints), jointsEdited: true })
   }
 
-  // the skeleton as lines: each bone from its parent
+  // the skeleton as lines: each bone from its parent (on a hand's view, that hand's alone)
   // (not a creature's root: it sits on the ground under the body, holding it, not a bone of it)
-  const bones = $derived(Object.entries(parents).flatMap(([c, p]) => p !== null && p !== 'root' && joints[c] !== undefined && joints[p] !== undefined ? [[joints[p], joints[c]] as [V3, V3]] : []))
+  const inView = (name: string): boolean => markerBoard.view === 'body' || name.startsWith(`${handPrefix}Hand`)
+  const bones = $derived(Object.entries(parents).flatMap(([c, p]) => p !== null && p !== 'root' && inView(c) && joints[c] !== undefined && joints[p] !== undefined ? [[joints[p], joints[c]] as [V3, V3]] : []))
+  $effect(() => { void markerBoard.view; place() })
   const near = (p: V3): boolean => set.view === 'front' || p[0] >= xCenter - 1e-4
 </script>
 
@@ -179,12 +231,12 @@
       {@const pa = toScreen(a)}{@const pb = toScreen(b)}
       <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} class:far={!near(a) || !near(b)} />
     {/each}
-    {#each Object.entries(joints).filter(([k]) => k !== 'root').map(([, j]) => j) as j}
+    {#each Object.entries(joints).filter(([k]) => k !== 'root' && inView(k)).map(([, j]) => j) as j}
       {@const p = toScreen(j)}
       <circle cx={p.x} cy={p.y} r="2.5" class="joint" class:far={!near(j)} />
     {/each}
     {#if markers !== null}
-      {#each keys as k (k.key)}
+      {#each shown as k (k.key)}
         {@const at = markers.positions[k.key]}
         {#if at !== undefined}
           {@const p = toScreen(at)}
@@ -199,7 +251,14 @@
       {/each}
     {/if}
   </svg>
-  <div class="hint">Drag each marker onto its joint{set.view === 'side' ? ' (the near legs: the far ones follow)' : ''}. The skeleton follows; letting go saves it.</div>
+  {#if hasHands}
+    <div class="tabs">
+      {#each [['body', 'Body'], ['right', 'Right hand (A)'], ['left', 'Left hand (B)']] as [v, label]}
+        <button class:on={markerBoard.view === v} onclick={() => { markerBoard.view = v as 'body' | 'right' | 'left' }}>{label}</button>
+      {/each}
+    </div>
+  {/if}
+  <div class="hint">{markerBoard.view === 'body' ? `Drag each marker onto its joint${set.view === 'side' ? ' (the near legs: the far ones follow)' : ''}.` : `Drag each letter onto the very end of its finger${markerBoard.mirror ? ' (the other hand follows, mirrored)' : ''}.`} The skeleton follows; letting go saves it.</div>
   <button class="close" onclick={() => { markerBoard.open = false }} aria-label="Close markers"><X size={16} /></button>
 </div>
 
@@ -216,5 +275,8 @@
   .marker.on .halo { stroke-width: 3.5; }
   .marker text { font-size: 11px; font-weight: 700; text-anchor: middle; fill: #111; pointer-events: none; }
   .hint { position: absolute; left: 14px; bottom: 12px; font-size: 12px; color: var(--text-3); pointer-events: none; }
+  .tabs { position: absolute; top: 10px; left: 10px; display: flex; gap: 4px; }
+  .tabs button { height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--bg-2); color: var(--text-2); font-size: 12px; }
+  .tabs button.on { border-color: var(--accent); color: var(--accent-strong); }
   .close { position: absolute; top: 10px; right: 10px; width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--bg-2); color: var(--text-2); display: grid; place-items: center; }
 </style>

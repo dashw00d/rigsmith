@@ -22,6 +22,8 @@ export interface MarkerDef {
   attach?: string[]
   /** On the body's middle line. */
   mid?: boolean
+  /** Placed on a flat view of each hand (finger tips), not the body's. */
+  view?: 'hand'
 }
 export interface MarkerSet { view: 'front' | 'side', markers: MarkerDef[] }
 

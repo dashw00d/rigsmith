@@ -88,6 +88,11 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   (the same names), fitted to his: loops by whole cycles (its gait leads), its Attack to his. The mount also picks the
   horse's skin and which of its garments it wears (one horse, its clips tuned once, dressed per rider). In the game spec
   the horse is the unit's `companion` with `ridden: true`; a unit still being made is a `draft` (built only when named).
+- **Markers** (Rig, "Adjust joints and re-rig" on a rigged one; `src/engine/markers.ts`, `static/templates/markers.json`):
+  a dozen points on one flat view (a person from the front, a horse from the side), seeded where the joints are; drag
+  the wrong ones and every joint follows live (as rigidly as it can, keeping the skeleton's shape), saved on letting
+  go. A person's finger tips go on a view of each hand ("Place finger markers": from the back of the hand, along the
+  fingers, cut to the hand; the other hand mirrored).
 - A creature's hips under a root bone (the horse template's `root` is tilted) take their track in that bone's frame
   (`retarget.ts`; until 2026-10-26 written in world space, which crouched the caravan pony's walk).
 

@@ -9,6 +9,8 @@ class MarkerBoardState {
   open = $state(false)
   selected = $state<string | null>(null)
   mirror = $state(true)
+  /** What the board shows: the body, or one hand (finger tips). */
+  view = $state<'body' | 'right' | 'left'>('body')
   /** The set and skeleton loaded for `forId`, or why there are none. */
   forId = $state<string | null>(null)
   setName = $state<string | null>(null)
