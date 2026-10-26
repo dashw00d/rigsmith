@@ -94,6 +94,10 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   the wrong ones and every joint follows live (as rigidly as it can, keeping the skeleton's shape), saved on letting
   go. A person's finger tips go on a view of each hand ("Place finger markers": from the back of the hand, along the
   fingers, cut to the hand; the other hand mirrored).
+- **The scale room** (Export, "Scale it with the game"; `src/app/export/ScaleRoom.svelte`): the character at the
+  height it plays at among the game's own models as the game draws them (its units at `units.visual_scale`, each
+  measured by its body; buildings and props as modelled; `/api/game/models`, read only): the player units beside it,
+  any building or prop behind. Set the height by eye; Save changes Rigsmith's unit (the game gets it on Export).
 - **Fix weights** (Rig; `src/engine/weightpaint.ts`, `src/state/paint.svelte.ts`, `server/weights.ts`): pause a test
   clip on the frame that shows the problem and paint on the body as it stands. *Heal*: mark the problem skin, Heal
   refills its weights smoothly from the good skin round it (skin pulled by a wrong bone goes with what surrounds it);

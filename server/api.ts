@@ -287,6 +287,24 @@ route('DELETE', /^\/api\/characters\/([a-z0-9-]+)\/weights$/, async (req, res, [
   send(res, 200, { ok: true })
 })
 
+// The game's models, read only (the scale room sets a unit against them): what there is, and each file.
+route('GET', /^\/api\/game\/models$/, async (req, res) => {
+  const repo = (await getSettings()).gameRepo
+  const kinds: Record<string, string[]> = {}
+  for (const kind of ['units', 'buildings', 'props']) {
+    try { kinds[kind] = (await readdir(path.join(repo, 'assets', 'models', kind))).filter(f => f.endsWith('.glb')).map(f => f.slice(0, -4)).sort() } catch { kinds[kind] = [] }
+  }
+  let visualScale = 1
+  try { visualScale = (JSON.parse(await readFile(path.join(repo, 'data', 'visual.json'), 'utf8')) as { units?: { visual_scale?: number } }).units?.visual_scale ?? 1 } catch { /* (no game data: as modelled) */ }
+  send(res, 200, { ...kinds, visualScale })
+})
+route('GET', /^\/api\/game\/models\/(units|buildings|props)\/([\w-]+)\.glb$/, async (req, res, [kind, name]) => {
+  const file = path.join((await getSettings()).gameRepo, 'assets', 'models', kind, `${name}.glb`)
+  if (!existsSync(file)) throw new HttpError(404, 'No such model')
+  res.writeHead(200, { 'content-type': 'model/gltf-binary', 'cache-control': 'no-store' })
+  createReadStream(file).pipe(res)
+})
+
 // Rigsmith's game units: each with the game's own entry and whether they differ (what Export would write).
 route('GET', /^\/api\/game$/, async (req, res) => { send(res, 200, await gameStatus()) })
 // One unit's entry (null takes it off), journaled on its character (and its companion's).

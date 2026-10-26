@@ -15,6 +15,8 @@
   import MaskPainter from './texture/MaskPainter.svelte'
   import MarkerBoard from './rig/MarkerBoard.svelte'
   import { markerBoard } from '../state/markers.svelte.ts'
+  import ScaleRoom from './export/ScaleRoom.svelte'
+  import { scaleRoom } from '../state/scaleroom.svelte.ts'
 
   let container: HTMLDivElement
 
@@ -81,6 +83,11 @@
 
   {#if app.step === 'animate' || app.step === 'export' || app.step === 'outfit' || (app.step === 'rig' && animator.current?.test === true)}<Timeline />{/if}
   {#if painter.active && app.step === 'texture'}<MaskPainter />{/if}
+  {#if scaleRoom.open && app.selected && viewer.character && scaleRoom.unit && scaleRoom.entry}
+    {#key `${app.selected.id}|${scaleRoom.unit}|${scaleRoom.companion}`}
+      <ScaleRoom view={viewer.character} unit={scaleRoom.unit} entry={scaleRoom.entry} companion={scaleRoom.companion} />
+    {/key}
+  {/if}
   {#if markerBoard.open && app.step === 'rig' && app.selected && viewer.character && markerBoard.set && markerBoard.parents && markerBoard.setName}
     {#key `${app.selected.id}|${markerBoard.setName}`}
       <MarkerBoard character={app.selected} view={viewer.character} set={markerBoard.set} setName={markerBoard.setName} parents={markerBoard.parents} />

@@ -1,7 +1,8 @@
 <script lang="ts">
   // In the game: the unit this character is (Rigsmith's own list, server/game.ts), edited here and saved at once, and
   // Export, the one way Rigsmith writes into the game's repo (the unit's entry in its units.json, then its build).
-  import { CircleCheck, Gamepad2, Plus, Send, X } from '@lucide/svelte'
+  import { CircleCheck, Gamepad2, Plus, Ruler, Send, X } from '@lucide/svelte'
+  import { scaleRoom } from '../../state/scaleroom.svelte.ts'
   import { api, type Character, type GameStatus, type UnitSpec } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import Button from '../../ui/Button.svelte'
@@ -87,6 +88,7 @@
             </div>
           {/if}
         {/if}
+        <Button block variant="ghost" onclick={() => scaleRoom.show(name, ours, !asUnit)}><Ruler size={14} /> Scale it with the game</Button>
         <Button variant="primary" block loading={job !== null} onclick={() => exportUnit(name)}>
           {#if job === null}<Send size={14} />{/if} {job !== null ? (job.message || 'Exporting') : `Export ${name} to the game`}
         </Button>
