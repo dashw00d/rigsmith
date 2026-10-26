@@ -371,8 +371,12 @@ class Animator {
     void this.refresh()
   }
 
+  /** While the animation editor is open: what plays is its clip, built again on a refresh (not the clip it edits). */
+  editing: (() => void) | null = null
+
   async refresh (keepTime = false): Promise<void> {
     if (this.current === null) return
+    if (this.editing !== null) { this.editing(); return }
     if (this.current.clipId === 'fists') { await this.playFists(); return }
     await this.play(this.current, { keepTime })
   }

@@ -276,6 +276,19 @@ export class PoseEditor {
     return hits[0].object.name
   }
 
+  /** Is the pointer on one of the gizmo's handles (an arrow, a plane, a ring)? */
+  private overGizmo (e: PointerEvent): boolean {
+    const gz = this.gizmo as unknown as { object?: THREE.Object3D, dragging: boolean, mode: string, _gizmo?: { picker?: Record<string, THREE.Object3D> } }
+    if (gz.dragging) return true
+    if (gz.object === undefined) return false
+    const picker = gz._gizmo?.picker?.[gz.mode]
+    if (picker === undefined) return false
+    const r = this.stage.renderer.domElement.getBoundingClientRect()
+    this.ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), this.stage.camera)
+    this.gizmo.getHelper().updateMatrixWorld(true)
+    return this.ray.intersectObject(picker, true).some(h => h.object.visible)
+  }
+
   /** The prop under the pointer (the ray set by pick), or none. */
   private pickProp (): string | null {
     let best: { name: string, d: number } | null = null
@@ -287,9 +300,8 @@ export class PoseEditor {
   }
 
   private onDown (e: PointerEvent): void {
-    // (the gizmo's rings first: a joint under them is turned, not dragged)
-    const gizmo = this.gizmo as unknown as { dragging: boolean, axis: string | null }
-    if (e.button !== 0 || gizmo.dragging || (this.selected !== null && gizmo.axis !== null)) return
+    // (the gizmo's handles first: what is under them is moved or turned by the gizmo, not picked)
+    if (e.button !== 0 || this.overGizmo(e)) return
     const name = this.pick(e)
     if (name === null) {
       // (no joint there: a prop?)

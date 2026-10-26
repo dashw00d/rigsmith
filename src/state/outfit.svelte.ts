@@ -80,7 +80,8 @@ class Outfit {
       this.objects = objects
     }
     const fitting = showGizmo ? this.fitting : null
-    const garmentKey = JSON.stringify([this.garments, fitting])
+    // (a garment's sockets aren't seen: changing them attaches nothing again)
+    const garmentKey = JSON.stringify([this.garments.map(g => ({ ...g, sockets: undefined })), fitting])
     if (garmentKey !== this.appliedGarments) {
       this.appliedGarments = garmentKey
       const token = ++this.garmentToken

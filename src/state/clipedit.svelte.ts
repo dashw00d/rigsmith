@@ -151,6 +151,8 @@ class ClipEdit {
       animator.setPlaying(false)
       this.makeEditor(this.limitsOn)
       this.active = true
+      // (a refresh while editing builds the edit again: its props re-attached, say)
+      animator.editing = () => { this.show(animator.time) }
       this.show(animator.time)
     } finally {
       this.busy = null
@@ -163,6 +165,7 @@ class ClipEdit {
     this.editor = null
     this.active = false
     animator.holding = false
+    animator.editing = null
   }
 
   setLimits (on: boolean): void {
