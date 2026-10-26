@@ -18,7 +18,7 @@
 import * as THREE from 'three'
 import type { ClipKey } from '../../server/workspace.ts'
 import { applyBoneKeys, sampleKeys } from './keys.ts'
-import { frameTimes, handGoals, legsOf, onPath, type PropRig, type Socket } from './clipedit.ts'
+import { frameTimes, GRIP_CLEAR, handGoals, legsOf, onPath, propObstacles, type PropRig, type Socket } from './clipedit.ts'
 import type { bodyBones, solveBody } from './bodysolve.ts'
 import type { JointLimits } from './limits.ts'
 import type { PoseRig } from './PoseEditor.ts'
@@ -173,6 +173,21 @@ export class FitLab {
     this.input.posable.updateMatrixWorld(true)
   }
 
+  /** The prop's shaft at `place` as the obstacles the body keeps clear of (but where `rig`'s hands hold it). */
+  obstaclesAt (rig: PropRig, place: THREE.Matrix4): ReturnType<typeof propObstacles> {
+    const { prop, height } = this.input
+    return propObstacles({ ...rig, paths: { [prop]: { locked: true, keys: [] } } }, p => (p === prop ? place : null), GRIP_CLEAR * height)
+  }
+
+  /** How deep (cm) the prop is in the body on frame `i` as the edit has it before any solve (the prop where its path has it). */
+  rawDepth (i: number): number {
+    const collider = this.input.collider ?? NO_COLLIDER
+    this.restore(i)
+    let worst = 0
+    for (const o of this.obstaclesAt(this.input.props, this.places[i])) worst = Math.max(worst, collider.penetration(o.from, o.to, o.radius, o.ignore) * 100)
+    return worst
+  }
+
   /** The prop's place on frame `i` as its path has it now (the fit's offset not yet on it). */
   placeAt (i: number): THREE.Matrix4 { return this.places[i] }
 
@@ -186,7 +201,10 @@ export class FitLab {
     const rig: PropRig = { ...props, paths: { ...props.paths, [prop]: { locked: true, keys: [{ u: 0, q: [0, 0, 0, 1], p: offset.toArray() as [number, number, number] }] } }, sockets: opts.sockets === undefined ? props.sockets : { ...props.sockets, [prop]: opts.sockets } }
     const goals = handGoals(posable, this.bones, rig, u, loop, rode)
     const nameOf = (b: THREE.Bone): string => b.name
-    const res = goals.length === 0 ? null : solver.solve(this.bones, goals, { limits, nameOf, legs: this.legs, height, floor: this.input.floor ?? 0, soles: this.soles, quick: opts.quick !== false } as Parameters<typeof solveBody>[2], null)
+    // (the prop where this offset puts it is solid, as in the edit's own solve: the body keeps clear of it but where the hands hold it)
+    const place = this.places[i].clone().premultiply(new THREE.Matrix4().makeTranslation(offset.x, offset.y, offset.z))
+    const obstacles = this.obstaclesAt(rig, place)
+    const res = goals.length === 0 ? null : solver.solve(this.bones, goals, { limits, nameOf, legs: this.legs, height, floor: this.input.floor ?? 0, soles: this.soles, quick: opts.quick !== false, obstacles } as Parameters<typeof solveBody>[2], null)
     posable.updateMatrixWorld(true)
     const obj = (res?.state as NaturalBodyState | undefined)?.objective?.end.total ?? null
     const wp = (n: string): THREE.Vector3 => this.bones.get(n)!.getWorldPosition(new THREE.Vector3())
@@ -203,13 +221,9 @@ export class FitLab {
     if (limits !== null) for (const n of BODY) { const b = this.bones.get(n); if (b !== undefined && n !== this.input.rig.hips && limits.has(n) && !limits.within(n, b.quaternion)) out++ }
     const collider = this.input.collider ?? NO_COLLIDER
     const self = collider.selfPenetration().worst * 100
+    // (the prop through the body: its shaft but where the hands hold it)
     let prp = 0
-    const shaft = this.input.shaft
-    if (shaft !== null && shaft !== undefined) {
-      const place = this.places[i].clone().premultiply(new THREE.Matrix4().makeTranslation(offset.x, offset.y, offset.z))
-      const hands = goals.flatMap(g => [`${g.hand}Hand`, ...fingersOf(g.hand)])
-      prp = collider.penetration(shaft.from.clone().applyMatrix4(place), shaft.to.clone().applyMatrix4(place), shaft.radius ?? 0.02, hands) * 100
-    }
+    for (const o of obstacles) prp = Math.max(prp, collider.penetration(o.from, o.to, o.radius, [...(o.ignore ?? []), ...goals.flatMap(g => fingersOf(g.hand))]) * 100)
     const miss = (res?.miss ?? 0) * 100
     const slack = Math.max(0, prp - FIT.propSlack)
     const over = Math.max(0, miss - FIT.missFree)
@@ -240,10 +254,13 @@ export async function fitProp (input: FitInput, progress: (label: string) => voi
   const n = lab.n
   const duration = input.base.duration
   const cm = input.height * 0.01
-  // (the frames searched: every FIT.every-th and the last; a solve is tens of milliseconds, the rest follow the keys' curve)
-  const at: number[] = []
-  for (let i = 0; i < n; i += FIT.every) at.push(i)
-  if (at[at.length - 1] !== n - 1) at.push(n - 1)
+  // (the frames searched: every FIT.every-th and the last; and every frame where the prop starts out in the body, with its
+  // neighbours, so a strike between the every-th frames is seen; a solve is tens of milliseconds, the rest follow the keys' curve)
+  const picked = new Set<number>()
+  for (let i = 0; i < n; i += FIT.every) picked.add(i)
+  picked.add(n - 1)
+  for (let i = 0; i < n; i++) if (lab.rawDepth(i) > FIT.propSlack) for (const j of [i - 1, i, i + 1]) if (j >= 0 && j < n) picked.add(j)
+  const at = [...picked].sort((a, b) => a - b)
   const O = at.map(() => new THREE.Vector3())
   progress('Fitting the prop: the clip as it stands')
   const S: Sample[] = []
@@ -251,10 +268,24 @@ export async function fitProp (input: FitInput, progress: (label: string) => voi
   const before = S.reduce((a, x) => a + x.cost, 0)
   const reachMax = input.height * FIT.maxMove
   // (a frame's whole score with the prop at `o`: its own, how far it moved and how unevenly against the neighbouring keys)
+  // (the body's jerk on a searched frame against its searched neighbours' bodies: the second difference per frame squared,
+  // the frames apart however far they are, the mean over the joints)
+  const jerkOf = (k: number, pos: Float64Array): number => {
+    const a = S[k - 1]; const b = S[k + 1]
+    if (a === undefined || b === undefined) return 0
+    const h0 = at[k] - at[k - 1]; const h1 = at[k + 1] - at[k]
+    let sum = 0; let joints = 0
+    for (let j = 0; j < pos.length; j += 3) {
+      if (pos[j] === 0 && pos[j + 1] === 0 && pos[j + 2] === 0) continue
+      for (let d = 0; d < 3; d++) { const acc = 2 * ((b.pos[j + d] - pos[j + d]) / h1 - (pos[j + d] - a.pos[j + d]) / h0) / (h0 + h1); sum += acc * acc }
+      joints++
+    }
+    return joints === 0 ? 0 : sum / joints
+  }
   const scoreOf = (k: number, o: THREE.Vector3, sample: Sample): number => {
     const mid = O[k - 1] !== undefined && O[k + 1] !== undefined ? O[k - 1].clone().add(O[k + 1]).multiplyScalar(0.5) : (O[k - 1] ?? O[k + 1])
     const uneven = mid === undefined ? 0 : o.distanceTo(mid) / cm
-    return sample.cost + FIT.prox * (o.length() / input.height * 100) ** 2 + FIT.smooth * uneven * uneven
+    return sample.cost + FIT.prox * (o.length() / input.height * 100) ** 2 + FIT.smooth * uneven * uneven + FIT.jerk * jerkOf(k, sample.pos)
   }
   const axes = [lab.away, lab.side, lab.up]
   for (let k = 0; k < at.length; k++) {

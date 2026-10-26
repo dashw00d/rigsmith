@@ -305,7 +305,13 @@ export interface NaturalOptions {
   smooth?: { ref: Float64Array, weight: number }
   /** The body's solids (buildBodyCollider): parts of the body may not end up inside one another (default: none). A live drag looks at the arms' pairs only. */
   collide?: BodyCollider
+  /** Things the body must stay clear of (with `collide`, whose segments they are tested against): a spear's shaft held in the hands. */
+  obstacles?: Obstacle[]
 }
+
+/** A thing the body must stay clear of: a capsule in the world (a stretch of a spear's shaft), the segments named in
+ * `ignore` (by the bone each rides: the hands holding it) let through. */
+export interface Obstacle { from: THREE.Vector3, to: THREE.Vector3, radius: number, ignore?: string[] }
 
 /** A pose: its numbers, the hips' heading and position. */
 export interface NaturalPose { p: Float64Array, yaw: number, hips: THREE.Vector3 }
@@ -338,6 +344,8 @@ export interface NaturalResult {
   objective?: { start: ObjectiveTerms, end: ObjectiveTerms }
   /** The deepest any two body parts are into each other past what they may overlap, as the bones stand now (metres; 0: none; only with `collide`), and the pair. */
   penetration?: { worst: number, pair: [string, string] | null }
+  /** The deepest the body is into an obstacle (metres; with `obstacles`), and the segment. */
+  obstacle?: { worst: number, segment: string | null }
 }
 
 /** The solver's score of a pose, term by term (each a sum of squares). */
@@ -448,6 +456,8 @@ export function elbowAllowed (below: number): number {
  * hand goal that is hard enough (a socket) meets its place, and the rest of the body gives way.
  */
 export const COLLIDE = { weight: 2, steep: 6 }
+/** An obstacle (a held spear's shaft) may be touched this far into a segment (metres of a Y Bot) before it costs as COLLIDE does. */
+export const OBSTACLE = { slack: 0.005 }
 /** A turn that yields round its roll axis: per 5 degrees (boosted goals do not harden it). */
 export const ROLL = { weight: 0.6 }
 /**
@@ -980,10 +990,20 @@ export class NaturalRig {
     const solid = this.solids(opts.collide)
     const cpairs = solid === null ? null : solid.pairs
     const nC = solid === null || cpairs === null ? 0 : quick ? solid.quick : cpairs.length / 2
+    // (things the body must stay clear of: each a capsule, against every segment it doesn't let through)
+    const obst: Array<{ p: Float64Array, q: Float64Array, r: number, seg: number }> = []
+    if (solid !== null) {
+      for (const o of opts.obstacles ?? []) {
+        const skip = new Set(o.ignore ?? [])
+        solid.shape.segments.forEach((sg, i) => { if (!skip.has(sg.name)) obst.push({ p: Float64Array.from(o.from.toArray()), q: Float64Array.from(o.to.toArray()), r: o.radius, seg: i }) })
+      }
+    }
+    const nO = obst.length
+    const obstacleSlack = OBSTACLE.slack * this.scale
     // (a pair that is nowhere near overlapping has no cost and no slope: the Jacobian's many small steps look only at the pairs that do, `active`)
-    const overlap = new Float64Array(nC); const active = new Uint8Array(nC)
+    const overlap = new Float64Array(nC + nO); const active = new Uint8Array(nC + nO)
     let collideAll = true; let anyActive = true
-    const nRows = rows.length * 9 + 6 + nC + DIM
+    const nRows = rows.length * 9 + 6 + nC + nO + DIM
     const f = new Float64Array(nRows); const f2 = new Float64Array(nRows)
     const J = new Float64Array(nRows * n)
     const p = new Float64Array(DIM); const pj = new Float64Array(DIM)
@@ -1088,11 +1108,18 @@ export class NaturalRig {
         out[r++] = 0
       } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
       // (body parts inside one another: the overlap past the slack)
-      if (solid !== null && cpairs !== null) {
+      if (solid !== null && (nC > 0 || nO > 0)) {
         if (collideAll || anyActive) solid.update(P, Q)
         for (let k = 0; k < nC; k++) {
           let u = 0
-          if (collideAll) { overlap[k] = solid.depth(cpairs[k * 2], cpairs[k * 2 + 1]) - solid.slack[k]; u = Math.max(0, overlap[k]) / unit } else if (active[k] === 1) u = Math.max(0, solid.depth(cpairs[k * 2], cpairs[k * 2 + 1]) - solid.slack[k]) / unit
+          if (collideAll) { overlap[k] = solid.depth(cpairs![k * 2], cpairs![k * 2 + 1]) - solid.slack[k]; u = Math.max(0, overlap[k]) / unit } else if (active[k] === 1) u = Math.max(0, solid.depth(cpairs![k * 2], cpairs![k * 2 + 1]) - solid.slack[k]) / unit
+          out[r++] = COLLIDE.weight * u * (1 + u / COLLIDE.steep)
+        }
+        // (the obstacles: a segment into one past the slack)
+        for (let k = 0; k < nO; k++) {
+          const o = obst[k]; const kk = nC + k
+          let u = 0
+          if (collideAll) { overlap[kk] = solid.depthOf(o.seg, o.p, o.q, o.r) - obstacleSlack; u = Math.max(0, overlap[kk]) / unit } else if (active[kk] === 1) u = Math.max(0, solid.depthOf(o.seg, o.p, o.q, o.r) - obstacleSlack) / unit
           out[r++] = COLLIDE.weight * u * (1 + u / COLLIDE.steep)
         }
       }
@@ -1180,7 +1207,7 @@ export class NaturalRig {
         if (j < DIM) near += v; else springs += v
       }
       const e = PRIOR.natural * lessNatural(zz)
-      const t = { hands, feet, balance: sq(G, G + 3), elbows: sq(G + 3, G + 6), collide: sq(G + 6, G + 6 + nC), limits: sq(G + 6 + nC, rr), near, springs, natural: e * e, total: 0 }
+      const t = { hands, feet, balance: sq(G, G + 3), elbows: sq(G + 3, G + 6), collide: sq(G + 6, G + 6 + nC + nO), limits: sq(G + 6 + nC + nO, rr), near, springs, natural: e * e, total: 0 }
       t.total = hands + feet + t.balance + t.elbows + t.collide + t.limits + near + springs + t.natural
       return t
     }
@@ -1206,11 +1233,11 @@ export class NaturalRig {
         iterations++
         // the Jacobian (forward differences)
         const h = 1e-4
-        if (nC > 0) {
+        if (nC + nO > 0) {
           collideAll = true
           evalRows(p, z, f2)
           anyActive = false
-          for (let k = 0; k < nC; k++) { active[k] = overlap[k] > -1e-3 * this.scale ? 1 : 0; if (active[k] === 1) anyActive = true }
+          for (let k = 0; k < nC + nO; k++) { active[k] = overlap[k] > -1e-3 * this.scale ? 1 : 0; if (active[k] === 1) anyActive = true }
           collideAll = false
         }
         for (let j = 0; j < n; j++) {
@@ -1324,6 +1351,12 @@ export class NaturalRig {
     const res = this.measure(rows, startCost, start, performance.now() - t0, iterations, feetNames)
     res.objective = { start: startTerms, end: endTerms }
     if (solid !== null) res.penetration = this.worstPenetration(solid)
+    if (solid !== null && nO > 0) {
+      // (solid's frames are the final pose's: worstPenetration updated them)
+      let worst = 0; let segment: string | null = null
+      for (const o of obst) { const d = solid.depthOf(o.seg, o.p, o.q, o.r); if (d > worst) { worst = d; segment = solid.shape.segments[o.seg].name } }
+      res.obstacle = { worst, segment }
+    }
     return res
   }
 
@@ -1536,6 +1569,8 @@ export interface NaturalSolveOptions extends SolveOptions {
   planted?: boolean, floor?: number, soles?: number[][]
   /** The hands carrying a prop (it rides the hand: its turn is the prop's, held exactly; the other hands' turns give). A goal marked `carrier: true` counts too, and so does a hand with a non-bone object (a garment) on it. */
   carrying?: Array<'Left' | 'Right'>
+  /** Things the body must stay clear of on this frame (a leading prop's shaft, but where the hands hold it): with the solver's `collide`. */
+  obstacles?: Obstacle[]
 }
 export type BodySolver = (bones: Map<string, THREE.Bone>, goals: HandGoal[], opts: NaturalSolveOptions, prev: BodyState | null) => { state: BodyState, miss: number }
 export interface BodySolverOptions {
@@ -1631,7 +1666,7 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
       const turn = options.roll === false || carries ? {} : options.give === false ? (grip === null ? {} : { roll: { axis: grip } }) : { give: grip === null ? {} : { axis: grip } }
       return { bone: `${g.hand}Hand`, position: g.at, turn: g.turn, exact: true, ...turn }
     }), {
-      feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, warm, collide: options.collide ?? undefined,
+      feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, warm, collide: options.collide ?? undefined, obstacles: opts.obstacles,
     })
     // (the fingers as asked; the miss as it stands)
     let miss = 0
@@ -1692,6 +1727,8 @@ export interface NaturalizeOptions {
   mode?: 'quick' | 'full'
   /** The body's solids (buildBodyCollider): body parts may not end up inside one another in any frame. */
   collide?: BodyCollider
+  /** What the body must stay clear of on frame `i` (with `collide`), called with the rig posed in the edited frame: a held spear's shaft. */
+  obstacles?: (i: number) => Obstacle[]
   /** A pull of every frame toward the model's mean pose (NaturalOptions.pull; default 0: only what the goals need moves), and on the part outside the model's subspace only (pullOutside: the joint combinations people don't make). */
   pull?: number
   pullOutside?: number
@@ -1765,7 +1802,7 @@ export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): Natura
         }
         smooth = { ref, weight }
       }
-      const res = rig.solve(o.goals(i), { keep: o.keep, feet: o.feet, planted: o.planted, floor: o.floor, hipsMove: o.hipsMove ?? true, mode: o.mode ?? 'full', pull: o.pull, pullOutside: o.pullOutside, warm: deltas[i] ?? undefined, smooth, collide: o.collide })
+      const res = rig.solve(o.goals(i), { keep: o.keep, feet: o.feet, planted: o.planted, floor: o.floor, hipsMove: o.hipsMove ?? true, mode: o.mode ?? 'full', pull: o.pull, pullOutside: o.pullOutside, warm: deltas[i] ?? undefined, smooth, collide: o.collide, obstacles: o.obstacles?.(i) })
       deltas[i] = res.delta
       if (last) {
         const q = new Float32Array(NB * 4)

@@ -8,6 +8,7 @@ import type { ClipKey } from '../../server/workspace.ts'
 import { applyBoneKeys, KEY_FPS, sampleKeys } from './keys.ts'
 import { keepOffFloor, reach, setWorldQuaternion, type Leg } from './ik.ts'
 import { bodyBones, solveBody, type BodyState, type HandGoal } from './bodysolve.ts'
+import type { Obstacle } from './posespace.ts'
 import type { JointLimits } from './limits.ts'
 import { pelvisName, retargetOffsets, type RestSkeleton } from './retarget.ts'
 import type { PoseRig } from './PoseEditor.ts'
@@ -83,6 +84,43 @@ export interface PropRig {
   /** The bone each prop rides. */
   carriers: Record<string, string>
   fingers: Partial<Record<'Left' | 'Right', Record<string, [number, number, number, number]>>>
+  /** By leading prop: its shaft (the end by the hand carrying it and the far end, in its node's frame) and its radius: the
+   * body is kept clear of it, but where the hands hold it (propObstacles). */
+  shafts?: Record<string, { from: [number, number, number], to: [number, number, number], radius: number }>
+}
+
+/** How much of a shaft either side of a fist on it is left out of what the body must stay clear of (a share of the
+ * body's height: the fist, the wrist and the forearm by it). */
+export const GRIP_CLEAR = 0.07
+
+/**
+ * What the body must stay clear of on a frame: each leading prop's shaft (where `placeOf` puts the prop), cut where each
+ * hand holds it (`margin` metres either side of its fist), the hands holding it let through.
+ */
+export function propObstacles (props: PropRig, placeOf: (prop: string) => THREE.Matrix4 | null, margin: number): Obstacle[] {
+  const out: Obstacle[] = []
+  for (const [prop, path] of Object.entries(props.paths)) {
+    const shaft = props.shafts?.[prop]
+    if (!path.locked || shaft === undefined) continue
+    const place = placeOf(prop)
+    if (place === null) continue
+    const from = new THREE.Vector3(...shaft.from).applyMatrix4(place); const to = new THREE.Vector3(...shaft.to).applyMatrix4(place)
+    const dir = to.clone().sub(from); const length = dir.length()
+    if (length < 1e-6) continue
+    dir.divideScalar(length)
+    const holding = props.attachments.filter(a => a.prop === prop)
+    const hands = [...new Set([...holding.map(a => `${a.hand}Hand`), props.carriers[prop]].filter((h): h is string => h !== undefined && /^(Left|Right)Hand$/.test(h)))]
+    // (where each hand holds it, along it: the wrist's place on the shaft's line)
+    const cuts = holding.map(a => props.sockets[prop]?.find(x => x.id === a.socket)).filter((x): x is Socket => x !== undefined)
+      .map(sock => handOn(place, sock).at.sub(from).dot(dir)).map(t => [t - margin, t + margin] as [number, number]).sort((a, b) => a[0] - b[0])
+    let at = 0
+    for (const [a, b] of [...cuts, [length, length] as [number, number]]) {
+      if (a - at > margin * 0.25) out.push({ from: from.clone().addScaledVector(dir, at), to: from.clone().addScaledVector(dir, Math.min(a, length)), radius: shaft.radius, ignore: hands })
+      at = Math.max(at, b)
+      if (at >= length) break
+    }
+  }
+  return out
 }
 
 /** A matrix from a socket (its wrist place and turn). */
@@ -226,8 +264,11 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
     const rode = active ? new Map(Object.keys(props!.paths).filter(p => props!.paths[p].locked).map(p => [p, posable.getObjectByName(props!.node(p))?.matrixWorld.clone()]).filter((x): x is [string, THREE.Matrix4] => x[1] !== undefined)) : null
     pose(keyed, t)
     if (active) {
-      const goals = handGoals(posable, bones, props!, keyed.duration > 0 ? t / keyed.duration : 0, loop, rode)
-      if (goals.length > 0) state = solver.solve(bones, goals, { limits, nameOf, legs, height, floor, soles } as Parameters<typeof solveBody>[2], state).state
+      const u = keyed.duration > 0 ? t / keyed.duration : 0
+      const goals = handGoals(posable, bones, props!, u, loop, rode)
+      // (the leading props' shafts, where their paths put them: the body kept clear of them but where the hands hold them)
+      const obstacles = propObstacles(props!, prop => { const node = posable.getObjectByName(props!.node(prop)); const was = rode?.get(prop) ?? node?.matrixWorld; return was === undefined ? null : onPath(was, props!.paths[prop], u, loop) }, GRIP_CLEAR * height)
+      if (goals.length > 0) state = solver.solve(bones, goals, { limits, nameOf, legs, height, floor, soles, obstacles } as Parameters<typeof solveBody>[2], state).state
     }
     const now = sunk(legs, soles, floor)
     // (only what the edit sank: lift the leg by that, from where it stands)

@@ -12,7 +12,7 @@ import type { ClipKey } from './api.ts'
 import { app } from './app.svelte.ts'
 import { animator, restOf, type NowPlaying } from './animator.svelte.ts'
 import { loadSource } from '../engine/clips.ts'
-import { armOf, buildEdit, handGrip, handOn, keyFor, legsOf, unretarget, type Attachment, type PropPath, type PropRig, type Socket } from '../engine/clipedit.ts'
+import { armOf, buildEdit, GRIP_CLEAR, handGrip, handOn, keyFor, legsOf, propObstacles, unretarget, type Attachment, type PropPath, type PropRig, type Socket } from '../engine/clipedit.ts'
 import { propNode } from './tune.svelte.ts'
 import { clipGlb, framesClip } from '../engine/clipexport.ts'
 import { library } from './library.svelte.ts'
@@ -622,7 +622,13 @@ class ClipEdit {
       sockets[prop] = [...(sockets[prop] ?? []), c.socket]
       attachments.push({ hand: c.hand, prop, socket: c.socket.id })
     }
-    return { node: propNode, paths, attachments, sockets, carriers: Object.fromEntries(this.props.map(p => [p.name, p.bone])), fingers: this.fists }
+    // (each leading prop's shaft: the body is kept clear of it, but where the hands hold it)
+    const shafts: NonNullable<PropRig['shafts']> = {}
+    for (const [prop, path] of Object.entries(paths)) {
+      const shaft = path.locked ? this.shaftLocal(prop) : null
+      if (shaft !== null) shafts[prop] = { from: shaft.from.toArray() as [number, number, number], to: shaft.to.toArray() as [number, number, number], radius: shaft.radius }
+    }
+    return { node: propNode, paths, attachments, sockets, carriers: Object.fromEntries(this.props.map(p => [p.name, p.bone])), fingers: this.fists, shafts }
   }
 
   /** Clear every key. */
@@ -644,7 +650,8 @@ class ClipEdit {
       root.traverse(o => { if ((o as THREE.Bone).isBone === true) bones.set(o.name, o as THREE.Bone) })
       const rig = new NaturalRig(this.model, bones, { offsets: this.offsets, limits: this.limitsOn ? this.limits : null, nameOf: b => b.name })
       // (the hands on props: on a socket, or carrying a prop that leads; the prop rides the hand carrying it, so it is held too)
-      const holds = this.propRig().attachments
+      const rigP = this.propRig()
+      const holds = rigP.attachments
       const attachedHands = [...new Set(holds.map(a => `${a.hand}Hand`))]
       const held = new Set(holds.flatMap(a => Object.values(armOf(a.hand))))
       const keyed = Object.keys(this.keys).filter(b => !held.has(b) && bones.has(b))
@@ -676,6 +683,8 @@ class ClipEdit {
         hipsMove: true,
         collide: solidsOf(view),
         pull: amount.pull, pullOutside: amount.outside, smoothMotion: amount.motion, sweeps: 3,
+        // (the leading props' shafts where the edit has them on each frame: the body kept clear of them but where the hands hold them)
+        obstacles: () => propObstacles(rigP, prop => root.getObjectByName(propNode(prop))?.matrixWorld.clone() ?? null, GRIP_CLEAR * view.height),
       })
       this.edited = out.clip
       this.naturalized = true
