@@ -12,11 +12,11 @@ import type { ClipKey } from './api.ts'
 import { app } from './app.svelte.ts'
 import { animator, restOf, type NowPlaying } from './animator.svelte.ts'
 import { loadSource } from '../engine/clips.ts'
-import { armOf, buildEdit, fistGrip, GRIP_CLEAR, handGrip, handOn, keyFor, legsOf, propObstacles, unretarget, type Attachment, type Grip, type PropPath, type PropRig, type Socket } from '../engine/clipedit.ts'
+import { armOf, buildEdit, fistGrip, frameTimes, GRIP_CLEAR, handGrip, handOn, holdAt, keyFor, nodePath, onPath, propObstacles, ROOT_HOLD, rootPath, unretarget, type Attachment, type Grip, type PropPath, type PropRig, type RootHold, type Socket } from '../engine/clipedit.ts'
 import { propNode } from './tune.svelte.ts'
 import { clipGlb, framesClip } from '../engine/clipexport.ts'
 import { library } from './library.svelte.ts'
-import { KEY_FPS } from '../engine/keys.ts'
+import { applyBoneKeys, KEY_FPS } from '../engine/keys.ts'
 import { JointLimits, type Rom } from '../engine/limits.ts'
 import { HORSE_RIG, HUMAN_RIG, PoseEditor, type PoseRig } from '../engine/PoseEditor.ts'
 import { retargetOffsets, type RestSkeleton } from '../engine/retarget.ts'
@@ -49,6 +49,10 @@ class ClipEdit {
   paths = $state.raw<Record<string, PropPath>>({})
   /** The hands on sockets. */
   attachments = $state.raw<Attachment[]>([])
+  /** The prop drags let go: the body's root held near where it was seen on the frames each moved the prop (RootHold). */
+  private holds: RootHold[] = []
+  /** The bones each drag keyed together, at its frame: Delete with one of them selected takes the others' keys there too. */
+  private groups: Array<{ u: number, bones: string[] }> = []
   /** Each hand's fingers closed round a shaft (as its Hold fist does). */
   private fists: Partial<Record<'Left' | 'Right', Record<string, [number, number, number, number]>>> = {}
   selected = $state<string | null>(null)
@@ -155,6 +159,8 @@ class ClipEdit {
       this.lift = now.entry === null ? animator.lift : (app.selected?.animations[now.entry]?.lift ?? 0)
       this.keys = {}
       this.paths = {}
+      this.holds = []
+      this.groups = []
       this.attachments = []
       this.selected = null
       this.prop = null
@@ -225,27 +231,38 @@ class ClipEdit {
 
   private get loop (): boolean { return this.base?.loop ?? true }
 
-  /** The playhead as a phase of the clip, snapped to a frame. */
+  /** The playhead as a phase of the clip, snapped to a frame (a loop's last frame is its first: a key there is the first's). */
   phase (): number {
     const d = this.baseClip?.duration ?? 0
     if (d <= 0) return 0
     const frames = Math.max(1, Math.round(d * KEY_FPS))
-    return Math.round(Math.min(1, Math.max(0, animator.time / d)) * frames) / frames
+    const u = Math.round(Math.min(1, Math.max(0, animator.time / d)) * frames) / frames
+    return this.loop && near(u, 1) ? 0 : u
   }
 
-  /** Key the bones a drag moved, at the playhead; while the body is solved round hands on props, every bone the solve
-   * moves too, as it stands (what was seen when it was let go is the authority at this frame: the solve starts there). */
+  /** A time snapped to the nearest frame of the clip edited (the playhead, while editing: a key is made on a frame, of
+   * the pose seen there). */
+  snapTime (time: number): number {
+    const d = this.baseClip?.duration ?? 0
+    if (!this.active || d <= 0) return time
+    const frames = Math.max(1, Math.round(d * KEY_FPS))
+    return Math.round(Math.min(1, Math.max(0, time / d)) * frames) / frames * d
+  }
+
+  /** Key the bones a drag moved, at the playhead (only those: the solve does the rest). */
   private async commit (moved: string[]): Promise<void> {
     const view = animator.character; const base = this.baseClip
     if (view === null || base === null || moved.length === 0) { animator.holding = false; return }
     const u = this.phase()
     const t = u * base.duration
-    // (an attached arm alone is its socket's, not keyed; with the body solved, it is keyed as seen with the rest)
+    // (an attached arm is its socket's, not keyed)
     const carriers = Object.entries(this.paths).filter(([, x]) => x.locked).map(([p]) => this.carrierSocket(p)?.hand).filter((h): h is 'Left' | 'Right' => h !== undefined)
     const attached = new Set([...this.attachments.flatMap(a => [...Object.values(armOf(a.hand)), ...Object.keys(this.fists[a.hand] ?? {})]), ...carriers.flatMap(h => Object.values(armOf(h)))])
     // (keyed now, as seen, before anything else can move a bone)
     const next = { ...this.keys }
-    this.keyBones(next, new Set([...moved.filter(b => !attached.has(b)), ...this.seenBones()]), u, t)
+    const bones = moved.filter(b => !attached.has(b))
+    this.keyBones(next, bones, u)
+    if (bones.length > 0) this.groups = [...this.groups.filter(g => !(near(g.u, u) && g.bones.some(b => bones.includes(b)))), { u, bones }]
     // (a hand on a socket moved or turned: its socket goes where it is now)
     for (const a of this.attachments) {
       if (!moved.includes(armOf(a.hand).end)) continue
@@ -257,16 +274,18 @@ class ClipEdit {
     this.show(t)
   }
 
-  /** Key `names` into `next` as they stand on the character, at `u` (time `t`): a bone's first key on a clip with motion
+  /** Key `names` into `next` as they stand on the character, at `u`: the turn from where the clip has them at the time
+   * shown (the playhead's, so no motion between it and the frame is baked in); a bone's first key on a clip with motion
    * of its own also pins it at the clip's ends, so the change eases in and back out. */
-  private keyBones (next: Record<string, ClipKey[]>, names: Iterable<string>, u: number, t: number): void {
+  private keyBones (next: Record<string, ClipKey[]>, names: Iterable<string>, u: number): void {
     const view = animator.character; const base = this.baseClip
     if (view === null || base === null) return
     const rest = restOf(view)
+    const shown = Math.min(Math.max(animator.time, 0), base.duration)
     for (const name of names) {
       const bone = view.bones.get(name); const r = rest(name)
       if (bone === undefined || r === null) continue
-      const key = keyFor(base, bone, u, t, r, name === this.rig.hips)
+      const key = keyFor(base, bone, u, shown, r, name === this.rig.hips)
       const ks = (next[name] ?? []).filter(k => !near(k.u, u))
       if (ks.length === 0 && !this.held) {
         if (!near(u, 0)) ks.push({ u: 0, q: [...IDENTITY] as ClipKey['q'] })
@@ -276,25 +295,17 @@ class ClipEdit {
     }
   }
 
-  /** While the body is solved round hands on props (a hand on a socket, or carrying a prop that leads): every bone the
-   * solve moves (the body, the legs, both arms; not the fingers, which the hold sets), else none. */
-  private seenBones (): string[] {
-    const view = animator.character
-    if (view === null) return []
-    const carriers = Object.entries(this.paths).filter(([, x]) => x.locked).map(([p]) => this.props.find(q => q.name === p)?.bone)
-    const hands = (['Left', 'Right'] as const).filter(h => this.attachments.some(a => a.hand === h) || carriers.includes(`${h}Hand`))
-    if (hands.length === 0) return []
-    return [...new Set([...this.solver.bones(hands.map(hand => ({ hand })), legsOf(view.bones, this.rig)),
-      ...['Left', 'Right'].flatMap(s => [`${s}Arm`, `${s}ForeArm`, `${s}Hand`]), this.rig.hips])].filter(n => view.bones.has(n))
-  }
-
-  /** Take the keys at the playhead off: the selected bone's, or every bone's. */
+  /** Take the keys at the playhead off: the selected bone's (and the bones keyed with it by the same drag), the selected
+   * prop's, or every one's. */
   deleteHere (): void {
     const u = this.phase()
     const all = this.selected === null && this.prop === null
+    const sel = this.selected
+    const with_ = new Set(sel === null ? [] : [sel, ...this.groups.filter(g => near(g.u, u) && g.bones.includes(sel)).flatMap(g => g.bones)])
+    this.groups = this.groups.filter(g => !(near(g.u, u) && (all || g.bones.some(b => with_.has(b)))))
     const next: Record<string, ClipKey[]> = {}
     for (const [bone, ks] of Object.entries(this.keys)) {
-      const keep = all || this.selected === bone ? ks.filter(k => !near(k.u, u)) : ks
+      const keep = all || with_.has(bone) ? ks.filter(k => !near(k.u, u)) : ks
       // (only its pins left: nothing changed on this bone)
       if (keep.length > 0 && (this.held || !keep.every(isAnchor))) next[bone] = keep
     }
@@ -305,6 +316,8 @@ class ClipEdit {
       paths[p] = { ...path, keys: keep.length > 0 && (this.held || !keep.every(isAnchor)) ? keep : [] }
     }
     this.paths = paths
+    // (a prop drag's key gone: its hold too)
+    this.holds = this.holds.filter(h => paths[h.prop]?.keys.some(k => near(k.u, h.u)) === true)
     this.show(u * (this.baseClip?.duration ?? 0))
   }
 
@@ -593,13 +606,51 @@ class ClipEdit {
       if (!this.loop && !near(u, 1)) ks.push({ u: 1, q: [...IDENTITY] as ClipKey['q'], p: [0, 0, 0] })
     }
     ks = [...ks, key].sort((x, y) => x.u - y.u)
+    const before = this.paths[prop]
+    const after: PropPath = { locked: true, keys: ks }
+    // (the body's root held where it was seen, on the frames the drag moved the prop: moving it away doesn't bring the body in)
+    this.holdRoot(prop, u, before, after)
     // (moving a prop makes it lead)
-    this.paths = { ...this.paths, [prop]: { locked: true, keys: ks } }
-    // (the body as it was seen when let go: the authority at this frame, keyed; the solve starts from it)
-    const next = { ...this.keys }
-    this.keyBones(next, this.seenBones(), u, t)
-    this.keys = next
+    this.paths = { ...this.paths, [prop]: after }
     this.show(t)
+  }
+
+  /** A prop drag let go at `u` (its path `before` and `after`): on each frame the drag moved the prop, how much of it the
+   * frame carries, and the solve's correction to the body's root there as it was (before the drag) — the build holds the
+   * root to it softly (src/engine/clipedit.ts RootHold). A second drag of the same key keeps the first's correction. */
+  private holdRoot (prop: string, u: number, before: PropPath | undefined, after: PropPath): void {
+    const view = animator.character; const base = this.baseClip; const root = this.posable(); const edited = this.edited
+    const shaft = this.shaftLocal(prop)
+    if (view === null || base === null || root === null || edited === null || shaft === null) return
+    const rode = nodePath(base, root, propNode(prop))
+    const times = frameTimes(base.duration)
+    if (rode.length !== times.length) return
+    const ends = [shaft.from, shaft.to]
+    const moveAt = (i: number): number => {
+      const ui = base.duration > 0 ? times[i] / base.duration : 0
+      const a = onPath(rode[i], before ?? { locked: true, keys: [] }, ui, this.loop); const b = onPath(rode[i], after, ui, this.loop)
+      return Math.max(...ends.map(e => e.clone().applyMatrix4(a).distanceTo(e.clone().applyMatrix4(b))))
+    }
+    const at = Math.round(u * (times.length - 1))
+    const full = moveAt(at)
+    if (!(full > 1e-3)) return
+    const had = this.holds.find(h => h.prop === prop && near(h.u, u))
+    const keyed = rootPath(applyBoneKeys(base, this.keys, this.loop, restOf(view)), root, this.rig.hips)
+    const solved = rootPath(edited, root, this.rig.hips)
+    const frames: RootHold['frames'] = {}
+    for (let i = 0; i < times.length; i++) {
+      const w = Math.min(1, moveAt(i) / full)
+      const was = had?.frames[i]
+      if (was !== undefined) { frames[i] = { ...was, w: Math.max(was.w, w) }; continue }
+      if (w < 0.05 || keyed[i] === undefined || solved[i] === undefined) continue
+      const r5 = (v: number[]): number[] => v.map(x => Math.round(x * 1e6) / 1e6)
+      frames[i] = {
+        w: Math.round(w * 1000) / 1000,
+        hips: r5(solved[i].hips.clone().sub(keyed[i].hips).toArray()) as [number, number, number],
+        chest: r5(solved[i].chest.clone().multiply(keyed[i].chest.clone().invert()).normalize().toArray()) as [number, number, number, number],
+      }
+    }
+    this.holds = [...this.holds.filter(h => h !== had), { prop, u, frames }]
   }
 
   /** While a prop is dragged: the hands on it follow it (the hand carrying it first, so the prop goes where it's dragged). */
@@ -673,7 +724,7 @@ class ClipEdit {
       const grip = this.gripOf(a.hand, a.prop)
       if (grip !== null) grips[a.hand] = grip
     }
-    return { node: propNode, paths, attachments, sockets, carriers: Object.fromEntries(this.props.map(p => [p.name, p.bone])), fingers: this.fists, shafts, grips }
+    return { node: propNode, paths, attachments, sockets, carriers: Object.fromEntries(this.props.map(p => [p.name, p.bone])), fingers: this.fists, shafts, grips, holds: this.holds }
   }
 
   /** Clear every key. */
@@ -705,11 +756,21 @@ class ClipEdit {
       const pullAt = (t: number): Map<number, string[]> => {
         const byWeight = new Map<number, string[]>()
         for (const b of keyed) {
-          const d = Math.min(...this.keys[b].map(k => Math.abs(t - k.u * duration) * KEY_FPS))
+          // (the pins at the clip's ends are not edits: only what the user moved is pulled)
+          const ks = this.keys[b].filter(k => !isAnchor(k))
+          if (ks.length === 0) continue
+          const d = Math.min(...ks.map(k => Math.abs(t - k.u * duration) * KEY_FPS))
           const w = Math.round(PULL_WEIGHT * Math.max(0, 1 - d / PULL_FRAMES) * 100) / 100
           if (w > 0) byWeight.set(w, [...(byWeight.get(w) ?? []), b])
         }
         return byWeight
+      }
+      // (the body's root where the edit has it (held there by the build) on the frames a prop drag moved the prop, as much)
+      const rootHeld = (i: number): NaturalGoal[] => {
+        const h = holdAt(rigP.holds, rigP.paths, i)
+        if (h === null) return []
+        const weight = ROOT_HOLD.weight * Math.min(1, h.w)
+        return [...poseTargets(rig, [this.rig.hips], { weight, turn: false }), ...poseTargets(rig, [ROOT_HOLD.chest], { weight, position: false })]
       }
       const rest = view.rest
       const soles: Record<string, number> = {}
@@ -717,7 +778,9 @@ class ClipEdit {
       const t0 = performance.now()
       const out = naturalizeClip(rig, this.edited, {
         root, fps: KEY_FPS,
-        goals: (_i, t) => [
+        goals: (i, t) => [
+          // the body's root held where it was seen when a prop was let go, on the frames the drag moved it
+          ...rootHeld(i),
           // the hands where the edit put them (on their sockets): met exactly
           ...attachedHands.map(n => { const b = bones.get(n)!; return { bone: n, position: b.getWorldPosition(new THREE.Vector3()), turn: b.getWorldQuaternion(new THREE.Quaternion()), exact: true } as NaturalGoal }),
           // the keyed bones near their keys pulled to where the edit has them

@@ -8,7 +8,7 @@ import type { ClipKey } from '../../server/workspace.ts'
 import { applyBoneKeys, KEY_FPS, sampleKeys } from './keys.ts'
 import { keepOffFloor, reach, setWorldQuaternion, type Leg } from './ik.ts'
 import { bodyBones, solveBody, type BodyState, type HandGoal } from './bodysolve.ts'
-import { FOLLOW, type Obstacle } from './posespace.ts'
+import { FOLLOW, type NaturalGoal, type Obstacle } from './posespace.ts'
 import type { JointLimits } from './limits.ts'
 import { pelvisName, retargetOffsets, type RestSkeleton } from './retarget.ts'
 import type { PoseRig } from './PoseEditor.ts'
@@ -89,6 +89,91 @@ export interface PropRig {
   shafts?: Record<string, { from: [number, number, number], to: [number, number, number], radius: number }>
   /** By hand: where it holds the shaft it is on (Grip; the carrying hand has none: its turn is held exactly). The solver keeps this point on the shaft while the hand's turn gives. */
   grips?: Partial<Record<'Left' | 'Right', Grip>>
+  /** The prop drags let go (RootHold): the body's root held near where it was seen, on the frames each one moved the prop. */
+  holds?: RootHold[]
+}
+
+/**
+ * A prop drag let go at `u` (a key on `prop`'s path): on each frame the drag moved the prop (by frame index, frameTimes),
+ * how much of the drag that frame carries (`w`, 0 to 1: the prop's move there over its move at the key), and the solve's
+ * correction to the body's root there before the drag (world: the hips' move, the chest's turn, from the keyed pose). The
+ * build holds the root to that correction softly, in proportion, so moving the prop away extends the arms instead of
+ * bringing the body in; local in time, as the drag is, and never keyed.
+ */
+export interface RootHold {
+  prop: string
+  u: number
+  frames: Record<number, { w: number, hips: [number, number, number], chest: [number, number, number, number] }>
+}
+
+/** A root hold: its weight at full (a soft goal's: as a keyed bone's in Naturalize), the chest bone it holds the turn of,
+ * and the least share of the drag a frame must carry to be held. */
+export const ROOT_HOLD = { weight: 4, chest: 'Spine2', min: 0.05 }
+
+/** The soft goals that hold the body's root on frame `i` (posed in its keyed pose): the strongest hold there, if any, its
+ * prop's path still keyed at its drag. */
+export function rootGoals (holds: RootHold[] | undefined, paths: Record<string, PropPath>, i: number, bones: Map<string, THREE.Bone>, hips: string): NaturalGoal[] {
+  const best = holdAt(holds, paths, i)
+  const hb = bones.get(hips); const chest = bones.get(ROOT_HOLD.chest)
+  if (best === null || hb === undefined || chest === undefined) return []
+  const weight = ROOT_HOLD.weight * Math.min(1, best.w)
+  return [
+    { bone: hips, position: hb.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(...best.hips)), weight, hard: false },
+    { bone: ROOT_HOLD.chest, turn: new THREE.Quaternion(...best.chest).multiply(chest.getWorldQuaternion(new THREE.Quaternion())).normalize(), weight, hard: false },
+  ]
+}
+
+/** The strongest root hold on frame `i` whose prop's path is still keyed at its drag, or null. */
+export function holdAt (holds: RootHold[] | undefined, paths: Record<string, PropPath>, i: number): RootHold['frames'][number] | null {
+  let best: RootHold['frames'][number] | null = null
+  for (const h of holds ?? []) {
+    const f = h.frames[i]
+    if (f === undefined || f.w < ROOT_HOLD.min || !(paths[h.prop]?.locked === true && paths[h.prop].keys.some(k => Math.abs(k.u - h.u) < 1e-4))) continue
+    if (best === null || f.w > best.w) best = f
+  }
+  return best
+}
+
+/** Per frame (frameTimes) of `clip` on `posable`: the hips' world place and the chest's world turn. Leaves the bones as they were. */
+export function rootPath (clip: THREE.AnimationClip, posable: THREE.Object3D, hips: string): Array<{ hips: THREE.Vector3, chest: THREE.Quaternion }> {
+  const bones = bonesOf(posable)
+  const hb = bones.get(hips); const chest = bones.get(ROOT_HOLD.chest)
+  if (hb === undefined || chest === undefined) return []
+  const saved = [...bones.values()].map(b => [b, b.position.clone(), b.quaternion.clone()] as const)
+  const mixer = new THREE.AnimationMixer(posable)
+  const out: Array<{ hips: THREE.Vector3, chest: THREE.Quaternion }> = []
+  for (const t of frameTimes(clip.duration)) {
+    mixer.stopAllAction()
+    const a = mixer.clipAction(clip); a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; a.reset(); a.play()
+    mixer.setTime(t)
+    posable.updateMatrixWorld(true)
+    out.push({ hips: hb.getWorldPosition(new THREE.Vector3()), chest: chest.getWorldQuaternion(new THREE.Quaternion()) })
+  }
+  mixer.stopAllAction(); mixer.uncacheRoot(posable)
+  for (const [b, p, q] of saved) { b.position.copy(p); b.quaternion.copy(q) }
+  posable.updateMatrixWorld(true)
+  return out
+}
+
+/** Per frame (frameTimes) of `clip` on `posable`: where the node `node` is (world). */
+export function nodePath (clip: THREE.AnimationClip, posable: THREE.Object3D, node: string): THREE.Matrix4[] {
+  const n = posable.getObjectByName(node)
+  if (n === undefined) return []
+  const saved: Array<readonly [THREE.Object3D, THREE.Vector3, THREE.Quaternion]> = []
+  posable.traverse(o => { if ((o as THREE.Bone).isBone === true) saved.push([o, o.position.clone(), o.quaternion.clone()]) })
+  const mixer = new THREE.AnimationMixer(posable)
+  const out: THREE.Matrix4[] = []
+  for (const t of frameTimes(clip.duration)) {
+    mixer.stopAllAction()
+    const a = mixer.clipAction(clip); a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; a.reset(); a.play()
+    mixer.setTime(t)
+    posable.updateMatrixWorld(true)
+    out.push(n.matrixWorld.clone())
+  }
+  mixer.stopAllAction(); mixer.uncacheRoot(posable)
+  for (const [b, p, q] of saved) { b.position.copy(p); b.quaternion.copy(q) }
+  posable.updateMatrixWorld(true)
+  return out
 }
 
 /** How much of a shaft either side of a fist on it is left out of what the body must stay clear of (a share of the
@@ -350,7 +435,11 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
   let changed = active
   let state: BodyState | null = null
   const nameOf = (b: THREE.Bone): string => b.name
-  for (const t of times) {
+  // (the frames a drag was let go on: a prop drag's key, a key on a bone; the solve there is not pulled toward the frame
+  // before, so what was seen when it was let go stays)
+  const frameOf = (u: number): number => Math.round(u * keyed.duration * KEY_FPS)
+  const letGo = new Set([...(props?.holds ?? []).map(h => frameOf(h.u)), ...Object.values(keys).flat().filter(k => !(k.p === undefined && Math.abs(k.q[3]) > 1 - 1e-9)).map(k => frameOf(k.u))])
+  for (const [i, t] of times.entries()) {
     pose(base, t)
     const was = sunk(legs, soles, floor)
     // (where each locked prop rode before the edit)
@@ -361,7 +450,9 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
       const goals = handGoals(posable, bones, props!, u, loop, rode)
       // (the leading props' shafts, where their paths put them: the body kept clear of them but where the hands hold them)
       const obstacles = propObstacles(props!, prop => { const node = posable.getObjectByName(props!.node(prop)); const was = rode?.get(prop) ?? node?.matrixWorld; return was === undefined ? null : onPath(was, props!.paths[prop], u, loop) }, GRIP_CLEAR * height)
-      if (goals.length > 0) state = solver.solve(bones, goals, { limits, nameOf, legs, height, floor, soles, obstacles, follow: FOLLOW.weight } as Parameters<typeof solveBody>[2], state).state
+      // (the body's root held where the solve had it before each prop drag, on the frames the drag moved the prop)
+      const soft = rootGoals(props!.holds, props!.paths, i, bones, rig.hips)
+      if (goals.length > 0) state = solver.solve(bones, goals, { limits, nameOf, legs, height, floor, soles, obstacles, follow: letGo.has(i) ? undefined : FOLLOW.weight, soft } as Parameters<typeof solveBody>[2], state).state
     }
     const now = sunk(legs, soles, floor)
     // (only what the edit sank: lift the leg by that, from where it stands)

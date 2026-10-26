@@ -13,15 +13,21 @@
   function seekFrom (e: PointerEvent, bar: HTMLElement): void {
     const r = bar.getBoundingClientRect()
     const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
-    animator.seek(t * animator.duration)
+    animator.seek(clipEdit.snapTime(t * animator.duration))
+  }
+
+  // (while editing, the playhead is always on a frame: a key is made on a frame, of the pose seen there)
+  function togglePlay (): void {
+    animator.setPlaying(!animator.playing)
+    if (!animator.playing && clipEdit.active) animator.seek(clipEdit.snapTime(animator.time))
   }
 
   function onKey (e: KeyboardEvent): void {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || animator.current === null) return
-    if (e.key === ' ') { e.preventDefault(); animator.setPlaying(!animator.playing) }
+    if (e.key === ' ') { e.preventDefault(); togglePlay() }
     if (e.key === ',' || e.key === '.') {
       animator.setPlaying(false)
-      animator.seek(Math.max(0, Math.min(animator.duration, animator.time + (e.key === '.' ? 1 : -1) / fps)))
+      animator.seek(clipEdit.snapTime(Math.max(0, Math.min(animator.duration, clipEdit.snapTime(animator.time) + (e.key === '.' ? 1 : -1) / fps))))
     }
   }
 </script>
@@ -30,7 +36,7 @@
 
 {#if animator.current}
   <div class="timeline">
-    <button class="play" onclick={() => animator.setPlaying(!animator.playing)} aria-label={animator.playing ? 'Pause' : 'Play'} use:tooltip={'Space'}>
+    <button class="play" onclick={togglePlay} aria-label={animator.playing ? 'Pause' : 'Play'} use:tooltip={'Space'}>
       {#if animator.playing}<Pause size={15} />{:else}<Play size={15} />{/if}
     </button>
     <div class="info">

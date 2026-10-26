@@ -19,10 +19,10 @@ import * as THREE from 'three'
 import type { ClipKey } from '../../server/workspace.ts'
 import { applyBoneKeys, sampleKeys } from './keys.ts'
 import { frameTimes, GRIP_CLEAR, handGoals, legsOf, onPath, propObstacles, type PropRig, type Socket } from './clipedit.ts'
-import type { bodyBones, solveBody } from './bodysolve.ts'
+import type { BodyState, bodyBones, solveBody } from './bodysolve.ts'
 import type { JointLimits } from './limits.ts'
 import type { PoseRig } from './PoseEditor.ts'
-import { BODY, heading, type NaturalBodyState } from './posespace.ts'
+import { BODY, FOLLOW, heading, type NaturalBodyState } from './posespace.ts'
 
 /** What src/engine/bodycollide.ts's collider gives (the body as the bones stand now); a stub that gives 0 stands in until it is passed. */
 export interface BodyColliderLike {
@@ -76,6 +76,8 @@ export interface FitInput {
 }
 
 export interface Sample {
+  /** The solve's state (the next frame follows it, as in the build). */
+  state?: BodyState | null
   /** The solver's objective total (null from a plain rule-based solver), the hands' worst miss (cm). */
   obj: number | null
   miss: number
@@ -192,7 +194,7 @@ export class FitLab {
   placeAt (i: number): THREE.Matrix4 { return this.places[i] }
 
   /** Solve frame `i` with the prop moved by `offset` (world) from where its path has it, and `sockets` for the prop's (default: the edit's). */
-  solve (i: number, offset: THREE.Vector3, opts: { sockets?: Socket[], quick?: boolean } = {}): Sample {
+  solve (i: number, offset: THREE.Vector3, opts: { sockets?: Socket[], quick?: boolean, prev?: BodyState | null } = {}): Sample {
     const { posable, props, prop, loop, height, limits, solver } = this.input
     this.evals++
     this.restore(i)
@@ -204,7 +206,7 @@ export class FitLab {
     // (the prop where this offset puts it is solid, as in the edit's own solve: the body keeps clear of it but where the hands hold it)
     const place = this.places[i].clone().premultiply(new THREE.Matrix4().makeTranslation(offset.x, offset.y, offset.z))
     const obstacles = this.obstaclesAt(rig, place)
-    const res = goals.length === 0 ? null : solver.solve(this.bones, goals, { limits, nameOf, legs: this.legs, height, floor: this.input.floor ?? 0, soles: this.soles, quick: opts.quick !== false, obstacles } as Parameters<typeof solveBody>[2], null)
+    const res = goals.length === 0 ? null : solver.solve(this.bones, goals, { limits, nameOf, legs: this.legs, height, floor: this.input.floor ?? 0, soles: this.soles, quick: opts.quick !== false, obstacles, follow: opts.prev === undefined || opts.prev === null ? undefined : FOLLOW.weight } as Parameters<typeof solveBody>[2], opts.prev ?? null)
     posable.updateMatrixWorld(true)
     const obj = (res?.state as NaturalBodyState | undefined)?.objective?.end.total ?? null
     const wp = (n: string): THREE.Vector3 => this.bones.get(n)!.getWorldPosition(new THREE.Vector3())
@@ -228,7 +230,7 @@ export class FitLab {
     const slack = Math.max(0, prp - FIT.propSlack)
     const over = Math.max(0, miss - FIT.missFree)
     const cost = (obj ?? 0) + FIT.miss * over * over + FIT.reach * reach + FIT.limit * out + FIT.self * self * self + FIT.prop * slack * slack
-    return { obj, miss, reach, out, self, prop: prp, cost, pos }
+    return { state: res?.state ?? null, obj, miss, reach, out, self, prop: prp, cost, pos }
   }
 }
 
@@ -264,7 +266,8 @@ export async function fitProp (input: FitInput, progress: (label: string) => voi
   const O = at.map(() => new THREE.Vector3())
   progress('Fitting the prop: the clip as it stands')
   const S: Sample[] = []
-  for (let k = 0; k < at.length; k++) { S.push(lab.solve(at[k], O[k])); if (k % 4 === 3) await yieldUi() }
+  // (each searched frame solved after the one before it, following it, as the build solves its frames in turn)
+  for (let k = 0; k < at.length; k++) { S.push(lab.solve(at[k], O[k], { prev: S[k - 1]?.state })); if (k % 4 === 3) await yieldUi() }
   const before = S.reduce((a, x) => a + x.cost, 0)
   const reachMax = input.height * FIT.maxMove
   // (a frame's whole score with the prop at `o`: its own, how far it moved and how unevenly against the neighbouring keys)
@@ -293,7 +296,7 @@ export async function fitProp (input: FitInput, progress: (label: string) => voi
     let best = O[k].clone(); let bestS = S[k]; let bestScore = scoreOf(k, best, bestS)
     // (the last key's offset is a good start too)
     if (k > 0 && O[k - 1].distanceTo(best) > 0.2 * cm) {
-      const sample = lab.solve(at[k], O[k - 1]); const c = scoreOf(k, O[k - 1], sample)
+      const sample = lab.solve(at[k], O[k - 1], { prev: S[k - 1]?.state }); const c = scoreOf(k, O[k - 1], sample)
       if (c < bestScore) { best = O[k - 1].clone(); bestS = sample; bestScore = c }
     }
     let step = input.height * FIT.step
@@ -302,7 +305,7 @@ export async function fitProp (input: FitInput, progress: (label: string) => voi
         for (const sign of [1, -1]) {
           const o = best.clone().addScaledVector(axis, sign * step)
           if (o.length() > reachMax) continue
-          const sample = lab.solve(at[k], o); const c = scoreOf(k, o, sample)
+          const sample = lab.solve(at[k], o, { prev: S[k - 1]?.state }); const c = scoreOf(k, o, sample)
           if (c < bestScore - 1e-6) { best = o; bestS = sample; bestScore = c; break }
         }
       }

@@ -277,7 +277,7 @@ export interface NaturalOptions {
   mode?: 'quick' | 'full'
   /** The pose to stay near, as `encode` gave it (default: the bones as they stand). */
   start?: NaturalPose
-  /** What the last frame's solution moved from its start (its `delta`): where this one begins its search. */
+  /** What an earlier solution moved from its start (its `delta`): where this one begins its search, when that scores better than the start does (and the start is tried too when a warm search ends off a hard goal). */
   warm?: Float64Array
   /** May the hips shift (a lunge, a drop) to let the limbs reach? Default true; a bake that keys only turns passes false (the heading stays free). */
   hipsMove?: boolean
@@ -450,13 +450,16 @@ export function elbowAllowed (below: number): number {
   return t[t.length - 1][1]
 }
 /**
- * Body parts inside one another (NaturalOptions.collide): the overlap of two segments' solids past what the pair may overlap
- * (bodycollide.ts ALLOW: capsules fitted to a skin are not exact, and a hand does rest on a thigh) costs `weight` per
- * centimetre (of a Y Bot's size; squared, steepening). Not boosted: a
- * hand goal that is hard enough (a socket) meets its place, and the rest of the body gives way.
+ * Body parts inside one another (NaturalOptions.collide) are an AVOID signal, not a bounce (the designer): only an overlap
+ * deeper than the start pose's own (past what the pair may overlap, bodycollide.ts ALLOW: capsules fitted to a skin are not
+ * exact, and a hand does rest on a thigh) costs, `weight` per centimetre (of a Y Bot's size) at first and saturating at
+ * `cap` centimetres deeper: the cost never passes (weight * cap) squared, so it steers a choice the goals leave open and
+ * resists going deeper, but never lurches the body, and a part deep in another (where which way is out is arbitrary) is
+ * not pushed either way. A limb's contacts with the trunk count once (the deepest of the trunk's overlapping capsules).
+ * Not boosted: a hand goal that is hard (a socket) meets its place.
  */
-export const COLLIDE = { weight: 2, steep: 6 }
-/** An obstacle (a held spear's shaft) may be touched this far into a segment (metres of a Y Bot) before it costs as COLLIDE does. */
+export const COLLIDE = { weight: 1, cap: 2 }
+/** An obstacle (a held spear's shaft) may be touched this far into a segment (metres of a Y Bot) past the start pose's own before it costs as COLLIDE does (an avoid signal too). */
 export const OBSTACLE = { slack: 0.005 }
 /** A turn that yields round its roll axis: per 5 degrees (boosted goals do not harden it). */
 export const ROLL = { weight: 0.6 }
@@ -467,8 +470,10 @@ export const ROLL = { weight: 0.6 }
  */
 export const GIVE: { roll: GiveAxis, other: GiveAxis } = { roll: { free: 8, steep: 20, weight: 2.5 }, other: { free: 5, steep: 15, weight: 4 } }
 
-/** A clip's frames solved in turn pull each frame's correction toward the last one's (NaturalSolveOptions.follow): per radian squared (the hips' metres count four times). */
+/** A clip's frames solved in turn pull each frame's correction toward the last one's (NaturalSolveOptions.follow): per radian squared (the hips' metres count four times). Each frame's search starts cold, from its own keyed pose: the pull is the only thing carried over. */
 export const FOLLOW = { weight: 100 }
+/** A full search that ends a hard goal more than this off (metres of a Y Bot) is tried again from its other start (NaturalRig.solve). */
+const WARM_RETRY = 0.002
 
 /** One component of a turn's error (radians) through an axis's give: nothing within `free`, then rising, then steeply. */
 function giveResidual (c: number, g: Float64Array, o: number): number {
@@ -479,6 +484,8 @@ function giveResidual (c: number, g: Float64Array, o: number): number {
   const r = g[o + 2] * u * (1 + k * k)
   return c < 0 ? -r : r
 }
+/** The collider's trunk segments (bodycollide.ts): they overlap one another, so a limb's or an obstacle's contact with them counts once, its deepest. */
+const TRUNK = new Set(['Hips', 'Spine', 'Spine1', 'Neck'])
 /** The body's segments: [bone, the bone whose joint ends the segment (null: the joint itself), share of the mass]. */
 const SEGMENTS: Array<[string, string | null, number]> = [
   ['Hips', 'Spine', 0.14], ['Spine', 'Spine1', 0.11], ['Spine1', 'Spine2', 0.11], ['Spine2', 'Neck', 0.14], ['Neck', 'Head', 0.02], ['Head', null, 0.07],
@@ -918,7 +925,35 @@ export class NaturalRig {
    * its transform by reach (src/engine/ik.ts) when the search left it off by a hair. The bones are read as they stand
    * (`opts.start` otherwise: the pose to stay near).
    */
+  /**
+   * Solve `goals` from the bones as they stand. A warm start (opts.warm) is a hint: it is dropped when it scores worse than
+   * the start does. A full search that ends a hard goal off is tried again from the other start (the start after a warm one;
+   * the correction `smooth` pulls toward after a cold one), the lower total kept: the search's end is a local one.
+   */
   solve (goals: NaturalGoal[], opts: NaturalOptions = {}): NaturalResult {
+    if (opts.mode === 'quick' || (opts.warm === undefined && opts.smooth === undefined)) return this.solveFrom(goals, opts)
+    const touched = [...new Set([...this.bones, ...goals.map(g => this.byName.get(g.bone)).filter((b): b is THREE.Bone => b !== undefined)])]
+    const save = (): { q: THREE.Quaternion[], hips: THREE.Vector3 } => ({ q: touched.map(b => b.quaternion.clone()), hips: this.bones[0].position.clone() })
+    const put = (s: { q: THREE.Quaternion[], hips: THREE.Vector3 }): void => { touched.forEach((b, i) => b.quaternion.copy(s.q[i])); this.bones[0].position.copy(s.hips); this.bones[0].updateMatrixWorld(true) }
+    const before = save()
+    const first = this.solveFrom(goals, opts)
+    if (first.miss <= WARM_RETRY * this.scale) return first
+    // (the other start: the start itself after a warm one, or the correction it is pulled toward (opts.smooth) after a cold one)
+    const other = this.warmUsed ? { ...opts, warm: undefined } : opts.smooth !== undefined ? { ...opts, warm: opts.smooth.ref } : null
+    if (other === null) return first
+    const after = save()
+    put(before)
+    const second = this.solveFrom(goals, other, true)
+    if ((second.objective?.end.total ?? Infinity) < (first.objective?.end.total ?? Infinity)) return second
+    put(after)
+    return first
+  }
+
+  /** Whether the last solveFrom searched from its warm start (or dropped it for the start). */
+  private warmUsed = false
+
+  /** One search (`force`: from opts.warm whatever the start scores). */
+  private solveFrom (goals: NaturalGoal[], opts: NaturalOptions, force = false): NaturalResult {
     const t0 = performance.now()
     const quick = opts.mode === 'quick'
     this.bones[0].updateMatrixWorld(true)
@@ -994,15 +1029,39 @@ export class NaturalRig {
     const cpairs = solid === null ? null : solid.pairs
     const nC = solid === null || cpairs === null ? 0 : quick ? solid.quick : cpairs.length / 2
     // (things the body must stay clear of: each a capsule, against every segment it doesn't let through)
-    const obst: Array<{ p: Float64Array, q: Float64Array, r: number, seg: number }> = []
+    const obst: Array<{ p: Float64Array, q: Float64Array, r: number, seg: number, o: number }> = []
     if (solid !== null) {
-      for (const o of opts.obstacles ?? []) {
+      (opts.obstacles ?? []).forEach((o, oi) => {
         const skip = new Set(o.ignore ?? [])
-        solid.shape.segments.forEach((sg, i) => { if (!skip.has(sg.name)) obst.push({ p: Float64Array.from(o.from.toArray()), q: Float64Array.from(o.to.toArray()), r: o.radius, seg: i }) })
-      }
+        solid.shape.segments.forEach((sg, i) => { if (!skip.has(sg.name)) obst.push({ p: Float64Array.from(o.from.toArray()), q: Float64Array.from(o.to.toArray()), r: o.radius, seg: i, o: oi }) })
+      })
     }
     const nO = obst.length
     const obstacleSlack = OBSTACLE.slack * this.scale
+    // (an avoid signal: each pair's and obstacle's overlap in the start pose is its own, only deeper costs; a limb against the
+    // trunk's overlapping capsules, and an obstacle against them, is one contact, its deepest: `group` is the row that carries it)
+    const tol = new Float64Array(nC + nO); const group = new Int32Array(nC + nO); const deepest = new Float64Array(nC + nO)
+    if (solid !== null && nC + nO > 0) {
+      const name = (i: number): string => solid.shape.segments[i].name
+      const trunk = (i: number): boolean => TRUNK.has(name(i))
+      const lead = new Map<string, number>()
+      const key = (k: number): string => {
+        if (k < nC) {
+          const a = cpairs![k * 2]; const b = cpairs![k * 2 + 1]
+          if (trunk(a) !== trunk(b)) return `${name(trunk(a) ? b : a)}|trunk`
+          return `${a}|${b}`
+        }
+        const o = obst[k - nC]
+        return trunk(o.seg) ? `o${o.o}|trunk` : `o${o.o}|${o.seg}`
+      }
+      for (let k = 0; k < nC + nO; k++) { const s = key(k); if (!lead.has(s)) lead.set(s, k); group[k] = lead.get(s)! }
+      this.fk(start.p, start.yaw, start.hips.x, start.hips.y, start.hips.z)
+      solid.update(this.P, this.Q)
+      for (let k = 0; k < nC; k++) tol[k] = Math.max(0, solid.depth(cpairs![k * 2], cpairs![k * 2 + 1]) - solid.slack[k])
+      for (let k = 0; k < nO; k++) { const o = obst[k]; tol[nC + k] = Math.max(0, solid.depthOf(o.seg, o.p, o.q, o.r) - obstacleSlack) }
+    }
+    // (the avoid cost of an overlap `x` metres deeper than allowed: per centimetre at first, saturating at COLLIDE.cap)
+    const avoid = (x: number): number => { const u = x / unit; return COLLIDE.weight * u / Math.sqrt(1 + (u / COLLIDE.cap) ** 2) }
     // (a pair that is nowhere near overlapping has no cost and no slope: the Jacobian's many small steps look only at the pairs that do, `active`)
     const overlap = new Float64Array(nC + nO); const active = new Uint8Array(nC + nO)
     let collideAll = true; let anyActive = true
@@ -1110,21 +1169,19 @@ export class NaturalRig {
         }
         out[r++] = 0
       } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
-      // (body parts inside one another: the overlap past the slack)
+      // (body parts inside one another, and the obstacles: the overlap past the slack and past the start's own, each group's deepest)
       if (solid !== null && (nC > 0 || nO > 0)) {
         if (collideAll || anyActive) solid.update(P, Q)
-        for (let k = 0; k < nC; k++) {
-          let u = 0
-          if (collideAll) { overlap[k] = solid.depth(cpairs![k * 2], cpairs![k * 2 + 1]) - solid.slack[k]; u = Math.max(0, overlap[k]) / unit } else if (active[k] === 1) u = Math.max(0, solid.depth(cpairs![k * 2], cpairs![k * 2 + 1]) - solid.slack[k]) / unit
-          out[r++] = COLLIDE.weight * u * (1 + u / COLLIDE.steep)
+        deepest.fill(0)
+        for (let k = 0; k < nC + nO; k++) {
+          if (!collideAll && active[k] !== 1) continue
+          let d: number
+          if (k < nC) d = solid.depth(cpairs![k * 2], cpairs![k * 2 + 1]) - solid.slack[k] - tol[k]
+          else { const o = obst[k - nC]; d = solid.depthOf(o.seg, o.p, o.q, o.r) - obstacleSlack - tol[k] }
+          if (collideAll) overlap[k] = d
+          if (d > deepest[group[k]]) deepest[group[k]] = d
         }
-        // (the obstacles: a segment into one past the slack)
-        for (let k = 0; k < nO; k++) {
-          const o = obst[k]; const kk = nC + k
-          let u = 0
-          if (collideAll) { overlap[kk] = solid.depthOf(o.seg, o.p, o.q, o.r) - obstacleSlack; u = Math.max(0, overlap[kk]) / unit } else if (active[kk] === 1) u = Math.max(0, solid.depthOf(o.seg, o.p, o.q, o.r) - obstacleSlack) / unit
-          out[r++] = COLLIDE.weight * u * (1 + u / COLLIDE.steep)
-        }
+        for (let k = 0; k < nC + nO; k++) out[r++] = group[k] === k ? avoid(deepest[k]) : 0
       }
       // (the limits: a joint out of its range pulled to the nearest turn in it, as chosen at the iteration's start)
       for (let b = 0; b < NB; b++) {
@@ -1215,16 +1272,25 @@ export class NaturalRig {
       return t
     }
     limitPull(p)
-    const startTerms = terms(p, z)
     let r = evalRows(p, z, f)
     let c = cost(f, r, z)
+    // (a warm start that scores worse than the start itself is dropped: an earlier answer is a hint, not a branch to be stuck in)
+    this.warmUsed = opts.warm !== undefined
+    if (this.warmUsed && !force) {
+      const zc = Float64Array.from(z0); const pc = new Float64Array(DIM)
+      model.fromWhite(zc, pc)
+      limitPull(pc)
+      const fc = new Float64Array(nRows); const rc = evalRows(pc, zc, fc); const cc = cost(fc, rc, zc)
+      if (cc <= c) { z.set(zc); p.set(pc); f.set(fc.subarray(0, rc)); r = rc; c = cc; this.warmUsed = false } else { limitPull(p); r = evalRows(p, z, f); c = cost(f, r, z) }
+    }
+    const startTerms = terms(p, z)
     let mu = 1e-2
     let iterations = 0
     const goalMiss = (): number => {
       // (the worst point miss, metres, from the rows' units)
       let worst = 0
       for (let gi = 0; gi < rows.length; gi++) {
-        if (!rows[gi].boost || rows[gi].position === null) continue
+        if (!rows[gi].boost || rows[gi].position === null || rows[gi].phase === 1) continue
         const o = gi * 9
         worst = Math.max(worst, Math.hypot(f[o], f[o + 1], f[o + 2]) * unit / weights[gi])
       }
@@ -1308,9 +1374,9 @@ export class NaturalRig {
     }
     const soften = phase === 1
     const meet = (): void => {
-      // (a goal still off by over half a millimetre counts for more: a few rounds)
+      // (a goal still off by over half a millimetre counts for more: a few rounds; the feet held while the goals are met (phase 1) are not hardened with them)
       for (let boost = 0; !quick && boost < 3 && goalMiss() > 0.0005; boost++) {
-        for (let gi = 0; gi < rows.length; gi++) if (rows[gi].boost) weights[gi] *= 4
+        for (let gi = 0; gi < rows.length; gi++) if (rows[gi].boost && rows[gi].phase !== 1) weights[gi] *= 4
         r = evalRows(p, z, f); c = cost(f, r, z)
         iterate(10)
       }
@@ -1513,7 +1579,7 @@ export class NaturalRig {
     const now = this.encode()
     const delta = new Float64Array(DIM + EXTRA)
     for (let d = 0; d < DIM; d++) delta[d] = now.p[d] - start.p[d]
-    delta[DIM] = now.yaw - start.yaw
+    delta[DIM] = Math.atan2(Math.sin(now.yaw - start.yaw), Math.cos(now.yaw - start.yaw))
     delta[DIM + 1] = now.hips.x - start.hips.x
     delta[DIM + 2] = now.hips.y - start.hips.y
     delta[DIM + 3] = now.hips.z - start.hips.z
@@ -1576,6 +1642,8 @@ export interface NaturalSolveOptions extends SolveOptions {
   obstacles?: Obstacle[]
   /** Follow the previous frame: its correction (the state's `warm`) is where this frame's is pulled to, at this weight (per radian squared; FOLLOW). A clip's frames are solved in turn, so a choice the goals leave open (which foot steps, how deep the hips drop, where the elbow points) is made the same way on neighbouring frames, not one way on one and the other on the next. */
   follow?: number
+  /** Soft goals passed through to the solve as they are (the editor's: the body's root held near where it was seen when a prop was let go). */
+  soft?: NaturalGoal[]
 }
 export type BodySolver = (bones: Map<string, THREE.Bone>, goals: HandGoal[], opts: NaturalSolveOptions, prev: BodyState | null) => { state: BodyState, miss: number }
 export interface BodySolverOptions {
@@ -1660,11 +1728,12 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
     const turnBefore = wq(spine); const hipsBefore = wp(hips)
     const lateral = wp(bones.get('LeftArm')!).sub(wp(bones.get('RightArm')!)); lateral.y = 0
     lateral.normalize()
-    const warm = opts.quick === true ? undefined : (prev as NaturalBodyState | null)?.warm
-    const follow = opts.follow !== undefined && warm !== undefined ? { ref: warm, weight: opts.follow } : undefined
+    // (each frame's search starts cold, from the frame as the clip has it; the last frame's correction is only what this one's is pulled toward: a warm start carried the last answer's branch on, through frames where the clip's own pose wants another)
+    const last = (prev as NaturalBodyState | null)?.warm
+    const follow = opts.follow !== undefined && last !== undefined ? { ref: last, weight: opts.follow } : undefined
     // (a hand holding a shaft: the point it holds at is the goal's point on the bone, so its turn gives about that point and the hand stays on the shaft; the goal's place is that point's, `at` + the turn carrying it)
     const heldAt = new Map<HandGoal, THREE.Vector3>()
-    const res = rig.solve(goals.map(g => {
+    const res = rig.solve([...goals.map((g): NaturalGoal => {
       // (a hand's turn: exact with roll false; with give false only the roll round its grip line yields; by default it gives a little on every axis)
       // (a hand carrying a prop keeps its turn exactly: the prop rides it, so its turn is the prop's place)
       const hand = bones.get(`${g.hand}Hand`)
@@ -1679,8 +1748,8 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
       const place = g.at.clone().add(held.fist.clone().applyQuaternion(g.turn))
       heldAt.set(g, place)
       return { bone: `${g.hand}Hand`, at: held.fist.clone().divideScalar(scale), position: place, turn: g.turn, exact: true, ...turn }
-    }), {
-      feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, warm, smooth: follow, collide: options.collide ?? undefined, obstacles: opts.obstacles,
+    }), ...(opts.soft ?? [])], {
+      feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, smooth: follow, collide: options.collide ?? undefined, obstacles: opts.obstacles,
     })
     // (the fingers as asked; the miss as it stands: a hand holding a shaft by its hold point)
     let miss = 0
