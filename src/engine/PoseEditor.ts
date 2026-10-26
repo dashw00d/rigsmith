@@ -1,7 +1,8 @@
 // Posing a character in the stage, for the animation editor (src/state/clipedit.svelte.ts). A dot on every joint:
 // dragging a limb's end (a hand, a foot, the head, a hoof) reaches the limb there (src/engine/ik.ts); dragging any other
 // joint swings the bone above it towards the pointer; the hips handle crouches and jumps (up and down, the feet kept
-// where they stand; Shift: any way). Clicking a joint selects its bone, and a gizmo turns it. Every joint is held in its
+// where they stand; Shift: any way). Clicking a joint selects it: the gizmo moves it as a drag does (arrows: one axis or
+// a plane), or turns its bone (rings; about its own axes or the world's). Every joint is held in its
 // limits (src/engine/limits.ts) and no foot goes under the floor. The clip stops driving the bones while a drag lasts
 // (`begin`); letting go reports the bones it moved (`commit`), to key there.
 import * as THREE from 'three'
@@ -46,6 +47,9 @@ export interface PoseEditorEvents {
   hover: (bone: string | null) => void
   begin: () => void
   commit: (bones: string[]) => void
+  /** After every move or turn, as it happens (`moving`: the joint moved): what holds (a hand locked on a prop) puts its
+   * hold back, but on the joint being moved. */
+  constrain: (moving: string | null) => void
 }
 
 const COLOR = { joint: 0xe9ebf1, end: 0x6aaaff, hips: 0xf5c45e, selected: 0xff7ab8 }
@@ -60,6 +64,14 @@ export class PoseEditor {
   private readonly off: Array<() => void> = []
   private drag: { bone: string, kind: 'reach' | 'swing' | 'hips', plane: THREE.Plane, grab: THREE.Vector3, start: THREE.Vector3, moved: Set<string>, free: boolean, feet: Array<{ at: THREE.Vector3, turn: THREE.Quaternion }> } | null = null
   private selected: string | null = null
+  /** What the gizmo does to the joint selected: moves it (the limb follows, as a drag) or turns its bone. */
+  private mode: 'move' | 'rotate' = 'move'
+  private space: 'local' | 'world' = 'local'
+  /** What the move gizmo holds: a point at the joint (the joint follows it). */
+  private readonly proxy = new THREE.Object3D()
+  private gizmoDragging = false
+  private gizmoFeet: Array<{ at: THREE.Vector3, turn: THREE.Quaternion }> = []
+  private gizmoMoved = new Set<string>()
   private hovered: string | null = null
   private readonly legs: Leg[]
   private readonly soles: number[][]
@@ -101,19 +113,29 @@ export class PoseEditor {
     this.soles = this.legs.map(l => [l.end, l.ball, l.tip].map(b => (b === null ? -Infinity : (rest?.bones.get(b.name)?.worldPosition.y ?? b.getWorldPosition(new THREE.Vector3()).y) - floor)))
 
     this.gizmo = new TransformControls(stage.camera, stage.renderer.domElement)
-    this.gizmo.setSize(0.6)
-    this.gizmo.setMode('rotate')
-    this.gizmo.setSpace('local')
+    this.gizmo.setSize(0.7)
+    stage.scene.add(this.proxy)
     this.gizmo.addEventListener('dragging-changed', (e) => {
       const on = (e as unknown as { value: boolean }).value
       stage.controls.enabled = !on
-      if (on) { this.allowed = this.sunk(); this.events.begin?.(); return }
-      if (this.selected !== null) this.events.commit?.([this.selected])
+      this.gizmoDragging = on
+      if (on) {
+        this.allowed = this.sunk()
+        this.gizmoFeet = plantedFeet(this.legs)
+        this.gizmoMoved = new Set(this.selected !== null && this.mode === 'rotate' ? [this.selected] : [])
+        this.events.begin?.()
+        return
+      }
+      if (this.gizmoMoved.size > 0) this.events.commit?.([...this.gizmoMoved])
     })
     this.gizmo.addEventListener('objectChange', () => {
+      if (!this.gizmoDragging || this.selected === null) return
+      if (this.mode === 'move') { this.moveJoint(this.selected, this.proxy.position.clone(), this.gizmoFeet, this.gizmoMoved); return }
       const b = bone(this.selected)
       if (b !== null && this.limits !== null && this.limits.has(b.name)) b.quaternion.copy(this.limits.clamp(b.name, b.quaternion))
-      this.keepFeet()
+      b?.updateMatrixWorld(true)
+      this.events.constrain?.(this.selected)
+      if (this.keepFeet()) for (const l of this.legs) for (const x of [l.upper, l.lower, l.end]) this.gizmoMoved.add(x.name)
     })
     stage.scene.add(this.gizmo.getHelper())
 
@@ -137,23 +159,48 @@ export class PoseEditor {
     this.gizmo.detach()
     this.gizmo.getHelper().removeFromParent()
     this.gizmo.dispose()
+    this.proxy.removeFromParent()
     this.group.removeFromParent()
     this.stage.controls.enabled = true
   }
 
-  /** Select a bone (the gizmo turns it), or none. */
+  /** Select a joint (the gizmo on it), or none. */
   select (name: string | null): void {
     this.selected = name
-    const b = name === null ? undefined : this.view.bones.get(name)
-    if (b === undefined) this.gizmo.detach(); else this.gizmo.attach(b)
+    this.attachGizmo()
     this.events.select?.(name)
+  }
+
+  /** Move the joint (the limb follows) or turn its bone; turn about the bone's own axes or the world's. */
+  setMode (mode: 'move' | 'rotate'): void { this.mode = mode; this.attachGizmo() }
+  setSpace (space: 'local' | 'world'): void { this.space = space; this.attachGizmo() }
+  get gizmoMode (): 'move' | 'rotate' { return this.mode }
+
+  private attachGizmo (): void {
+    const b = this.selected === null ? undefined : this.view.bones.get(this.selected)
+    if (b === undefined) { this.gizmo.detach(); return }
+    if (this.mode === 'move') {
+      b.getWorldPosition(this.proxy.position)
+      this.proxy.updateMatrixWorld(true)
+      this.gizmo.setMode('translate')
+      this.gizmo.setSpace('world')
+      this.gizmo.attach(this.proxy)
+    } else {
+      this.gizmo.setMode('rotate')
+      this.gizmo.setSpace(this.space)
+      this.gizmo.attach(b)
+    }
   }
 
   get selection (): string | null { return this.selected }
 
-  /** The handles follow the bones (each frame). */
+  /** The handles follow the bones (each frame), and the move gizmo its joint (but while it's dragged). */
   private place (): void {
     const v = new THREE.Vector3()
+    if (this.mode === 'move' && !this.gizmoDragging && this.selected !== null) {
+      this.view.bones.get(this.selected)?.getWorldPosition(this.proxy.position)
+      this.proxy.updateMatrixWorld(true)
+    }
     for (const [name, m] of this.handles) {
       const b = this.view.bones.get(name)!
       b.getWorldPosition(v)
@@ -215,24 +262,30 @@ export class PoseEditor {
     const hit = this.ray.ray.intersectPlane(d.plane, new THREE.Vector3())
     if (hit === null) return
     const target = d.start.clone().add(hit.sub(d.grab))
-    const bone = this.view.bones.get(d.bone)!
+    const want = d.kind === 'hips' && !(d.free || e.shiftKey) ? new THREE.Vector3(d.start.x, target.y, d.start.z) : target
+    this.moveJoint(d.bone, want, d.feet, d.moved)
+  }
+
+  /** Move a joint to `target` (world): a limb's end reaches it, the hips go there with the feet kept (`feet`: where
+   * they stood when the move began), any other joint swings the bone above it there. The bones moved go in `moved`. */
+  private moveJoint (name: string, target: THREE.Vector3, feet: Array<{ at: THREE.Vector3, turn: THREE.Quaternion }>, moved: Set<string>): void {
+    const bone = this.view.bones.get(name)
+    if (bone === undefined) return
     const opts = { limits: this.limits ?? undefined, nameOf: this.nameOf }
-    if (d.kind === 'hips') {
-      const hips = this.view.bones.get(this.rig.hips)!
-      const now = hips.getWorldPosition(new THREE.Vector3())
-      const want = d.free || e.shiftKey ? target : new THREE.Vector3(d.start.x, target.y, d.start.z)
-      moveHips(hips, want.sub(now), this.legs, { ...opts, floor: this.floor, soles: this.soles, planted: d.feet })
-      d.moved.add(hips.name)
-      for (const l of this.legs) for (const b of [l.upper, l.lower, l.end]) d.moved.add(b.name)
-    } else if (d.kind === 'reach') {
-      const l = this.rig.limbs[d.bone]
+    if (name === this.rig.hips) {
+      const now = bone.getWorldPosition(new THREE.Vector3())
+      moveHips(bone, target.clone().sub(now), this.legs, { ...opts, floor: this.floor, soles: this.soles, planted: feet })
+      moved.add(bone.name)
+      for (const l of this.legs) for (const b of [l.upper, l.lower, l.end]) moved.add(b.name)
+    } else if (this.rig.limbs[name] !== undefined) {
+      const l = this.rig.limbs[name]
       const limb: Limb = { upper: this.view.bones.get(l.upper)!, lower: this.view.bones.get(l.lower)!, end: this.view.bones.get(l.end)! }
-      // (the joint dragged may be below the limb's end, a hoof below its fetlock: the end moves with it)
+      // (the joint moved may be below the limb's end, a hoof below its fetlock: the end moves with it)
       const offset = bone === limb.end ? new THREE.Vector3() : bone.getWorldPosition(new THREE.Vector3()).sub(limb.end.getWorldPosition(new THREE.Vector3()))
       reach(limb, target.clone().sub(offset), { ...opts, keepEnd: true })
-      for (const b of [limb.upper, limb.lower, limb.end]) d.moved.add(b.name)
+      for (const b of [limb.upper, limb.lower, limb.end]) moved.add(b.name)
     } else {
-      // swing the bone above towards the pointer
+      // swing the bone above towards the target
       const parent = bone.parent as THREE.Bone
       if (parent?.isBone !== true) return
       const p = parent.getWorldPosition(new THREE.Vector3())
@@ -244,9 +297,10 @@ export class PoseEditor {
       parent.quaternion.copy(pq.invert().multiply(q))
       if (this.limits !== null && this.limits.has(parent.name)) parent.quaternion.copy(this.limits.clamp(parent.name, parent.quaternion))
       parent.updateMatrixWorld(true)
-      d.moved.add(parent.name)
+      moved.add(parent.name)
     }
-    if (this.keepFeet()) for (const l of this.legs) for (const b of [l.upper, l.lower, l.end]) d.moved.add(b.name)
+    this.events.constrain?.(name)
+    if (this.keepFeet()) for (const l of this.legs) for (const b of [l.upper, l.lower, l.end]) moved.add(b.name)
   }
 
   /** How far under the floor each leg's soles are now (0 above it). */

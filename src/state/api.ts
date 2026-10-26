@@ -16,6 +16,8 @@ export interface LibraryPage {
   pages: number
   pageSize: number
   categories: Array<{ id: string, label: string, count: number }>
+  /** How many clips were made here (source custom). */
+  custom: number
   clips: LibraryClip[]
 }
 
@@ -60,7 +62,7 @@ export const api = {
   skeletonPresets: async () => await call<Array<{ name: string, map: Record<string, string> }>>('GET', '/api/skeleton-presets'),
   saveSkeletonPreset: async (name: string, map: Record<string, string>) => await call<{ ok: boolean }>('POST', '/api/skeleton-presets', { name, map }),
   thumbnail: async (id: string, image: Blob) => await call<Character>('PUT', `/api/characters/${id}/thumbnail`, image),
-  library: async (params: { category?: string, q?: string, page?: number, size?: number, rig?: string }) => {
+  library: async (params: { category?: string, q?: string, page?: number, size?: number, rig?: string, source?: string }) => {
     const query = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') query.set(k, String(v))
     return await call<LibraryPage>('GET', `/api/library?${query.toString()}`)

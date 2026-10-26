@@ -141,6 +141,21 @@ async function bundledClips (): Promise<Clip[]> {
   return out
 }
 
+let creatures: { mtime: number, clips: Clip[] } | null = null
+
+/** Clips made in the animation editor for a creature (a horse): workspace/library/creatures/index.json, the files
+ * beside it (server/clipedits.ts). A person's are library clips like any. */
+async function creatureClips (): Promise<Clip[]> {
+  const file = path.join(LIBRARY, 'creatures', 'index.json')
+  let mtime: number
+  try { mtime = (await stat(file)).mtimeMs } catch { return [] }
+  if (creatures === null || creatures.mtime !== mtime) {
+    const index = await readJson<{ clips: Clip[] }>(file, { clips: [] })
+    creatures = { mtime, clips: index.clips.map(c => ({ ...c, href: `/files/library/${c.file}` })) }
+  }
+  return creatures.clips
+}
+
 async function manifest (): Promise<Manifest> {
   const file = path.join(LIBRARY, 'manifest.json')
   let mtime: number
@@ -172,7 +187,7 @@ export async function queryLibrary (q: LibraryQuery) {
   const m = await manifest()
   const findings = await auditFindings()
   const rig = q.rig ?? 'human'
-  const all = [...m.clips, ...await bundledClips()].filter(c => c.rig === rig)
+  const all = [...m.clips, ...await bundledClips(), ...await creatureClips()].filter(c => c.rig === rig)
   const terms = (q.query ?? '').toLowerCase().split(/\s+/).filter(Boolean)
   const matches = all.filter(c =>
     (q.category === undefined || q.category === '' || c.category === q.category) &&
@@ -200,7 +215,15 @@ export async function queryLibrary (q: LibraryQuery) {
     pages,
     pageSize,
     catalog: rig === 'human' ? m.catalog ?? null : null,
+    /** Clips made here (the animation editor's, the scripted ones): source custom. */
+    custom: all.filter(c => c.source === 'custom').length,
     categories: order.map(id => ({ id, label: labels.get(id) ?? id.replace(/-/g, ' & ').replace(/^\w/, ch => ch.toUpperCase()), count: counts.get(id) ?? 0 })),
     clips: matches.slice(page * pageSize, (page + 1) * pageSize).map(c => ({ ...c, url: c.href ?? `/files/library/${c.file}`, problems: findings[c.id]?.problems })),
   }
+}
+
+/** A clip's category, by id (any rig's: the library's, the bundled, the made ones). */
+export async function categoryOf (id: string): Promise<string | null> {
+  const m = await manifest()
+  return [...m.clips, ...await bundledClips(), ...await creatureClips()].find(c => c.id === id)?.category ?? null
 }

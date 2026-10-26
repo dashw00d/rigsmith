@@ -280,6 +280,16 @@ class Animator {
     return new THREE.AnimationClip(clip.name, clip.duration, tracks)
   }
 
+  /** A hand's fingers closed round a shaft (local turns): as the character's Hold fist script for that hand closes
+   * them, else as 2hand Idle does. */
+  async fistOf (side: 'Left' | 'Right'): Promise<Record<string, [number, number, number, number]>> {
+    const root = this.posableCopy()
+    if (root === null || this.cache === null) return {}
+    const grip = (app.selected?.scripts ?? []).find((x): x is GripScript => x.enabled && x.kind === 'grip' && x.side === side)
+    const clip = await this.cache.get(clipUrl(grip?.clip ?? 'mixamo-2hand_Idle'), { inPlace: true })
+    return Object.fromEntries([...fistPose(root, clip, side).pose].map(([n, q]) => [n, q.toArray() as [number, number, number, number]]))
+  }
+
   /** The rest pose with the hands closed as the character's Hold fist scripts close them (both hands round a shaft, as
    * in 2hand Idle, if it has none): to fit what a hand holds. */
   async playFists (): Promise<void> {

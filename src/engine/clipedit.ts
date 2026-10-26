@@ -6,7 +6,8 @@
 import * as THREE from 'three'
 import type { ClipKey } from '../../server/workspace.ts'
 import { applyBoneKeys, KEY_FPS } from './keys.ts'
-import { keepOffFloor, type Leg } from './ik.ts'
+import { keepOffFloor, reach, setWorldQuaternion, type Leg } from './ik.ts'
+import { holdTwoHanded, twoHandBones, type BodyTurn, type TwoHandHold } from './twohand.ts'
 import type { JointLimits } from './limits.ts'
 import { pelvisName, retargetOffsets, type RestSkeleton } from './retarget.ts'
 import type { PoseRig } from './PoseEditor.ts'
@@ -44,7 +45,7 @@ function bonesOf (root: THREE.Object3D): Map<string, THREE.Bone> {
   return out
 }
 
-function legsOf (bones: Map<string, THREE.Bone>, rig: PoseRig): Leg[] {
+export function legsOf (bones: Map<string, THREE.Bone>, rig: PoseRig): Leg[] {
   const b = (n: string | null): THREE.Bone | null => (n === null ? null : bones.get(n) ?? null)
   return rig.legs.filter(l => b(l.upper) !== null && b(l.lower) !== null && b(l.end) !== null)
     .map(l => ({ upper: b(l.upper)!, lower: b(l.lower)!, end: b(l.end)!, ball: b(l.ball), tip: b(l.tip) }))
@@ -56,17 +57,101 @@ function sunk (legs: Leg[], soles: number[][], floor: number): number[] {
   return legs.map((l, i) => Math.max(0, ...[l.end, l.ball, l.tip].map((b, k) => (b === null || !Number.isFinite(soles[i][k]) ? 0 : floor + soles[i][k] - b.getWorldPosition(v).y))))
 }
 
+/** A hand held on a prop through the clip (src/engine/twohand.ts TwoHandHold): its fist's middle on the prop and the
+ * prop's length, in the frame of the bone the prop rides (a prop rides its bone rigidly: held to the bone is held to the
+ * prop), the hand's turn there, where its fist is in it, its fingers closed. */
+export interface Hold extends TwoHandHold {
+  /** The prop (a rigid garment's name), for the panel. */
+  prop: string
+}
+
+/** Both hands on one prop: the prop rides the other hand (a spear); the whole body takes part. */
+export function twoHanded (h: Hold): boolean {
+  const side = /^(Left|Right)Hand$/.exec(h.bone)?.[1]
+  return side !== undefined && side !== h.hand
+}
+
 /**
- * The edited clip: `base` with the keys, then the floor (on `posable`, a copy of the character to pose off stage): on
- * each frame a leg the keys sank further under the floor than the base had it reaches its foot back up.
+ * A hand's grip, from its knuckles at rest, in the hand's own frame: the line a shaft takes through the fist (across
+ * the knuckles from the little finger's to the index's, leaning 25 degrees towards the heel of the hand: out of the
+ * thumb's side), and the fist's middle (by the knuckles, a little into the palm). Null for a hand without fingers.
+ */
+export function handGrip (rest: RestSkeleton, hand: 'Left' | 'Right'): { axis: THREE.Vector3, fist: THREE.Vector3 } | null {
+  const at = (n: string): THREE.Vector3 | null => rest.bones.get(`${hand}${n}`)?.worldPosition.clone() ?? null
+  const wrist = rest.bones.get(`${hand}Hand`)
+  const index = at('HandIndex1'); const little = at('HandPinky1') ?? at('HandRing1') ?? at('HandMiddle1'); const middle = at('HandMiddle1') ?? index
+  if (wrist === undefined || index === null || little === null || middle === null || index.distanceTo(little) < 1e-6) return null
+  const h = wrist.worldPosition
+  const along = middle.clone().sub(h)
+  const length = along.length()
+  const f = along.normalize()
+  const k = index.clone().sub(little)
+  const width = k.length()
+  k.addScaledVector(f, -k.dot(f)).normalize()
+  // (the palm's side: where the thumb is, off the plane of the knuckles)
+  let n = new THREE.Vector3().crossVectors(f, k).normalize()
+  const thumb = at('HandThumb1')
+  if (thumb !== null && thumb.clone().sub(h).dot(n) < 0) n.negate()
+  const lean = THREE.MathUtils.degToRad(25)
+  const axis = k.clone().multiplyScalar(Math.cos(lean)).addScaledVector(f, -Math.sin(lean)).normalize()
+  const fist = index.clone().add(little).multiplyScalar(0.5).addScaledVector(f, 0.12 * length).addScaledVector(n, 0.35 * width)
+  const inv = wrist.worldQuaternion.clone().invert()
+  return { axis: axis.applyQuaternion(inv), fist: fist.sub(h).applyQuaternion(inv) }
+}
+
+/** The arm a hand belongs to. */
+export function armOf (hand: 'Left' | 'Right'): { upper: string, lower: string, end: string } {
+  return { upper: `${hand}Arm`, lower: `${hand}ForeArm`, end: `${hand}Hand` }
+}
+
+/** Put each held hand on its prop, as the body stands now (`prev`: each two-handed hold's last turn, kept near; `quick`:
+ * a drag, live). A hand on a prop the other hand carries: the whole body turns to it (src/engine/twohand.ts); on any
+ * other prop: its arm reaches it. Returns each hold's turn (for the next frame) and the worst miss. */
+export function applyHolds (bones: Map<string, THREE.Bone>, holds: Hold[], limits: JointLimits | null, legs: Leg[] = [], prev: Array<BodyTurn | null> = [], quick = false): { turns: Array<BodyTurn | null>, miss: number } {
+  const nameOf = (b: THREE.Bone): string => b.name
+  let worst = 0
+  const turns = holds.map((h, i) => {
+    // (a drag, live: the hand just reaches its grip; the body's turn is the bake's, after)
+    if (twoHanded(h) && !quick) {
+      const r = holdTwoHanded(bones, h, { limits, nameOf, legs, quick }, prev[i] ?? null)
+      worst = Math.max(worst, r.miss)
+      return r.turn
+    }
+    const carrier = bones.get(h.bone); const a = armOf(h.hand)
+    const upper = bones.get(a.upper); const lower = bones.get(a.lower); const end = bones.get(a.end)
+    if (carrier === undefined || upper === undefined || lower === undefined || end === undefined) return null
+    carrier.updateMatrixWorld(true)
+    const turn = carrier.getWorldQuaternion(new THREE.Quaternion()).multiply(new THREE.Quaternion(...h.turn))
+    const fist = new THREE.Vector3(...h.fist).applyMatrix4(carrier.matrixWorld)
+    worst = Math.max(worst, reach({ upper, lower, end }, fist.sub(new THREE.Vector3(...h.fistOffset).applyQuaternion(turn)), { limits: limits ?? undefined, nameOf, keepEnd: false }))
+    setWorldQuaternion(end, turn)
+    for (const [name, q] of Object.entries(h.fingers ?? {})) { const b = bones.get(name); if (b !== undefined) { b.quaternion.set(...q); b.updateMatrixWorld(true) } }
+    return null
+  })
+  return { turns, miss: worst }
+}
+
+/** The bones the hold alone drives (never keyed): the held hand's arm and fingers. */
+export function heldBy (h: Hold): string[] {
+  return [...Object.values(armOf(h.hand)), ...Object.keys(h.fingers ?? {})]
+}
+
+/** The bones a hold moves (their tracks baked). */
+export function holdBones (h: Hold, legs: Leg[] = []): string[] {
+  return twoHanded(h) ? twoHandBones(h, legs) : [...Object.values(armOf(h.hand)), ...Object.keys(h.fingers ?? {})]
+}
+
+/**
+ * The edited clip: `base` with the keys; then, on each frame (on `posable`, a copy of the character to pose off
+ * stage), the hands held on their props (`holds`), and the floor: a leg the edit sank further under it than the base
+ * had it reaches its foot back up.
  */
 export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipKey[]>, loop: boolean, rest: (bone: string) => { q: THREE.Quaternion, p: THREE.Vector3 } | null,
-  posable: THREE.Object3D, rig: PoseRig, floor: number, limits: JointLimits | null): THREE.AnimationClip {
+  posable: THREE.Object3D, rig: PoseRig, floor: number, limits: JointLimits | null, holds: Hold[] = []): THREE.AnimationClip {
   const keyed = applyBoneKeys(base, keys, loop, rest)
-  if (Object.keys(keys).length === 0) return keyed
+  if (Object.keys(keys).length === 0 && holds.length === 0) return keyed
   const bones = bonesOf(posable)
   const legs = legsOf(bones, rig)
-  if (legs.length === 0) return keyed
   // (the soles' heights at rest above the floor)
   const saved = [...bones.values()].map(b => [b, b.position.clone(), b.quaternion.clone()] as const)
   for (const b of bones.values()) { const r = rest(b.name); if (r !== null) { b.quaternion.copy(r.q); b.position.copy(r.p) } }
@@ -82,15 +167,18 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
     mixer.setTime(t)
     posable.updateMatrixWorld(true)
   }
-  const legBones = legs.flatMap(l => [l.upper, l.lower, l.end])
-  const values = new Map(legBones.map(b => [b.name, [] as number[]]))
-  let changed = false
+  const held = holds.flatMap(h => holdBones(h, legs).map(n => bones.get(n)).filter((b): b is THREE.Bone => b !== undefined))
+  let turns: Array<BodyTurn | null> = []
+  const touched = [...new Set([...legs.flatMap(l => [l.upper, l.lower, l.end]), ...held])]
+  const values = new Map(touched.map(b => [b.name, [] as number[]]))
+  let changed = holds.length > 0
   for (const t of times) {
     pose(base, t)
     const was = sunk(legs, soles, floor)
     pose(keyed, t)
+    if (holds.length > 0) turns = applyHolds(bones, holds, limits, legs, turns).turns
     const now = sunk(legs, soles, floor)
-    // (only what the keys sank: lift the leg by that, from where it stands)
+    // (only what the edit sank: lift the leg by that, from where it stands)
     const lift = legs.map((_, i) => now[i] - was[i])
     if (lift.some(x => x > 1e-4)) {
       changed = true
@@ -99,15 +187,15 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
         keepOffFloor([leg], floor - was[i], [soles[i]], { limits: limits ?? undefined, nameOf: b => b.name })
       })
     }
-    for (const b of legBones) values.get(b.name)!.push(...b.quaternion.toArray())
+    for (const b of touched) values.get(b.name)!.push(...b.quaternion.toArray())
   }
   mixer.stopAllAction()
   mixer.uncacheRoot(posable)
   for (const [b, p, q] of saved) { b.position.copy(p); b.quaternion.copy(q) }
   posable.updateMatrixWorld(true)
   if (!changed) return keyed
-  const tracks = keyed.tracks.filter(t => !legBones.some(b => t.name === `${b.name}.quaternion`))
-  for (const b of legBones) tracks.push(new THREE.QuaternionKeyframeTrack(`${b.name}.quaternion`, times, values.get(b.name)!))
+  const tracks = keyed.tracks.filter(t => !touched.some(b => t.name === `${b.name}.quaternion`))
+  for (const b of touched) tracks.push(new THREE.QuaternionKeyframeTrack(`${b.name}.quaternion`, times, values.get(b.name)!))
   return new THREE.AnimationClip(keyed.name, keyed.duration, tracks)
 }
 

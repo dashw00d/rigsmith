@@ -60,7 +60,14 @@ export class JointLimits {
    * @param parentOf a bone's parent (by name) in the character's skeleton
    * @param slack how many cells round the ones reached also count (a little room past the captures); `twistSlack` degrees
    */
-  constructor (readonly rom: Rom, private readonly offsets: Map<string, THREE.Quaternion> | null, private readonly parentOf: (bone: string) => string | null, slack = 1, twistSlack = 5) {
+  readonly rom: Rom
+  private readonly offsets: Map<string, THREE.Quaternion> | null
+  private readonly parentOf: (bone: string) => string | null
+
+  constructor (rom: Rom, offsets: Map<string, THREE.Quaternion> | null, parentOf: (bone: string) => string | null, slack = 1, twistSlack = 5) {
+    this.rom = rom
+    this.offsets = offsets
+    this.parentOf = parentOf
     const [ni, nj] = rom.bins
     for (const [name, b] of Object.entries(rom.bones)) {
       const raw = Uint8Array.from(atob(b.cells), c => c.charCodeAt(0))

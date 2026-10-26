@@ -5,6 +5,8 @@ const PAGE_SIZE = 24
 
 class LibraryState {
   category = $state('')
+  /** Only the clips made here (source custom), or every clip (''). */
+  source = $state('')
   query = $state('')
   /** Skeleton the library is showing clips for ('human' or a creature template). */
   rig = $state('human')
@@ -19,7 +21,7 @@ class LibraryState {
     const token = ++this.token
     this.loading = true
     try {
-      const data = await api.library({ category: this.category, q: this.query, page: this.page, size: PAGE_SIZE, rig: this.rig })
+      const data = await api.library({ category: this.category, q: this.query, page: this.page, size: PAGE_SIZE, rig: this.rig, source: this.source })
       if (token !== this.token) return
       this.data = data
       this.page = data.page
@@ -36,6 +38,16 @@ class LibraryState {
     this.page = 0
     void this.load()
   }
+
+  /** Show only the clips made here (or all again). */
+  setSource (source: string): void {
+    this.source = source
+    this.page = 0
+    void this.load()
+  }
+
+  /** Load the page again (a clip was saved). */
+  reload (): void { void this.load() }
 
   setQuery (query: string): void {
     this.query = query

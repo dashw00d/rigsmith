@@ -84,7 +84,14 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   a new clip* takes the edit back off the character onto the base clip's own skeleton (the retarget undone) and writes
   it into the library as `custom-<Name>`, tagged custom, in the base clip's category (`POST /api/library/edits`,
   `server/clipedits.ts` -> `workspace/library/sources/custom/<id>.edit.json`, made by `blender/clips/edit.py` through
-  the library's build). Creatures edit, but their clips aren't saved anywhere yet (they aren't library clips).
+  the library's build). A creature's clip (a horse's: not a Mixamo clip) is saved as a .glb on its template's skeleton
+  into `workspace/library/creatures/<rig>/`, listed beside the bundled ones (`creatures/index.json`). The library's
+  *Custom* chip shows the clips made here (a badge on each card). The gizmo moves a joint (G; the limb follows) or
+  turns its bone (R; its own axes or the world's). *Hands on a prop*: put a hand on a prop (the other hand's spear)
+  and Lock: the fist is snapped onto the prop's length, turned so the shaft runs through it, the fingers closed (the
+  Hold fist pose), and held there on every frame; with both hands on one prop the whole body turns and leans to it
+  (`src/engine/twohand.ts`: the hips and spine share the turn, the feet kept, the carrying hand put back on the prop,
+  the turn searched for the arms' ease), the carrying hand giving way only if the grip is still out of reach.
 - **Clip scripts** (Animate; `src/engine/scripts.ts`): switchable changes on top of the library motion: *Hold fist*,
   *Blow timing* (an attack cut so its blow lands at a share of it, or to a window around the blow), *Pace*.
 - The order, the same in the viewer (`animator.scripted`) and the export: the clip at its speed, then the scripts, then the

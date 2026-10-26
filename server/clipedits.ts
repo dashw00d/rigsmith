@@ -104,3 +104,29 @@ export async function saveEdit (id: string, e: SavedEdit, update: (progress: num
   queue = turn.catch(() => {})
   await turn
 }
+
+/** A creature's clip (a horse's: not a library clip) saved as made: its file into workspace/library/creatures/<rig>/,
+ * its line in creatures/index.json (server/library.ts lists them beside the bundled ones: source custom, tagged
+ * custom, in the category of the clip it came from). */
+export async function saveCreatureClip (p: { rig: string, name: string, base: string, category: string, loop: boolean, inPlace: boolean, duration: number }, glb: Buffer): Promise<{ id: string }> {
+  if (!/^[a-z0-9_-]+$/.test(p.rig)) throw new Error('Which body?')
+  if (p.name.trim() === '' || p.name.length > 80) throw new Error('Name the clip')
+  if (glb.length < 20 || glb.readUInt32LE(0) !== 0x46546C67) throw new Error('Not a .glb')
+  const dir = path.join(LIBRARY, 'creatures')
+  const indexFile = path.join(dir, 'index.json')
+  const index = await readJson<{ clips: Array<Record<string, unknown>> }>(indexFile, { clips: [] })
+  const stem = `custom-${p.rig}-${slug(p.name)}`
+  let id = stem
+  for (let k = 2; index.clips.some(c => c.id === id); k++) id = `${stem}_${k}`
+  await mkdir(path.join(dir, p.rig), { recursive: true })
+  const file = `creatures/${p.rig}/${id}.glb`
+  await writeFile(path.join(LIBRARY, file), glb)
+  const frames = Math.round(p.duration * 30) + 1
+  index.clips = [...index.clips.filter(c => c.id !== id), {
+    id, name: p.name.trim(), description: `Made in Rigsmith's animation editor from ${p.base}.`, source: 'custom', nameSource: 'source', file, fps: 30, frames,
+    duration: Math.round(p.duration * 1e4) / 1e4, category: p.category, tags: ['custom', p.loop ? 'loop' : 'one-shot', p.inPlace ? 'in-place' : 'root-motion'],
+    loop: p.loop, inPlace: p.inPlace, rig: p.rig, base: p.base, createdAt: new Date().toISOString(),
+  }]
+  await writeFile(indexFile, JSON.stringify(index, null, 1))
+  return { id }
+}

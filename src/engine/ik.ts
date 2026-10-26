@@ -34,13 +34,39 @@ function clampBone (bone: THREE.Bone, limits: JointLimits | undefined, nameOf: N
 
 /**
  * Reach: the limb's end to `target` (world), the middle joint bending on the side it bends now (or towards `pole`);
- * the end keeps its world turn (a hand doesn't spin as the arm moves) unless `keepEnd` is false. Within limits, a few
+ * the end keeps its world turn (a hand doesn't spin as the arm moves) unless `keepEnd` is false (held in its limit too
+ * unless `endFree`). Within limits, a few
  * rounds: each solves, then holds every joint in range. Returns how far from the target the end is left.
  */
-export function reach (limb: Limb, target: THREE.Vector3, opts: { limits?: JointLimits, nameOf: NameOf, pole?: THREE.Vector3, keepEnd?: boolean, rounds?: number }): number {
+export function reach (limb: Limb, target: THREE.Vector3, opts: { limits?: JointLimits, nameOf: NameOf, pole?: THREE.Vector3, keepEnd?: boolean, endFree?: boolean, rounds?: number }): number {
   const { upper, lower, end } = limb
   upper.updateMatrixWorld(true)
   const endTurn = worldQ(end)
+  const start = [upper.quaternion.clone(), lower.quaternion.clone(), end.quaternion.clone()]
+  let miss = reachOnce(limb, target, opts, endTurn)
+  // (held short by its limits: the middle joint may bend another way round the line to the target; the best of a
+  // few kept)
+  if (opts.limits !== undefined && miss > 0.005) {
+    const S = worldP(upper)
+    const axis = target.clone().sub(S).normalize()
+    let best = { miss, q: [upper.quaternion.clone(), lower.quaternion.clone(), end.quaternion.clone()] }
+    const side = new THREE.Vector3(0, 1, 0).cross(axis)
+    if (side.lengthSq() < 1e-8) side.set(1, 0, 0)
+    side.normalize()
+    for (let k = 0; k < 8 && best.miss > 0.005; k++) {
+      upper.quaternion.copy(start[0]); lower.quaternion.copy(start[1]); end.quaternion.copy(start[2]); upper.updateMatrixWorld(true)
+      const pole = side.clone().applyAxisAngle(axis, (k / 8) * Math.PI * 2)
+      const m = reachOnce(limb, target, { ...opts, pole }, endTurn)
+      if (m < best.miss - 1e-4) best = { miss: m, q: [upper.quaternion.clone(), lower.quaternion.clone(), end.quaternion.clone()] }
+    }
+    upper.quaternion.copy(best.q[0]); lower.quaternion.copy(best.q[1]); end.quaternion.copy(best.q[2]); upper.updateMatrixWorld(true)
+    miss = best.miss
+  }
+  return miss
+}
+
+function reachOnce (limb: Limb, target: THREE.Vector3, opts: { limits?: JointLimits, nameOf: NameOf, pole?: THREE.Vector3, keepEnd?: boolean, endFree?: boolean, rounds?: number }, endTurn: THREE.Quaternion): number {
+  const { upper, lower, end } = limb
   const rounds = opts.limits === undefined ? 1 : (opts.rounds ?? 4)
   for (let r = 0; r < rounds; r++) {
     const S = worldP(upper); const E = worldP(lower); const H = worldP(end)
@@ -67,7 +93,8 @@ export function reach (limb: Limb, target: THREE.Vector3, opts: { limits?: Joint
   }
   if (opts.keepEnd !== false) {
     setWorldQuaternion(end, endTurn)
-    clampBone(end, opts.limits, opts.nameOf)
+    // (endFree: the end keeps its turn exactly, its limit or not: a hand carrying a spear keeps the spear on its line)
+    if (opts.endFree !== true) clampBone(end, opts.limits, opts.nameOf)
   }
   return worldP(end).distanceTo(target)
 }

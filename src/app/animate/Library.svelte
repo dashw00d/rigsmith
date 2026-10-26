@@ -66,8 +66,12 @@
   {/if}
 
   <div class="chips" role="tablist" aria-label="Categories">
-    <button role="tab" aria-selected={library.category === ''} class:active={library.category === ''} onclick={() => library.setCategory('')}>
+    <button role="tab" aria-selected={library.category === '' && library.source === ''} class:active={library.category === '' && library.source === ''} onclick={() => { library.source = ''; library.setCategory('') }}>
       All <span>{total.toLocaleString()}</span>
+    </button>
+    <!-- (the clips made here: the animation editor's, the scripted ones) -->
+    <button role="tab" aria-selected={library.source === 'custom'} class:active={library.source === 'custom'} class="custom" onclick={() => library.setSource(library.source === 'custom' ? '' : 'custom')}>
+      Custom <span>{(library.data?.custom ?? 0).toLocaleString()}</span>
     </button>
     {#each library.data?.categories ?? [] as category (category.id)}
       {#if category.count > 0}

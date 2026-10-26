@@ -7,8 +7,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path'
 import { enqueue, events, type Job, listJobs, runBlender, runCodex } from './jobs.ts'
 import { optimizeSkin, torchPython } from './skinopt.ts'
-import { queryLibrary } from './library.ts'
-import { newId, saveEdit, type SavedEdit } from './clipedits.ts'
+import { categoryOf, queryLibrary } from './library.ts'
+import { newId, saveCreatureClip, saveEdit, type SavedEdit } from './clipedits.ts'
 import { journal, note as note_, record } from './journal.ts'
 import { exportUnits, gameSlots, gameStatus, saveUnits, units, type UnitSpec } from './game.ts'
 import { dropWeightEdits, keepWeightEdits, weightEdits, writeWeights, type WeightEdit } from './weights.ts'
@@ -608,6 +608,17 @@ route('POST', /^\/api\/library\/edits$/, async (req, res) => {
     await saveEdit(id, body, (progress, message) => { update({ progress, message }) })
   })
   send(res, 202, { id, job: job.id })
+})
+
+// A creature's clip made in the animation editor (a .glb on its template's skeleton): beside the bundled ones.
+route('POST', /^\/api\/library\/creature-clips$/, async (req, res, _, url) => {
+  const q = (k: string): string => url.searchParams.get(k) ?? ''
+  const glb = await readBody(req, 64 * 1024 * 1024)
+  try {
+    send(res, 200, await saveCreatureClip({ rig: q('rig'), name: q('name'), base: q('base'), category: q('category') || (await categoryOf(q('base'))) || 'gesture', loop: q('loop') === '1', inPlace: q('inPlace') === '1', duration: Number(q('duration')) || 0 }, glb))
+  } catch (error) {
+    throw new HttpError(400, (error as Error).message)
+  }
 })
 
 route('GET', /^\/api\/settings$/, async (req, res) => { send(res, 200, await getSettings()) })

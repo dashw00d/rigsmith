@@ -79,6 +79,7 @@
     {#if sheet === null && !failed}<div class="shimmer"></div>{/if}
     <span class="time mono">{duration}s</span>
     {#if clip.loop}<span class="loop" use:tooltip={'Loops seamlessly'}><Repeat size={11} /></span>{/if}
+    {#if clip.source === 'custom'}<span class="custom" use:tooltip={'Made here (the animation editor, or a script)'}>custom</span>{/if}
     {#if warning}<span class="warn" use:tooltip={warning} aria-label={warning}><TriangleAlert size={12} /></span>{/if}
     <button class="add" class:on={added && slots.armed === null} class:slot={slots.armed !== null} onclick={add}
       aria-label={slots.armed !== null ? `Use for ${slots.armed}` : added ? 'Remove from set' : 'Add to set'}
@@ -141,6 +142,7 @@
   .add:hover { transform: scale(1.08); background: var(--accent); color: var(--accent-ink); }
   .add.on { background: var(--ok); color: #06140d; }
   .add.slot { opacity: 1; width: auto; padding: 0 9px; border-radius: 13px; background: var(--accent); color: var(--accent-ink); }
+  .custom { position: absolute; left: 50%; transform: translateX(-50%); top: 6px; padding: 1px 6px; border-radius: 4px; background: rgb(255 122 184 / 85%); color: #1b0d14; font-size: 10px; font-weight: 700; letter-spacing: 0.02em; }
   .slotname { font-size: 11px; font-weight: 650; white-space: nowrap; }
   .label { padding: 7px 8px 8px; min-height: 40px; display: flex; flex-direction: column; gap: 2px; }
   .name { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; font-weight: 550; line-height: 1.3; }
