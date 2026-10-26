@@ -40,6 +40,8 @@ class AppState {
   connected = $state(false)
   /** Bumped when a character's journal gains a note (its changes come with the character itself). */
   journalBeat = $state(0)
+  /** Bumped when Rigsmith's game units change or an export finishes. */
+  gameBeat = $state(0)
 
   selected = $derived(this.characters.find(c => c.id === this.selectedId) ?? null)
   activeJobs = $derived(this.jobs.filter(j => j.status === 'queued' || j.status === 'running'))
@@ -68,6 +70,7 @@ class AppState {
     })
     source.addEventListener('character', (e) => { this.upsert(JSON.parse((e as MessageEvent).data) as Character) })
     source.addEventListener('journal', () => { this.journalBeat++ })
+    source.addEventListener('game', () => { this.gameBeat++ })
     source.addEventListener('removed', (e) => { this.forget(JSON.parse((e as MessageEvent).data) as string) })
     source.onerror = () => { this.connected = false }
   }

@@ -9,8 +9,9 @@ import { enqueue, events, type Job, listJobs, runBlender, runCodex } from './job
 import { optimizeSkin, torchPython } from './skinopt.ts'
 import { queryLibrary } from './library.ts'
 import { journal, note as note_, record } from './journal.ts'
+import { exportUnits, gameSlots, gameStatus, saveUnits, units, type UnitSpec } from './game.ts'
 import {
-  type Character, characterDir, type Garment, type TextureImage, createCharacter, deleteCharacter, gameSlots, getCharacter, getSettings, listCharacters,
+  type Character, characterDir, type Garment, type TextureImage, createCharacter, deleteCharacter, getCharacter, getSettings, listCharacters,
   ROOT, saveSettings, updateCharacter, type Vec3, WORKSPACE, writeJson,
 } from './workspace.ts'
 
@@ -255,9 +256,49 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/journal$/, async (req, res, [id
   send(res, 201, { ok: true })
 })
 
-// The game's side of a character (settings.gameSpec): its unit and the clip names the game plays for it.
+// The game's side of a character (Rigsmith's units, server/game.ts): its unit and the clip names the game plays for it.
 route('GET', /^\/api\/characters\/([a-z0-9-]+)\/game$/, async (req, res, [id]) => {
   send(res, 200, await gameSlots(id))
+})
+
+// Rigsmith's game units: each with the game's own entry and whether they differ (what Export would write).
+route('GET', /^\/api\/game$/, async (req, res) => { send(res, 200, await gameStatus()) })
+// One unit's entry (null takes it off), journaled on its character (and its companion's).
+route('PUT', /^\/api\/game\/units\/([a-z0-9_]+)$/, async (req, res, [name]) => {
+  const entry = await readJsonBody<UnitSpec | null>(req)
+  if (entry !== null && (typeof entry.character !== 'string' || !Array.isArray(entry.clips) || typeof entry.height !== 'number')) throw new HttpError(400, 'A unit needs a character, a height and its clips')
+  const spec = await units()
+  const before = spec.units[name] ?? null
+  if (entry === null) delete spec.units[name]
+  else spec.units[name] = entry
+  await saveUnits(spec)
+  const who = by(req)
+  for (const id of new Set([before?.character, entry?.character, before?.companion?.character, entry?.companion?.character].filter((x): x is string => x !== undefined))) {
+    if (await getCharacter(id) === null) continue
+    const changed = entry === null ? 'off the game' : before === null ? 'added' : Object.keys({ ...before, ...entry }).filter(k => JSON.stringify(before[k]) !== JSON.stringify(entry[k])).map(k => `${k} -> ${JSON.stringify(entry[k] ?? null)}`).join(', ')
+    if (changed !== '') await note_(id, who, `game unit ${name}: ${changed}`)
+  }
+  events.emit('game', name)
+  send(res, 200, await gameStatus())
+})
+// Export units into the game (its units.json entry, then its build): the one way Rigsmith writes into the game's repo.
+route('POST', /^\/api\/game\/export$/, async (req, res) => {
+  const { units: names } = await readJsonBody<{ units?: string[] }>(req)
+  if (!Array.isArray(names) || names.length === 0 || !names.every(n => /^[a-z0-9_]+$/.test(n))) throw new HttpError(400, 'Name the units to export')
+  const who = by(req)
+  const job = enqueue('export', `Export to the game · ${names.join(', ')}`, undefined, async (job, update) => {
+    let lines = 0
+    const reports = await exportUnits(names, line => { lines++; update({ progress: Math.min(0.95, lines / 40), message: line.slice(0, 120) }) })
+    const spec = await units()
+    for (const r of reports) {
+      const id = spec.units[r.unit]?.character
+      const strides = r.walkStride != null ? `walk ${r.walkStride}${r.runStride != null ? `, run ${r.runStride}` : ''}` : 'no walk'
+      if (id !== undefined && await getCharacter(id) !== null) await note_(id, who, `exported to the game as ${r.unit} (${strides}${r.holdsFailed.length > 0 ? `; ${r.holdsFailed.length} holds failed` : ''})`)
+    }
+    update({ progress: 1, message: reports.map(r => `${r.unit}: walk ${r.walkStride ?? '-'}, run ${r.runStride ?? '-'}${r.holdsFailed.length > 0 ? `, ${r.holdsFailed.length} holds failed` : ''}`).join('; ') })
+    events.emit('game', names.join(','))
+  })
+  send(res, 202, job)
 })
 
 route('DELETE', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
@@ -481,7 +522,9 @@ route('GET', /^\/api\/events$/, async (req, res) => {
   events.on('character', onCharacter)
   const onJournal = (id: string): void => { res.write(`event: journal\ndata: ${JSON.stringify(id)}\n\n`) }
   events.on('journal', onJournal)
-  req.on('close', () => { clearInterval(ping); events.off('job', onJob); events.off('removed', onRemoved); events.off('character', onCharacter); events.off('journal', onJournal) })
+  const onGame = (name: string): void => { res.write(`event: game\ndata: ${JSON.stringify(name)}\n\n`) }
+  events.on('game', onGame)
+  req.on('close', () => { clearInterval(ping); events.off('job', onJob); events.off('removed', onRemoved); events.off('character', onCharacter); events.off('journal', onJournal); events.off('game', onGame) })
 })
 
 route('GET', /^\/api\/library$/, async (req, res, _, url) => {

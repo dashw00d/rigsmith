@@ -159,36 +159,16 @@ export interface Settings {
   exportDir: string
   exportFormat: 'glb' | 'fbx'
   boneNames: 'mixamo' | 'mixamorig'
-  /** The game's unit spec (Emberhold's tools/rigsmith/units.json): which character is which unit, and the clip names the
-   * game plays for each (a character's slots). */
-  gameSpec: string
+  /** The game's repo (Emberhold): Export writes its units (tools/rigsmith/units.json, the models and maps). Rigsmith's own
+   * list of units is server/game.ts's (workspace/game/units.json). */
+  gameRepo: string
 }
 
 const DEFAULT_SETTINGS: Settings = {
   exportDir: EXPORTS,
   exportFormat: 'glb',
   boneNames: 'mixamo',
-  gameSpec: path.join(homedir(), 'dev', 'games', 'emberhold', 'tools', 'rigsmith', 'units.json'),
-}
-
-/** The game's side of a character: the unit it is (or is the companion of) and the clip names the game plays for it, in
- * the spec's order. Null when the spec doesn't name it (or there is no spec). */
-export async function gameSlots (id: string): Promise<{ unit: string, role: 'unit' | 'companion', clips: string[], height: number | null, spec: string,
-  companion?: { character: string, height: number | null, ridden: boolean } } | null> {
-  const spec = (await getSettings()).gameSpec
-  const json = await readJson<{ units?: Record<string, { character?: string, height?: number, clips?: string[] | Record<string, unknown>,
-    companion?: { character?: string, height?: number, ridden?: boolean } }> } | null>(spec, null)
-  const units = Object.entries(json?.units ?? {})
-  const clipsOf = (u: { clips?: string[] | Record<string, unknown> }): string[] => Array.isArray(u.clips) ? u.clips : Object.keys(u.clips ?? {})
-  for (const [unit, u] of units) {
-    const companion = u.companion?.character !== undefined ? { character: u.companion.character, height: u.companion.height ?? null, ridden: u.companion.ridden === true } : undefined
-    if (u.character === id) return { unit, role: 'unit', clips: clipsOf(u), height: u.height ?? null, spec, companion }
-  }
-  // a companion several units share (one horse, dressed per rider): every name any of them plays
-  const with_ = units.filter(([, u]) => u.companion?.character === id)
-  if (with_.length === 0) return null
-  const clips = [...new Set(with_.flatMap(([, u]) => clipsOf(u)))]
-  return { unit: with_.map(([unit]) => unit).join(', '), role: 'companion', clips, height: with_[0][1].companion?.height ?? null, spec }
+  gameRepo: path.join(homedir(), 'dev', 'games', 'emberhold'),
 }
 
 export async function ensureWorkspace (): Promise<void> {
@@ -280,7 +260,7 @@ export async function getSettings (): Promise<Settings> {
 export async function saveSettings (change: Partial<Settings>): Promise<Settings> {
   const next = { ...(await getSettings()), ...change }
   if (next.exportDir.startsWith('~')) next.exportDir = path.join(homedir(), next.exportDir.slice(1))
-  if (next.gameSpec.startsWith('~')) next.gameSpec = path.join(homedir(), next.gameSpec.slice(1))
+  if (next.gameRepo.startsWith('~')) next.gameRepo = path.join(homedir(), next.gameRepo.slice(1))
   await writeJson(SETTINGS, next)
   return next
 }

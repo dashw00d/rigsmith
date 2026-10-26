@@ -16,8 +16,12 @@
 //   node tools/rig.ts render WHO [clips=Idle,Walk] [at=0,.25,.5,.75] [views=right,front] [size=320] [out=DIR]
 //                                                       pictures of its clips as the game file has them (Blender)
 //   node tools/rig.ts check [UNIT ...]                  is each game unit's file what Rigsmith would build now?
+//   node tools/rig.ts units                             Rigsmith's game units, and which differ from the game's
+//   node tools/rig.ts unit NAME JSON|null               set one unit's entry (in Rigsmith: the game is untouched)
+//   node tools/rig.ts export UNIT ...                   export units into the game (its units.json entry, its build)
 //
-// WHO: a character id, its name, or the game unit it is (units.json). Writes need the server (the app, port 5180).
+// WHO: a character id, its name, or the game unit it is. Writes need the server (the app, port 5180). The game's repo is
+// written by `export` alone.
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -37,9 +41,10 @@ interface SpecUnit { character: string, height: number, clips: string[], draft?:
 function settings (): Settings {
   const file = path.join(WORKSPACE, 'settings.json')
   const own = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as Partial<Settings> : {}
-  return { gameSpec: path.join(homedir(), 'dev', 'games', 'emberhold', 'tools', 'rigsmith', 'units.json'), ...own } as Settings
+  return { gameRepo: path.join(homedir(), 'dev', 'games', 'emberhold'), ...own } as Settings
 }
-const specFile = (): string => settings().gameSpec
+// Rigsmith's own units (server/game.ts): the game's repo is written only by an export
+const specFile = (): string => path.join(WORKSPACE, 'game', 'units.json')
 function spec (): Record<string, SpecUnit> {
   const f = specFile()
   return existsSync(f) ? (JSON.parse(readFileSync(f, 'utf8')) as { units: Record<string, SpecUnit> }).units : {}
@@ -292,6 +297,27 @@ async function main (): Promise<void> {
       console.log(`${c.name} ${name}: ${entryLine(entry, null, c.stats?.height ?? 1)}${was !== undefined && was.clipId !== clipId ? ' (a new clip: its keys and ground start again)' : ''}`)
       return
     }
+    case 'units': {
+      const st = await call<{ repo: string, units: Record<string, { ours: SpecUnit | null, game: SpecUnit | null, differs: boolean }> }>('GET', '/api/game')
+      for (const [u, x] of Object.entries(st.units)) console.log(`${u.padEnd(16)} ${(x.ours?.character ?? '-').padEnd(26)} ${x.ours === null ? 'only in the game' : x.game === null ? 'not in the game yet' : x.differs ? 'changed here (export writes it)' : 'as in the game'}${x.ours?.draft === true ? ' · draft' : ''}`)
+      console.log(`(the game: ${st.repo})`)
+      return
+    }
+    case 'unit': {
+      if (pos[0] === undefined || pos[1] === undefined) throw new Error('unit NAME JSON|null')
+      await call('PUT', `/api/game/units/${pos[0]}`, JSON.parse(pos.slice(1).join(' ')) as unknown)
+      console.log(`unit ${pos[0]} saved (in Rigsmith; export to put it in the game)`)
+      return
+    }
+    case 'export': {
+      if (pos.length === 0) throw new Error('export UNIT ...')
+      const job = await call<{ id: string }>('POST', '/api/game/export', { units: pos })
+      for (;;) {
+        await new Promise(r => setTimeout(r, 1500))
+        const j = (await call<Array<{ id: string, status: string, message: string, error?: string }>>('GET', '/api/jobs')).find(x => x.id === job.id)
+        if (j === undefined || j.status === 'done' || j.status === 'failed') { console.log(j?.status === 'failed' ? `failed: ${j.error}` : `exported: ${j?.message ?? ''}`); return }
+      }
+    }
     case 'ride': {
       const c = resolve(pos[0])
       console.log(await ride(c, pos[1] ?? 'off'))
@@ -310,7 +336,7 @@ async function main (): Promise<void> {
     }
     case 'check': {
       const units = spec()
-      const repo = path.resolve(path.dirname(specFile()), '..', '..')
+      const repo = settings().gameRepo
       const names = pos.length > 0 ? pos : Object.keys(units).filter(u => units[u].draft !== true)
       const out = path.join(WORKSPACE, 'renders', '_check')
       mkdirSync(out, { recursive: true })

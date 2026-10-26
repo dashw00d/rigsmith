@@ -47,9 +47,13 @@ npm run test:godot -- workspace/exports/X.glb   # imports a GLB in headless Godo
 
 ## Game units
 
-The RTS's player units are these characters, and the game gets them exactly as they are here. The spec in the game's
-repo (`tools/rigsmith/units.json`, Settings `gameSpec`) says which character each unit is, its height and budget, and
-the clip names the game plays: the character's **slots**.
+The RTS's player units are these characters, and the game gets them exactly as they are here. Rigsmith keeps its own
+list of them (`workspace/game/units.json`, `server/game.ts`; first copied from the game's): which character each unit
+is, its height and budget, its horse, and the clip names the game plays (the character's **slots**). It is edited in
+the Export step's "In the game" (or `tools/rig.ts unit`), saved at once and live in every page. **The game's repo
+(Settings `gameRepo`) is written only by Export** ("Export <unit> to the game", `tools/rig.ts export UNIT`): the unit's
+entry in its `tools/rigsmith/units.json` (that block alone, the rest of the file byte for byte), then its
+`tools/rigsmith/build.sh` for that unit (the model, its maps, the holds check). Tinkering never touches the game.
 
 ```bash
 npm run export:game -- <spec.json> <models dir> <work dir> [unit ...]        # what the game's tools/rigsmith/build.sh runs

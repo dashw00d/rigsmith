@@ -2,9 +2,11 @@
 import type { AnimationEntry, Character, ClipKey, ClipKeys, Garment, Mount, Settings, TextureImage, Vec3 } from '../../server/workspace.ts'
 import type { Job } from '../../server/jobs.ts'
 import type { JournalEntry } from '../../server/journal.ts'
+import type { UnitSpec } from '../../server/game.ts'
 import type { CatalogStatus, Clip } from '../../server/library.ts'
 
-export type { AnimationEntry, Character, ClipKey, ClipKeys, Clip, Garment, Job, JournalEntry, Mount, Settings, TextureImage, Vec3 }
+export type { AnimationEntry, Character, ClipKey, ClipKeys, Clip, Garment, Job, JournalEntry, Mount, Settings, TextureImage, UnitSpec, Vec3 }
+export interface GameStatus { repo: string, units: Record<string, { ours: UnitSpec | null, game: UnitSpec | null, differs: boolean }> }
 
 export interface LibraryClip extends Clip { url: string }
 export interface LibraryPage {
@@ -34,6 +36,9 @@ export const api = {
   characters: async () => await call<Character[]>('GET', '/api/characters'),
   upload: async (file: File) => await call<Character>('POST', `/api/characters?name=${encodeURIComponent(file.name)}`, file),
   update: async (id: string, patch: Partial<Character>) => await call<Character>('PATCH', `/api/characters/${id}`, patch),
+  game: async () => await call<GameStatus>('GET', '/api/game'),
+  putUnit: async (name: string, entry: UnitSpec | null) => await call<GameStatus>('PUT', `/api/game/units/${name}`, entry as unknown as object),
+  exportUnits: async (units: string[]) => await call<Job>('POST', '/api/game/export', { units }),
   journal: async (id: string, last = 200) => await call<JournalEntry[]>('GET', `/api/characters/${id}/journal?last=${last}`),
   addNote: async (id: string, note: string) => await call<{ ok: boolean }>('POST', `/api/characters/${id}/journal`, { note }),
   remove: async (id: string) => await call<{ ok: boolean }>('DELETE', `/api/characters/${id}`),

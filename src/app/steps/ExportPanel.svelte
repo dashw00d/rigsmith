@@ -13,6 +13,7 @@
   import Section from '../../ui/Section.svelte'
   import Segmented from '../../ui/Segmented.svelte'
   import Toggle from '../../ui/Toggle.svelte'
+  import GameUnitPanel from './GameUnitPanel.svelte'
 
   let { character }: { character: Character } = $props()
 
@@ -90,6 +91,7 @@
 {#if character.status !== 'rigged'}
   <Section><p class="muted">Rig {character.name} and pick animations before exporting.</p></Section>
 {:else}
+  <GameUnitPanel {character} />
   <Section title="Package">
     <div class="summary">
       <PackageCheck size={18} />
