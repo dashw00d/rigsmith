@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Activity, ArrowRight, FlipHorizontal2, RotateCcw, Sparkles, Square, TriangleAlert, Wrench } from '@lucide/svelte'
+  import { ArrowRight, FlipHorizontal2, RotateCcw, Sparkles, Square, TriangleAlert, Wrench } from '@lucide/svelte'
   import { animator } from '../../state/animator.svelte.ts'
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
@@ -53,7 +53,10 @@
     }
   }
   const rigging = $derived(character.status === 'rigging' || job?.kind === 'rig')
-  const testing = $derived(animator.current?.clipId === 'test')
+  const testing = $derived(animator.current?.test === true)
+  let testSets = $state<Record<string, Array<{ id: string, name: string, url?: string }>>>({})
+  $effect(() => { void fetch('/templates/tests.json').then(async r => await r.json()).then(j => { testSets = j as typeof testSets }) })
+  const tests = $derived(testSets[template] ?? [])
   $effect(() => { void character.template; void character.fingers; void markerBoard.load(character) })
   // (the legend: one row per marker; a pair once)
   // (a marker is missing when its joint isn't in the skeleton: a person's markers need the detected joints)
@@ -120,10 +123,15 @@
     <Button variant="primary" size="lg" block onclick={() => { app.step = 'animate' }}>Pick animations <ArrowRight size={15} /></Button>
   </Section>
   <Section title="Check deformation">
-    <Button block variant={testing ? 'ghost' : 'primary'} onclick={() => { if (testing) animator.stop(); else animator.playTest() }}>
-      {#if testing}<Square size={13} /> Stop the test{:else}<Activity size={14} /> Test rig{/if}
-    </Button>
-    <p class="faint small">Every joint through its range: {human ? 'the arms raised sideways, forward and overhead, elbows bent, forearms twisted, wrists flexed, fists closing and hands spreading as the arms move; the spine bent and twisted, the head nodded and turned, each leg lifted, a squat' : 'each leg folded in turn, the back bent, the neck and head, the tail'}. Watch the joints for creases, candy-wrapping and skin left behind; pause and scrub on the timeline.</p>
+    <span class="group-label">Test the rig: clips that work its joints hard</span>
+    <div class="bone-grid">
+      {#each tests as t (t.id)}
+        <button class="bone-chip" class:active={animator.current?.clipId === t.id} onclick={() => animator.playTest(t)}>{t.name}</button>
+      {/each}
+      {#if testing}<button class="bone-chip" onclick={() => animator.stop()}><Square size={10} /> Stop</button>{/if}
+    </div>
+    {#if tests.length === 0}<p class="faint small">No test clips for this body type yet (static/templates/tests.json).</p>{/if}
+    <p class="faint small">Watch the joints for creases, candy-wrapping and skin left behind; pause and scrub on the timeline.</p>
     <p class="faint small">Switch the viewport to <strong>Weights</strong> to see each bone's area{human ? ', or click a joint name to see its influence' : ''}.</p>
     <div class="bone-grid" class:hidden={!human}>
       {#each ['Head', 'Spine2', 'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand', 'Hips', 'LeftUpLeg', 'LeftLeg', 'LeftFoot'] as bone}

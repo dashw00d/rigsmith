@@ -1,0 +1,23 @@
+{
+  "_doc": "The Rig step's tests (Check deformation): library clips picked for how hard they work a rig's joints, per body type. Each plays on the rig in place, looped. A person's: shoulders and arms overhead with the hands moving, a deep squat, the hands gripping while the arm swings, finger by finger, twisting with fists (each with its fingers animated). A horse's: its template's own clips (url: bundled with the app).",
+  "human": [
+    { "id": "mixamo-Arm_Stretching", "name": "Arm stretching" },
+    { "id": "mixamo-Jumping_Jacks", "name": "Jumping jacks" },
+    { "id": "mixamo-Air_Squat", "name": "Air squat" },
+    { "id": "mixamo-Fist_Pump", "name": "Fist pump" },
+    { "id": "mixamo-Grab_And_Slam", "name": "Grab and slam" },
+    { "id": "mixamo-Standing_Thumbs_Up", "name": "Thumbs up" },
+    { "id": "mixamo-Counting_2", "name": "Counting" },
+    { "id": "mixamo-Boxing_8", "name": "Boxing" }
+  ],
+  "horse": [
+    { "id": "horse-walk", "name": "Walk", "url": "/animations/horse-animations.glb#Walk" },
+    { "id": "horse-run", "name": "Run", "url": "/animations/horse-animations.glb#Run" },
+    { "id": "horse-rear", "name": "Rear", "url": "/animations/horse-animations.glb#Rear" },
+    { "id": "horse-kick", "name": "Kick", "url": "/animations/horse-animations.glb#Kick" },
+    { "id": "horse-eating", "name": "Eating", "url": "/animations/horse-animations.glb#Eating" },
+    { "id": "horse-lay-to-idle", "name": "Lying down", "url": "/animations/horse-animations.glb#lay_to_idle" },
+    { "id": "horse-head-but", "name": "Head-butt", "url": "/animations/horse-animations.glb#Head_But" },
+    { "id": "horse-death", "name": "Death", "url": "/animations/horse-animations.glb#Death" }
+  ]
+}

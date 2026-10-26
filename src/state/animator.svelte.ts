@@ -13,13 +13,14 @@ import { applyScripts, fistPose, retime, type GripScript } from '../engine/scrip
 import { applyBoneKeys, applyLift, propTracks } from '../engine/keys.ts'
 import { garmentMatrix } from '../engine/placement.ts'
 import { fitRide, freezeClip } from '../engine/mount.ts'
-import { rigTest } from '../engine/romtest.ts'
 import type { Stage } from '../engine/Stage.ts'
 
 export interface NowPlaying {
   clipId: string
   url: string
   name: string
+  /** A rig test (the Rig step's): it plays on there. */
+  test?: boolean
   /** Index in the character's animation set, or null for a library preview. */
   entry: number | null
 }
@@ -294,21 +295,9 @@ class Animator {
     }
   }
 
-  /** "Test rig": every joint through its range (src/engine/romtest.ts), to see bad weights. */
-  playTest (): void {
-    if (this.player === null || this.view?.rest == null) return
-    ++this.token
-    this.current = { clipId: 'test', url: '', name: 'Test rig', entry: null }
-    this.error = null
-    const human = (app.selected?.template ?? 'human') === 'human'
-    const clip = rigTest(this.view.rest, human)
-    this.player.stop()
-    this.horsePlayer?.stop()
-    this.player.setLoop(true)
-    this.player.play(clip)
-    this.player.setPlaying(true)
-    this.playing = true
-    this.duration = clip.duration
+  /** A test of the rig (static/templates/tests.json): a library clip that works its joints hard, in place, looped. */
+  playTest (test: { id: string, name: string, url?: string }): void {
+    void this.play({ clipId: test.id, url: test.url ?? clipUrl(test.id), name: test.name, entry: null, test: true }, { inPlace: true, loop: true })
   }
 
   playLibrary (clip: LibraryClip): void {
@@ -327,7 +316,6 @@ class Animator {
   async refresh (keepTime = false): Promise<void> {
     if (this.current === null) return
     if (this.current.clipId === 'fists') { await this.playFists(); return }
-    if (this.current.clipId === 'test') { this.playTest(); return }
     await this.play(this.current, { keepTime })
   }
 
