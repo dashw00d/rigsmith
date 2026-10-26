@@ -9,7 +9,7 @@ import { enqueue, events, type Job, listJobs, runBlender, runCodex } from './job
 import { optimizeSkin, torchPython } from './skinopt.ts'
 import { queryLibrary } from './library.ts'
 import {
-  type Character, characterDir, type Garment, type TextureImage, createCharacter, deleteCharacter, getCharacter, getSettings, listCharacters,
+  type Character, characterDir, type Garment, type TextureImage, createCharacter, deleteCharacter, gameSlots, getCharacter, getSettings, listCharacters,
   ROOT, saveSettings, updateCharacter, type Vec3, WORKSPACE, writeJson,
 } from './workspace.ts'
 
@@ -222,6 +222,11 @@ route('PATCH', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
   // (every open page takes it: a page holding an older copy would otherwise save that back over it)
   events.emit('character', character)
   send(res, 200, character)
+})
+
+// The game's side of a character (settings.gameSpec): its unit and the clip names the game plays for it.
+route('GET', /^\/api\/characters\/([a-z0-9-]+)\/game$/, async (req, res, [id]) => {
+  send(res, 200, await gameSlots(id))
 })
 
 route('DELETE', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {

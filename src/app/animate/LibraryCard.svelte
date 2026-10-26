@@ -4,6 +4,7 @@
   import type { LibraryClip } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { animator } from '../../state/animator.svelte.ts'
+  import { slots } from '../../state/slots.svelte.ts'
   import { SPRITE_FRAMES } from '../../engine/PreviewRenderer.ts'
   import { tooltip } from '../../ui/tooltip.ts'
 
@@ -56,6 +57,11 @@
     e.stopPropagation()
     const c = app.selected
     if (c === null) return
+    if (slots.armed !== null) {
+      // (an armed game slot: this clip plays there)
+      await slots.fill(slots.armed, { clipId: clip.id, url: clip.source === 'bundled' ? clip.url : undefined, inPlace: clip.inPlace || clip.category === 'locomotion', loop: clip.loop })
+      return
+    }
     if (added) {
       await app.update(c.id, { animations: c.animations.filter(a => a.clipId !== clip.id) })
       return
@@ -74,8 +80,10 @@
     <span class="time mono">{duration}s</span>
     {#if clip.loop}<span class="loop" use:tooltip={'Loops seamlessly'}><Repeat size={11} /></span>{/if}
     {#if warning}<span class="warn" use:tooltip={warning} aria-label={warning}><TriangleAlert size={12} /></span>{/if}
-    <button class="add" class:on={added} onclick={add} aria-label={added ? 'Remove from set' : 'Add to set'} use:tooltip={added ? 'In this character’s set (click to remove)' : 'Add to set'}>
-      {#if added}<Check size={14} strokeWidth={3} />{:else}<Plus size={15} />{/if}
+    <button class="add" class:on={added && slots.armed === null} class:slot={slots.armed !== null} onclick={add}
+      aria-label={slots.armed !== null ? `Use for ${slots.armed}` : added ? 'Remove from set' : 'Add to set'}
+      use:tooltip={slots.armed !== null ? `Use for ${slots.armed}` : added ? 'In this character’s set (click to remove)' : 'Add as a trial'}>
+      {#if slots.armed !== null}<span class="slotname">{slots.armed}</span>{:else if added}<Check size={14} strokeWidth={3} />{:else}<Plus size={15} />{/if}
     </button>
   </div>
   <div class="label" use:tooltip={hint}>
@@ -132,6 +140,8 @@
   .card:hover .add, .add.on, .card:focus-within .add { opacity: 1; }
   .add:hover { transform: scale(1.08); background: var(--accent); color: var(--accent-ink); }
   .add.on { background: var(--ok); color: #06140d; }
+  .add.slot { opacity: 1; width: auto; padding: 0 9px; border-radius: 13px; background: var(--accent); color: var(--accent-ink); }
+  .slotname { font-size: 11px; font-weight: 650; white-space: nowrap; }
   .label { padding: 7px 8px 8px; min-height: 40px; display: flex; flex-direction: column; gap: 2px; }
   .name { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; font-weight: 550; line-height: 1.3; }
   .name.provisional { color: var(--text-2); font-weight: 450; }

@@ -105,18 +105,55 @@ export interface AnimationEntry {
   trim?: [number, number]
   /** Why this clip (what it does with the unit's gear, what the others did wrong). */
   note?: string
+  /** Keyframed tweaks on top of the clip as it plays (after its speed and scripts): src/engine/keys.ts. */
+  keys?: ClipKeys
+  /** The clip's ground: the whole body raised (+) or lowered (-) through it, in the character's units (its height about
+   * 1), so its feet meet the ground (Mixamo clips often sink them a few per cent of the height). */
+  lift?: number
+}
+
+/** A clip's keyframed tweaks: per bone (by name) and per prop (rigid garment, by name), each a list of keys at a phase of
+ * the clip (0 its start, 1 its end; a looping clip's keys wrap round). A bone's key turns it on top of the clip in its own
+ * frame (the Hips may also move); a prop's moves and turns it from where it is placed, about its pivot (where it is held). */
+export interface ClipKeys {
+  bones?: Record<string, ClipKey[]>
+  props?: Record<string, ClipKey[]>
+}
+export interface ClipKey {
+  u: number
+  /** The turn, a quaternion [x, y, z, w]. */
+  q: [number, number, number, number]
+  /** The move (the Hips: in its parent's frame; a prop: in its own placed frame). */
+  p?: [number, number, number]
 }
 
 export interface Settings {
   exportDir: string
   exportFormat: 'glb' | 'fbx'
   boneNames: 'mixamo' | 'mixamorig'
+  /** The game's unit spec (Emberhold's tools/rigsmith/units.json): which character is which unit, and the clip names the
+   * game plays for each (a character's slots). */
+  gameSpec: string
 }
 
 const DEFAULT_SETTINGS: Settings = {
   exportDir: EXPORTS,
   exportFormat: 'glb',
   boneNames: 'mixamo',
+  gameSpec: path.join(homedir(), 'dev', 'games', 'emberhold', 'tools', 'rigsmith', 'units.json'),
+}
+
+/** The game's side of a character: the unit it is (or is the companion of) and the clip names the game plays for it, in
+ * the spec's order. Null when the spec doesn't name it (or there is no spec). */
+export async function gameSlots (id: string): Promise<{ unit: string, role: 'unit' | 'companion', clips: string[], height: number | null, spec: string } | null> {
+  const spec = (await getSettings()).gameSpec
+  const json = await readJson<{ units?: Record<string, { character?: string, height?: number, clips?: string[] | Record<string, unknown>, companion?: { character?: string, height?: number } }> } | null>(spec, null)
+  for (const [unit, u] of Object.entries(json?.units ?? {})) {
+    const clips = Array.isArray(u.clips) ? u.clips : Object.keys(u.clips ?? {})
+    if (u.character === id) return { unit, role: 'unit', clips, height: u.height ?? null, spec }
+    if (u.companion?.character === id) return { unit, role: 'companion', clips, height: u.companion.height ?? null, spec }
+  }
+  return null
 }
 
 export async function ensureWorkspace (): Promise<void> {
@@ -208,6 +245,7 @@ export async function getSettings (): Promise<Settings> {
 export async function saveSettings (change: Partial<Settings>): Promise<Settings> {
   const next = { ...(await getSettings()), ...change }
   if (next.exportDir.startsWith('~')) next.exportDir = path.join(homedir(), next.exportDir.slice(1))
+  if (next.gameSpec.startsWith('~')) next.gameSpec = path.join(homedir(), next.gameSpec.slice(1))
   await writeJson(SETTINGS, next)
   return next
 }

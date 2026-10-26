@@ -31,6 +31,7 @@ import { compact, simplify } from '../src/engine/export/lods.ts'
 import { garmentMatrix } from '../src/engine/placement.ts'
 import { captureRest, pelvisName, retarget } from '../src/engine/retarget.ts'
 import { applyScripts, retime, sample, stride, type ClipScript } from '../src/engine/scripts.ts'
+import { applyBoneKeys, applyLift, propTracks } from '../src/engine/keys.ts'
 import type { AnimationEntry, Garment } from '../server/workspace.ts'
 
 const g = globalThis as Record<string, unknown>
@@ -339,6 +340,11 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   }
   out.updateMatrixWorld(true)
   const bones = [...skeleton.bones, root, ...compBones]
+  // each bone's rest (game space): a clip's key on a bone the clip doesn't move starts from there
+  const restLocal = new Map(bones.map(b => [b.name, { q: b.quaternion.clone(), p: b.position.clone() }]))
+  // a prop keyed in any clip rides its own bone ("Prop_<name>", at its pivot under the bone it rides), which the clips move
+  const keyedProps = new Set(spec.clips.flatMap(n => Object.keys(character.animations.find(a => a.name === n)?.keys?.props ?? {})))
+  const propBones: Array<{ bone: THREE.Bone, garment: Garment, rest: { position: THREE.Vector3, quaternion: THREE.Quaternion } }> = []
   const material = new THREE.MeshStandardMaterial({ name: 'Main' })
   geometry.applyMatrix4(new THREE.Matrix4().makeScale(s, s, s).multiply(new THREE.Matrix4().makeTranslation(0, -floor, 0)))
   for (const name of Object.keys(geometry.attributes)) if (!['position', 'normal', 'uv', 'skinIndex', 'skinWeight'].includes(name)) geometry.deleteAttribute(name)
@@ -365,6 +371,21 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     }
     const index = bones.findIndex(b => b.name === g.bone)
     if (index < 0) throw new Error(`${unit}: ${g.name} rides ${g.bone}, not in the skeleton`)
+    let ride = index
+    if (keyedProps.has(g.name)) {
+      const parent = bones[index]
+      const gp = new THREE.Vector3(); const gq = new THREE.Quaternion(); const gsc = new THREE.Vector3()
+      garmentMatrix(g).decompose(gp, gq, gsc)
+      const world = new THREE.Matrix4().compose(gp.clone().applyMatrix4(toGame), gq, new THREE.Vector3(1, 1, 1))
+      const pb = new THREE.Bone()
+      pb.name = `Prop_${g.name.replace(/[^\w]+/g, '_')}`
+      parent.matrixWorld.clone().invert().multiply(world).decompose(pb.position, pb.quaternion, pb.scale)
+      parent.add(pb)
+      pb.updateMatrixWorld(true)
+      bones.push(pb)
+      ride = bones.length - 1
+      propBones.push({ bone: pb, garment: g, rest: { position: pb.position.clone(), quaternion: pb.quaternion.clone() } })
+    }
     const file = path.join(characterDir, g.file!)
     const { scene: gs } = await load(file)
     gs.updateMatrixWorld(true)
@@ -384,12 +405,13 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     const geo = geos.length === 1 ? geos[0] : mergeGeometries(geos, true)
     const n = geo.attributes.position.count
     const si = new Uint16Array(n * 4); const sw = new Float32Array(n * 4)
-    for (let i = 0; i < n; i++) { si[i * 4] = index; sw[i * 4] = 1 }
+    for (let i = 0; i < n; i++) { si[i * 4] = ride; sw[i * 4] = 1 }
     geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4))
     geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4))
-    parts.push({ bone: g.bone, geometry: geo, material: mats.length === 1 ? mats[0] : mats, name: g.name, budget: !SWAPPED.test(g.name) })
+    parts.push({ bone: bones[ride].name, geometry: geo, material: mats.length === 1 ? mats[0] : mats, name: g.name, budget: !SWAPPED.test(g.name) })
     gearReport[g.name] = {
       bone: g.bone, position: g.position, rotation: g.rotation, scale: g.scale, hidden: g.hidden === true, from: g.from,
+      propBone: ride !== index ? bones[ride].name : undefined,
       mesh: createHash('sha256').update(readFileSync(file)).digest('hex'),
     }
   }
@@ -498,6 +520,23 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   for (const r of Object.values(scriptReport) as Array<Record<string, unknown>>) {
     if (r.kind === 'blow') Object.assign(clipReport[r.clip as string] as object, { blow: r.blow, kept: r.kept, hit: r.at })
     if (r.kind === 'pace') Object.assign(clipReport[r.clip as string] as object, { pacedLike: r.like, retimed: r.retimed })
+  }
+  // Then each clip's ground and keys, as the viewer applies them (src/engine/keys.ts), in game units (x s); every clip
+  // moves the prop bones (at rest where it has no keys for them), so a prop keyed in one clip is back in the next.
+  for (let i = 0; i < clips.length; i++) {
+    const entry = character.animations.find(a => a.name === clips[i].name)!
+    let clip = applyLift(clips[i], 'Hips', (entry.lift ?? 0) * s, restLocal.get('Hips')!.p)
+    clip = applyBoneKeys(clip, entry.keys?.bones, entry.loop, b => restLocal.get(b) ?? null, s)
+    const extra = propBones.flatMap(pb => propTracks(pb.bone.name, clip.duration, entry.keys?.props?.[pb.garment.name], entry.loop, pb.rest, pb.garment.scale, s))
+    clips[i] = extra.length > 0 ? new THREE.AnimationClip(clip.name, clip.duration, [...clip.tracks, ...extra]) : clip
+    const counted = (t?: Record<string, unknown[]>): Record<string, number> | undefined =>
+      t === undefined || Object.keys(t).length === 0 ? undefined : Object.fromEntries(Object.entries(t).map(([k, v]) => [k, v.length]))
+    Object.assign(clipReport[clip.name] as object, { lift: entry.lift, keys: entry.keys === undefined ? undefined : { bones: counted(entry.keys.bones), props: counted(entry.keys.props) } })
+  }
+  // (the build record keeps the keys themselves too: game_import restores a character from it)
+  for (const name of spec.clips) {
+    const entry = character.animations.find(a => a.name === name)!
+    if (entry.keys !== undefined) Object.assign(clipReport[name] as object, { keyData: entry.keys })
   }
   exportSkeleton.pose()
   out.updateMatrixWorld(true)

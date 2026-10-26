@@ -50,8 +50,9 @@ class Outfit {
       this.gizmo.setSize(0.8)
       this.gizmo.addEventListener('dragging-changed', (e) => {
         stage.controls.enabled = !(e as unknown as { value: boolean }).value
-        // (hold the frame while a piece is moved on a playing clip)
+        // (hold the frame while a piece is moved on a playing clip; the clip lets go of the props meanwhile)
         if ((e as unknown as { value: boolean }).value && animator.playing) animator.setPlaying(false)
+        animator.holding = (e as unknown as { value: boolean }).value
         if (!(e as unknown as { value: boolean }).value) {
           if (this.fitting !== null) this.commitFit()
           else this.commitGizmo()
@@ -84,7 +85,11 @@ class Outfit {
         this.busy = this.garments.some(g => g.status === 'ready' && g.id !== fitting)
         try {
           const objects = await attachGarments(view, this.garments, g => fileUrl(character, g.file) ?? '', fitting)
-          if (token === this.garmentToken) this.garmentObjects = objects
+          if (token === this.garmentToken) {
+            this.garmentObjects = objects
+            // (the clip playing carries the props' placements: play it again with these)
+            if (animator.current !== null) void animator.refresh(true)
+          }
         } finally {
           if (token === this.garmentToken) this.busy = false
         }

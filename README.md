@@ -47,26 +47,36 @@ npm run test:godot -- workspace/exports/X.glb   # imports a GLB in headless Godo
 
 ## Game units
 
-The RTS's player units are these characters, and the game gets them exactly as they are here: the clips in each one's
-animation set (under the game's names), its clip scripts and its gear as placed. The spec in the game's repo
-(`tools/rigsmith/units.json`) only says which character, its height and budget, and which clip names the game plays.
+The RTS's player units are these characters, and the game gets them exactly as they are here. The spec in the game's
+repo (`tools/rigsmith/units.json`, Settings `gameSpec`) says which character each unit is, its height and budget, and
+the clip names the game plays: the character's **slots**.
 
 ```bash
 npm run export:game -- <spec.json> <models dir> <work dir> [unit ...]        # what the game's tools/rigsmith/build.sh runs
 python3 tools/game_import.py ~/dev/games/emberhold [unit ...] [--replace]     # fill a character in from the game's last build
-node tools/dev/script_parity.ts <models dir> <unit> <character> <clip ...>   # the viewer's clip against the exported one
+node tools/dev/tune_parity.ts <unit.glb> <character> <game height> <clip ...> # the viewer's clip against the exported one
+node tools/dev/ground.ts <unit.glb> ...                                       # how far each clip's feet sit off the ground
 ```
 
-- **Clip scripts** (Animate, under the set; `src/engine/scripts.ts`): switchable changes on top of the library motion, the
-  same code in the viewer and the export: *Hold fist* (a hand keeps the most closed fist of a clip in every clip), *Blow
-  timing* (an attack cut so its blow lands at a share of it, or to a window around the blow), *Pace* (a clip retimed to
-  another's stride).
-- **Gear** (Outfit): rigid garments, placed by one function the viewer and the export share (`src/engine/placement.ts`).
-  A hidden garment stays out of the game, except the pieces the game shows by job (`Gear*`, `Head*`, `Wear*`). Only parts
-  built in the game's Blender pipeline go in (brought in by `game_import`, `from: "emberhold:..."`); others are left out
-  with a warning.
+- **Slots** (Animate, "In the game"): each clip name the game plays, filled with a library clip. Arm a slot and press a
+  card's button, or play a card and press Use. Entries the game doesn't name are Trials: kept here, never exported.
+- **Tune** (Animate, under the slots; `src/engine/keys.ts`): on the slot playing, its **ground** (the whole body raised or
+  lowered through the clip, in cm in the game; Auto sets its lowest point on the ground: Mixamo clips sink the feet a few
+  per cent of the height, which the game used to hide by lifting units every frame) and **keys** on its bones (turns;
+  the Hips also move) and props (moves and turns about where they are held). Pause on a frame and drag the gizmo: letting
+  go keys it there. Keys sit at a phase of the clip, blend between, wrap round a loop and hold at a one-shot's ends. A
+  keyed prop gets its own bone in the game file (`Prop_<part>`) that the clips move.
+- **Clip scripts** (Animate; `src/engine/scripts.ts`): switchable changes on top of the library motion: *Hold fist*,
+  *Blow timing* (an attack cut so its blow lands at a share of it, or to a window around the blow), *Pace*.
+- The order, the same in the viewer (`animator.scripted`) and the export: the clip at its speed, then the scripts, then the
+  ground, then the bone keys, then the props. `tune_parity.ts` checks the two agree (every bone and prop point).
+- **Gear** (Outfit): rigid garments, placed by one function the viewer and the export share (`src/engine/placement.ts`),
+  fitted on the bone in any pose (Rest, fists closed, or a clip paused on a frame). A hidden garment stays out of the
+  game, except the pieces the game shows by job (`Gear*`, `Head*`, `Wear*`). Only parts built in the game's Blender
+  pipeline go in (brought in by `game_import`, `from: "emberhold:..."`); others are left out with a warning.
 - `game_import` fills in what a character lacks from the unit's last build (its record in the game's
-  `assets/textures/models/<unit>/<unit>.json`) and touches nothing already there; `--replace` puts it back as built.
+  `assets/textures/models/<unit>/<unit>.json`: clips, scripts, ground, keys, gear) and touches nothing already there;
+  `--replace` puts it back as built.
 
 ## Named animation library
 

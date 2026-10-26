@@ -10,6 +10,8 @@ import { renamer } from '../engine/presets/skeletonMap.ts'
 import { Player } from '../engine/Player.ts'
 import { PreviewRenderer } from '../engine/PreviewRenderer.ts'
 import { applyScripts, fistPose, retime, type GripScript } from '../engine/scripts.ts'
+import { applyBoneKeys, applyLift, propTracks } from '../engine/keys.ts'
+import { garmentMatrix } from '../engine/placement.ts'
 import type { Stage } from '../engine/Stage.ts'
 
 export interface NowPlaying {
@@ -55,12 +57,18 @@ class Animator {
   private lastKey = ''
   /** A posable copy of the character, for scripts to measure clips on without moving the one on stage. */
   private posable: THREE.Object3D | null = null
+  /** While a tweak is being dragged: the clip stops driving the bones (the gizmo does). */
+  holding = false
+  /** The entry playing, as it plays before its keys (on the timeline played): what a new key is measured against. */
+  unkeyed: THREE.AnimationClip | null = null
+  private stageRef: Stage | null = null
 
   attach (view: CharacterView, stage: Stage): void {
     this.detach()
     if (view.rest === null) return
     view.setRename(renamer(app.selected?.boneMap))
     this.view = view
+    this.stageRef = stage
     this.player = new Player(view.root)
     this.player.setSpeed(this.speed)
     this.player.setLoop(this.loop)
@@ -68,7 +76,7 @@ class Animator {
     this.cache = new RetargetCache(view.rest)
     this.posable = null
     this.offFrame = stage.onFrame(dt => {
-      if (this.player === null || this.player.clip === null) return
+      if (this.player === null || this.player.clip === null || this.holding) return
       this.player.update(dt)
       this.time = this.player.time
     })
@@ -90,9 +98,19 @@ class Animator {
   }
 
   get ready (): boolean { return this.player !== null }
+  get character (): CharacterView | null { return this.view }
+  /** The clip playing (as built: speed, scripts, ground, keys). */
+  get clip (): THREE.AnimationClip | null { return this.player?.clip ?? null }
+  get stage (): Stage | null { return this.stageRef }
+  /** A posable copy of the character (for measuring clips off stage). */
+  posableCopy (): THREE.Object3D | null {
+    if (this.view === null) return null
+    this.posable ??= cloneSkinned(this.view.root)
+    return this.posable
+  }
 
   /** Play a library clip or an entry from the character's set (an entry with the character's scripts on it). */
-  async play (target: NowPlaying, options: { inPlace?: boolean, speed?: number, loop?: boolean } = {}): Promise<void> {
+  async play (target: NowPlaying, options: { inPlace?: boolean, speed?: number, loop?: boolean, keepTime?: boolean } = {}): Promise<void> {
     if (this.player === null || this.cache === null) return
     const token = ++this.token
     this.current = target
@@ -103,12 +121,14 @@ class Animator {
     if (options.loop !== undefined) this.setLoop(options.loop)
     try {
       const entry = target.entry !== null ? app.selected?.animations[target.entry] : undefined
-      const clip = entry !== undefined && entry.clipId === target.clipId && (app.selected?.scripts ?? []).some(s => s.enabled)
+      // (an entry plays as the game gets it: its speed, scripts, ground and keys; a library preview as it comes, props at rest)
+      const clip = entry !== undefined && entry.clipId === target.clipId
         ? await this.scripted(entry)
-        : await this.cache.get(target.url, { inPlace: this.inPlace, mirror: this.mirror })
+        : this.withProps(await this.cache.get(target.url, { inPlace: this.inPlace, mirror: this.mirror }), undefined, false)
+      if (entry === undefined) this.unkeyed = null
       if (token !== this.token || this.player === null) return
       if (this.player.clip?.name === 'Rest, fists closed') this.player.stop()   // (no closed fingers left over)
-      this.player.play(clip)
+      this.player.play(clip, options.keepTime === true)
       this.duration = clip.duration
     } catch (error) {
       if (token === this.token) this.error = (error as Error).message
@@ -117,8 +137,8 @@ class Animator {
     }
   }
 
-  playEntry (entry: AnimationEntry, index: number): void {
-    void this.play({ clipId: entry.clipId, url: entryUrl(entry), name: entry.name, entry: index }, { inPlace: entry.inPlace, speed: entry.speed, loop: entry.loop })
+  playEntry (entry: AnimationEntry, index: number, keepTime = false): void {
+    void this.play({ clipId: entry.clipId, url: entryUrl(entry), name: entry.name, entry: index }, { inPlace: entry.inPlace, speed: entry.speed, loop: entry.loop, keepTime })
   }
 
   /** An entry as the game export makes it: at its speed, the scripts applied (with the clips a pace needs), then
@@ -138,7 +158,33 @@ class Animator {
       }
     }
     const { clips: out } = await applyScripts(this.posable, clips, scripts, async id => await cache.get(clipUrl(id), { inPlace: true }))
-    return retime(out.get(entry.name)!, 1 / entry.speed)
+    const rest = this.view!.rest!
+    const hips = rest.bones.get('Hips')
+    let clip = out.get(entry.name)!
+    if (hips !== undefined) clip = applyLift(clip, 'Hips', entry.lift ?? 0, hips.localPosition)
+    this.unkeyed = retime(clip, 1 / entry.speed)
+    clip = applyBoneKeys(clip, entry.keys?.bones, entry.loop, bone => {
+      const b = rest.bones.get(bone)
+      return b === undefined ? null : { q: b.localQuaternion.clone(), p: b.localPosition.clone() }
+    })
+    return retime(this.withProps(clip, entry.keys?.props, entry.loop), 1 / entry.speed)
+  }
+
+  /** `clip` with a track for every prop on stage (its placement, then its keys if it has any), so a prop keyed in one
+   * clip is back in place in the next. */
+  private withProps (clip: THREE.AnimationClip, props: Record<string, Array<{ u: number, q: [number, number, number, number], p?: [number, number, number] }>> | undefined, loop: boolean): THREE.AnimationClip {
+    const c = app.selected
+    if (c === null || this.view === null) return clip
+    const tracks = [...clip.tracks]
+    for (const g of c.garments ?? []) {
+      if (g.mode !== 'rigid') continue
+      const node = `${g.name.replace(/[^\w]+/g, '_')}_place`
+      if (this.view.root.getObjectByName(node) === undefined) continue    // (hidden: not on stage)
+      const position = new THREE.Vector3(); const quaternion = new THREE.Quaternion(); const scale = new THREE.Vector3()
+      garmentMatrix(g).decompose(position, quaternion, scale)
+      tracks.push(...propTracks(node, clip.duration, props?.[g.name], loop, { position, quaternion }, g.scale))
+    }
+    return new THREE.AnimationClip(clip.name, clip.duration, tracks)
   }
 
   /** The rest pose with the hands closed as the character's Hold fist scripts close them (both hands round a shaft, as
@@ -183,8 +229,10 @@ class Animator {
     void this.refresh()
   }
 
-  async refresh (): Promise<void> {
-    if (this.current !== null) await this.play(this.current)
+  async refresh (keepTime = false): Promise<void> {
+    if (this.current === null) return
+    if (this.current.clipId === 'fists') { await this.playFists(); return }
+    await this.play(this.current, { keepTime })
   }
 
   stop (): void {

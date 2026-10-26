@@ -7,7 +7,8 @@ way back, for a character that lacks them (a new workspace, a part rebuilt in th
 game's spec (<game>/tools/rigsmith/units.json), its built units (<game>/assets/models/units/<unit>.glb) and their
 build records (<game>/assets/textures/models/<unit>/<unit>.json, sources.rigsmith):
 
-  animations  the clips the unit was built with, under the game's names (clip, loop, in place, speed)
+  animations  the clips the unit was built with, under the game's names (clip, loop, in place, speed, its ground
+              and its keys)
   scripts     the clip scripts it was built with (src/engine/scripts.ts)
   garments    every part the built unit carries besides its body (Weapons_<bone>, the villager's Gear* and spare Head*,
               his job wear from <game>/assets/models/kits/<unit>_wear.glb), LOD0, moved from game space back into the
@@ -407,6 +408,10 @@ def game_clips(lib, spec_clips, built, comp=False):
         e = {'clipId': b['clip'], 'name': name, 'inPlace': b.get('inPlace', True), 'loop': b.get('loop', False), 'speed': b.get('speed', 1)}
         if b.get('url'):
             e['url'] = b['url']
+        if b.get('lift'):
+            e['lift'] = b['lift']
+        if b.get('keyData'):
+            e['keys'] = b['keyData']
         out.append(e)
     return out
 
