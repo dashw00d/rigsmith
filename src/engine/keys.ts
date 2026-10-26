@@ -8,27 +8,48 @@ import type { ClipKey } from '../../server/workspace.ts'
 
 export const KEY_FPS = 30
 
-/** The tweak at phase `u`: keys interpolated (slerp, lerp), wrapping round on a loop. */
+/** The tweak at phase `u`: keys tweened smoothly (a cubic through them, Catmull-Rom tangents: a motion passes through
+ * a key without stopping), wrapping round on a loop; a one-shot eases out of its first key and into its last, and holds
+ * them beyond. */
 export function sampleKeys (keys: ClipKey[], u: number, loop: boolean): { q: THREE.Quaternion, p: THREE.Vector3 } {
-  const q = new THREE.Quaternion(); const p = new THREE.Vector3()
-  if (keys.length === 0) return { q, p }
+  if (keys.length === 0) return { q: new THREE.Quaternion(), p: new THREE.Vector3() }
   const ks = [...keys].sort((a, b) => a.u - b.u)
-  const val = (k: ClipKey): { q: THREE.Quaternion, p: THREE.Vector3 } => ({ q: new THREE.Quaternion(...k.q), p: new THREE.Vector3(...(k.p ?? [0, 0, 0])) })
-  if (ks.length === 1) return val(ks[0])
-  let a: ClipKey; let b: ClipKey; let f: number
-  const last = ks[ks.length - 1]
-  if (u <= ks[0].u || u >= last.u) {
-    if (!loop) return val(u <= ks[0].u ? ks[0] : last)
-    a = last; b = ks[0]
-    const span = ks[0].u + 1 - last.u
-    f = span <= 1e-9 ? 0 : (((u - last.u) % 1) + 1) % 1 / span
-  } else {
-    const i = ks.findIndex(k => k.u > u)
-    a = ks[i - 1]; b = ks[i]
-    f = (u - a.u) / Math.max(b.u - a.u, 1e-9)
+  const n = ks.length
+  const val = (k: ClipKey): { q: number[], p: number[] } => ({ q: [...k.q], p: [...(k.p ?? [0, 0, 0])] })
+  const out = (v: { q: number[], p: number[] }): { q: THREE.Quaternion, p: THREE.Vector3 } => ({ q: new THREE.Quaternion(...v.q as [number, number, number, number]).normalize(), p: new THREE.Vector3(...v.p as [number, number, number]) })
+  if (n === 1) return out(val(ks[0]))
+  // the segment: keys i and i+1 (indices past the ends wrap round a loop, a cycle on)
+  const at = (i: number): { u: number, v: { q: number[], p: number[] } } => {
+    const cycle = Math.floor(i / n)
+    const k = ks[((i % n) + n) % n]
+    return { u: k.u + cycle, v: val(k) }
   }
-  const va = val(a); const vb = val(b)
-  return { q: va.q.slerp(vb.q, Math.min(1, Math.max(0, f))), p: va.p.lerp(vb.p, Math.min(1, Math.max(0, f))) }
+  let i: number
+  let x = u
+  if (u < ks[0].u || u >= ks[n - 1].u) {
+    if (!loop) return out(val(u < ks[0].u ? ks[0] : ks[n - 1]))
+    i = n - 1
+    if (x < ks[0].u) x += 1
+  } else {
+    i = ks.findIndex(k => k.u > u) - 1
+  }
+  const k0 = at(i - 1); const k1 = at(i); const k2 = at(i + 1); const k3 = at(i + 2)
+  const span = Math.max(k2.u - k1.u, 1e-9)
+  const f = Math.min(1, Math.max(0, (x - k1.u) / span))
+  // tangents (per unit of the segment): Catmull-Rom over uneven spacing; none at a one-shot's ends (it eases)
+  const ends = !loop
+  const first = ends && i === 0; const last = ends && i + 1 === n - 1
+  // (quaternions on one side of the sphere, as the segment's first)
+  const align = (q: number[]): number[] => (q[0] * k1.v.q[0] + q[1] * k1.v.q[1] + q[2] * k1.v.q[2] + q[3] * k1.v.q[3] < 0 ? q.map(c => -c) : q)
+  const q0 = align(k0.v.q); const q1 = k1.v.q; const q2 = align(k2.v.q); const q3 = align(k3.v.q)
+  const tangent = (a: number[], b: number[], ua: number, ub: number, none: boolean): number[] => none ? a.map(() => 0) : a.map((c, j) => (b[j] - c) / Math.max(ub - ua, 1e-9) * span)
+  const h00 = 2 * f ** 3 - 3 * f ** 2 + 1; const h10 = f ** 3 - 2 * f ** 2 + f; const h01 = -2 * f ** 3 + 3 * f ** 2; const h11 = f ** 3 - f ** 2
+  const hermite = (p0: number[], p1: number[], p2: number[], p3: number[]): number[] => {
+    const m1 = tangent(p0, p2, k0.u, k2.u, first)
+    const m2 = tangent(p1, p3, k1.u, k3.u, last)
+    return p1.map((c, j) => h00 * c + h10 * m1[j] + h01 * p2[j] + h11 * m2[j])
+  }
+  return out({ q: hermite(q0, q1, q2, q3), p: hermite(k0.v.p, k1.v.p, k2.v.p, k3.v.p) })
 }
 
 /** The times a keyed track is baked at: every frame, and the clip's end. */

@@ -324,11 +324,10 @@ function restWorld (skeleton: RestSkeleton, name: string | null, child: string):
   return restWorld(skeleton, b.parent, name).multiply(new THREE.Matrix4().compose(b.localPosition, b.localQuaternion, b.localScale))
 }
 
-export function retarget (sourceRoot: THREE.Object3D, source: RestSkeleton, clip: THREE.AnimationClip, target: RestSkeleton, options: RetargetOptions = {}): THREE.AnimationClip {
-  const fps = options.fps ?? 30
-  // Single-frame pose clips have zero duration, which breaks looping; give them one frame of length.
-  const duration = Math.max(clip.duration, 1 / fps)
-  // Per-bone world-space offsets K so that Qtarget = Qsource(t) * K.
+/** The retarget's per-bone world turns K: a target bone's world turn is its source bone's then K
+ * (Qtarget = Qsource(t) * K), so a clip edited on the target goes back onto the source as Qsource = Qtarget * K^-1;
+ * and the hips' moves, scaled by `scale` (the target's hips height over the source's). */
+export function retargetOffsets (source: RestSkeleton, target: RestSkeleton): { offsets: Map<string, THREE.Quaternion>, scale: number } {
   const offsets = new Map<string, THREE.Quaternion>()
   for (const name of target.order) {
     const s = source.bones.get(name)
@@ -337,6 +336,15 @@ export function retarget (sourceRoot: THREE.Object3D, source: RestSkeleton, clip
     const aligned = alignment(source, target, name).multiply(t.worldQuaternion)
     offsets.set(name, s.worldQuaternion.clone().invert().multiply(aligned))
   }
+  return { offsets, scale: hipsHeight(target) / hipsHeight(source) }
+}
+
+export function retarget (sourceRoot: THREE.Object3D, source: RestSkeleton, clip: THREE.AnimationClip, target: RestSkeleton, options: RetargetOptions = {}): THREE.AnimationClip {
+  const fps = options.fps ?? 30
+  // Single-frame pose clips have zero duration, which breaks looping; give them one frame of length.
+  const duration = Math.max(clip.duration, 1 / fps)
+  // Per-bone world-space offsets K so that Qtarget = Qsource(t) * K.
+  const { offsets, scale } = retargetOffsets(source, target)
 
   const sourceRig = new Map<string, THREE.Object3D>()
   sourceRoot.traverse(o => { const c = canonical(o.name); if (source.bones.has(c) && !sourceRig.has(c)) sourceRig.set(c, o) })
@@ -354,7 +362,6 @@ export function retarget (sourceRoot: THREE.Object3D, source: RestSkeleton, clip
   for (const name of target.order) rotations.set(name, new Float32Array(frames * 4))
   const hipsPositions = new Float32Array(frames * 3)
   const hipsName = pelvisName(target)
-  const scale = hipsHeight(target) / hipsHeight(source)
   const sourceHips = source.bones.get(pelvisName(source))
 
   const world = new Map<string, THREE.Quaternion>()

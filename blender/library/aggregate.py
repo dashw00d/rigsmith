@@ -692,7 +692,10 @@ def run(out, names_path=DEFAULT_NAMES):
         if kc != "pose" and classification_frames <= 10:
             kc = None  # a single held frame is a pose whatever it is called
         fc, fconf, scores = classify(f, classification_frames)
-        if kc:
+        if m.get("category") in CAT_ORDER:
+            # (a clip that says its own: one made in Rigsmith's editor keeps the category of the clip it came from)
+            e["category"], e["confidence"], e["categorySource"] = m["category"], 1.0, "set"
+        elif kc:
             e["category"], e["confidence"], e["categorySource"] = kc, NAME_CONFIDENCE[name_src], "name"
         else:
             e["category"], e["confidence"], e["categorySource"] = fc, fconf, "features"

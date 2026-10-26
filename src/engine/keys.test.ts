@@ -16,7 +16,17 @@ describe('sampleKeys', () => {
   it('wraps round a loop', () => {
     // from 40 at 0.6 back to 0 at 1.2 (= 0.2): halfway at 0.9
     expect(angle(sampleKeys(keys, 0.9, true).q)).toBe(20)
-    expect(angle(sampleKeys(keys, 0.05, true).q)).toBe(10)
+    // (three quarters of the way, eased: two keys turn back at each)
+    expect(angle(sampleKeys(keys, 0.05, true).q)).toBe(6)
+  })
+  it('passes through a middle key without stopping', () => {
+    const five: ClipKey[] = [0, 1, 2, 3, 4].map(i => ({ u: i / 4, q: turn(i * 20) }))
+    // evenly spaced and in line: inside, the cubic is the straight line through them
+    expect(angle(sampleKeys(five, 0.375, false).q)).toBe(30)
+    // it moves at a middle key (no hold there), and eases out of the first
+    const a = angle(sampleKeys(five, 0.48, false).q); const b = angle(sampleKeys(five, 0.52, false).q)
+    expect(b - a).toBeGreaterThan(2)
+    expect(angle(sampleKeys(five, 0.02, false).q)).toBeLessThan(1)
   })
   it('is no change with no keys', () => { expect(sampleKeys([], 0.5, true).q.w).toBe(1) })
 })
