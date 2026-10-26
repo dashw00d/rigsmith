@@ -10,7 +10,7 @@
 import * as THREE from 'three'
 import type { ClipKey } from './api.ts'
 import { app } from './app.svelte.ts'
-import { animator, restOf, type NowPlaying } from './animator.svelte.ts'
+import { animator, GRIP_CLIP, restOf, type NowPlaying } from './animator.svelte.ts'
 import { loadSource } from '../engine/clips.ts'
 import { armOf, buildEdit, fistGrip, frameTimes, GRIP_CLEAR, handGrip, handOn, holdAt, keyFor, nodePath, onPath, propObstacles, ROOT_HOLD, rootPath, unretarget, type Attachment, type Grip, type PropPath, type PropRig, type RootHold, type Socket } from '../engine/clipedit.ts'
 import { propNode } from './tune.svelte.ts'
@@ -33,6 +33,10 @@ const PULL_FRAMES = 3
 /** Naturalize, each press: the pull toward the library's poses (per whitened unit squared: the whole, and the part of a
  * pose outside what people do together), and the pull of each pose to the middle of its neighbours' (per radian squared). */
 const NATURALIZE = { pull: 0.05, outside: 0.5, motion: 15 }
+/** How near (a share of the body's height) a free hand's fist must be let go to a prop's shaft to snap onto it. */
+const SNAP_REACH = 0.1
+/** The gap left between two hands on one shaft, beyond their widths (a share of the body's height). */
+const HAND_GAP = 0.005
 const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-4
 const isAnchor = (k: ClipKey): boolean => k.p === undefined && Math.abs(k.q[3]) > 1 - 1e-9
 
@@ -258,6 +262,9 @@ class ClipEdit {
     // (an attached arm is its socket's, not keyed)
     const carriers = Object.entries(this.paths).filter(([, x]) => x.locked).map(([p]) => this.carrierSocket(p)?.hand).filter((h): h is 'Left' | 'Right' => h !== undefined)
     const attached = new Set([...this.attachments.flatMap(a => [...Object.values(armOf(a.hand)), ...Object.keys(this.fists[a.hand] ?? {})]), ...carriers.flatMap(h => Object.values(armOf(h)))])
+    // (a free hand let go near a prop's shaft snaps onto it there: its arm is the socket's then, not keyed)
+    const snap = this.snapTarget(moved)
+    if (snap !== null) for (const b of [...Object.values(armOf(snap.hand)), ...Object.keys(this.fists[snap.hand] ?? {})]) attached.add(b)
     // (keyed now, as seen, before anything else can move a bone)
     const next = { ...this.keys }
     const bones = moved.filter(b => !attached.has(b))
@@ -270,8 +277,39 @@ class ClipEdit {
       const sock = this.socketAt(a.hand, a.prop, false, carries)
       if (sock !== null) await this.saveSocket(a.prop, { ...sock, id: a.socket, name: this.props.find(p => p.name === a.prop)?.sockets.find(x => x.id === a.socket)?.name ?? sock.name })
     }
+    if (snap !== null) {
+      this.fists[snap.hand] ??= await animator.fistOf(snap.hand, GRIP_CLIP).catch(() => ({}))
+      const sock = this.socketAt(snap.hand, snap.prop, true)
+      if (sock !== null) {
+        await this.saveSocket(snap.prop, this.clearOfOthers(snap.hand, snap.prop, sock))
+        this.attachments = [...this.attachments.filter(a => a.hand !== snap.hand), { hand: snap.hand, prop: snap.prop, socket: sock.id }]
+      }
+    }
     this.keys = next
     this.show(t)
+  }
+
+  /** A hand on no socket, let go (in `moved`) with its fist near a prop's shaft (not the prop it carries): that hand and
+   * prop, the nearest; else null. */
+  private snapTarget (moved: string[]): { hand: 'Left' | 'Right', prop: string } | null {
+    const view = animator.character
+    if (view === null) return null
+    let best: { hand: 'Left' | 'Right', prop: string, d: number } | null = null
+    for (const hand of ['Left', 'Right'] as const) {
+      const bone = view.bones.get(`${hand}Hand`)
+      if (!moved.includes(`${hand}Hand`) || bone === undefined || this.attachments.some(a => a.hand === hand)) continue
+      for (const p of this.props) {
+        if (p.bone === `${hand}Hand`) continue
+        const shaft = this.shaftOf(p.name); const grip = this.gripOf(hand, p.name)
+        if (shaft === null || grip === null) continue
+        const fist = grip.fist.clone().applyQuaternion(bone.getWorldQuaternion(new THREE.Quaternion())).add(bone.getWorldPosition(new THREE.Vector3()))
+        const length = shaft.from.distanceTo(shaft.to)
+        const k = Math.max(0, Math.min(length, fist.clone().sub(shaft.from).dot(shaft.dir)))
+        const d = shaft.from.clone().addScaledVector(shaft.dir, k).distanceTo(fist)
+        if (d < SNAP_REACH * view.height && (best === null || d < best.d)) best = { hand, prop: p.name, d }
+      }
+    }
+    return best === null ? null : { hand: best.hand, prop: best.prop }
   }
 
   /** Key `names` into `next` as they stand on the character, at `u`: the turn from where the clip has them at the time
@@ -426,7 +464,7 @@ class ClipEdit {
    * the prop fitted again if it leads. */
   async grip (hand: 'Left' | 'Right', prop: string): Promise<void> {
     if (this.busy !== null) return
-    this.fists[hand] ??= await animator.fistOf(hand).catch(() => ({}))
+    this.fists[hand] ??= await animator.fistOf(hand, GRIP_CLIP).catch(() => ({}))
     const snapped = this.socketAt(hand, prop, true)
     if (snapped === null) { app.toast('error', `No ${hand.toLowerCase()} hand, or the prop isn't on stage`); return }
     const had = this.attachments.find(a => a.hand === hand && a.prop === prop)?.socket
@@ -458,7 +496,13 @@ class ClipEdit {
       const o = p?.sockets.find(x => x.id === a.socket)
       if (o !== undefined) others.push(along(o, this.gripOf(a.hand, prop) ?? handGrip(rest, a.hand) ?? { fist: new THREE.Vector3() }))
     }
-    const fist = FIT.fist * view.height / scale
+    // (how far apart two fists must be along the shaft: half of each hand's width (its solid's, fitted to the mesh), and a little)
+    const widthOf = (h: 'Left' | 'Right'): number => {
+      const seg = solidsOf(view)?.shape.segments.find(x => x.name === `${h}Hand`)
+      return seg === undefined ? FIT.fist * view.height : 2 * Math.max(seg.r1, seg.r2)
+    }
+    const others0 = [...(carrier !== null && carrier.hand !== hand ? [carrier.hand] : []), ...this.attachments.filter(a => a.prop === prop && a.hand !== hand && a.socket !== carrier?.socket.id).map(a => a.hand)]
+    const fist = (Math.max(...others0.map(h => (widthOf(hand) + widthOf(h)) / 2), FIT.fist * view.height) + HAND_GAP * view.height) / scale
     const was = along(sock, grip)
     let at = was
     for (let round = 0; round < 3; round++) {
@@ -486,7 +530,7 @@ class ClipEdit {
     const prop = this.prop
     if (prop === null) return
     // (its fist first: the socket is made with the shaft through the closed fingers)
-    this.fists[hand] ??= await animator.fistOf(hand).catch(() => ({}))
+    this.fists[hand] ??= await animator.fistOf(hand, GRIP_CLIP).catch(() => ({}))
     const sock = this.socketAt(hand, prop, true)
     if (sock === null) { app.toast('error', `No ${hand.toLowerCase()} hand, or the prop isn't on stage`); return }
     await this.saveSocket(prop, sock)
@@ -505,7 +549,7 @@ class ClipEdit {
    * hand's grip (its spot and roll kept) and slid just clear of any other hand on the prop; then, if the prop leads, the
    * prop is fitted again (fitPath). `place: false` puts the hand on the socket as it is. */
   async attach (hand: 'Left' | 'Right', prop: string, socket: string, opts: { place?: boolean } = {}): Promise<void> {
-    this.fists[hand] ??= await animator.fistOf(hand).catch(() => ({}))
+    this.fists[hand] ??= await animator.fistOf(hand, GRIP_CLIP).catch(() => ({}))
     // (a socket made for another grip (an older one: the shaft at the front of the knuckles) put back on the shaft for this one, its spot and roll kept)
     const p = this.props.find(x => x.name === prop); const sock = p?.sockets.find(x => x.id === socket)
     this.attachments = [...this.attachments.filter(a => a.hand !== hand), { hand, prop, socket }]

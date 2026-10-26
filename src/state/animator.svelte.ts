@@ -28,6 +28,10 @@ export interface NowPlaying {
 
 const MANNEQUIN = '/files/library/mannequin/ybot.glb'
 
+/** The library clip a hand's fist is closed as when nothing says otherwise: of the library's held-object clips, the one
+ * whose fingers wrap a shaft most evenly and closely, both hands (a scan of their fists round a spear's shaft). */
+export const GRIP_CLIP = 'mixamo-Great_Sword_Crouching_6'
+
 export function clipUrl (clipId: string): string {
   return `/files/library/clips/${clipId}.glb`
 }
@@ -283,11 +287,11 @@ class Animator {
 
   /** A hand's fingers closed round a shaft (local turns): as the character's Hold fist script for that hand closes
    * them, else as 2hand Idle does. */
-  async fistOf (side: 'Left' | 'Right'): Promise<Record<string, [number, number, number, number]>> {
+  async fistOf (side: 'Left' | 'Right', clipId?: string): Promise<Record<string, [number, number, number, number]>> {
     const root = this.posableCopy()
     if (root === null || this.cache === null) return {}
     const grip = (app.selected?.scripts ?? []).find((x): x is GripScript => x.enabled && x.kind === 'grip' && x.side === side)
-    const clip = await this.cache.get(clipUrl(grip?.clip ?? 'mixamo-2hand_Idle'), { inPlace: true })
+    const clip = await this.cache.get(clipUrl(clipId ?? grip?.clip ?? GRIP_CLIP), { inPlace: true })
     return Object.fromEntries([...fistPose(root, clip, side).pose].map(([n, q]) => [n, q.toArray() as [number, number, number, number]]))
   }
 
@@ -302,7 +306,7 @@ class Animator {
     this.error = null
     try {
       const grips = (app.selected?.scripts ?? []).filter((x): x is GripScript => x.enabled && x.kind === 'grip')
-      const hands = grips.length > 0 ? grips.map(g => ({ side: g.side, clip: g.clip })) : (['Left', 'Right'] as const).map(side => ({ side, clip: 'mixamo-2hand_Idle' }))
+      const hands = grips.length > 0 ? grips.map(g => ({ side: g.side, clip: g.clip })) : (['Left', 'Right'] as const).map(side => ({ side, clip: GRIP_CLIP }))
       this.posable ??= cloneSkinned(this.view.root)
       const tracks: THREE.KeyframeTrack[] = []
       for (const h of hands) {

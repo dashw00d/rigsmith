@@ -4,7 +4,7 @@
   import { Hand, Plus, Swords, Timer, Trash2 } from '@lucide/svelte'
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
-  import { animator } from '../../state/animator.svelte.ts'
+  import { animator, GRIP_CLIP } from '../../state/animator.svelte.ts'
   import { describe, type ClipScript } from '../../engine/scripts.ts'
   import Section from '../../ui/Section.svelte'
   import Toggle from '../../ui/Toggle.svelte'
@@ -27,7 +27,7 @@
     const id = Math.random().toString(36).slice(2, 10)
     const pick = (want: string): string => names.includes(want) ? want : names[0] ?? want
     const script: ClipScript = kind === 'grip'
-      ? { id, kind, enabled: true, side: 'Right', clip: 'mixamo-2hand_Idle' }
+      ? { id, kind, enabled: true, side: 'Right', clip: GRIP_CLIP }
       : kind === 'blow'
         ? { id, kind, enabled: true, clip: pick('Attack'), at: 0.45, hand: 'RightHand' }
         : { id, kind, enabled: true, clip: pick('Carry'), like: pick('Walk') }
