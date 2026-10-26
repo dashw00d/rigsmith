@@ -89,6 +89,9 @@ export interface PropRig {
   /** By leading prop: its shaft (the end by the hand carrying it and the far end, in its node's frame) and its radius: the
    * body is kept clear of it, but where the hands hold it (propObstacles). */
   shafts?: Record<string, { from: [number, number, number], to: [number, number, number], radius: number }>
+  /** By prop: its node's place on its bone as the outfit has it (local position, turn). A leading prop's node is keyed
+   * in the edit to where its path puts it, whatever hand holds it how; a copy posed from an edit is put back to this first. */
+  rest?: Record<string, { position: [number, number, number], quaternion: [number, number, number, number] }>
   /** By hand: where it holds the shaft it is on (Grip; the carrying hand has none: its turn is held exactly). The solver keeps this point on the shaft while the hand's turn gives. */
   grips?: Partial<Record<'Left' | 'Right', Grip>>
   /** The prop drags let go (RootHold): the body's root held near where it was seen, on the frames each one moved the prop. */
@@ -412,6 +415,8 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
   // (the soles' heights at rest above the floor)
   const saved = [...bones.values()].map(b => [b, b.position.clone(), b.quaternion.clone()] as const)
   for (const b of bones.values()) { const r = rest(b.name); if (r !== null) { b.quaternion.copy(r.q); b.position.copy(r.p) } }
+  // (the props' nodes as the outfit places them: an edit keys a leading prop's node, and a copy may carry that)
+  for (const [prop, r] of Object.entries(props?.rest ?? {})) { const n = posable.getObjectByName(props!.node(prop)); if (n !== undefined) { n.position.fromArray(r.position); n.quaternion.fromArray(r.quaternion) } }
   posable.updateMatrixWorld(true)
   const v = new THREE.Vector3()
   const soles = legs.map(l => [l.end, l.ball, l.tip].map(b => (b === null ? -Infinity : b.getWorldPosition(v).y - floor)))
@@ -441,6 +446,10 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
   // before, so what was seen when it was let go stays)
   const frameOf = (u: number): number => Math.round(u * keyed.duration * KEY_FPS)
   const letGo = new Set([...(props?.holds ?? []).map(h => frameOf(h.u)), ...Object.values(keys).flat().filter(k => !(k.p === undefined && Math.abs(k.q[3]) > 1 - 1e-9)).map(k => frameOf(k.u))])
+  // (each leading prop's node keyed where its path puts it, on its bone as the solve left that: the prop is where it leads
+  // to, however the hand carrying it holds it)
+  const leading = active ? Object.keys(props!.paths).filter(p => props!.paths[p].locked && posable.getObjectByName(props!.node(p)) !== undefined) : []
+  const propAt = new Map(leading.map(p => [p, { position: [] as number[], quaternion: [] as number[] }]))
   for (const [i, t] of times.entries()) {
     pose(base, t)
     const was = sunk(legs, soles, floor)
@@ -468,15 +477,35 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
     }
     for (const b of touched) values.get(b.name)!.push(...b.quaternion.toArray())
     if (hipsBone !== undefined) hipsAt.push(...hipsBone.position.toArray())
+    if (leading.length > 0) {
+      posable.updateMatrixWorld(true)
+      const u = keyed.duration > 0 ? t / keyed.duration : 0
+      for (const prop of leading) {
+        const node = posable.getObjectByName(props!.node(prop))!; const was = rode?.get(prop)
+        const place = was === undefined ? node.matrixWorld.clone() : onPath(was, props!.paths[prop], u, loop)
+        const local = (node.parent?.matrixWorld.clone().invert() ?? new THREE.Matrix4()).multiply(place)
+        const pos = new THREE.Vector3(); const q = new THREE.Quaternion(); local.decompose(pos, q, new THREE.Vector3())
+        const at = propAt.get(prop)!
+        at.position.push(...pos.toArray()); at.quaternion.push(...q.toArray())
+      }
+    }
   }
   mixer.stopAllAction()
   mixer.uncacheRoot(posable)
   for (const [b, p, q] of saved) { b.position.copy(p); b.quaternion.copy(q) }
   posable.updateMatrixWorld(true)
   if (!changed) return keyed
-  const tracks = keyed.tracks.filter(t => !touched.some(b => t.name === `${b.name}.quaternion`) && !(active && hipsBone !== undefined && t.name === `${hipsBone.name}.position`))
+  // (the tracks the edit replaces: the bones it solved, the hips' place, and a leading prop's node (a clip may key it: a
+  // prop script's placement), which the edit keys where the prop's path puts it)
+  const propNodes = new Set([...propAt.keys()].map(p => props!.node(p)))
+  const tracks = keyed.tracks.filter(t => !touched.some(b => t.name === `${b.name}.quaternion`) && !(active && hipsBone !== undefined && t.name === `${hipsBone.name}.position`) &&
+    !propNodes.has(t.name.slice(0, t.name.lastIndexOf('.'))))
   for (const b of touched) tracks.push(new THREE.QuaternionKeyframeTrack(`${b.name}.quaternion`, times, values.get(b.name)!))
   if (active && hipsBone !== undefined) tracks.push(new THREE.VectorKeyframeTrack(`${hipsBone.name}.position`, times, hipsAt))
+  for (const [prop, at] of propAt) {
+    const name = props!.node(prop)
+    tracks.push(new THREE.VectorKeyframeTrack(`${name}.position`, times, at.position), new THREE.QuaternionKeyframeTrack(`${name}.quaternion`, times, at.quaternion))
+  }
   return new THREE.AnimationClip(keyed.name, keyed.duration, tracks)
 }
 

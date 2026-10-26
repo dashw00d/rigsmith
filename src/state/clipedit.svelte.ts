@@ -27,6 +27,8 @@ import { bodyBonesNatural, createBodySolver, loadPoseModel, naturalizeClip, Natu
 import { FIT, fitProp, type FitResult } from '../engine/propfit.ts'
 
 const IDENTITY: ClipKey['q'] = [0, 0, 0, 1]
+/** A hand's socket on a prop (one a hand). */
+const handSocket = (hand: 'Left' | 'Right'): string => `${hand.toLowerCase()}-hand`
 /** Naturalize: how hard a keyed bone is pulled to the edit at its key, and over how many frames that fades out. */
 const PULL_WEIGHT = 4
 const PULL_FRAMES = 3
@@ -170,6 +172,9 @@ class ClipEdit {
       this.attachments = []
       this.selected = null
       this.prop = null
+      // (each prop's node as the outfit places it on its bone: the edit keys a leading prop's node, this puts it back)
+      this.propRest = Object.fromEntries(this.props.map(p => [p.name, view.root.getObjectByName(propNode(p.name))]).filter((x): x is [string, THREE.Object3D] => x[1] !== undefined)
+        .map(([n, o]) => [n, { position: o.position.toArray() as [number, number, number], quaternion: o.quaternion.toArray() as [number, number, number, number] }]))
       animator.setPlaying(false)
       this.makeEditor(this.limitsOn)
       this.active = true
@@ -186,6 +191,10 @@ class ClipEdit {
     this.editor?.dispose()
     this.editor = null
     this.active = false
+    // (the props back where the outfit places them)
+    const view = animator.character
+    for (const [prop, r] of Object.entries(this.propRest)) { const n = view?.root.getObjectByName(propNode(prop)); if (n !== undefined) { n.position.fromArray(r.position); n.quaternion.fromArray(r.quaternion); n.updateMatrixWorld(true) } }
+    this.propRest = {}
     animator.holding = false
     animator.editing = null
   }
@@ -210,9 +219,9 @@ class ClipEdit {
       select: b => { this.selected = b },
       hover: b => { this.hovered = b },
       selectProp: p => { this.prop = p },
-      begin: () => { animator.setPlaying(false); animator.holding = true },
+      begin: () => { animator.setPlaying(false); animator.holding = true; this.dragPlaces = this.leadingPlaces() },
       commit: bones => { void this.commit(bones) },
-      constrain: moving => { this.handsLive(moving) },
+      constrain: moving => { this.keepLeading(); this.handsLive(moving) },
       moveProp: (p, place, done) => { if (done) this.commitProp(p, place); else this.propLive(p, place) },
     }, 0, () => this.propNodes())
     this.editor.setMode(this.gizmo)
@@ -224,22 +233,53 @@ class ClipEdit {
    * (world): its gizmo slides it along the prop and rolls it round it, and letting go moves its socket (every frame). */
   private gripHold (bone: string): { at: THREE.Vector3, axis: THREE.Vector3 } | null {
     const hand = /^(Left|Right)Hand$/.exec(bone)?.[1] as 'Left' | 'Right' | undefined
+    // (a hand on a socket, or the hand carrying a leading prop: both hold it where they are put)
     const a = hand === undefined ? undefined : this.attachments.find(x => x.hand === hand)
-    const p = a === undefined ? undefined : this.props.find(x => x.name === a.prop)
+    const propName = a?.prop ?? this.props.find(x => x.bone === bone && this.paths[x.name]?.locked === true)?.name
     const view = animator.character; const b = view?.bones.get(bone)
-    if (hand === undefined || a === undefined || p === undefined || p.bone === bone || b === undefined) return null
-    const node = view?.root.getObjectByName(propNode(a.prop))
-    const local = this.axisCache.get(a.prop) ?? this.shaftLocal(a.prop)
-    const grip = this.gripOf(hand, a.prop)
+    if (hand === undefined || propName === undefined || b === undefined) return null
+    const node = view?.root.getObjectByName(propNode(propName))
+    const local = this.axisCache.get(propName) ?? this.shaftLocal(propName)
+    const grip = this.gripOf(hand, propName)
     if (node === undefined || local === null || grip === null) return null
-    this.axisCache.set(a.prop, local)
+    this.axisCache.set(propName, local)
     node.updateMatrixWorld(true)
     const axis = local.to.clone().applyMatrix4(node.matrixWorld).sub(local.from.clone().applyMatrix4(node.matrixWorld)).normalize()
     const at = grip.fist.clone().applyQuaternion(b.getWorldQuaternion(new THREE.Quaternion())).add(b.getWorldPosition(new THREE.Vector3()))
     return { at, axis }
   }
+  /** Each prop's node as the outfit places it on its bone (local position, turn), when the edit began. */
+  private propRest: NonNullable<PropRig['rest']> = {}
+  /** While a joint is dragged: each leading prop's place (world) when the drag began, where it is kept. */
+  private dragPlaces = new Map<string, THREE.Matrix4>()
+
   /** Each prop's long axis in its own node's frame (measured once: its mesh doesn't change while editing). */
   private axisCache = new Map<string, { from: THREE.Vector3, to: THREE.Vector3, radius: number }>()
+
+  /** Each leading prop's place (world) as it stands now. */
+  private leadingPlaces (): Map<string, THREE.Matrix4> {
+    const view = animator.character
+    const out = new Map<string, THREE.Matrix4>()
+    for (const [prop, path] of Object.entries(this.paths)) {
+      const node = path.locked ? view?.root.getObjectByName(propNode(prop)) : undefined
+      if (node !== undefined) { node.updateMatrixWorld(true); out.set(prop, node.matrixWorld.clone()) }
+    }
+    return out
+  }
+
+  /** While a joint is dragged: each leading prop kept where it was when the drag began (it leads: the hand carrying it
+   * moves on it, not it with the hand). */
+  private keepLeading (): void {
+    const view = animator.character
+    for (const [prop, place] of this.dragPlaces) {
+      const node = view?.root.getObjectByName(propNode(prop))
+      if (node === undefined || node.parent === null) continue
+      node.parent.updateMatrixWorld(true)
+      const local = node.parent.matrixWorld.clone().invert().multiply(place)
+      local.decompose(node.position, node.quaternion, new THREE.Vector3())
+      node.updateMatrixWorld(true)
+    }
+  }
 
   /** The props on stage: by name, their placed nodes. */
   private propNodes (): Map<string, THREE.Object3D> {
@@ -300,12 +340,23 @@ class ClipEdit {
       const sock = this.socketAt(a.hand, a.prop, false, true)
       if (sock !== null) await this.saveSocket(a.prop, { ...sock, id: a.socket, name: this.props.find(p => p.name === a.prop)?.sockets.find(x => x.id === a.socket)?.name ?? sock.name, placed: true })
     }
+    // (the hand carrying a leading prop moved or turned: it gets a socket of its own on the prop where it is now; the prop stays on its path)
+    for (const [prop, path] of Object.entries(this.paths)) {
+      const side = /^(Left|Right)Hand$/.exec(this.props.find(p => p.name === prop)?.bone ?? '')?.[1] as 'Left' | 'Right' | undefined
+      if (!path.locked || side === undefined || !moved.includes(`${side}Hand`) || this.attachments.some(a => a.hand === side)) continue
+      const sock = this.socketAt(side, prop, false, true)
+      if (sock === null) continue
+      await this.saveSocket(prop, { ...sock, id: handSocket(side), name: `${side} hand`, placed: true })
+      this.attachments = [...this.attachments, { hand: side, prop, socket: handSocket(side) }]
+      await this.pruneSockets(prop)
+    }
     if (snap !== null) {
       this.fists[snap.hand] ??= await animator.fistOf(snap.hand, GRIP_CLIP).catch(() => ({}))
       const sock = this.socketAt(snap.hand, snap.prop, true)
       if (sock !== null) {
-        await this.saveSocket(snap.prop, this.clearOfOthers(snap.hand, snap.prop, sock))
-        this.attachments = [...this.attachments.filter(a => a.hand !== snap.hand), { hand: snap.hand, prop: snap.prop, socket: sock.id }]
+        await this.saveSocket(snap.prop, { ...this.clearOfOthers(snap.hand, snap.prop, sock), id: handSocket(snap.hand), name: `${snap.hand} hand` })
+        this.attachments = [...this.attachments.filter(a => a.hand !== snap.hand), { hand: snap.hand, prop: snap.prop, socket: handSocket(snap.hand) }]
+        await this.pruneSockets(snap.prop)
       }
     }
     this.keys = next
@@ -459,23 +510,6 @@ class ClipEdit {
   }
   private gripCache: Partial<Record<'Left' | 'Right', { fingers: Record<string, [number, number, number, number]>, radius: number, root: THREE.Object3D, grip: Grip }>> = {}
 
-  /** The hand put on the prop where it is: its fist squarely round the shaft (the shaft through the closed fingers, square
-   * to the palm) at the spot on the shaft nearest it, turned the least way onto it, and slid along just clear of any other
-   * hand on the prop; saved as the hand's socket on the prop (the one it has, or a new one) and the hand put on it; then
-   * the prop fitted again if it leads. */
-  async grip (hand: 'Left' | 'Right', prop: string): Promise<void> {
-    if (this.busy !== null) return
-    this.fists[hand] ??= await animator.fistOf(hand, GRIP_CLIP).catch(() => ({}))
-    const snapped = this.socketAt(hand, prop, true)
-    if (snapped === null) { app.toast('error', `No ${hand.toLowerCase()} hand, or the prop isn't on stage`); return }
-    const had = this.attachments.find(a => a.hand === hand && a.prop === prop)?.socket
-    const name = (had === undefined ? undefined : this.props.find(x => x.name === prop)?.sockets.find(x => x.id === had)?.name) ?? snapped.name
-    const id = had ?? snapped.id
-    await this.saveSocket(prop, this.clearOfOthers(hand, prop, { ...snapped, id, name }))
-    this.attachments = [...this.attachments.filter(a => a.hand !== hand), { hand, prop, socket: id }]
-    if (this.paths[prop]?.locked === true && this.natural) await this.fitPath(prop); else this.show(animator.time)
-  }
-
   /** `sock` (for `hand` on `prop`) slid along the shaft, its turn kept, until its fist is a fist's width at least from every
    * other hand's on the prop (the one carrying it, any on a socket): to whichever side is nearer and still on the shaft. */
   private clearOfOthers (hand: 'Left' | 'Right', prop: string, sock: Socket): Socket {
@@ -526,16 +560,31 @@ class ClipEdit {
     await app.update(c.id, { garments })
   }
 
-  /** A new socket on the prop selected for `hand`, where the hand is now (its fist snapped on the shaft), the hand put on it. */
-  async addSocket (hand: 'Left' | 'Right'): Promise<void> {
-    const prop = this.prop
-    if (prop === null) return
-    // (its fist first: the socket is made with the shaft through the closed fingers)
-    this.fists[hand] ??= await animator.fistOf(hand, GRIP_CLIP).catch(() => ({}))
-    const sock = this.socketAt(hand, prop, true)
-    if (sock === null) { app.toast('error', `No ${hand.toLowerCase()} hand, or the prop isn't on stage`); return }
-    await this.saveSocket(prop, sock)
-    await this.attach(hand, prop, sock.id)
+  /** The hands on a prop: on a socket, and the hand carrying it when it leads (no socket of its own: it holds it as the
+   * outfit places it). */
+  handsOn (prop: string): Array<{ hand: 'Left' | 'Right', socket: string | null, carries: boolean }> {
+    const bone = this.props.find(p => p.name === prop)?.bone
+    const out: Array<{ hand: 'Left' | 'Right', socket: string | null, carries: boolean }> = this.attachments.filter(a => a.prop === prop).map(a => ({ hand: a.hand, socket: a.socket, carries: bone === `${a.hand}Hand` }))
+    const side = /^(Left|Right)Hand$/.exec(bone ?? '')?.[1] as 'Left' | 'Right' | undefined
+    if (side !== undefined && this.paths[prop]?.locked === true && !out.some(h => h.hand === side)) out.push({ hand: side, socket: null, carries: true })
+    return out.sort((x, y) => x.hand.localeCompare(y.hand))
+  }
+
+  /** Take a hand off a prop, its socket with it (the hand carrying the prop holds it as the outfit places it again). */
+  async release (hand: 'Left' | 'Right', prop: string): Promise<void> {
+    const a = this.attachments.find(x => x.hand === hand && x.prop === prop)
+    if (a === undefined) return
+    await this.removeSocket(prop, a.socket)
+  }
+
+  /** The sockets on a prop no hand is on, deleted (one socket a hand: no pile of old ones). */
+  private async pruneSockets (prop: string): Promise<void> {
+    const c = app.selected
+    if (c === null) return
+    const keep = new Set(this.attachments.filter(a => a.prop === prop).map(a => a.socket))
+    const g = (c.garments ?? []).find(x => x.name === prop)
+    if (g === undefined || (g.sockets ?? []).every(x => keep.has(x.id))) return
+    await app.update(c.id, { garments: (c.garments ?? []).map(x => x.name !== prop ? x : { ...x, sockets: (x.sockets ?? []).filter(k => keep.has(k.id)) }) })
   }
 
   async removeSocket (prop: string, id: string): Promise<void> {
@@ -819,7 +868,7 @@ class ClipEdit {
       const grip = this.gripOf(a.hand, a.prop)
       if (grip !== null) grips[a.hand] = grip
     }
-    return { node: propNode, paths, attachments, sockets, carriers: Object.fromEntries(this.props.map(p => [p.name, p.bone])), fingers: this.fists, shafts, grips, holds: this.holds }
+    return { node: propNode, paths, attachments, sockets, carriers: Object.fromEntries(this.props.map(p => [p.name, p.bone])), fingers: this.fists, shafts, grips, holds: this.holds, rest: this.propRest }
   }
 
   /** Clear every key. */

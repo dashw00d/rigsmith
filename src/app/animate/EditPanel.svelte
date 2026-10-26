@@ -2,7 +2,7 @@
   // The animation editor's panel (src/state/clipedit.svelte.ts): start editing the clip playing, then pose and key it in
   // the viewport; delete keys, hold joints in their ranges, save as a new library clip.
   import { onDestroy } from 'svelte'
-  import { Hand, Move3d, PencilRuler, Plus, Rotate3d, Save, ShieldCheck, Sparkles, Trash2, Wand2, X } from '@lucide/svelte'
+  import { Move3d, PencilRuler, Plus, Rotate3d, Save, ShieldCheck, Sparkles, Trash2, Wand2, X } from '@lucide/svelte'
   import { animator } from '../../state/animator.svelte.ts'
   import { clipEdit } from '../../state/clipedit.svelte.ts'
   import Button from '../../ui/Button.svelte'
@@ -91,34 +91,16 @@
           {#if clipEdit.paths[p.name]?.locked && /^(Left|Right)Hand$/.test(p.bone)}
             <p class="faint small">The {p.bone.startsWith('Left') ? 'left' : 'right'} hand holds it where its placement has it (Outfit), unless it is on a socket.</p>
           {/if}
-          <span class="muted small">Sockets (where hands hold it)</span>
-          {#each p.sockets as sk (sk.id)}
+          <span class="muted small">Hands on it</span>
+          {#each clipEdit.handsOn(p.name) as h (h.hand)}
             <div class="row socket">
-              <span class="small">{sk.name}</span>
-              <span class="hands">
-                {#each ['Left', 'Right'] as const as hand}
-                  {@const on = clipEdit.attachments.some(a => a.hand === hand && a.prop === p.name && a.socket === sk.id)}
-                  <button class="hand" class:on onclick={() => { if (on) clipEdit.detach(hand); else void clipEdit.attach(hand, p.name, sk.id) }} use:tooltip={on ? `${hand} hand on it: click to let go` : `Put the ${hand.toLowerCase()} hand on it`}>{hand === 'Left' ? 'L' : 'R'}</button>
-                {/each}
-                <button class="iconbtn" onclick={() => clipEdit.removeSocket(p.name, sk.id)} aria-label="Delete {sk.name}"><Trash2 size={12} /></button>
-              </span>
+              <span class="small">{h.hand} hand{h.carries ? ' (carries it)' : ''}</span>
+              {#if h.socket !== null}<button class="iconbtn" onclick={() => clipEdit.release(h.hand, p.name)} use:tooltip={h.carries ? 'Back to holding it as the outfit places it' : `Take the ${h.hand.toLowerCase()} hand off it`} aria-label="Take the {h.hand.toLowerCase()} hand off"><Trash2 size={12} /></button>{/if}
             </div>
           {:else}
-            <p class="faint small">None yet.</p>
+            <p class="faint small">None: drag a hand onto it.</p>
           {/each}
-          <div class="row">
-            <span class="muted small">Grip it</span>
-            {#each ['Left', 'Right'] as const as hand}
-              {#if p.bone !== `${hand}Hand`}
-                <span use:tooltip={`The ${hand.toLowerCase()} hand on the shaft where it is: its fist squarely round it (the shaft through the closed fingers, square to the palm) at the nearest spot, kept a fist's width from the other hand; saved as the hand's socket.`}><Button size="sm" disabled={clipEdit.busy !== null} onclick={() => clipEdit.grip(hand, p.name)}><Hand size={12} /> {hand}</Button></span>
-              {/if}
-            {/each}
-          </div>
-          <div class="row">
-            <Button size="sm" onclick={() => clipEdit.addSocket('Left')}><Plus size={12} /> Left hand here</Button>
-            <Button size="sm" onclick={() => clipEdit.addSocket('Right')}><Plus size={12} /> Right hand here</Button>
-          </div>
-          <p class="faint small">A socket is made where the hand is now, its fist put on the shaft and closed round it, and the hand put on it. Turn or move a hand on a socket to change the socket (it stays on the shaft).</p>
+          <p class="faint small">Drag a hand onto it and let go: it closes on it there. Select a hand on it and its gizmo moves and turns it on the prop, on every frame; a prop that leads stays on its path.</p>
         </div>
       {/if}
     {:else if clipEdit.props.length > 0}
@@ -146,9 +128,6 @@
   .field { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
   .propbox { display: flex; flex-direction: column; gap: 5px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent-soft); }
   .socket { padding: 2px 0; border-top: 1px solid var(--line); }
-  .hands { display: flex; gap: 3px; align-items: center; }
-  .hand { width: 24px; height: 22px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg-2); color: var(--text-2); font-size: 11px; font-weight: 700; }
-  .hand.on { background: #ff7ab8; border-color: #ff7ab8; color: #1b0d14; }
   .iconbtn { width: 22px; height: 22px; border: 0; border-radius: 5px; background: transparent; color: var(--text-3); display: grid; place-items: center; }
   .iconbtn:hover { background: var(--bg-3); color: var(--text-1); }
   .seg { display: flex; gap: 2px; padding: 2px; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--line); }
