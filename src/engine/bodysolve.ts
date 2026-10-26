@@ -18,6 +18,9 @@ export interface HandGoal {
   grip?: { axis: THREE.Vector3, fist: THREE.Vector3 }
   /** Held exactly (its socket put there by hand): its place and turn as given, no give. */
   exact?: boolean
+  /** A hand on a leading prop's shaft: it may slide along it (`dir`, world, unit) from `back` (metres, negative) to `ahead`,
+   * at a cost, and its turn gives, so at an extreme it gives on the prop before its wrist bends past its range. */
+  slide?: { dir: THREE.Vector3, back: number, ahead: number }
 }
 
 export interface BodyState { yaw: number, lean: number, forward: number, drop: number }

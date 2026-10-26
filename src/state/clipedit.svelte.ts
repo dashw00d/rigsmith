@@ -528,6 +528,18 @@ class ClipEdit {
   }
   private gripCache: Partial<Record<'Left' | 'Right', { fingers: Record<string, [number, number, number, number]>, radius: number, root: THREE.Object3D, grip: Grip }>> = {}
 
+  /** How near two hands' holds may come along a shaft (metres): half of each hand's width (their solids, fitted to the
+   * mesh), and a little. */
+  private handGap (): number {
+    const view = animator.character
+    if (view === null) return 0
+    const widthOf = (h: 'Left' | 'Right'): number => {
+      const seg = solidsOf(view)?.shape.segments.find(x => x.name === `${h}Hand`)
+      return seg === undefined ? FIT.fist * view.height : 2 * Math.max(seg.r1, seg.r2)
+    }
+    return (widthOf('Left') + widthOf('Right')) / 2 + HAND_GAP * view.height
+  }
+
   /** `sock` (for `hand` on `prop`) slid along the shaft, its turn kept, until its fist is a fist's width at least from every
    * other hand's on the prop (the one carrying it, any on a socket): to whichever side is nearer and still on the shaft. */
   private clearOfOthers (hand: 'Left' | 'Right', prop: string, sock: Socket): Socket {
@@ -877,7 +889,7 @@ class ClipEdit {
     const shafts: NonNullable<PropRig['shafts']> = {}
     for (const [prop, path] of Object.entries(paths)) {
       const shaft = path.locked ? this.shaftLocal(prop) : null
-      if (shaft !== null) shafts[prop] = { from: shaft.from.toArray() as [number, number, number], to: shaft.to.toArray() as [number, number, number], radius: shaft.radius }
+      if (shaft !== null) shafts[prop] = { from: shaft.from.toArray() as [number, number, number], to: shaft.to.toArray() as [number, number, number], radius: shaft.radius, gap: this.handGap() }
     }
     // (where each hand on a socket holds the shaft: the carrying hand has none, its turn is held exactly)
     const grips: NonNullable<PropRig['grips']> = {}

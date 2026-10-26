@@ -88,7 +88,7 @@ export interface PropRig {
   fingers: Partial<Record<'Left' | 'Right', Record<string, [number, number, number, number]>>>
   /** By leading prop: its shaft (the end by the hand carrying it and the far end, in its node's frame) and its radius: the
    * body is kept clear of it, but where the hands hold it (propObstacles). */
-  shafts?: Record<string, { from: [number, number, number], to: [number, number, number], radius: number }>
+  shafts?: Record<string, { from: [number, number, number], to: [number, number, number], radius: number, /** how near two hands' holds may come along it (metres) */ gap?: number }>
   /** By prop: its node's place on its bone as the outfit has it (local position, turn). A leading prop's node is keyed
    * in the edit to where its path puts it, whatever hand holds it how; a copy posed from an edit is put back to this first. */
   rest?: Record<string, { position: [number, number, number], quaternion: [number, number, number, number] }>
@@ -180,6 +180,10 @@ export function nodePath (clip: THREE.AnimationClip, posable: THREE.Object3D, no
   posable.updateMatrixWorld(true)
   return out
 }
+
+/** How much of a shaft's near end, and of its far end (a spear's head), no hand slides onto (shares of its length). */
+const SHAFT_END = 0.03
+const SHAFT_HEAD = 0.15
 
 /** How much of a shaft either side of a fist on it is left out of what the body must stay clear of (a share of the
  * body's height: the fist, the wrist and the forearm by it). */
@@ -373,11 +377,30 @@ export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>,
     const was = base?.get(prop) ?? node?.matrixWorld
     if (node === undefined || was === undefined) continue
     const place = onPath(was, path, u, loop)
+    const first = goals.length
     for (const a of props.attachments.filter(x => x.prop === prop)) {
       const sock = props.sockets[prop]?.find(x => x.id === a.socket)
       if (sock === undefined || used.has(a.hand)) continue
       used.add(a.hand)
       goals.push({ hand: a.hand, ...handOn(place, sock), fingers: props.fingers[a.hand], grip: props.grips?.[a.hand], exact: sock.placed === true })
+    }
+    // (the hands on its shaft may slide along it at an extreme (and turn in their grips): from where each holds it, no
+    // nearer another hand than the shaft's gap, off its ends)
+    const shaft = props.shafts?.[prop]
+    const mine = goals.slice(first)
+    if (shaft !== undefined && mine.length > 0) {
+      const from = new THREE.Vector3(...shaft.from).applyMatrix4(place); const to = new THREE.Vector3(...shaft.to).applyMatrix4(place)
+      const dir = to.clone().sub(from); const length = dir.length()
+      if (length > 1e-6) {
+        dir.divideScalar(length)
+        const along = mine.map(g => (g.grip === undefined ? g.at.clone() : g.at.clone().add(g.grip.fist.clone().applyQuaternion(g.turn))).sub(from).dot(dir))
+        const gap = shaft.gap ?? 0
+        mine.forEach((g, i) => {
+          let lo = length * SHAFT_END; let hi = length * (1 - SHAFT_HEAD)
+          along.forEach((o, j) => { if (j === i) return; if (o <= along[i]) lo = Math.max(lo, o + gap); else hi = Math.min(hi, o - gap) })
+          g.slide = { dir: dir.clone(), back: Math.min(0, lo - along[i]), ahead: Math.max(0, hi - along[i]) }
+        })
+      }
     }
   }
   for (const a of props.attachments) {

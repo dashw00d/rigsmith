@@ -242,6 +242,10 @@ export interface NaturalGoal {
   position?: THREE.Vector3
   /** The point may slide along this direction (a shaft): only its distance off the line through `position` counts. */
   slide?: THREE.Vector3
+  /** How far it may slide (metres along `slide` from `position`: back, a negative, and ahead; default any way; past it, a
+   * miss), and what each centimetre of a Y Bot it slides costs (default 0: free): a hand on a shaft giving at an extreme. */
+  slideRange?: [number, number]
+  slideCost?: number
   /** The turn the bone should have (world). */
   turn?: THREE.Quaternion
   /** Or: a direction in the bone's frame that should run along a world direction (either way round when `either`). */
@@ -351,7 +355,7 @@ export interface NaturalResult {
 /** The solver's score of a pose, term by term (each a sum of squares). */
 export interface ObjectiveTerms {
   /** The hands' goals; the feet's (kept, soft, the floor); balance and upright; the elbows; the joint ranges. */
-  hands: number, feet: number, balance: number, elbows: number, limits: number
+  hands: number, feet: number, balance: number, elbows: number, wrists: number, limits: number
   /** Body parts inside one another (with `collide`). */
   collide: number
   /** How far the pose moved from the start (whitened: per spread of natural variation), and the heading's and hips' springs. */
@@ -465,11 +469,18 @@ export const OBSTACLE = { slack: 0.005 }
 /** A turn that yields round its roll axis: per 5 degrees (boosted goals do not harden it). */
 export const ROLL = { weight: 0.6 }
 /**
- * How much a hand's turn gives on a socket (degrees; the weight per 5 degrees past the free): the roll round the grip line
- * the cheapest (free to 8, rising to 20, then steeply), the swing of the line costlier (free to 5, rising to 15, then steeply). Not boosted: only
- * the position of a goal hardens.
+ * How much a hand's turn gives on a socket (degrees; the weight per 5 degrees past the free): almost none free (a hand
+ * stays as it is put at an ordinary frame), then a long soft ramp, so at an extreme a hand turns in its grip before a
+ * wrist bends past its range (the designer: a hand turned or slid a bit looks far better than a wrist bent 90 degrees);
+ * the roll round the grip line the cheapest. Not boosted: only the position of a goal hardens.
  */
-export const GIVE: { roll: GiveAxis, other: GiveAxis } = { roll: { free: 8, steep: 20, weight: 2.5 }, other: { free: 5, steep: 15, weight: 4 } }
+export const GIVE: { roll: GiveAxis, other: GiveAxis } = { roll: { free: 2, steep: 45, weight: 1.5 }, other: { free: 2, steep: 30, weight: 2 } }
+/** A wrist bent off its forearm's line (radians): free to `free`, then `weight` per 5 degrees, steeply on toward `steep`
+ * (the range's edge): so a hand on a prop turns in its grip or slides on it before its wrist bends far (the designer: that
+ * looks far better than a wrist bent 90 degrees). */
+export const WRIST = { free: THREE.MathUtils.degToRad(25), steep: THREE.MathUtils.degToRad(60), weight: 2 }
+/** A hand on a shaft sliding along it (an extreme the hand gives at): the cost per Y Bot centimetre slid (squared). */
+export const SLIDE = { cost: 0.6 }
 
 /** A clip's frames solved in turn pull each frame's correction toward the last one's (NaturalSolveOptions.follow): per radian squared (the hips' metres count four times). Each frame's search starts cold, from its own keyed pose: the pull is the only thing carried over. */
 export const FOLLOW = { weight: 100 }
@@ -528,6 +539,10 @@ interface Compiled {
   rel: Float64Array
   position: Float64Array | null
   slide: Float64Array | null
+  /** How far along `slide` the point may go (metres from `position`), and its cost per Y Bot centimetre there. */
+  slideMin: number
+  slideMax: number
+  slideW: number
   turn: Float64Array | null
   axisLocal: Float64Array | null
   axisWorld: Float64Array | null
@@ -569,6 +584,8 @@ export class NaturalRig {
   readonly model: PoseModel
   readonly bones: THREE.Bone[]
   private readonly byName: Map<string, THREE.Bone>
+  /** Each hand's own line (to its middle finger's knuckle), in the hand bone's frame: left, right (null: no fingers). */
+  private readonly handAxis: Array<Float64Array | null>
   private readonly limits: JointLimits | null
   private readonly nameOf: NameOf
   /** K per body bone (identity when none). */
@@ -597,6 +614,13 @@ export class NaturalRig {
   constructor (model: PoseModel, bones: Map<string, THREE.Bone>, opts: RigOptions = {}) {
     this.model = model
     this.byName = bones
+    this.handAxis = ['Left', 'Right'].map(side => {
+      const hand = bones.get(`${side}Hand`); const knuckle = hand?.children.find(c => /Middle1$/.test(c.name))
+      if (hand === undefined || knuckle === undefined) return null
+      hand.updateMatrixWorld(true)
+      const d = knuckle.getWorldPosition(new THREE.Vector3()).sub(hand.getWorldPosition(new THREE.Vector3())).applyQuaternion(hand.getWorldQuaternion(new THREE.Quaternion()).invert())
+      return d.lengthSq() < 1e-12 ? null : Float64Array.from(d.normalize().toArray())
+    })
     this.limits = opts.limits ?? null
     this.nameOf = opts.nameOf ?? ((b: THREE.Bone): string => canonical(b.name))
     this.bones = BODY.map(n => {
@@ -842,11 +866,12 @@ export class NaturalRig {
   private compile (goals: NaturalGoal[], opts: NaturalOptions): Compiled[] {
     const out: Compiled[] = []
     const v = (x: THREE.Vector3 | number[] | undefined): Float64Array | null => (x === undefined ? null : Float64Array.from(x instanceof THREE.Vector3 ? x.toArray() : x))
-    const base = { slide: null, axisLocal: null, axisWorld: null, either: false, soft: false, wy: 1, turnRatio: 1, tiltK: 1, floorY: null, exact: false, hard: true, phase: 0 as 0 | 1 | 2, rollLocal: null as Float64Array | null, rollWorld: null as Float64Array | null, rollW: 0, give: null as Float64Array | null, giveB: null as Float64Array | null }
+    const base = { slide: null, slideMin: -Infinity, slideMax: Infinity, slideW: 0, axisLocal: null, axisWorld: null, either: false, soft: false, wy: 1, turnRatio: 1, tiltK: 1, floorY: null, exact: false, hard: true, phase: 0 as 0 | 1 | 2, rollLocal: null as Float64Array | null, rollWorld: null as Float64Array | null, rollW: 0, give: null as Float64Array | null, giveB: null as Float64Array | null }
     for (const g of goals) {
       const att = this.attach(g.bone, g.at instanceof THREE.Vector3 ? g.at.toArray() : g.at)
       out.push({
         ...base, ...att, bone: g.bone, position: v(g.position), slide: g.slide === undefined ? null : Float64Array.from(g.slide.clone().normalize().toArray()),
+        slideMin: g.slideRange?.[0] ?? -Infinity, slideMax: g.slideRange?.[1] ?? Infinity, slideW: g.slideCost ?? 0,
         turn: g.turn === undefined ? null : Float64Array.from(g.turn.clone().normalize().toArray()),
         axisLocal: g.axis === undefined ? null : Float64Array.from((g.axis.local instanceof THREE.Vector3 ? g.axis.local.clone() : new THREE.Vector3(...g.axis.local)).normalize().toArray()),
         axisWorld: g.axis === undefined ? null : Float64Array.from(g.axis.world.clone().normalize().toArray()),
@@ -1066,7 +1091,7 @@ export class NaturalRig {
     // (a pair that is nowhere near overlapping has no cost and no slope: the Jacobian's many small steps look only at the pairs that do, `active`)
     const overlap = new Float64Array(nC + nO); const active = new Uint8Array(nC + nO)
     let collideAll = true; let anyActive = true
-    const nRows = rows.length * 9 + 6 + nC + nO + DIM
+    const nRows = rows.length * 9 + 8 + nC + nO + DIM
     const f = new Float64Array(nRows); const f2 = new Float64Array(nRows)
     const J = new Float64Array(nRows * n)
     const p = new Float64Array(DIM); const pj = new Float64Array(DIM)
@@ -1091,6 +1116,7 @@ export class NaturalRig {
         const w = weights[g]
         const ao = c.a * 4
         let stride = 0
+        let slideRes = 0
         // (the point; a floor row: only how far under its lowest height)
         if (c.floorY !== null) {
           rotAdd(t, 0, Q, ao, c.at[0], c.at[1], c.at[2], P, c.a * 3)
@@ -1099,7 +1125,13 @@ export class NaturalRig {
         } else if (c.position !== null) {
           rotAdd(t, 0, Q, ao, c.at[0], c.at[1], c.at[2], P, c.a * 3)
           let dx = t[0] - c.position[0]; let dy = t[1] - c.position[1]; let dz = t[2] - c.position[2]
-          if (c.slide !== null) { const k = dx * c.slide[0] + dy * c.slide[1] + dz * c.slide[2]; dx -= k * c.slide[0]; dy -= k * c.slide[1]; dz -= k * c.slide[2] }
+          if (c.slide !== null) {
+            // (along the line: within its range (past it, a miss), at its cost per centimetre)
+            const k = dx * c.slide[0] + dy * c.slide[1] + dz * c.slide[2]
+            const kc = Math.min(c.slideMax, Math.max(c.slideMin, k))
+            dx -= kc * c.slide[0]; dy -= kc * c.slide[1]; dz -= kc * c.slide[2]
+            slideRes = c.slideW * kc / unit
+          }
           // (a soft foot's slide is a Huber loss: squared to the knee, linear past it, so a step costs little more than a shuffle; past a stride, steeply)
           stride = 0
           if (c.soft) {
@@ -1150,7 +1182,7 @@ export class NaturalRig {
           const dx = c.axisWorld[0]; const dy = c.axisWorld[1]; const dz = c.axisWorld[2]
           const s = w * c.turnRatio / FIVE
           if (c.either) { out[r++] = (ay * dz - az * dy) * s; out[r++] = (az * dx - ax * dz) * s; out[r++] = (ax * dy - ay * dx) * s } else { out[r++] = (ax - dx) * s; out[r++] = (ay - dy) * s; out[r++] = (az - dz) * s }
-        } else if (stride > 0) { out[r++] = stride; out[r++] = 0; out[r++] = 0 } else if (rollRes !== 0) { out[r++] = rollRes; out[r++] = 0; out[r++] = 0 } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
+        } else { out[r++] = stride > 0 ? stride : rollRes; out[r++] = slideRes; out[r++] = 0 }
       }
       // (balance: the centre of mass past the support; upright: the trunk bent past the start's)
       if (useBalance) {
@@ -1170,6 +1202,20 @@ export class NaturalRig {
         }
         out[r++] = 0
       } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
+      // (the wrists: bent past WRIST.free off the forearm's line, steeply on toward its range's edge)
+      for (let side = 0; side < 2; side++) {
+        const ax = this.handAxis[side]
+        if (ax === null) { out[r++] = 0; continue }
+        const h = (side === 0 ? E.leftArm : E.rightArm) + 2
+        rotAdd(this.tmp, 0, Q, h * 4, ax[0], ax[1], ax[2], ZERO3, 0)
+        let fx = P[h * 3] - P[(h - 1) * 3]; let fy = P[h * 3 + 1] - P[(h - 1) * 3 + 1]; let fz = P[h * 3 + 2] - P[(h - 1) * 3 + 2]
+        const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl
+        const hl = Math.hypot(this.tmp[0], this.tmp[1], this.tmp[2]) || 1
+        const bend = Math.acos(Math.max(-1, Math.min(1, (this.tmp[0] * fx + this.tmp[1] * fy + this.tmp[2] * fz) / hl)))
+        const u = Math.max(0, bend - WRIST.free) / FIVE
+        const k = u / Math.max(0.5, (WRIST.steep - WRIST.free) / FIVE)
+        out[r++] = WRIST.weight * u * (1 + k * k)
+      }
       // (body parts inside one another, and the obstacles: the overlap past the slack and past the start's own, each group's deepest)
       if (solid !== null && (nC > 0 || nO > 0)) {
         if (collideAll || anyActive) solid.update(P, Q)
@@ -1268,8 +1314,8 @@ export class NaturalRig {
         if (j < DIM) near += v; else springs += v
       }
       const e = PRIOR.natural * lessNatural(zz)
-      const t = { hands, feet, balance: sq(G, G + 3), elbows: sq(G + 3, G + 6), collide: sq(G + 6, G + 6 + nC + nO), limits: sq(G + 6 + nC + nO, rr), near, springs, natural: e * e, total: 0 }
-      t.total = hands + feet + t.balance + t.elbows + t.collide + t.limits + near + springs + t.natural
+      const t = { hands, feet, balance: sq(G, G + 3), elbows: sq(G + 3, G + 6), wrists: sq(G + 6, G + 8), collide: sq(G + 8, G + 8 + nC + nO), limits: sq(G + 8 + nC + nO, rr), near, springs, natural: e * e, total: 0 }
+      t.total = hands + feet + t.balance + t.elbows + t.wrists + t.collide + t.limits + near + springs + t.natural
       return t
     }
     limitPull(p)
@@ -1552,7 +1598,7 @@ export class NaturalRig {
       }
       if (row.position !== null) {
         const d = at.clone().sub(new THREE.Vector3(...row.position))
-        if (row.slide !== null) { const s = new THREE.Vector3(...row.slide); d.addScaledVector(s, -d.dot(s)) }
+        if (row.slide !== null) { const s = new THREE.Vector3(...row.slide); d.addScaledVector(s, -Math.min(row.slideMax, Math.max(row.slideMin, d.dot(s)))) }
         if (row.keep) keepMiss = Math.max(keepMiss, d.length()); else if (row.hard) miss = Math.max(miss, d.length()); else softMiss = Math.max(softMiss, d.length())
       }
       if (row.turn !== null && row.give !== null) {
@@ -1747,17 +1793,21 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
       // (a hand's turn: exact with roll false; with give false only the roll round its grip line yields; by default it gives a little on every axis)
       // (a hand carrying a prop keeps its turn exactly: the prop rides it, so its turn is the prop's place)
       const hand = bones.get(`${g.hand}Hand`)
-      const carries = (g as { carrier?: boolean }).carrier === true || g.exact === true || (opts.carrying ?? options.carrying)?.includes(g.hand) === true ||
-        (hand?.children.some(c => (c as THREE.Bone).isBone !== true && c.children.length > 0) ?? false)
+      // (a hand on a leading prop's shaft gives instead: it may turn in its grip and slide along the shaft a little, at a
+      // cost, before its wrist bends past its range; the prop is where its path puts it, whatever hand holds it how)
+      const onShaft = g.slide !== undefined
+      const carries = !onShaft && ((g as { carrier?: boolean }).carrier === true || g.exact === true || (opts.carrying ?? options.carrying)?.includes(g.hand) === true ||
+        (hand?.children.some(c => (c as THREE.Bone).isBone !== true && c.children.length > 0) ?? false))
+      const slide = g.slide === undefined ? {} : { slide: g.slide.dir, slideRange: [g.slide.back, g.slide.ahead] as [number, number], slideCost: SLIDE.cost }
       const held = carries || hand === undefined ? undefined : g.grip
       const grip = options.roll === false || carries ? null : held?.axis ?? gripAxisOf(bones, g.hand)
       const turn = options.roll === false || carries ? {} : options.give === false ? (grip === null ? {} : { roll: { axis: grip } }) : { give: grip === null ? {} : { axis: grip } }
-      if (held === undefined || hand === undefined) return { bone: `${g.hand}Hand`, position: g.at, turn: g.turn, exact: true, ...turn }
+      if (held === undefined || hand === undefined) return { bone: `${g.hand}Hand`, position: g.at, turn: g.turn, exact: true, ...turn, ...slide }
       // (the grip's offset is in world units, the goal's point in the bone's own: its world scale undone)
       const scale = hand.getWorldScale(new THREE.Vector3()).x || 1
       const place = g.at.clone().add(held.fist.clone().applyQuaternion(g.turn))
       heldAt.set(g, place)
-      return { bone: `${g.hand}Hand`, at: held.fist.clone().divideScalar(scale), position: place, turn: g.turn, exact: true, ...turn }
+      return { bone: `${g.hand}Hand`, at: held.fist.clone().divideScalar(scale), position: place, turn: g.turn, exact: true, ...turn, ...slide }
     }), ...gaze, ...(opts.soft ?? [])], {
       feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, smooth: follow, collide: options.collide ?? undefined, obstacles: opts.obstacles,
     })
@@ -1767,7 +1817,10 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
       const hand = bones.get(`${g.hand}Hand`)!
       for (const [name, q] of Object.entries(g.fingers ?? {})) { const b = bones.get(name); if (b !== undefined) { b.quaternion.set(...q); b.updateMatrixWorld(true) } }
       const place = heldAt.get(g)
-      miss = Math.max(miss, place === undefined ? wp(hand).distanceTo(g.at) : wp(hand).add(g.grip!.fist.clone().applyQuaternion(wq(hand))).distanceTo(place))
+      const off = place === undefined ? wp(hand).sub(g.at) : wp(hand).add(g.grip!.fist.clone().applyQuaternion(wq(hand))).sub(place)
+      // (a hand on a shaft may slide along it: only what is off the line, or past the slide's range, misses)
+      if (g.slide !== undefined) off.addScaledVector(g.slide.dir, -Math.min(g.slide.ahead, Math.max(g.slide.back, off.dot(g.slide.dir))))
+      miss = Math.max(miss, off.length())
     }
     // (for show: how far the chest turned and leaned, the hips shifted)
     const rv = [0, 0, 0]
