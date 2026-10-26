@@ -34,7 +34,7 @@ class ClipEdit {
   base = $state<NowPlaying & { loop: boolean, inPlace: boolean } | null>(null)
   keys = $state.raw<Record<string, ClipKey[]>>({})
   /** The props on stage (rigid garments, shown): their names, the bones they ride, their sockets. */
-  props = $derived((app.selected?.garments ?? []).filter(g => g.mode === 'rigid' && g.hidden !== true).map(g => ({ name: g.name, bone: g.bone, sockets: (g.sockets ?? []) as Socket[] })))
+  props = $derived((app.selected?.garments ?? []).filter(g => g.mode === 'rigid' && g.hidden !== true).map(g => ({ name: g.name, bone: g.bone, sockets: ((g.sockets ?? []) as Socket[]).filter(x => !x.name.endsWith('(carries it)')) })))
   /** The prop selected (clicked), or none. */
   prop = $state<string | null>(null)
   /** Each prop's path: locked (it leads), and its keys. */
@@ -235,7 +235,8 @@ class ClipEdit {
       const sock = this.socketAt(a.hand, a.prop, false, carries)
       if (sock !== null) await this.saveSocket(a.prop, { ...sock, id: a.socket, name: this.props.find(p => p.name === a.prop)?.sockets.find(x => x.id === a.socket)?.name ?? sock.name })
     }
-    const attached = new Set(this.attachments.flatMap(a => [...Object.values(armOf(a.hand)), ...Object.keys(this.fists[a.hand] ?? {})]))
+    const carriers = Object.entries(this.paths).filter(([, x]) => x.locked).map(([p]) => this.carrierSocket(p)?.hand).filter((h): h is 'Left' | 'Right' => h !== undefined)
+    const attached = new Set([...this.attachments.flatMap(a => [...Object.values(armOf(a.hand)), ...Object.keys(this.fists[a.hand] ?? {})]), ...carriers.flatMap(h => Object.values(armOf(h)))])
     bones = bones.filter(b => !attached.has(b))
     const next = { ...this.keys }
     for (const name of bones) {
@@ -375,17 +376,24 @@ class ClipEdit {
   /** Lock a prop (it leads: the hands on it follow its path, the body the hands), or let it ride its hand again. Locking
    * puts the hand carrying it on a socket where it holds it now, if it has none. */
   async setLocked (prop: string, on: boolean): Promise<void> {
-    const p = this.props.find(x => x.name === prop)
-    if (p === undefined) return
-    if (on) {
-      const side = /^(Left|Right)Hand$/.exec(p.bone)?.[1] as 'Left' | 'Right' | undefined
-      if (side !== undefined && !this.attachments.some(a => a.hand === side)) {
-        const sock = this.socketAt(side, prop, false, true)
-        if (sock !== null) { await this.saveSocket(prop, { ...sock, name: `${side} hand (carries it)` }); await this.attach(side, prop, sock.id) }
-      }
-    }
+    if (this.props.find(x => x.name === prop) === undefined) return
     this.paths = { ...this.paths, [prop]: { locked: on, keys: this.paths[prop]?.keys ?? [] } }
     this.show(animator.time)
+  }
+
+  /** The hand carrying a prop: where it holds it, in the prop's frame (from how the prop is placed on it: the Outfit
+   * step's placement, so never stale), as a socket. */
+  private carrierSocket (prop: string): { hand: 'Left' | 'Right', socket: Socket } | null {
+    const view = animator.character
+    const p = this.props.find(x => x.name === prop)
+    const side = p === undefined ? undefined : /^(Left|Right)Hand$/.exec(p.bone)?.[1] as 'Left' | 'Right' | undefined
+    const hand = side === undefined ? undefined : view?.bones.get(`${side}Hand`)
+    const node = view?.root.getObjectByName(propNode(prop))
+    if (side === undefined || hand === undefined || node === undefined) return null
+    node.updateMatrixWorld(true)
+    const m = node.matrixWorld.clone().invert().multiply(hand.matrixWorld)
+    const at = new THREE.Vector3(); const q = new THREE.Quaternion(); m.decompose(at, q, new THREE.Vector3())
+    return { hand: side, socket: { id: `carrier:${prop}`, name: `${side} hand (carries it)`, position: at.toArray() as Socket['position'], rotation: q.toArray() as Socket['rotation'] } }
   }
 
   /** Where `prop` rode at time `t` in the clip as it was (before the edit). */
@@ -421,10 +429,9 @@ class ClipEdit {
       if (!this.loop && !near(u, 1)) ks.push({ u: 1, q: [...IDENTITY] as ClipKey['q'], p: [0, 0, 0] })
     }
     ks = [...ks, key].sort((x, y) => x.u - y.u)
-    const was0 = this.paths[prop]
+    // (moving a prop makes it lead)
     this.paths = { ...this.paths, [prop]: { locked: true, keys: ks } }
-    // (moving a prop locks it: the hand carrying it goes on a socket where it holds it)
-    if (was0?.locked !== true) void this.setLocked(prop, true); else this.show(t)
+    this.show(t)
   }
 
   /** While a prop is dragged: the hands on it follow it (the hand carrying it first, so the prop goes where it's dragged). */
@@ -475,10 +482,17 @@ class ClipEdit {
 
   /** What the props do in the edit (for the clip's build). */
   private propRig (): PropRig {
-    return {
-      node: propNode, paths: this.paths, attachments: this.attachments,
-      sockets: Object.fromEntries(this.props.map(p => [p.name, p.sockets])), carriers: Object.fromEntries(this.props.map(p => [p.name, p.bone])), fingers: this.fists,
+    const sockets: Record<string, Socket[]> = Object.fromEntries(this.props.map(p => [p.name, [...p.sockets]]))
+    const attachments = [...this.attachments]
+    // (a prop that leads: the hand carrying it holds it where its placement has it, unless that hand is on a socket)
+    for (const [prop, path] of Object.entries(this.paths)) {
+      if (!path.locked) continue
+      const c = this.carrierSocket(prop)
+      if (c === null || attachments.some(a => a.hand === c.hand)) continue
+      sockets[prop] = [...(sockets[prop] ?? []), c.socket]
+      attachments.push({ hand: c.hand, prop, socket: c.socket.id })
     }
+    return { node: propNode, paths: this.paths, attachments, sockets, carriers: Object.fromEntries(this.props.map(p => [p.name, p.bone])), fingers: this.fists }
   }
 
   /** Clear every key. */

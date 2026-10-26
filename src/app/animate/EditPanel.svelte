@@ -86,6 +86,9 @@
           </div>
           <span use:tooltip={'Leads: the hands on it follow its path, and the body follows the hands. Off: it rides the hand carrying it, as the clip moves that hand.'}><Toggle label="Leads (the body follows it)" checked={clipEdit.paths[p.name]?.locked ?? false} onchange={(on: boolean) => clipEdit.setLocked(p.name, on)} /></span>
           <p class="faint small">Move or turn it with the gizmo to key its path at this frame (that makes it lead).</p>
+          {#if clipEdit.paths[p.name]?.locked && /^(Left|Right)Hand$/.test(p.bone)}
+            <p class="faint small">The {p.bone.startsWith('Left') ? 'left' : 'right'} hand holds it where its placement has it (Outfit), unless it is on a socket.</p>
+          {/if}
           <span class="muted small">Sockets (where hands hold it)</span>
           {#each p.sockets as sk (sk.id)}
             <div class="row socket">
