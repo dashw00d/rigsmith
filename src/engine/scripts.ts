@@ -13,14 +13,23 @@ import * as THREE from 'three'
 export type ClipScript = GripScript | BlowScript | PaceScript
 interface ScriptBase { id: string, enabled: boolean, /** why it is there */ note?: string }
 export interface GripScript extends ScriptBase { kind: 'grip', side: 'Left' | 'Right', /** library clip id */ clip: string }
-export interface BlowScript extends ScriptBase { kind: 'blow', /** entry name */ clip: string, at: number, hand?: string, window?: number }
+export interface BlowScript extends ScriptBase {
+  kind: 'blow', /** entry name */ clip: string, /** where in the cut clip the blow lands (the game's 0.45) */ at: number
+  /** The blow you picked, as a phase of the clip before it is cut (0 its start, 1 its end); unset: found (`hand`'s
+   * fastest moment). */
+  blowU?: number
+  /** A blow later than `at`: cut the start (the wind-up goes) or hold the end (the last pose held after the blow, the
+   * clip lengthened, so a bow's whole draw stays). Default cut. */
+  late?: 'cut' | 'hold'
+  hand?: string, window?: number
+}
 export interface PaceScript extends ScriptBase { kind: 'pace', /** entry name */ clip: string, /** entry name */ like: string }
 
 export const FINGERS = ['Index', 'Middle', 'Ring', 'Pinky']
 
 export function describe (s: ClipScript): string {
   if (s.kind === 'grip') return `${s.side} fist closed in every clip`
-  if (s.kind === 'blow') return s.window !== undefined ? `${s.clip}: ${s.window} s around the blow, blow at ${Math.round(s.at * 100)}%` : `${s.clip}: blow at ${Math.round(s.at * 100)}%`
+  if (s.kind === 'blow') return `${s.clip}: the blow lands at ${Math.round(s.at * 100)}%${s.window !== undefined ? ` of ${s.window} s around it` : ''}`
   return `${s.clip}: paced like ${s.like}`
 }
 
@@ -153,15 +162,21 @@ export function holdFist (clip: THREE.AnimationClip, pose: Map<string, THREE.Qua
 }
 
 /** The attack cut so its blow lands at `at` of it (or `window` seconds around the blow). Leaves the bones as they were. */
-export function blowCut (root: THREE.Object3D, clip: THREE.AnimationClip, s: Pick<BlowScript, 'at' | 'hand' | 'window'>): { clip: THREE.AnimationClip, blow: number, kept: [number, number] } {
-  const restore = saveBones(root)
-  const blow = blowTime(root, clip, s.hand ?? 'RightHand')
-  restore()
+export function blowCut (root: THREE.Object3D, clip: THREE.AnimationClip, s: Pick<BlowScript, 'at' | 'hand' | 'window' | 'blowU' | 'late'>): { clip: THREE.AnimationClip, blow: number, kept: [number, number] } {
+  let blow: number
+  if (s.blowU !== undefined) {
+    blow = Math.min(1, Math.max(0, s.blowU)) * clip.duration
+  } else {
+    const restore = saveBones(root)
+    blow = blowTime(root, clip, s.hand ?? 'RightHand')
+    restore()
+  }
   let start = 0; let end = clip.duration
   if (s.window !== undefined) {
     start = Math.max(0, blow - s.at * s.window)
     end = Math.min(clip.duration, start + s.window)
   } else if (blow / clip.duration < s.at) end = Math.min(clip.duration, blow / s.at)
+  else if (s.late === 'hold') end = blow / s.at    // (past its end: the last pose held there)
   else start = Math.max(0, (blow - s.at * end) / (1 - s.at))
   return { clip: cut(clip, start, end), blow, kept: [start, end] }
 }
@@ -196,7 +211,7 @@ export async function applyScripts (root: THREE.Object3D, clips: Map<string, THR
     if (clip === undefined) continue
     const r = blowCut(root, clip, s)
     out.set(s.clip, r.clip)
-    report[s.id] = { kind: 'blow', clip: s.clip, at: s.at, window: s.window, blow: +r.blow.toFixed(3), kept: r.kept.map(x => +x.toFixed(3)) }
+    report[s.id] = { kind: 'blow', clip: s.clip, at: s.at, window: s.window, blowU: s.blowU, blow: +r.blow.toFixed(3), kept: r.kept.map(x => +x.toFixed(3)), uncut: +clip.duration.toFixed(4) }
   }
   for (const s of on.filter((x): x is PaceScript => x.kind === 'pace')) {
     const clip = out.get(s.clip); const like = out.get(s.like)

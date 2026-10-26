@@ -61,6 +61,8 @@ class Animator {
   holding = false
   /** The entry playing, as it plays before its keys (on the timeline played): what a new key is measured against. */
   unkeyed: THREE.AnimationClip | null = null
+  /** How the entry playing was cut by its blow timing (seconds of the clip before the cut, at its speed). */
+  cut = $state<{ name: string, start: number, end: number, uncut: number, blow: number } | null>(null)
   private stageRef: Stage | null = null
 
   attach (view: CharacterView, stage: Stage): void {
@@ -157,7 +159,9 @@ class Animator {
         if (like !== undefined) clips.set(like.name, await build(like))
       }
     }
-    const { clips: out } = await applyScripts(this.posable, clips, scripts, async id => await cache.get(clipUrl(id), { inPlace: true }))
+    const { clips: out, report } = await applyScripts(this.posable, clips, scripts, async id => await cache.get(clipUrl(id), { inPlace: true }))
+    const blow = Object.values(report).find(r => (r as { kind?: string, clip?: string }).kind === 'blow' && (r as { clip?: string }).clip === entry.name) as { kept: [number, number], uncut: number, blow: number } | undefined
+    this.cut = blow === undefined ? null : { name: entry.name, start: blow.kept[0], end: blow.kept[1], uncut: blow.uncut, blow: blow.blow }
     const rest = this.view!.rest!
     const hips = rest.bones.get('Hips')
     let clip = out.get(entry.name)!
