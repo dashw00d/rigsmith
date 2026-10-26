@@ -12,7 +12,7 @@ import type { ClipKey } from './api.ts'
 import { app } from './app.svelte.ts'
 import { animator, restOf, type NowPlaying } from './animator.svelte.ts'
 import { loadSource } from '../engine/clips.ts'
-import { armOf, buildEdit, GRIP_CLEAR, handGrip, handOn, keyFor, legsOf, propObstacles, unretarget, type Attachment, type PropPath, type PropRig, type Socket } from '../engine/clipedit.ts'
+import { armOf, buildEdit, fistGrip, GRIP_CLEAR, handGrip, handOn, keyFor, legsOf, propObstacles, unretarget, type Attachment, type PropPath, type PropRig, type Socket } from '../engine/clipedit.ts'
 import { propNode } from './tune.svelte.ts'
 import { clipGlb, framesClip } from '../engine/clipexport.ts'
 import { library } from './library.svelte.ts'
@@ -345,7 +345,7 @@ class ClipEdit {
     let turn = end.getWorldQuaternion(new THREE.Quaternion())
     let wrist = end.getWorldPosition(new THREE.Vector3())
     const shaft = this.shaftOf(prop)
-    const grip = handGrip(view.rest, hand)
+    const grip = this.gripOf(hand)
     // (exact: where the hand is, as it is: the hand carrying the prop holds it there by its placement)
     if (shaft !== null && grip !== null && !exact) {
       // (always on the shaft: a snap turns the hand onto it; a move keeps the turn and slides the fist along it)
@@ -367,6 +367,36 @@ class ClipEdit {
     }
   }
 
+  /** A hand's grip (the line a shaft runs along through its fist, and the fist's middle, in the hand's own frame): from
+   * its fist closed round a shaft when it has one (fistGrip), else the rest hand's estimate (handGrip). */
+  private gripOf (hand: 'Left' | 'Right'): { axis: THREE.Vector3, fist: THREE.Vector3 } | null {
+    const fingers = this.fists[hand]; const root = this.posable()
+    if (fingers !== undefined && Object.keys(fingers).length > 0 && root !== null) {
+      const g = fistGrip(root, hand, fingers)
+      if (g !== null) return g
+    }
+    const rest = animator.character?.rest
+    return rest === null || rest === undefined ? null : handGrip(rest, hand)
+  }
+
+  /** The hand put on the prop where it holds it best: its fist squarely round the shaft (the shaft through the closed
+   * fingers, square to the palm, the thumb toward the far end), and, when another hand holds the prop too, slid along it
+   * and rolled round it to where the whole clip is easiest; saved as the hand's socket on the prop (the one it has, or a
+   * new one) and the hand put on it; then the prop fitted again if it leads. */
+  async grip (hand: 'Left' | 'Right', prop: string): Promise<void> {
+    if (this.busy !== null) return
+    this.fists[hand] ??= await animator.fistOf(hand).catch(() => ({}))
+    const sock = this.socketAt(hand, prop, true)
+    if (sock === null) { app.toast('error', `No ${hand.toLowerCase()} hand, or the prop isn't on stage`); return }
+    const had = this.attachments.find(a => a.hand === hand && a.prop === prop)?.socket
+    const name = (had === undefined ? undefined : this.props.find(x => x.name === prop)?.sockets.find(x => x.id === had)?.name) ?? sock.name
+    const id = had ?? sock.id
+    await this.saveSocket(prop, { ...sock, id, name })
+    this.attachments = [...this.attachments.filter(a => a.hand !== hand), { hand, prop, socket: id }]
+    const placed = await this.autoGrip(hand, prop, id, { free: true })
+    if (placed === null) { if (this.paths[prop]?.locked === true && this.natural) await this.fitPath(prop); else this.show(animator.time) }
+  }
+
   /** Save a socket on its prop's garment (added, or the same id replaced). */
   private async saveSocket (prop: string, socket: Socket): Promise<void> {
     const c = app.selected
@@ -379,6 +409,8 @@ class ClipEdit {
   async addSocket (hand: 'Left' | 'Right'): Promise<void> {
     const prop = this.prop
     if (prop === null) return
+    // (its fist first: the socket is made with the shaft through the closed fingers)
+    this.fists[hand] ??= await animator.fistOf(hand).catch(() => ({}))
     const sock = this.socketAt(hand, prop, true)
     if (sock === null) { app.toast('error', `No ${hand.toLowerCase()} hand, or the prop isn't on stage`); return }
     await this.saveSocket(prop, sock)
@@ -476,7 +508,7 @@ class ClipEdit {
 
   /** The grip's spot for `hand`'s socket on `prop`, chosen over the whole clip when another hand holds the prop; saved as that
    * socket (same id), then the prop is fitted again if it leads. Null when no other hand holds it (nothing is changed). */
-  private async autoGrip (hand: 'Left' | 'Right', prop: string, socket: string): Promise<GripResult | null> {
+  private async autoGrip (hand: 'Left' | 'Right', prop: string, socket: string, opts: { free?: boolean } = {}): Promise<GripResult | null> {
     const view = animator.character
     const p = this.props.find(x => x.name === prop)
     const sock = p?.sockets.find(x => x.id === socket)
@@ -494,7 +526,7 @@ class ClipEdit {
       const input = this.fitInput(prop)
       const rest = view.rest
       if (input !== null) {
-        placed = await placeGrip({ ...input, hand, socket, grip: handGrip(rest, hand), others: others.map(o => ({ ...o, grip: handGrip(rest, o.hand) })) }, label => { this.busy = label })
+        placed = await placeGrip({ ...input, hand, socket, grip: this.gripOf(hand), others: others.map(o => ({ ...o, grip: this.gripOf(o.hand) ?? handGrip(rest, o.hand) })), free: opts.free }, label => { this.busy = label })
         if (placed !== null) await this.saveSocket(prop, { ...placed.socket, id: socket, name: sock.name })
       }
     } catch (error) {

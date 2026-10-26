@@ -173,6 +173,57 @@ export function handGrip (rest: RestSkeleton, hand: 'Left' | 'Right'): { axis: T
   return { axis: axis.applyQuaternion(inv), fist: fist.sub(h).applyQuaternion(inv) }
 }
 
+/**
+ * A hand's grip from its fist closed round a shaft (`fingers`: the fist's local turns, on the hand of `root`): the line
+ * the curled fingers wrap round (through each finger's curl, the circle through its three joints, little finger to
+ * index), squared to the palm (at right angles to the line from the wrist to the middle finger's knuckle), and the
+ * fist's middle on it; both in the hand's own turn, from the wrist, in world units (as handGrip gives them). A shaft
+ * along `axis` through `fist` runs through the closed fingers, the thumb's side toward where `axis` points. Null when
+ * the hand hasn't the fingers.
+ */
+export function fistGrip (root: THREE.Object3D, hand: 'Left' | 'Right', fingers: Record<string, [number, number, number, number]>): { axis: THREE.Vector3, fist: THREE.Vector3 } | null {
+  const bones = new Map<string, THREE.Bone>()
+  root.traverse(o => { if ((o as THREE.Bone).isBone === true) bones.set(o.name, o as THREE.Bone) })
+  const wrist = bones.get(`${hand}Hand`)
+  if (wrist === undefined) return null
+  // (the fingers closed, to read; put back after)
+  const saved = [...bones.values()].filter(b => b.name.startsWith(`${hand}Hand`) && b !== wrist).map(b => [b, b.quaternion.clone()] as const)
+  for (const [name, q] of Object.entries(fingers)) bones.get(name)?.quaternion.set(...q)
+  wrist.updateMatrixWorld(true)
+  const w = wrist.getWorldPosition(new THREE.Vector3()); const inv = wrist.getWorldQuaternion(new THREE.Quaternion()).invert()
+  const at = (n: string): THREE.Vector3 | null => { const b = bones.get(`${hand}Hand${n}`); return b === undefined ? null : b.getWorldPosition(new THREE.Vector3()).sub(w).applyQuaternion(inv) }
+  const centres: THREE.Vector3[] = []
+  for (const f of ['Index', 'Middle', 'Ring', 'Pinky']) {
+    const a = at(`${f}1`); const b = at(`${f}2`); const c = at(`${f}3`)
+    if (a === null || b === null || c === null) continue
+    // (the circle through the three joints: its centre)
+    const ab = b.clone().sub(a); const ac = c.clone().sub(a); const n = new THREE.Vector3().crossVectors(ab, ac)
+    const nn = n.lengthSq()
+    if (nn < 1e-14) continue
+    const centre = new THREE.Vector3().crossVectors(n, ab).multiplyScalar(ac.lengthSq()).add(new THREE.Vector3().crossVectors(ac, n).multiplyScalar(ab.lengthSq())).divideScalar(2 * nn).add(a)
+    centres.push(centre)
+  }
+  const index = at('Index1'); const little = at('Pinky1') ?? at('Ring1'); const middle = at('Middle1') ?? index
+  for (const [b, q] of saved) b.quaternion.copy(q)
+  wrist.updateMatrixWorld(true)
+  if (centres.length < 2 || index === null || little === null || middle === null) return null
+  const fist = centres.reduce((m, c) => m.add(c), new THREE.Vector3()).divideScalar(centres.length)
+  // (the line through the curl centres: their main direction, little finger to index)
+  let axis = centres[0].clone().sub(centres[centres.length - 1])
+  if (centres.length > 2) {
+    const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+    for (const c of centres) { const d = c.clone().sub(fist).toArray(); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i][j] += d[i] * d[j] }
+    let v = axis.clone().normalize()
+    for (let it = 0; it < 30; it++) { const x = v.toArray(); v = new THREE.Vector3(C[0][0] * x[0] + C[0][1] * x[1] + C[0][2] * x[2], C[1][0] * x[0] + C[1][1] * x[1] + C[1][2] * x[2], C[2][0] * x[0] + C[2][1] * x[1] + C[2][2] * x[2]).normalize() }
+    axis = v
+  }
+  if (axis.dot(index.clone().sub(little)) < 0) axis.negate()
+  // (square to the palm: at right angles to the wrist's line to the middle finger's knuckle)
+  const palm = middle.clone().normalize()
+  axis.addScaledVector(palm, -axis.dot(palm)).normalize()
+  return { axis, fist }
+}
+
 /** The arm a hand belongs to. */
 export function armOf (hand: 'Left' | 'Right'): { upper: string, lower: string, end: string } {
   return { upper: `${hand}Arm`, lower: `${hand}ForeArm`, end: `${hand}Hand` }

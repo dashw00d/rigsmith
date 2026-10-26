@@ -2,7 +2,7 @@
   // The animation editor's panel (src/state/clipedit.svelte.ts): start editing the clip playing, then pose and key it in
   // the viewport; delete keys, hold joints in their ranges, save as a new library clip.
   import { onDestroy } from 'svelte'
-  import { Move3d, PencilRuler, Plus, Rotate3d, Save, ShieldCheck, Sparkles, Trash2, Wand2, X } from '@lucide/svelte'
+  import { Hand, Move3d, PencilRuler, Plus, Rotate3d, Save, ShieldCheck, Sparkles, Trash2, Wand2, X } from '@lucide/svelte'
   import { animator } from '../../state/animator.svelte.ts'
   import { clipEdit } from '../../state/clipedit.svelte.ts'
   import Button from '../../ui/Button.svelte'
@@ -105,6 +105,14 @@
           {:else}
             <p class="faint small">None yet.</p>
           {/each}
+          <div class="row">
+            <span class="muted small">Grip it</span>
+            {#each ['Left', 'Right'] as const as hand}
+              {#if p.bone !== `${hand}Hand`}
+                <span use:tooltip={`The ${hand.toLowerCase()} hand on the shaft where it holds it best: its fist squarely round it (the shaft through the closed fingers, square to the palm, the thumb toward the far end), slid along and rolled round to where the whole clip is easiest when another hand holds it too; saved as the hand's socket.`}><Button size="sm" disabled={clipEdit.busy !== null} onclick={() => clipEdit.grip(hand, p.name)}><Hand size={12} /> {hand}</Button></span>
+              {/if}
+            {/each}
+          </div>
           <div class="row">
             <Button size="sm" onclick={() => clipEdit.addSocket('Left')}><Plus size={12} /> Left hand here</Button>
             <Button size="sm" onclick={() => clipEdit.addSocket('Right')}><Plus size={12} /> Right hand here</Button>

@@ -311,21 +311,79 @@ export async function fitProp (input: FitInput, progress: (label: string) => voi
     await yieldUi()
   }
   const after = S.reduce((a, x) => a + x.cost, 0)
-  // (the keys: one at each searched frame, on top of the path as it was; the other frames follow their curve)
+  // (the offsets on every frame: a smooth curve through the searched ones, near each, its bend from frame to frame kept
+  // small (each searched on its own, they wobble); then the path as it was plus that curve written as the fewest keys
+  // whose curve follows it to KEYS.tol: a few keys that tween, not one per frame)
   const existing = input.props.paths[input.prop]?.keys ?? []
-  const keys: ClipKey[] = O.some(o => o.length() > 0.0015) || existing.length > 0 ? at.map((i, k) => {
-    const u = duration > 0 ? lab.times[i] / duration : 0
-    const e = existing.length === 0 ? null : sampleKeys(existing, u, input.loop)
-    const p = (e?.p ?? new THREE.Vector3()).clone().add(O[k])
-    return { u, q: ((e?.q ?? new THREE.Quaternion()).toArray() as ClipKey['q']).map(v => Math.round(v * 1e6) / 1e6) as ClipKey['q'], p: p.toArray().map(v => Math.round(v * 1e5) / 1e5) as [number, number, number] }
-  }) : []
-  const offsets = lab.times.map(t => {
+  const curve = smoothCurve(n, at, O, KEYS.bend)
+  const uOf = (i: number): number => (duration > 0 ? lab.times[i] / duration : 0)
+  const want = lab.times.map((_, i) => {
+    const e = existing.length === 0 ? null : sampleKeys(existing, uOf(i), input.loop)
+    return { p: (e?.p ?? new THREE.Vector3()).clone().add(curve[i]), q: e?.q ?? new THREE.Quaternion() }
+  })
+  const moves = curve.some(o => o.length() > 0.0015)
+  const keys: ClipKey[] = moves || existing.length > 0 ? fewestKeys(want, uOf, input.loop, KEYS.tol * input.height, KEYS.most) : []
+  const offsets = lab.times.map((_, i) => {
     if (keys.length === 0) return new THREE.Vector3()
-    const u = duration > 0 ? t / duration : 0
-    const e = existing.length === 0 ? new THREE.Vector3() : sampleKeys(existing, u, input.loop).p
-    return sampleKeys(keys, u, input.loop).p.sub(e)
+    const e = existing.length === 0 ? new THREE.Vector3() : sampleKeys(existing, uOf(i), input.loop).p
+    return sampleKeys(keys, uOf(i), input.loop).p.sub(e)
   })
   return { offsets, keys, before, after, evals: lab.evals, ms: performance.now() - t0, moved: offsets.filter(o => o.length() > 0.002).length, maxMove: Math.max(0, ...offsets.map(o => o.length())) }
+}
+
+/** The fit's keys: how much the offsets' curve may bend between frames (against how near it stays to the searched
+ * offsets), how near the keys' curve must follow the path (a share of the body's height) and the most keys. */
+export const KEYS = { bend: 6, tol: 0.003, most: 12 }
+
+/** A smooth curve over frames 0..n-1 near the values at frames `at` (a smoothing spline: the squared misses plus `bend`
+ * times the squared second differences, least). */
+export function smoothCurve (n: number, at: number[], values: THREE.Vector3[], bend: number): THREE.Vector3[] {
+  const A = Array.from({ length: n }, () => new Float64Array(n))
+  const rhs = [new Float64Array(n), new Float64Array(n), new Float64Array(n)]
+  at.forEach((i, k) => { A[i][i] += 1; const v = values[k].toArray(); for (let d = 0; d < 3; d++) rhs[d][i] += v[d] })
+  for (let i = 1; i < n - 1; i++) {
+    const idx = [i - 1, i, i + 1]; const c = [1, -2, 1]
+    for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) A[idx[a]][idx[b]] += bend * c[a] * c[b]
+  }
+  // (a frame with no value and no neighbours to bend against stays where its neighbours put it: a tiny pull to 0 keeps the system solvable)
+  for (let i = 0; i < n; i++) A[i][i] += 1e-9
+  const x = rhs.map(r => solveDense(A.map(row => Float64Array.from(row)), Float64Array.from(r)))
+  return Array.from({ length: n }, (_, i) => new THREE.Vector3(x[0][i], x[1][i], x[2][i]))
+}
+
+function solveDense (A: Float64Array[], b: Float64Array): Float64Array {
+  const n = b.length
+  for (let c = 0; c < n; c++) {
+    let p = c
+    for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r
+    if (p !== c) { [A[p], A[c]] = [A[c], A[p]]; [b[p], b[c]] = [b[c], b[p]] }
+    const d = A[c][c]
+    if (Math.abs(d) < 1e-15) continue
+    for (let r = c + 1; r < n; r++) { const f = A[r][c] / d; if (f === 0) continue; for (let k = c; k < n; k++) A[r][k] -= f * A[c][k]; b[r] -= f * b[c] }
+  }
+  const x = new Float64Array(n)
+  for (let r = n - 1; r >= 0; r--) { let s = b[r]; for (let k = r + 1; k < n; k++) s -= A[r][k] * x[k]; x[r] = Math.abs(A[r][r]) < 1e-15 ? 0 : s / A[r][r] }
+  return x
+}
+
+/** The fewest keys (at frames, the first and last always) whose curve (sampleKeys, as the editor tweens) follows `want`
+ * on every frame to `tol` metres (and a degree): the frame it misses most gets the next key. */
+export function fewestKeys (want: Array<{ p: THREE.Vector3, q: THREE.Quaternion }>, uOf: (i: number) => number, loop: boolean, tol: number, most: number): ClipKey[] {
+  const n = want.length
+  const keyAt = (i: number): ClipKey => ({ u: uOf(i), q: want[i].q.toArray().map(v => Math.round(v * 1e6) / 1e6) as ClipKey['q'], p: want[i].p.toArray().map(v => Math.round(v * 1e5) / 1e5) as [number, number, number] })
+  const chosen = new Set<number>([0, n - 1])
+  for (;;) {
+    const keys = [...chosen].sort((a, b) => a - b).map(keyAt)
+    let worst = -1; let at = -1
+    for (let i = 0; i < n; i++) {
+      if (chosen.has(i)) continue
+      const s = sampleKeys(keys, uOf(i), loop)
+      const miss = Math.max(s.p.distanceTo(want[i].p) / tol, s.q.angleTo(want[i].q) / THREE.MathUtils.degToRad(1))
+      if (miss > worst) { worst = miss; at = i }
+    }
+    if (worst <= 1 || at < 0 || chosen.size >= most) return keys
+    chosen.add(at)
+  }
 }
 
 // ---- grip auto-placement -----------------------------------------------------------------------------------------------
@@ -340,6 +398,8 @@ export interface GripInput extends FitInput {
   grip: { axis: THREE.Vector3, fist: THREE.Vector3 } | null
   /** The other hands on the prop: their fists' places along the shaft are kept a fist's width away. */
   others?: Array<{ hand: 'Left' | 'Right', socket: Socket, grip: { fist: THREE.Vector3 } | null }>
+  /** The best spot whatever the socket had (no pull back to it), the roll round the shaft looked for all the way round first. */
+  free?: boolean
 }
 
 export interface GripResult {
@@ -401,7 +461,8 @@ export async function placeGrip (input: GripInput, progress: (label: string) => 
     const sockets = input.props.sockets[input.prop].map(x => (x.id === sock.id ? cand : x))
     let sum = 0
     for (const i of frames) { const r = lab.solve(i, zero, { sockets }); sum += r.cost }
-    // (the grip stays where the user had it unless the clip is clearly easier elsewhere: a pull to it, per cm slid squared and per degree rolled squared)
+    // (the grip stays where the user had it unless the clip is clearly easier elsewhere: a pull to it, per cm slid squared and per degree rolled squared; none when free)
+    if (input.free === true) return sum
     return sum + GRIP.slide * ((s - nowS) * length * 100) ** 2 + GRIP.roll * THREE.MathUtils.radToDeg(roll) ** 2
   }
   progress('Placing the grip: the clip as it stands')
@@ -409,10 +470,21 @@ export async function placeGrip (input: GripInput, progress: (label: string) => 
   const score = (s: number, roll: number): number => { const c = scoreOf(s, roll); if (Number.isFinite(c)) tried.push({ s, roll, c }); return c }
   const before = score(nowS, 0)
   let best = { s: nowS, roll: 0, c: Number.isFinite(before) ? before : Infinity }
+  // (free: the roll round the shaft first, all the way round in twelfths, where the grip is (or the middle, if it can't be there))
+  let roll0 = 0
+  if (input.free === true) {
+    const at = ok(nowS) ? nowS : 0.45
+    for (let k = 1; k < 12; k++) {
+      progress(`Placing the grip: rolled ${k * 30}°`)
+      const c = score(at, k * Math.PI / 6)
+      if (c < best.c) { best = { s: at, roll: k * Math.PI / 6, c }; roll0 = k * Math.PI / 6 }
+      await yieldUi()
+    }
+  }
   const slides: number[] = []
   for (let s = 0.1; s <= 0.85; s += 0.075) slides.push(s)
   for (const s of slides) {
-    for (const roll of [-0.5, 0, 0.5]) {
+    for (const roll of [roll0 - 0.5, roll0, roll0 + 0.5]) {
       progress(`Placing the grip: ${Math.round(s * 100)}% along the shaft`)
       const c = score(s, roll)
       if (c < best.c) best = { s, roll, c }
