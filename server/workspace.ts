@@ -31,6 +31,8 @@ export interface Character {
   /** Joints as detected on import, for "reset". */
   autoJoints?: Record<string, Vec3>
   jointsEdited?: boolean
+  /** The Rig step's markers (src/engine/markers.ts): the skeleton they were seeded from and where they are now. */
+  markers?: { set: string, base: Record<string, Vec3>, positions: Record<string, Vec3> }
   fingers?: 'none' | 'one' | 'two' | 'full'
   /** Skeleton template: 'human' (Mixamo, auto-placed) or a creature template id from static/templates. */
   template?: string

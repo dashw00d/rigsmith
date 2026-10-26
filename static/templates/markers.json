@@ -1,0 +1,34 @@
+{
+  "_doc": "The markers of the Rig step (src/engine/markers.ts): a few points placed on one flat view of the model, from which every joint follows. Per body type: the view (front: the model seen from +Z, its right on the left; side: from +X, its head on the left), and its markers: a joint each ({Side} Left/Right, {s} l/r for a pair), or a point of its own tied to joints (attach). A pair on a front view is placed on both sides; on a side view on the near side (its left) and mirrored. mid: on the body's middle line.",
+  "human": {
+    "view": "front",
+    "markers": [
+      { "id": "chin", "label": "Chin", "color": "#3fd0e0", "joint": "Neck", "mid": true },
+      { "id": "shoulder", "label": "Shoulders", "color": "#f2d14b", "joint": "{Side}Arm", "pair": true },
+      { "id": "elbow", "label": "Elbows", "color": "#5fd36a", "joint": "{Side}ForeArm", "pair": true },
+      { "id": "wrist", "label": "Wrists", "color": "#e85cc8", "joint": "{Side}Hand", "pair": true },
+      { "id": "groin", "label": "Groin", "color": "#ffffff", "attach": ["Hips", "LeftUpLeg", "RightUpLeg"], "mid": true },
+      { "id": "knee", "label": "Knees", "color": "#f08a3c", "joint": "{Side}Leg", "pair": true },
+      { "id": "ankle", "label": "Ankles", "color": "#b7e34a", "joint": "{Side}Foot", "pair": true }
+    ]
+  },
+  "horse": {
+    "view": "side",
+    "markers": [
+      { "id": "chin", "label": "Chin", "color": "#3fd0e0", "joint": "head", "mid": true },
+      { "id": "blade", "label": "Shoulder blade", "color": "#c9b13a", "joint": "front_scapula_{s}", "pair": true },
+      { "id": "shoulder", "label": "Shoulder", "color": "#f2d14b", "joint": "front_humerus_{s}", "pair": true },
+      { "id": "hips", "label": "Hips", "color": "#ffffff", "joint": "hips", "mid": true },
+      { "id": "tail_root", "label": "Tail root", "color": "#4f7dff", "joint": "tail_1", "mid": true },
+      { "id": "tail_tip", "label": "Tail tip", "color": "#5fd36a", "joint": "tail_leaf", "mid": true },
+      { "id": "elbow", "label": "Elbow", "letter": "F", "color": "#e85cc8", "joint": "front_leg_upper_{s}", "pair": true },
+      { "id": "knee", "label": "Knee", "letter": "F", "color": "#a77bff", "joint": "front_leg_lower_{s}", "pair": true },
+      { "id": "front_fetlock", "label": "Fetlock", "letter": "F", "color": "#f08a3c", "joint": "front_leg_ankle_{s}", "pair": true },
+      { "id": "front_hoof", "label": "Hoof", "letter": "F", "color": "#b7e34a", "joint": "front_leg_foot_{s}", "pair": true },
+      { "id": "stifle", "label": "Stifle", "letter": "H", "color": "#e85cc8", "joint": "back_leg_lower_{s}", "pair": true },
+      { "id": "hock", "label": "Hock", "letter": "H", "color": "#a77bff", "joint": "back_leg_ankle_{s}", "pair": true },
+      { "id": "hind_fetlock", "label": "Fetlock", "letter": "H", "color": "#f08a3c", "joint": "back_leg_foot_{s}", "pair": true },
+      { "id": "hind_hoof", "label": "Hoof", "letter": "H", "color": "#b7e34a", "joint": "back_leg_toe_{s}", "pair": true }
+    ]
+  }
+}

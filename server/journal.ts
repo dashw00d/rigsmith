@@ -82,6 +82,11 @@ export function describe (before: Character | null, after: Character): string[] 
     }
   }
   if (!same(before.skins, after.skins)) out.push(`skins: ${(after.skins ?? []).map(s => s.name).join(', ') || 'none'}`)
+  if (!same(before.markers?.positions, after.markers?.positions)) {
+    const b = before.markers?.positions ?? {}; const a = after.markers?.positions ?? {}
+    const moved = Object.keys(a).filter(k => !same(b[k], a[k]))
+    out.push(after.markers === undefined ? 'markers cleared' : moved.length > 0 && Object.keys(b).length > 0 ? `markers moved: ${moved.join(', ')}` : `markers placed (${after.markers.set})`)
+  }
   if (!same(before.joints, after.joints)) out.push('joints moved')
   if (before.fingers !== after.fingers) out.push(`fingers: ${String(after.fingers)}`)
   if (!same(before.boneMap, after.boneMap)) out.push('bone map changed')

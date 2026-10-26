@@ -225,7 +225,7 @@ route('GET', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
 
 route('PATCH', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
   const patch = await readJsonBody<Partial<Character>>(req)
-  const allowed: Array<keyof Character> = ['name', 'joints', 'jointsEdited', 'fingers', 'animations', 'scripts', 'props', 'garments', 'mount', 'skins', 'boneMap']
+  const allowed: Array<keyof Character> = ['name', 'joints', 'jointsEdited', 'markers', 'fingers', 'animations', 'scripts', 'props', 'garments', 'mount', 'skins', 'boneMap']
   let before: Character | null = null
   const character = await updateCharacter(id, c => {
     before = structuredClone(c)
@@ -311,6 +311,8 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/template$/, async (req, res, [i
       c.jointsEdited = true
     }
     if (c.status === 'rigged') c.status = 'ready'
+    // (markers belong to the joints they were seeded from: a new fit seeds them again)
+    delete c.markers
   })
   send(res, 200, character)
 })

@@ -23,6 +23,8 @@ class Viewer {
   hoveredJoint = $state<string | null>(null)
   selectedJoint = $state<string | null>(null)
   mirror = $state(true)
+  /** Back at the joints of a rigged character (markers, the 3D editor) to re-rig it: it stays rigged till then. */
+  adjusting = $state(false)
   /** Bumped on every frame so overlay labels can follow joints. */
   frame = $state(0)
 
@@ -92,7 +94,7 @@ class Viewer {
   private editorToken = 0
 
   private syncEditor (character: Character | null, step: Step): void {
-    const wants = step === 'rig' && character !== null && character.kind === 'mesh' && character.joints !== undefined && this.character !== null && character.status !== 'rigged'
+    const wants = step === 'rig' && character !== null && character.kind === 'mesh' && character.joints !== undefined && this.character !== null && (character.status !== 'rigged' || this.adjusting)
     if (!wants) {
       this.editorToken++
       if (this.editor !== null) { this.editor.dispose(); this.editor = null }

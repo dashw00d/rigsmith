@@ -13,6 +13,8 @@
   import { outfit } from '../state/outfit.svelte.ts'
   import { painter } from '../state/painter.svelte.ts'
   import MaskPainter from './texture/MaskPainter.svelte'
+  import MarkerBoard from './rig/MarkerBoard.svelte'
+  import { markerBoard } from '../state/markers.svelte.ts'
 
   let container: HTMLDivElement
 
@@ -79,6 +81,11 @@
 
   {#if app.step === 'animate' || app.step === 'export' || app.step === 'outfit'}<Timeline />{/if}
   {#if painter.active && app.step === 'texture'}<MaskPainter />{/if}
+  {#if markerBoard.open && app.step === 'rig' && app.selected && viewer.character && markerBoard.set && markerBoard.parents && markerBoard.setName}
+    {#key `${app.selected.id}|${markerBoard.setName}`}
+      <MarkerBoard character={app.selected} view={viewer.character} set={markerBoard.set} setName={markerBoard.setName} parents={markerBoard.parents} />
+    {/key}
+  {/if}
 
   {#if animator.error}<div class="busy error">{animator.error}</div>{/if}
 

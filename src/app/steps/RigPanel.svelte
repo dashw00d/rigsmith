@@ -7,6 +7,8 @@
   import { BODY_TYPES, fitTemplate, loadTemplate } from '../../engine/templates.ts'
   import { api } from '../../state/api.ts'
   import SkeletonMapping from './SkeletonMapping.svelte'
+  import { markerBoard } from '../../state/markers.svelte.ts'
+  import { jointOf, keysOf } from '../../engine/markers.ts'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
   import Segmented from '../../ui/Segmented.svelte'
@@ -50,6 +52,15 @@
     }
   }
   const rigging = $derived(character.status === 'rigging' || job?.kind === 'rig')
+  $effect(() => { void character.template; void character.fingers; void markerBoard.load(character) })
+  // (the legend: one row per marker; a pair once)
+  // (a marker is missing when its joint isn't in the skeleton: a person's markers need the detected joints)
+  const legend = $derived(markerBoard.set === null ? [] : markerBoard.set.markers.map(def => ({ def, placed: def.joint === undefined || keysOf(markerBoard.set!).some(k => k.def.id === def.id && character.joints?.[jointOf(def, k.side) ?? ''] !== undefined) })))
+  async function resetMarkers (): Promise<void> {
+    markerBoard.open = false
+    await app.update(character.id, { markers: null as unknown as undefined })
+    markerBoard.open = true
+  }
   const jointGroups = $derived(groups(fingers))
 
   async function setFingers (value: FingerLevel): Promise<void> {
@@ -63,10 +74,13 @@
     viewer.editor?.setJoints(character.autoJoints)
   }
 
-  async function adjust (): Promise<void> {
-    // Back to the mesh with joint markers; the previous rig stays until the next one replaces it.
-    await app.update(character.id, { joints: character.joints })
-    character.status = 'ready'
+  // Back to the joints (markers, the 3D editor) of a rigged character; the rig stays until the next one replaces it.
+  // (a mode of this panel: the character stays rigged, so a save from here doesn't flip the panel back)
+  let adjustingFor = ''
+  $effect(() => { if (character.id !== adjustingFor) { adjustingFor = character.id; viewer.adjusting = false } })
+  $effect(() => { if (rigging) viewer.adjusting = false })
+  function adjust (): void {
+    viewer.adjusting = true
     viewer.resetEditor()
   }
 </script>
@@ -92,7 +106,7 @@
     {/if}
     <Button variant="primary" size="lg" block onclick={() => { app.step = 'animate' }}>Pick animations <ArrowRight size={15} /></Button>
   </Section>
-{:else if character.status === 'rigged' && !rigging}
+{:else if character.status === 'rigged' && !rigging && !viewer.adjusting}
   <Section title="Rig">
     <div class="ok-card">
       <strong>Rigged with the {human ? 'Mixamo' : BODY_TYPES.find(b => b.id === template)?.label.toLowerCase()} skeleton</strong>
@@ -121,8 +135,27 @@
     {#if !human}<p class="faint small">The {BODY_TYPES.find(b => b.id === template)?.label.toLowerCase()} skeleton was scaled to the model's bounds. Drag joints onto the body; its animations come with it.</p>{/if}
   </Section>
 
-  <Section title="Joints">
-    <p class="faint small">{human ? 'Joints were placed automatically. ' : ''}Drag any marker to adjust it. With mirroring on, the right side follows the left.</p>
+  <Section title="Markers">
+    <p class="faint small">Place a few markers on one flat view of the model ({markerBoard.set?.view === 'side' ? 'from the side: the near legs, the far ones follow' : 'from the front'}); every joint follows them. They start where the {human ? 'detected joints' : 'fitted template'} put them: move the ones that are off.</p>
+    {#if markerBoard.missing}<p class="faint small">{markerBoard.missing}</p>{/if}
+    {#if markerBoard.set}
+      <div class="legend">
+        {#each legend as { def, placed }}
+          <button class="legend-row" class:active={markerBoard.selected === def.id} onclick={() => { markerBoard.selected = def.id; markerBoard.open = true }}>
+            <span class="swatch" style="background: {def.color}">{def.letter ?? ''}</span>{def.label}{#if !placed}<span class="faint"> · no joint</span>{/if}
+          </button>
+        {/each}
+      </div>
+      {#if markerBoard.set.view === 'front'}<Toggle label="Mirror left and right" bind:checked={markerBoard.mirror} />{/if}
+      <div class="row">
+        <Button variant={markerBoard.open ? 'ghost' : 'primary'} block onclick={() => { markerBoard.open = !markerBoard.open }}>{markerBoard.open ? 'Done with markers' : 'Place markers'}</Button>
+        {#if character.markers}<Button size="sm" variant="ghost" onclick={resetMarkers}><RotateCcw size={13} /> Start again</Button>{/if}
+      </div>
+    {/if}
+  </Section>
+
+  <Section title="Fine-tune joints">
+    <p class="faint small">Every joint, in 3D, for what the markers don't reach: drag one in the viewport. With mirroring on, the right side follows the left.</p>
     <Toggle label="Mirror left and right" bind:checked={mirror} onchange={(v) => viewer.setMirror(v)} />
     <div class="groups" class:hidden={!human}>
       {#each jointGroups as group}
@@ -185,4 +218,9 @@
   }
   .bone-chip:hover { color: var(--text-1); border-color: var(--text-4); }
   .bone-chip.active { background: var(--accent-soft); color: var(--accent-strong); border-color: rgb(142 162 255 / 40%); }
+  .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
+  .legend-row { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--text-2); font-size: 12px; padding: 2px 0; text-align: left; }
+  .legend-row.active { color: var(--accent-strong); }
+  .swatch { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font-size: 9px; font-weight: 700; color: #111; flex: none; }
+  .row { display: flex; gap: 6px; align-items: center; }
 </style>

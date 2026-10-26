@@ -108,10 +108,26 @@ def diffuse(verts, tris, attach, distance, n_bones, heat=1.0):
     return np.clip(solve(graph, h.astype(np.float32), rhs), 0.0, 1.0).astype(np.float64)
 
 
-def bone_heat(verts, tris, heads, tails, ray_cast=None, candidates=4, heat=1.0):
-    """Weights (n_verts, n_bones). ray_cast(origin, direction, max_distance) -> bool (hit)."""
+def side_eligible(verts, heads, tails, x_center, height, inside=0.35):
+    """(n, b) whether vertex v may attach to bone b: a bone off to one side of the body (a left or right limb) takes
+    only skin on its own side, at least `inside` of the bone's own distance out from the middle; the middle (a belly,
+    a chest, a back) goes to the bones down the middle. Heat alone binds a horse's belly to whichever stifle or elbow
+    is nearest, left on one vertex and right on the next, and the belly tears when the legs part."""
+    mid = 0.5 * (heads[:, 0] + tails[:, 0]) - x_center
+    offset = np.minimum(np.abs(heads[:, 0] - x_center), np.abs(tails[:, 0] - x_center))
+    side = np.where(np.abs(mid) > 0.02 * height, np.sign(mid), 0.0)
+    x = verts[:, 0:1] - x_center
+    return (side[None, :] == 0) | (x * side[None, :] > inside * offset[None, :])
+
+
+def bone_heat(verts, tris, heads, tails, ray_cast=None, candidates=4, heat=1.0, eligible=None, attachments=False):
+    """Weights (n_verts, n_bones). ray_cast(origin, direction, max_distance) -> bool (hit). `eligible` (n, b): which
+    bones each vertex may attach to (side_eligible). With `attachments`, also each vertex's bone and its distance
+    from it (the body's thickness there)."""
     height = float(np.ptp(verts[:, 2])) or 1.0
     dist, closest = segment_distances(verts, heads, tails)
+    if eligible is not None:
+        dist = np.where(eligible, dist, dist + 1e3 * height)
     order = np.argsort(dist, axis=1)
     nearest = order[:, 0].copy()
     if ray_cast is not None:
@@ -128,4 +144,6 @@ def bone_heat(verts, tris, heads, tails, ray_cast=None, candidates=4, heat=1.0):
                 if not ray_cast(verts[v] + direction * eps * 2, direction, length - eps * 4):
                     nearest[v] = b
                     break
-    return diffuse(verts, tris, nearest, dist[np.arange(len(verts)), nearest], len(heads), heat)
+    radius = np.minimum(dist[np.arange(len(verts)), nearest], height)
+    w = diffuse(verts, tris, nearest, radius, len(heads), heat)
+    return (w, nearest, radius) if attachments else w

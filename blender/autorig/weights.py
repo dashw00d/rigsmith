@@ -16,6 +16,11 @@ MAX_INFLUENCES = 4
 HEAT = float(os.environ.get('RIG_HEAT', 32))
 LOCALIZE_HOPS = int(os.environ.get('RIG_LOCALIZE', 0))
 BAND = float(os.environ.get('RIG_BAND', 0.04))
+# Creatures: the heat that shapes the bend at a joint, the bend band per unit of the body's thickness there, its
+# bounds (fractions of the height).
+CREATURE_HEAT = 4.0
+CREATURE_BAND = 1.0
+CREATURE_BAND_RANGE = (0.015, 0.15)
 
 
 def localize(w, attach_to, armature, names, hops=2):
@@ -168,7 +173,18 @@ def skin(meshes, armature, verts, tris, steer=True, method='regions'):
         def ray_cast(origin, direction, distance):
             return tree.ray_cast(Vector(origin), Vector(direction), distance)[0] is not None
 
-        w = heat.bone_heat(verts, tris, heads, tails, ray_cast)
+        # Creatures (templates without regions): each limb kept to its own side of the body, then rigid bones that
+        # bend only near their joints, over a band as wide as the body is thick there (a thin knee bends short, a
+        # hip buried in muscle wide). One broad heat everywhere made every limb bend along its whole length.
+        H = float(np.ptp(verts[:, 2])) or 1.0
+        x_center = 0.5 * (float(verts[:, 0].min()) + float(verts[:, 0].max()))
+        eligible = heat.side_eligible(verts, heads, tails, x_center, H) if os.environ.get('RIG_SIDES', '1') != '0' else None
+        w, attach_to, radius = heat.bone_heat(verts, tris, heads, tails, ray_cast, eligible=eligible, attachments=True,
+                                              heat=float(os.environ.get('RIG_CREATURE_HEAT', CREATURE_HEAT)))
+        k = float(os.environ.get('RIG_CREATURE_BAND', CREATURE_BAND))
+        if k > 0:
+            band = np.clip(k * radius, CREATURE_BAND_RANGE[0] * H, CREATURE_BAND_RANGE[1] * H)
+            w = band_blend(verts, tris, w, attach_to, band)
     w = limit_and_normalize(w)
     offset = 0
     for ob in meshes:
