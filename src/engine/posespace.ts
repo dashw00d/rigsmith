@@ -25,6 +25,12 @@
 // (no sole point under its rest height). The search first holds them (finding the body's way to the goals in the
 // stance it has), then lets them go. `planted` locks them as the first solver did.
 //
+// Balance and upright (on with soft feet): the centre of mass (a mass-weighted mean of the body's segments) over the
+// ground must stay inside the support (the hull of the standing feet's sole points), and the trunk no more tilted than the
+// start had it (and a few degrees), both steep costs; a foot's slide costs like a Huber loss (squared to a knee, then
+// linear, steep past a stride), so the body lunges (hips forward and down, a foot stepping, flat) rather than folding
+// over its goal.
+//
 // A whole clip: naturalizeFrames / naturalizeClip solve every frame this way with the corrections between neighbouring
 // frames pulled together (swept forward and back), so the pass is smooth over time and the edit's own motion stays.
 import * as THREE from 'three'
@@ -249,6 +255,10 @@ export interface NaturalOptions {
   planted?: boolean
   /** The floor (world y) and each sole point's rest height above it (restSoles): no sole point goes under its height. */
   floor?: { y: number, soles: Record<string, number> }
+  /** How many times the usual number of search steps (default 1 in quick mode, 2 in full). */
+  effort?: number
+  /** Balance and upright (default on when soft `feet` are given, off with `planted`: the first solver's behaviour): the centre of mass over the standing feet's support, the trunk no more bent than the start had it. `false`: lean anywhere. */
+  balance?: boolean
   /** A pull of the whole pose toward the model's mean, per whitened unit squared (default 0: the pose stays as near the start as the goals allow; more drifts every joint toward the most natural pose too). */
   pull?: number
   /** A pull of the correction (p - start, the result's `delta` shape) toward `ref` (its neighbours' in a clip), `weight` per radian squared. */
@@ -276,6 +286,19 @@ export interface NaturalResult {
   feetMoved: { slide: number, lift: number, twist: number, tilt: number }
   /** The worst a soft target (a goal with `hard: false`) is off (metres). */
   softMiss: number
+  /** The standing feet's balance as the bones stand now (only with `feet`). */
+  balance: Balance | null
+}
+
+/** The centre of mass over the floor against the support, and the trunk's tilt. */
+export interface Balance {
+  /** The centre of mass (world). */
+  com: THREE.Vector3
+  /** How far inside the support the centre of mass's ground point is (metres; negative: outside by that much). */
+  margin: number
+  /** The trunk's (hips to neck) tilt from the vertical, and its forward part (degrees; forward is where the hips face). */
+  tilt: number
+  pitch: number
 }
 
 export interface RigOptions {
@@ -294,13 +317,36 @@ export const KEEP_WEIGHT = 12
 const PRIOR = { near: 1, natural: 2, angle: 1, heading: 1, hips: 1 }
 /** The hips' heading and position, free on springs: the spread (radians; metres of a Y Bot, scaled). */
 const HEADING_SPREAD = 0.35
-const HIPS_SPREAD = 0.03
+const HIPS_SPREAD = 0.08
 const EXTRA = 4
 const LIMIT_WEIGHT = 40
 /** What a soft foot's moving costs: per centimetre slid, per centimetre lifted, per 5 degrees twisted (heading), per 5 degrees tilted. */
-export const FOOT = { slide: 0.6, lift: 1.5, twist: 0.4, tilt: 1.2 }
+export const FOOT = { slide: 0.3, lift: 1.5, twist: 0.4, tilt: 1.2 }
 /** A sole point under its floor: per centimetre. */
 const FLOOR_WEIGHT = 30
+/**
+ * A foot's slide costs like a Huber loss: squared up to this knee (centimetres of a Y Bot's size), then only linearly, so a
+ * step that the balance needs costs little more than a shuffle (a lean that the balance forbids costs a great deal).
+ */
+const SLIDE_KNEE = 4
+/** The longest step (centimetres of a Y Bot's size; a stride is about this) a foot may travel from where it stood before the cost of more goes up steeply, per centimetre past it. */
+const STRIDE = { max: 45, weight: 2 }
+/**
+ * Balance: the centre of mass (a mass-weighted mean of the body's segments' middles: the torso and the hips heavy) over
+ * the ground, held inside the support (the hull of the standing feet's sole points: ankle, ball and toes' tip). The cost
+ * starts `BALANCE_RAMP` before the support's edge (or the start pose's own overhang, when it has one) and rises steeply
+ * (BALANCE.weight per centimetre, then steeper: its square grows with the fourth power of the overhang).
+ */
+export const BALANCE = { weight: 3, steep: 6, ramp: 0.06 }
+/** Upright: the trunk's (hips to neck) tilt from the vertical beyond what the start pose has plus `slack` (radians), per 5 degrees, steepening past 20. */
+export const UPRIGHT = { weight: 3, slack: THREE.MathUtils.degToRad(3) }
+/** The body's segments: [bone, the bone whose joint ends the segment (null: the joint itself), share of the mass]. */
+const SEGMENTS: Array<[string, string | null, number]> = [
+  ['Hips', 'Spine', 0.14], ['Spine', 'Spine1', 0.11], ['Spine1', 'Spine2', 0.11], ['Spine2', 'Neck', 0.14], ['Neck', 'Head', 0.02], ['Head', null, 0.07],
+  ...['Left', 'Right'].flatMap((s): Array<[string, string | null, number]> => [
+    [`${s}Arm`, `${s}ForeArm`, 0.028], [`${s}ForeArm`, `${s}Hand`, 0.016], [`${s}Hand`, null, 0.007],
+    [`${s}UpLeg`, `${s}Leg`, 0.10], [`${s}Leg`, `${s}Foot`, 0.047], [`${s}Foot`, `${s}ToeBase`, 0.014]]),
+]
 
 // ---- small quaternion arithmetic on typed arrays (the solver's inner loop allocates nothing) -------------------------
 
@@ -385,6 +431,13 @@ export class NaturalRig {
   private readonly Q = new Float64Array(NB * 4)
   private readonly P = new Float64Array(NB * 3)
   private readonly tmp = new Float64Array(12)
+  // balance: the segments' ends in BODY, their masses; the toes' tips (in their ToeBase's frame); the support points
+  private readonly seg: Int32Array
+  private readonly segMass: Float64Array
+  private readonly tip = new Map<string, Float64Array>()
+  private readonly hx = new Float64Array(8)
+  private readonly hz = new Float64Array(8)
+  private readonly hull = new Int32Array(20)
 
   constructor (model: PoseModel, bones: Map<string, THREE.Bone>, opts: RigOptions = {}) {
     this.model = model
@@ -415,7 +468,101 @@ export class NaturalRig {
     const leg = (s: string): number => Math.hypot(this.off[INDEX.get(`${s}Leg`)! * 3], this.off[INDEX.get(`${s}Leg`)! * 3 + 1], this.off[INDEX.get(`${s}Leg`)! * 3 + 2]) +
       Math.hypot(this.off[INDEX.get(`${s}Foot`)! * 3], this.off[INDEX.get(`${s}Foot`)! * 3 + 1], this.off[INDEX.get(`${s}Foot`)! * 3 + 2])
     this.scale = leg('Left') / Y_BOT_LEG
+    this.seg = new Int32Array(SEGMENTS.length * 2)
+    this.segMass = new Float64Array(SEGMENTS.length)
+    const total = SEGMENTS.reduce((m, x) => m + x[2], 0)
+    SEGMENTS.forEach(([a, b, m], i) => { this.seg[i * 2] = INDEX.get(a)!; this.seg[i * 2 + 1] = b === null ? -1 : INDEX.get(b)!; this.segMass[i] = m / total })
+    for (const side of ['Left', 'Right']) {
+      const toe = bones.get(`${side}ToeBase`); const end = bones.get(`${side}Toe_End`)
+      if (toe !== undefined && end !== undefined) this.tip.set(`${side}Foot`, Float64Array.from(wp(end).sub(wp(toe)).applyQuaternion(wq(toe).invert()).toArray()))
+    }
   }
+
+  /**
+   * The balance terms of the FK in this.P / this.Q: [the signed distance (metres, positive outside) of the centre of
+   * mass's ground point from the hull of the standing feet's sole points, the trunk's tilt (radians), its forward part].
+   * `feet` are the Foot bones' BODY indices (with the tips' offsets in `tips`).
+   */
+  private balanceTerms (feet: ArrayLike<number>, tips: Array<Float64Array | undefined>, out: Float64Array, forward: ArrayLike<number>): void {
+    const P = this.P; const Q = this.Q
+    let cx = 0; let cy = 0; let cz = 0
+    for (let i = 0; i < this.segMass.length; i++) {
+      const a = this.seg[i * 2]; const b = this.seg[i * 2 + 1]; const m = this.segMass[i]
+      if (b < 0) { cx += m * P[a * 3]; cy += m * P[a * 3 + 1]; cz += m * P[a * 3 + 2] } else {
+        cx += m * 0.5 * (P[a * 3] + P[b * 3]); cy += m * 0.5 * (P[a * 3 + 1] + P[b * 3 + 1]); cz += m * 0.5 * (P[a * 3 + 2] + P[b * 3 + 2])
+      }
+    }
+    // the support: each standing foot's ankle, ball and toes' tip, on the ground
+    let n = 0
+    const hx = this.hx; const hz = this.hz
+    for (let f = 0; f < feet.length; f++) {
+      const foot = feet[f]; const toe = foot + 1
+      hx[n] = P[foot * 3]; hz[n++] = P[foot * 3 + 2]
+      hx[n] = P[toe * 3]; hz[n++] = P[toe * 3 + 2]
+      const tip = tips[f]
+      if (tip !== undefined) {
+        rotAdd(this.tmp, 0, Q, toe * 4, tip[0], tip[1], tip[2], P, toe * 3)
+        hx[n] = this.tmp[0]; hz[n++] = this.tmp[2]
+      }
+    }
+    out[0] = n === 0 ? 0 : this.hullDistance(n, cx, cz)
+    // the trunk
+    const hips = 0; const neck = INDEX.get('Neck')!
+    const ax = P[neck * 3] - P[hips * 3]; const ay = P[neck * 3 + 1] - P[hips * 3 + 1]; const az = P[neck * 3 + 2] - P[hips * 3 + 2]
+    out[1] = Math.atan2(Math.hypot(ax, az), ay)
+    out[2] = Math.atan2(ax * forward[0] + az * forward[1], ay)
+  }
+
+  /** The signed distance of (qx, qz) from the convex hull of the first `n` points of hx, hz (positive outside, negative inside by its depth). */
+  private hullDistance (n: number, qx: number, qz: number): number {
+    const hx = this.hx; const hz = this.hz; const h = this.hull
+    // (the points sorted by x then z: insertion sort of their indices, then Andrew's monotone chain)
+    const order = this.hull.subarray(12, 12 + n)
+    for (let i = 0; i < n; i++) order[i] = i
+    for (let i = 1; i < n; i++) {
+      const k = order[i]; let j = i - 1
+      while (j >= 0 && (hx[order[j]] > hx[k] || (hx[order[j]] === hx[k] && hz[order[j]] > hz[k]))) { order[j + 1] = order[j]; j-- }
+      order[j + 1] = k
+    }
+    const cross = (o: number, a: number, b: number): number => (hx[a] - hx[o]) * (hz[b] - hz[o]) - (hz[a] - hz[o]) * (hx[b] - hx[o])
+    let m = 0
+    for (let i = 0; i < n; i++) { while (m >= 2 && cross(h[m - 2], h[m - 1], order[i]) <= 0) m--; h[m++] = order[i] }
+    const lowerEnd = m + 1
+    for (let i = n - 2; i >= 0; i--) { while (m >= lowerEnd && cross(h[m - 2], h[m - 1], order[i]) <= 0) m--; h[m++] = order[i] }
+    if (m > 1) m--
+    if (m === 1) return Math.hypot(qx - hx[h[0]], qz - hz[h[0]])
+    let inside = m >= 3; let near = Infinity; let depth = Infinity
+    for (let i = 0; i < m; i++) {
+      const a = h[i]; const b = h[(i + 1) % m]
+      const ex = hx[b] - hx[a]; const ez = hz[b] - hz[a]
+      const len2 = ex * ex + ez * ez
+      if (len2 < 1e-14) continue
+      const t = Math.max(0, Math.min(1, ((qx - hx[a]) * ex + (qz - hz[a]) * ez) / len2))
+      near = Math.min(near, Math.hypot(qx - hx[a] - t * ex, qz - hz[a] - t * ez))
+      const side = (ex * (qz - hz[a]) - ez * (qx - hx[a])) / Math.sqrt(len2)
+      if (side < 0) inside = false
+      depth = Math.min(depth, side)
+    }
+    return inside ? -depth : near
+  }
+
+  /** The standing feet's balance as the bones stand now: the centre of mass, how far inside the support it is, the trunk's tilt. */
+  balanceOf (feet: string[] = ['LeftFoot', 'RightFoot']): Balance {
+    const pose = this.encode()
+    const hipsPos = pose.hips
+    this.fk(pose.p, pose.yaw, hipsPos.x, hipsPos.y, hipsPos.z)
+    const out = new Float64Array(3)
+    const fwd = [Math.sin(pose.yaw), Math.cos(pose.yaw)]
+    this.balanceTerms(feet.map(f => INDEX.get(f)!), feet.map(f => this.tip.get(f)), out, fwd)
+    let cx = 0; let cy = 0; let cz = 0
+    for (let i = 0; i < this.segMass.length; i++) {
+      const a = this.seg[i * 2]; const b = this.seg[i * 2 + 1]; const m = this.segMass[i]
+      const k = b < 0 ? 1 : 0.5
+      cx += m * k * (this.P[a * 3] + (b < 0 ? 0 : this.P[b * 3])); cy += m * k * (this.P[a * 3 + 1] + (b < 0 ? 0 : this.P[b * 3 + 1])); cz += m * k * (this.P[a * 3 + 2] + (b < 0 ? 0 : this.P[b * 3 + 2]))
+    }
+    return { com: new THREE.Vector3(cx, cy, cz), margin: -out[0], tilt: THREE.MathUtils.radToDeg(out[1]), pitch: THREE.MathUtils.radToDeg(out[2]) }
+  }
+
 
   /** The bones' pose as they stand: the pose vector (in the model's frames), the hips' heading and world position. */
   encode (): NaturalPose {
@@ -552,7 +699,9 @@ export class NaturalRig {
           const height = opts.floor.soles[sole]
           if (height === undefined || !this.byName.has(sole)) continue
           const att = this.attach(sole, undefined)
-          out.push({ ...base, ...att, bone: sole, position: null, turn: null, weight: FLOOR_WEIGHT, keep: false, boost: false, hard: false, phase: 2 as 0 | 1 | 2, floorY: opts.floor.y + height })
+          // (a sole point the start pose already has under its rest height keeps that: the clip's own contact is not the edit's to lift)
+          const now = wp(this.byName.get(sole)!).y
+          out.push({ ...base, ...att, bone: sole, position: null, turn: null, weight: FLOOR_WEIGHT, keep: false, boost: false, hard: false, phase: 2 as 0 | 1 | 2, floorY: Math.min(opts.floor.y + height, now) })
         }
       }
     }
@@ -611,7 +760,21 @@ export class NaturalRig {
       for (let a = 0; a < 3; a++) sdiag[DIM + 1 + a] = opts.hipsMove === false ? 0 : opts.smooth.weight * spreadH * spreadH * 4
     }
 
-    const nRows = rows.length * 9 + DIM
+    // (balance and upright: the start pose's own overhang and trunk tilt are what they are; only worse costs)
+    const feetNames = (opts.feet ?? []).filter(n => INDEX.has(n) && INDEX.has(n.replace('Foot', 'ToeBase')))
+    const useBalance = (opts.balance ?? opts.planted !== true) && feetNames.length > 0
+    const feetIdx = feetNames.map(n => INDEX.get(n)!)
+    const feetTips = feetNames.map(n => this.tip.get(n))
+    const bal = new Float64Array(3)
+    let balTh = 0; let tiltTh = 0
+    if (useBalance) {
+      this.fk(start.p, start.yaw, start.hips.x, start.hips.y, start.hips.z)
+      this.balanceTerms(feetIdx, feetTips, bal, [Math.sin(start.yaw), Math.cos(start.yaw)])
+      balTh = Math.max(bal[0], -BALANCE.ramp * this.scale)
+      tiltTh = Math.max(bal[1], 0) + UPRIGHT.slack
+    }
+
+    const nRows = rows.length * 9 + 3 + DIM
     const f = new Float64Array(nRows); const f2 = new Float64Array(nRows)
     const J = new Float64Array(nRows * n)
     const p = new Float64Array(DIM); const pj = new Float64Array(DIM)
@@ -626,7 +789,8 @@ export class NaturalRig {
     let floorOn = false
     let phase: 1 | 2 = rows.some(r => r.phase === 1) ? 1 : 2
     const evalRows = (pp: ArrayLike<number>, zz: Float64Array, out: Float64Array): number => {
-      this.fk(pp, zz[DIM] * HEADING_SPREAD + start.yaw, zStartHips[0] + zz[DIM + 1] * spreadH, zStartHips[1] + zz[DIM + 2] * spreadH, zStartHips[2] + zz[DIM + 3] * spreadH)
+      const yawNow = zz[DIM] * HEADING_SPREAD + start.yaw
+      this.fk(pp, yawNow, zStartHips[0] + zz[DIM + 1] * spreadH, zStartHips[1] + zz[DIM + 2] * spreadH, zStartHips[2] + zz[DIM + 3] * spreadH)
       let r = 0
       const Q = this.Q; const P = this.P; const t = this.tmp
       for (let g = 0; g < rows.length; g++) {
@@ -634,6 +798,7 @@ export class NaturalRig {
         if (c.phase !== 0 && c.phase !== phase) { for (let k = 0; k < 9; k++) out[r++] = 0; continue }
         const w = weights[g]
         const ao = c.a * 4
+        let stride = 0
         // (the point; a floor row: only how far under its lowest height)
         if (c.floorY !== null) {
           rotAdd(t, 0, Q, ao, c.at[0], c.at[1], c.at[2], P, c.a * 3)
@@ -643,9 +808,16 @@ export class NaturalRig {
           rotAdd(t, 0, Q, ao, c.at[0], c.at[1], c.at[2], P, c.a * 3)
           let dx = t[0] - c.position[0]; let dy = t[1] - c.position[1]; let dz = t[2] - c.position[2]
           if (c.slide !== null) { const k = dx * c.slide[0] + dy * c.slide[1] + dz * c.slide[2]; dx -= k * c.slide[0]; dy -= k * c.slide[1]; dz -= k * c.slide[2] }
+          // (a soft foot's slide is a Huber loss: squared to the knee, linear past it, so a step costs little more than a shuffle; past a stride, steeply)
+          stride = 0
+          if (c.soft) {
+            const m = Math.hypot(dx, dz) / unit
+            stride = STRIDE.weight * Math.max(0, m - STRIDE.max)
+            if (m > 1e-9) { const k = Math.sqrt(2 * SLIDE_KNEE * SLIDE_KNEE * (Math.sqrt(1 + (m / SLIDE_KNEE) ** 2) - 1)) / m; dx *= k; dz *= k }
+          }
           const s = w / unit
           out[r++] = dx * s; out[r++] = dy * s * c.wy; out[r++] = dz * s
-        } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
+        } else { stride = 0; out[r++] = 0; out[r++] = 0; out[r++] = 0 }
         // (the turn: the error as a rotation vector)
         if (c.turn !== null) {
           mul(t, 4, Q, ao, c.rel, 0)
@@ -668,8 +840,17 @@ export class NaturalRig {
           const dx = c.axisWorld[0]; const dy = c.axisWorld[1]; const dz = c.axisWorld[2]
           const s = w * c.turnRatio / FIVE
           if (c.either) { out[r++] = (ay * dz - az * dy) * s; out[r++] = (az * dx - ax * dz) * s; out[r++] = (ax * dy - ay * dx) * s } else { out[r++] = (ax - dx) * s; out[r++] = (ay - dy) * s; out[r++] = (az - dz) * s }
-        } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
+        } else if (stride > 0) { out[r++] = stride; out[r++] = 0; out[r++] = 0 } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
       }
+      // (balance: the centre of mass past the support; upright: the trunk bent past the start's)
+      if (useBalance) {
+        this.balanceTerms(feetIdx, feetTips, bal, [Math.sin(yawNow), Math.cos(yawNow)])
+        const ub = Math.max(0, bal[0] - balTh) / unit
+        out[r++] = BALANCE.weight * ub * (1 + ub / BALANCE.steep)
+        const ut = Math.max(0, bal[1] - tiltTh) / FIVE
+        out[r++] = UPRIGHT.weight * ut * (1 + ut / 4)
+        out[r++] = 0
+      } else { out[r++] = 0; out[r++] = 0; out[r++] = 0 }
       // (the limits: a joint out of its range pulled to the nearest turn in it, as chosen at the iteration's start)
       for (let b = 0; b < NB; b++) {
         for (let e = 0; e < 3; e++) out[r++] = limited[b] === 1 ? LIMIT_WEIGHT * (pp[b * 3 + e] - limitTarget[b * 3 + e]) : 0
@@ -749,6 +930,7 @@ export class NaturalRig {
       return worst
     }
     const iterate = (maxIter: number): void => {
+      mu = 1e-2
       for (let it = 0; it < maxIter; it++) {
         iterations++
         // the Jacobian (forward differences)
@@ -824,14 +1006,20 @@ export class NaturalRig {
         iterate(10)
       }
     }
-    iterate(soften ? (quick ? 4 : 15) : (quick ? 5 : 15))
-    meet()
+    const effort = opts.effort ?? (quick ? 1 : 2)
+    // (a bake goes on while a goal is still over a millimetre off: a long reach with balance and upright asks for more steps)
+    const finish = (): void => {
+      meet()
+      for (let more = 0; !quick && more < 4 && goalMiss() > 0.001; more++) { iterate(Math.round(20 * effort)); meet() }
+    }
+    iterate(Math.round((soften ? (quick ? 4 : 15) : (quick ? 5 : 15)) * effort))
+    finish()
     // the feet let go: from the stance the goals were met in, what is cheaper (a pivot, a slide, a tilt) is taken
     if (soften) {
       phase = 2
       r = evalRows(p, z, f); c = cost(f, r, z)
-      iterate(quick ? 3 : 12)
-      meet()
+      iterate(Math.round((quick ? 3 : 12) * effort))
+      finish()
     }
     // the floor: switched on if a sole point is left under its height, then the search goes on from there
     if (rows.some(r => r.floorY !== null)) {
@@ -845,14 +1033,14 @@ export class NaturalRig {
       if (under > 5e-4) {
         floorOn = true
         r = evalRows(p, z, f); c = cost(f, r, z)
-        iterate(quick ? 4 : 20)
+        iterate(Math.round((quick ? 4 : 20) * effort))
       }
     }
     // ---- put it on the bones ----
     const pose: NaturalPose = { p: Float64Array.from(p), yaw: z[DIM] * HEADING_SPREAD + start.yaw, hips: new THREE.Vector3(zStartHips[0] + z[DIM + 1] * spreadH, zStartHips[1] + z[DIM + 2] * spreadH, zStartHips[2] + z[DIM + 3] * spreadH) }
     this.apply(pose)
     this.hold(rows, exempt, opts)
-    return this.measure(rows, startCost, start, performance.now() - t0, iterations)
+    return this.measure(rows, startCost, start, performance.now() - t0, iterations, feetNames)
   }
 
   /** Joints held in range; the kept bones put back by reach where the search left them off. */
@@ -900,13 +1088,27 @@ export class NaturalRig {
         const ballName = `${side}ToeBase`; const tipName = `${side}Toe_End`
         const ball = this.byName.get(ballName) ?? null; const tip = this.byName.get(tipName) ?? null
         legs.push({ upper, lower, end, ball, tip })
-        soles.push([opts.floor.soles[n] ?? -Infinity, opts.floor.soles[ballName] ?? -Infinity, opts.floor.soles[tipName] ?? -Infinity])
+        // (the heights the search held them to: the rest heights, or lower where the start pose had a point under its own)
+        const held = (name: string): number => { const row = rows.find(r => r.floorY !== null && r.bone === name); return row === undefined ? -Infinity : row.floorY! - opts.floor!.y }
+        soles.push([held(n), held(ballName), held(tipName)])
       }
-      keepOffFloor(legs, opts.floor.y, soles, { limits, nameOf: this.nameOf })
+      // (a leg that is only a hair under is left: reaching it up with the limits on can throw a leg at the edge of its range far from where the search put it; one that is moved and strays is put back)
+      legs.forEach((leg, i) => {
+        const under = Math.max(...[leg.end, leg.ball, leg.tip].map((b, k) => (b === null || !Number.isFinite(soles[i][k]) ? 0 : opts.floor!.y + soles[i][k] - wp(b).y)))
+        if (under <= 5e-4 * this.scale) return
+        const saved = [leg.upper, leg.lower, leg.end].map(b => b.quaternion.clone())
+        const at = wp(leg.end)
+        keepOffFloor([leg], opts.floor!.y, [soles[i]], { limits, nameOf: this.nameOf })
+        const moved = wp(leg.end).sub(at)
+        if (Math.hypot(moved.x, moved.z) > 0.5 * under + 1e-3 * this.scale || moved.y > 2 * under + 1e-3 * this.scale) {
+          [leg.upper, leg.lower, leg.end].forEach((b, k) => b.quaternion.copy(saved[k]))
+          leg.upper.updateMatrixWorld(true)
+        }
+      })
     }
   }
 
-  private measure (rows: Compiled[], startCost: NaturalCost, start: NaturalPose, ms: number, iterations: number): NaturalResult {
+  private measure (rows: Compiled[], startCost: NaturalCost, start: NaturalPose, ms: number, iterations: number, feet: string[]): NaturalResult {
     this.bones[0].updateMatrixWorld(true)
     let miss = 0; let keepMiss = 0; let turnMiss = 0; let softMiss = 0; let floorMiss = 0
     const moved = { slide: 0, lift: 0, twist: 0, tilt: 0 }
@@ -943,7 +1145,7 @@ export class NaturalRig {
     delta[DIM + 1] = now.hips.x - start.hips.x
     delta[DIM + 2] = now.hips.y - start.hips.y
     delta[DIM + 3] = now.hips.z - start.hips.z
-    return { miss, keepMiss, turnMiss, cost: this.model.cost(now.p), startCost, pose: now, delta, iterations, ms, floorMiss: Math.max(0, floorMiss), feetMoved: moved, softMiss }
+    return { miss, keepMiss, turnMiss, cost: this.model.cost(now.p), startCost, pose: now, delta, iterations, ms, floorMiss: Math.max(0, floorMiss), feetMoved: moved, softMiss, balance: feet.length > 0 ? this.balanceOf(feet) : null }
   }
 }
 
@@ -1001,6 +1203,8 @@ export interface BodySolverOptions {
   hipsMove?: boolean
   /** The feet hard-locked (also per call: opts.planted). Default false: soft. */
   planted?: boolean
+  /** Balance and upright (the centre of mass over the feet's support, the trunk no more bent than the clip has it): default true with soft feet (off with `planted`); false lets the body lean anywhere. */
+  balance?: boolean
 }
 
 /** The bones the natural solve moves (to bake their tracks): the whole body's, and the fingers a goal closes. (The Hips' position track too, when the hips may move.) */
@@ -1048,7 +1252,7 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
     lateral.normalize()
     const warm = opts.quick === true ? undefined : (prev as NaturalBodyState | null)?.warm
     const res = rig.solve(goals.map(g => ({ bone: `${g.hand}Hand`, position: g.at, turn: g.turn, exact: true })), {
-      feet, planted: opts.planted ?? options.planted, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, warm,
+      feet, planted: opts.planted ?? options.planted, balance: options.balance, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, warm,
     })
     // (the fingers as asked; the miss as it stands)
     let miss = 0

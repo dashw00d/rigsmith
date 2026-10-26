@@ -312,7 +312,7 @@ describe.skipIf(!have)('both hands on a shaft', () => {
 })
 
 describe.skipIf(!have)('the drop-in for solveBody', () => {
-  it('takes bodysolve.ts solveBody\'s arguments: hand goals (a wrist place and turn) with the feet kept', async () => {
+  it('takes bodysolve.ts solveBody\'s arguments: hand goals (a wrist place and turn) with the feet soft', async () => {
     const b = await body(YBOT, false)
     const solveNatural = createBodySolver(b.model, null)
     const bone = (n: string): THREE.Bone => b.bones.get(n)!
@@ -351,7 +351,7 @@ describe.skipIf(!have)('the drop-in for solveBody', () => {
     console.log(`natural:   miss ${f(nat.map(r => r.miss))}, ${median(nat.map(r => r.ms)).toFixed(1)} ms, cost ${mean(nat.map(r => r.total)).toFixed(1)}, feet ${f(nat.map(r => r.feet))}`)
     for (const r of nat) {
       expect(r.miss).toBeLessThan(0.01)
-      expect(r.feet).toBeLessThan(0.005)
+      expect(r.feet).toBeLessThan(0.03)
       expect(r.turn).toBeLessThan(1)
     }
     expect(mean(nat.map(r => r.miss))).toBeLessThanOrEqual(mean(old.map(r => r.miss)) + 0.001)
@@ -387,7 +387,8 @@ describe.skipIf(!have)('soft feet', () => {
     for (const c of cases) {
       await poseFromClip(b, c.id, 0.3)
       const target = wp(b.bones.get('LeftHand')!).add(new THREE.Vector3(...c.d)); target.y = Math.max(target.y, 0.05)
-      const soft = b.rig.solve([{ bone: 'LeftHand', position: target }], { feet: FEET, floor: { y: 0, soles: b.soles }, mode: 'full' })
+      // (soft against planted, both without balance: what letting the feet go is worth by itself)
+      const soft = b.rig.solve([{ bone: 'LeftHand', position: target }], { feet: FEET, floor: { y: 0, soles: b.soles }, mode: 'full', balance: false })
       b.scene.updateMatrixWorld(true)
       const miss = wp(b.bones.get('LeftHand')!).distanceTo(target)
       for (const [n, h] of Object.entries(b.soles)) expect(wp(b.bones.get(n)!).y - h, n).toBeGreaterThan(-0.001)
@@ -402,8 +403,8 @@ describe.skipIf(!have)('soft feet', () => {
     for (const r of rows) {
       expect(r.miss).toBeLessThan(0.01)
       expect(r.soft).toBeLessThan(r.planted + 1)
-      // (they move, not far)
-      expect(r.slide).toBeLessThan(0.08)
+      // (they move, not past a stride)
+      expect(r.slide).toBeLessThan(0.5)
     }
     expect(mean(rows.map(r => r.soft))).toBeLessThan(mean(rows.map(r => r.planted)))
     expect(Math.max(...rows.map(r => r.twist))).toBeGreaterThan(1)
@@ -442,21 +443,19 @@ describe.skipIf(!have)('soft feet', () => {
         under: Math.max(0, ...b.legs.flatMap((l, i) => [l.end, l.ball, l.tip].map((x, k) => (x === null ? 0 : soles[i][k] - wp(x).y)))),
       }
     }
-    for (const ahead of [0.45, 0.7, 0.9]) {
+    for (const ahead of [0.25, 0.45, 0.6, 0.7]) {
       const fixed = await run(ahead, { hipsMove: false })
       const moving = await run(ahead, {})
       const planted = await run(ahead, { planted: true })
       console.log(`prop leading ${ahead * 100} cm: hips fixed miss ${(fixed.miss * 100).toFixed(1)} cm; hips free miss ${(moving.miss * 100).toFixed(2)} cm (hips ${(moving.hipsFwd * 100).toFixed(1)} cm forward, ${(moving.hipsDown * 100).toFixed(1)} down, feet moved ${(moving.feet * 100).toFixed(1)} cm); naturalness cost hips free ${moving.cost.toFixed(1)} vs fixed ${fixed.cost.toFixed(1)}; planted (hips free) miss ${(planted.miss * 100).toFixed(1)} cm (feet moved ${(planted.feet * 100).toFixed(2)} cm)`)
-      expect(moving.miss).toBeLessThan(0.01)
+      // (balance and upright stop the body bending over to reach: it lowers into a lunge, hips forward and down, a foot stepping; with the hips held it cannot reach so far)
+      if (ahead <= 0.6) expect(moving.miss).toBeLessThan(0.01)
+      expect(moving.miss).toBeLessThanOrEqual(fixed.miss + 1e-3)
       expect(moving.under).toBeLessThan(0.001)
       expect(planted.feet).toBeLessThan(0.002)
       expect(fixed.hipsFwd).toBeLessThan(0.001)
-      // (the body bends to reach either way; with the hips free they come forward and the pose is the more natural)
-      expect(fixed.miss).toBeLessThan(0.01)
-      if (ahead >= 0.7) {
-        expect(moving.hipsFwd).toBeGreaterThan(0.05)
-        expect(moving.cost).toBeLessThanOrEqual(fixed.cost + 0.5)
-      }
+      expect(moving.cost).toBeLessThanOrEqual(fixed.cost + 0.5)
+      if (ahead >= 0.45) expect(moving.hipsFwd).toBeGreaterThan(0.05)
     }
   })
 
@@ -631,5 +630,102 @@ describe.skipIf(!have)('naturalizing a whole clip', () => {
     expect(held).toBeLessThanOrEqual(free + 0.01)
     expect(held).toBeLessThan(2)
     mixer.stopAllAction(); mixer.uncacheRoot(b.scene)
+  })
+})
+
+/** The body's centre of mass (segment middles, mass-weighted) and the signed distance of its ground point from the hull of the feet's sole points (positive outside), measured on the bones with nothing of the solver's. */
+function balanceOnBones (b: Body, feet: string[]): { margin: number, tiltDeg: number, pitchDeg: number } {
+  const bone = (n: string): THREE.Vector3 => wp(b.bones.get(n)!)
+  const parts: Array<[string, string | null, number]> = [['Hips', 'Spine', 0.14], ['Spine', 'Spine1', 0.11], ['Spine1', 'Spine2', 0.11], ['Spine2', 'Neck', 0.14], ['Neck', 'Head', 0.02], ['Head', null, 0.07]]
+  for (const s of ['Left', 'Right']) parts.push([`${s}Arm`, `${s}ForeArm`, 0.028], [`${s}ForeArm`, `${s}Hand`, 0.016], [`${s}Hand`, null, 0.007], [`${s}UpLeg`, `${s}Leg`, 0.10], [`${s}Leg`, `${s}Foot`, 0.047], [`${s}Foot`, `${s}ToeBase`, 0.014])
+  const com = new THREE.Vector3(); let total = 0
+  for (const [a, c, m] of parts) { com.addScaledVector(c === null ? bone(a) : bone(a).add(bone(c)).multiplyScalar(0.5), m); total += m }
+  com.divideScalar(total)
+  // the hull of the sole points (ankle, ball, tip of each standing foot), by Andrew's monotone chain
+  const pts: Array<[number, number]> = []
+  for (const f of feet) for (const n of [f, f.replace('Foot', 'ToeBase'), f.replace('Foot', 'Toe_End')]) { const p = bone(n); pts.push([p.x, p.z]) }
+  pts.sort((u, v) => u[0] - v[0] || u[1] - v[1])
+  const cross = (o: number[], a: number[], c: number[]): number => (a[0] - o[0]) * (c[1] - o[1]) - (a[1] - o[1]) * (c[0] - o[0])
+  const chain = (list: Array<[number, number]>): Array<[number, number]> => { const h: Array<[number, number]> = []; for (const p of list) { while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop(); h.push(p) } h.pop(); return h }
+  const hull = [...chain(pts), ...chain([...pts].reverse())]
+  let inside = true; let near = Infinity; let depth = Infinity
+  hull.forEach((a, i) => {
+    const c = hull[(i + 1) % hull.length]
+    const e = [c[0] - a[0], c[1] - a[1]]; const len = Math.hypot(e[0], e[1])
+    const t = Math.max(0, Math.min(1, ((com.x - a[0]) * e[0] + (com.z - a[1]) * e[1]) / (len * len)))
+    near = Math.min(near, Math.hypot(com.x - a[0] - t * e[0], com.z - a[1] - t * e[1]))
+    const side = (e[0] * (com.z - a[1]) - e[1] * (com.x - a[0])) / len
+    if (side < 0) inside = false
+    depth = Math.min(depth, side)
+  })
+  const trunk = bone('Neck').sub(bone('Hips'))
+  return { margin: inside ? depth : -near, tiltDeg: THREE.MathUtils.radToDeg(Math.atan2(Math.hypot(trunk.x, trunk.z), trunk.y)), pitchDeg: THREE.MathUtils.radToDeg(Math.atan2(trunk.z, trunk.y)) }
+}
+
+describe.skipIf(!haveCharacter || !existsSync(path.join(LIBRARY, 'clips', 'custom-Spear_Thrust.glb')))('balance: the spearman\'s thrust with the spear keyed 25 cm further forward', () => {
+  it('lunges (hips forward and down, a foot stepping, flat) instead of folding over the spear: upright, balanced, the hands met', async () => {
+    const b = await body(CHARACTER, true)
+    const duration = (await load(path.join(LIBRARY, 'clips', 'custom-Spear_Thrust.glb'))).animations[0].duration
+    const rows: string[] = []
+    for (const u of [0.3, 0.4, 0.5]) {
+      const goalsAt = async (): Promise<NaturalGoal[]> => {
+        await poseFromClip(b, 'custom-Spear_Thrust', u * duration)
+        // (both hands on the spear: it leads 25 cm further forward than the clip's thrust)
+        return ['LeftHand', 'RightHand'].map(bone => ({ bone, position: wp(b.bones.get(bone)!).add(new THREE.Vector3(0, 0, 0.25)), turn: wq(b.bones.get(bone)!), exact: true }))
+      }
+      const run = async (balance: boolean): Promise<{ tilt: number, pitch: number, margin: number, miss: number, turn: number, lift: number, footTilt: number, slide: number, hipsFwd: number, hipsDown: number, ms: number, under: number }> => {
+        const goals = await goalsAt()
+        const hips0 = wp(b.bones.get('Hips')!)
+        const res = b.rig.solve(goals, { feet: FEET, floor: { y: 0, soles: b.soles }, mode: 'full', balance })
+        b.scene.updateMatrixWorld(true)
+        const m = balanceOnBones(b, FEET)
+        const hips1 = wp(b.bones.get('Hips')!)
+        return {
+          tilt: m.tiltDeg, pitch: m.pitchDeg, margin: m.margin, miss: Math.max(...goals.map(g => wp(b.bones.get(g.bone)!).distanceTo(g.position!))), turn: res.turnMiss,
+          lift: res.feetMoved.lift, footTilt: res.feetMoved.tilt, slide: res.feetMoved.slide, hipsFwd: hips1.z - hips0.z, hipsDown: hips0.y - hips1.y, ms: res.ms, under: res.floorMiss,
+        }
+      }
+      await goalsAt()
+      const start = balanceOnBones(b, FEET)
+      const before = await run(false)
+      const after = await run(true)
+      const cm = (x: number): string => (x * 100).toFixed(1)
+      rows.push(`u=${u}: clip pose: trunk ${start.tiltDeg.toFixed(1)} deg, COM ${cm(start.margin)} cm inside | without balance: trunk ${before.tilt.toFixed(1)} deg (pitch ${before.pitch.toFixed(1)}), COM margin ${cm(before.margin)} cm, feet lifted ${cm(before.lift)} cm tilted ${before.footTilt.toFixed(0)} deg | with: trunk ${after.tilt.toFixed(1)} deg (pitch ${after.pitch.toFixed(1)}), COM margin ${cm(after.margin)} cm, hands off ${cm(after.miss)} cm (turn ${after.turn.toFixed(2)} deg), hips ${cm(after.hipsFwd)} cm forward ${cm(after.hipsDown)} down, feet slid ${cm(after.slide)} cm, lifted ${cm(after.lift)} cm, tilted ${after.footTilt.toFixed(1)} deg, ${after.ms.toFixed(0)} ms`)
+      // the hands met, the body upright (within 35 degrees) and over its feet, the feet flat and on the floor
+      expect(after.miss).toBeLessThan(0.01)
+      expect(after.turn).toBeLessThan(1)
+      expect(after.tilt).toBeLessThan(35)
+      expect(after.pitch).toBeLessThan(35)
+      expect(after.margin).toBeGreaterThanOrEqual(0)
+      expect(after.under).toBeLessThan(0.001)
+      expect(after.lift).toBeLessThan(0.02)
+      expect(after.footTilt).toBeLessThan(15)
+      // and better than without (more upright, more inside)
+      expect(after.tilt).toBeLessThan(before.tilt + 0.5)
+      expect(after.margin).toBeGreaterThan(before.margin)
+      expect(after.ms).toBeLessThan(250)
+    }
+    console.log(rows.join('\n'))
+  })
+
+  it('the drop-in does the same through solveBody\'s arguments, planted or soft, quick or not', async () => {
+    const b = await body(CHARACTER, true)
+    const duration = (await load(path.join(LIBRARY, 'clips', 'custom-Spear_Thrust.glb'))).animations[0].duration
+    const soles = b.legs.map(l => [l.end, l.ball, l.tip].map(x => (x === null ? -Infinity : wp(x).y)))
+    const out: string[] = []
+    for (const [label, options, quick] of [['soft', {}, false], ['soft, quick', {}, true], ['planted', { planted: true }, false], ['soft, no balance', { balance: false }, false]] as const) {
+      await poseFromClip(b, 'custom-Spear_Thrust', 0.4 * duration)
+      const solver = createBodySolver(b.model, b.offsets, options)
+      const goals = (['Left', 'Right'] as const).map(hand => ({ hand, at: wp(b.bones.get(`${hand}Hand`)!).add(new THREE.Vector3(0, 0, 0.25)), turn: wq(b.bones.get(`${hand}Hand`)!) }))
+      const t0 = performance.now()
+      const r = solver(b.bones, goals, { limits: b.limits, nameOf, legs: b.legs, height: 0.7, quick, floor: 0, soles }, null)
+      const ms = performance.now() - t0
+      b.scene.updateMatrixWorld(true)
+      const m = balanceOnBones(b, FEET)
+      out.push(`${label}: trunk ${m.tiltDeg.toFixed(1)} deg, COM margin ${(m.margin * 100).toFixed(1)} cm, hands off ${(r.miss * 100).toFixed(2)} cm, ${ms.toFixed(0)} ms`)
+      if (label === 'soft') { expect(m.tiltDeg).toBeLessThan(35); expect(m.margin).toBeGreaterThanOrEqual(0); expect(r.miss).toBeLessThan(0.01) }
+      if (label === 'soft, quick') { expect(m.tiltDeg).toBeLessThan(35); expect(r.miss).toBeLessThan(0.02) }
+    }
+    console.log(out.join('\n'))
   })
 })
