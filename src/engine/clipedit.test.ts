@@ -7,7 +7,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { describe, expect, it } from 'vitest'
 import { captureRest, retarget } from './retarget.ts'
-import { unretarget } from './clipedit.ts'
+import { carrierGrip, handOn, socketMisses, unretarget, type PropRig } from './clipedit.ts'
 
 const g = globalThis as Record<string, unknown>
 g.self ??= globalThis
@@ -24,6 +24,32 @@ async function load (file: string): Promise<{ scene: THREE.Group, animations: TH
   return await new Promise((resolve, reject) => { new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '', r => { resolve(r) }, reject) })
 }
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
+
+describe('prop grip frames', () => {
+  it('reconstructs the carrying hand from fixed rest transforms, including prop scale', () => {
+    const place = new THREE.Matrix4().compose(new THREE.Vector3(.2, .8, -.1), new THREE.Quaternion().setFromEuler(new THREE.Euler(.2, .7, -.3)), new THREE.Vector3(2, 2, 2))
+    const rest = new THREE.Matrix4().compose(new THREE.Vector3(.1, .7, .2), new THREE.Quaternion().setFromEuler(new THREE.Euler(-.4, .1, .2)), new THREE.Vector3(1, 1, 1))
+    const socket = carrierGrip('Spear', 'Right', place, rest)
+    const goal = handOn(place, socket)
+    expect(goal.at.distanceTo(new THREE.Vector3().setFromMatrixPosition(rest))).toBeLessThan(1e-8)
+    expect(goal.turn.angleTo(new THREE.Quaternion().setFromRotationMatrix(rest))).toBeLessThan(1e-7)
+  })
+
+  it('reports a moving prop leaving a fixed hand and restores the sampled scene', () => {
+    const root = new THREE.Group()
+    const left = new THREE.Bone(); left.name = 'LeftHand'
+    const right = new THREE.Bone(); right.name = 'RightHand'
+    const prop = new THREE.Group(); prop.name = 'spear_place'
+    right.add(prop); root.add(left, right); root.updateMatrixWorld(true)
+    const props: PropRig = {
+      node: () => prop.name, paths: {}, attachments: [{ hand: 'Left', prop: 'Spear', socket: 'left' }], carriers: { Spear: 'RightHand' }, fingers: {},
+      sockets: { Spear: [{ id: 'left', name: 'Left', position: [0, 0, 0], rotation: [0, 0, 0, 1] }] },
+    }
+    const clip = new THREE.AnimationClip('drift', 1, [new THREE.VectorKeyframeTrack('RightHand.position', [0, 1], [0, 0, 0, .1, 0, 0])])
+    expect(Math.max(...socketMisses(clip, root, props))).toBeCloseTo(.1, 6)
+    expect(right.position.length()).toBe(0)
+  })
+})
 
 describe.skipIf(!have)('taking an edited clip back to the library', () => {
   it('gives back the clip it was retargeted from', async () => {

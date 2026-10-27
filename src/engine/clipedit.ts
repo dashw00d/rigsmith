@@ -68,6 +68,14 @@ export interface Socket {
 /** A hand on a socket through the clip (the edit's). */
 export interface Attachment { hand: 'Left' | 'Right', prop: string, socket: string }
 
+/** The carrying hand's grip from the prop's fixed Outfit placement and the hand's rest frame. */
+export function carrierGrip (prop: string, hand: 'Left' | 'Right', placement: THREE.Matrix4, handRest: THREE.Matrix4): Socket {
+  const local = placement.clone().invert().multiply(handRest)
+  const at = new THREE.Vector3(); const turn = new THREE.Quaternion()
+  local.decompose(at, turn, new THREE.Vector3())
+  return { id: `carrier:${prop}`, name: `${hand} hand (carries it)`, position: at.toArray(), rotation: turn.toArray() }
+}
+
 /** A prop's path through the clip: locked, it leads (the hands on it follow it, the body follows the hands); its keys are
  * moves and turns from where it rode in the clip (in the world, about its own origin). */
 export interface PropPath { locked: boolean, keys: ClipKey[] }
@@ -226,6 +234,29 @@ export function handOn (prop: THREE.Matrix4, socket: Socket): { at: THREE.Vector
   const at = new THREE.Vector3(); const turn = new THREE.Quaternion(); const scale = new THREE.Vector3()
   m.decompose(at, turn, scale)
   return { at, turn }
+}
+
+/** Measure the actual wrists against their sockets after baking, including movement of the carrying hand/prop. */
+export function socketMisses (clip: THREE.AnimationClip, root: THREE.Object3D, props: PropRig): number[] {
+  const bones = bonesOf(root)
+  const mixer = new THREE.AnimationMixer(root)
+  const action = mixer.clipAction(clip)
+  action.setLoop(THREE.LoopOnce, 1); action.clampWhenFinished = true; action.play()
+  const out: number[] = []
+  for (const t of frameTimes(clip.duration)) {
+    mixer.setTime(t); root.updateMatrixWorld(true)
+    let miss = 0
+    for (const a of props.attachments) {
+      const hand = bones.get(`${a.hand}Hand`); const node = root.getObjectByName(props.node(a.prop))
+      const socket = props.sockets[a.prop]?.find(s => s.id === a.socket)
+      if (hand === undefined || node === undefined || socket === undefined) continue
+      miss = Math.max(miss, hand.getWorldPosition(new THREE.Vector3()).distanceTo(handOn(node.matrixWorld, socket).at))
+    }
+    out.push(miss)
+  }
+  mixer.stopAllAction(); mixer.uncacheRoot(root)
+  root.updateMatrixWorld(true)
+  return out
 }
 
 /** A prop's world place on its path at phase `u`: where it rode (`base`), then its keys' move and turn. */

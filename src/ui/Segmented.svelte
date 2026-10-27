@@ -3,20 +3,36 @@
   import { tooltip } from './tooltip.ts'
 
   interface Option { value: T, label: string, icon?: Component, hint?: string }
-  interface Props { options: Option[], value: T, size?: 'sm' | 'md', iconsOnly?: boolean, onchange?: (value: T) => void }
+  interface Props { options: Option[], value: T, size?: 'sm' | 'md', iconsOnly?: boolean, label?: string, onchange?: (value: T) => void }
 
-  let { options, value = $bindable(), size = 'md', iconsOnly = false, onchange }: Props = $props()
+  let { options, value = $bindable(), size = 'md', iconsOnly = false, label, onchange }: Props = $props()
+
+  function onKey (event: KeyboardEvent, index: number): void {
+    let next: number
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % options.length
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (index - 1 + options.length) % options.length
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = options.length - 1
+    else return
+    event.preventDefault()
+    value = options[next].value
+    onchange?.(value)
+    const group = (event.currentTarget as HTMLElement).parentElement
+    group?.querySelectorAll('button')[next]?.focus()
+  }
 </script>
 
-<div class="seg {size}" role="radiogroup">
-  {#each options as option (option.value)}
+<div class="seg {size}" role="radiogroup" aria-label={label}>
+  {#each options as option, index (option.value)}
     <button
       role="radio"
       aria-checked={value === option.value}
       aria-label={option.label}
+      tabindex={value === option.value ? 0 : -1}
       class:active={value === option.value}
       use:tooltip={iconsOnly ? option.label : option.hint}
       onclick={() => { value = option.value; onchange?.(option.value) }}
+      onkeydown={(event) => onKey(event, index)}
     >
       {#if option.icon}<option.icon size={14} strokeWidth={2} />{/if}
       {#if !iconsOnly}<span>{option.label}</span>{/if}

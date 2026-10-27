@@ -1882,6 +1882,10 @@ export function poseTargets (rig: NaturalRig, names: string[], opts: { weight?: 
 export interface NaturalizeOptions {
   /** How many frames. */
   frames: number
+  /** The frames are one cycle without its duplicate endpoint; smooth across the seam. */
+  loop?: boolean
+  /** World-space root travel per cycle, used when averaging poses across a moving loop's seam. */
+  cycleTravel?: THREE.Vector3
   /** Put the rig's bones in the edited clip's frame `i` (and its world matrices up to date). */
   pose: (i: number) => void
   /** The goals of frame `i`, called with the rig posed in the edited frame (so a target can be read off it: poseTargets). Hard ones (the hands on their prop's sockets) are met; `hard: false` ones (a keyed bone's) are pulled toward at their weight. */
@@ -1942,6 +1946,7 @@ export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): Natura
   const deltas: Array<Float64Array | null> = new Array<Float64Array | null>(n).fill(null)
   // (each frame's pose as the edit has it: what its correction is from)
   const starts: Array<NaturalPose | undefined> = new Array<NaturalPose | undefined>(n)
+  if (o.loop === true) for (let i = 0; i < n; i++) { o.pose(i); starts[i] = rig.encode() }
   const out: NaturalizedFrame[] = new Array<NaturalizedFrame>(n)
   let done = 0
   for (let s = 0; s < sweeps; s++) {
@@ -1950,7 +1955,9 @@ export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): Natura
       const i = s % 2 === 0 ? k : n - 1 - k
       o.pose(i)
       starts[i] ??= rig.encode()
-      const near = [deltas[i - 1], deltas[i + 1]].filter((d): d is Float64Array => d !== null && d !== undefined)
+      const left = o.loop === true && n > 1 ? (i + n - 1) % n : i - 1
+      const right = o.loop === true && n > 1 ? (i + 1) % n : i + 1
+      const near = [deltas[left], deltas[right]].filter((d): d is Float64Array => d !== null && d !== undefined)
       let smooth: NaturalOptions['smooth']
       if (near.length > 0) {
         // the corrections held to their neighbours'
@@ -1959,15 +1966,20 @@ export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): Natura
         let weight = (o.smooth ?? 40) * near.length
         // and the pose itself pulled to the middle of its neighbours' (only between two: a clip's ends are left their own)
         const wm = (o.smoothMotion ?? 0) * 2
-        const a = deltas[i - 1]; const b = deltas[i + 1]
+        const a = deltas[left]; const b = deltas[right]
         if (wm > 0 && a !== null && a !== undefined && b !== null && b !== undefined) {
-          const sa = starts[i - 1]!; const sb = starts[i + 1]!; const si = starts[i]!
+          const sa = starts[left]!; const sb = starts[right]!; const si = starts[i]!
           const mid = new Float64Array(DIM + EXTRA)
           for (let d = 0; d < DIM; d++) mid[d] = (sa.p[d] + a[d] + sb.p[d] + b[d]) / 2 - si.p[d]
           const wrap = (x: number): number => Math.atan2(Math.sin(x), Math.cos(x))
           mid[DIM] = (wrap(sa.yaw + a[DIM] - si.yaw) + wrap(sb.yaw + b[DIM] - si.yaw)) / 2
-          const ha = [sa.hips.x, sa.hips.y, sa.hips.z]; const hb = [sb.hips.x, sb.hips.y, sb.hips.z]; const hi = [si.hips.x, si.hips.y, si.hips.z]
-          for (let k = 0; k < 3; k++) mid[DIM + 1 + k] = (ha[k] + a[DIM + 1 + k] + hb[k] + b[DIM + 1 + k]) / 2 - hi[k]
+          const ha = sa.hips.clone(); const hb = sb.hips.clone()
+          if (o.loop === true && o.cycleTravel !== undefined) {
+            if (left > i) ha.sub(o.cycleTravel)
+            if (right < i) hb.add(o.cycleTravel)
+          }
+          const hi = [si.hips.x, si.hips.y, si.hips.z]
+          for (let k = 0; k < 3; k++) mid[DIM + 1 + k] = (ha.getComponent(k) + a[DIM + 1 + k] + hb.getComponent(k) + b[DIM + 1 + k]) / 2 - hi[k]
           for (let j = 0; j < ref.length; j++) ref[j] = (ref[j] * weight + mid[j] * wm) / (weight + wm)
           weight += wm
         }
@@ -2012,7 +2024,23 @@ export function naturalizeClip (rig: NaturalRig, clip: THREE.AnimationClip, o: O
     mixer.setTime(times[i])
     root.updateMatrixWorld(true)
   }
-  const frames = naturalizeFrames(rig, { ...o, frames: times.length, pose, goals: i => o.goals(i, times[i]) })
+  // Solve a loop's seam once. Its duplicate endpoint gets the same local correction, retaining source root travel.
+  pose(0)
+  const first = rig.bones.map(b => ({ q: b.quaternion.clone(), p: b.position.clone() }))
+  const startHips = wp(rig.bones[0])
+  pose(times.length - 1)
+  const end = rig.bones.map(b => ({ q: b.quaternion.clone(), p: b.position.clone() }))
+  const cycleTravel = wp(rig.bones[0]).sub(startHips)
+  const loop = o.loop === true
+  const frames = naturalizeFrames(rig, { ...o, cycleTravel, frames: times.length - (loop ? 1 : 0), pose, goals: i => o.goals(i, times[i]) })
+  if (loop) {
+    const q = new Float32Array(NB * 4)
+    rig.bones.forEach((_, j) => {
+      end[j].q.clone().multiply(first[j].q.clone().invert()).multiply(new THREE.Quaternion().fromArray(frames[0].q, j * 4)).normalize().toArray(q, j * 4)
+    })
+    const hips = end[0].p.clone().sub(first[0].p).add(new THREE.Vector3(...frames[0].hips))
+    frames.push({ ...frames[0], q, hips: hips.toArray() })
+  }
   mixer.stopAllAction()
   mixer.uncacheRoot(root)
   for (const [b, p, q] of saved) { b.position.copy(p); b.quaternion.copy(q) }

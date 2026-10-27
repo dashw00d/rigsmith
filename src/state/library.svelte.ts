@@ -56,6 +56,15 @@ class LibraryState {
     this.debounce = setTimeout(() => { void this.load() }, 180)
   }
 
+  resetFilters (): void {
+    clearTimeout(this.debounce)
+    this.query = ''
+    this.category = ''
+    this.source = ''
+    this.page = 0
+    void this.load()
+  }
+
   setRig (rig: string): void {
     if (rig === this.rig && this.data !== null) return
     this.rig = rig

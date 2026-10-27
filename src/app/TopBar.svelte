@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount, tick } from 'svelte'
   import { Check, LoaderCircle, Settings2 } from '@lucide/svelte'
   import { app, STEPS, type Step } from '../state/app.svelte.ts'
   import { tooltip } from '../ui/tooltip.ts'
@@ -7,6 +8,19 @@
 
   let jobsOpen = $state(false)
   let settingsOpen = $state(false)
+  let nav: HTMLElement
+
+  function revealStep (): void {
+    const button = nav?.querySelector<HTMLElement>('[aria-current="step"]')
+    if (button) nav.scrollLeft = button.offsetLeft - (nav.clientWidth - button.offsetWidth) / 2
+  }
+
+  $effect(() => { void app.step; void tick().then(revealStep) })
+  onMount(() => {
+    const observer = new ResizeObserver(revealStep)
+    observer.observe(nav)
+    return () => observer.disconnect()
+  })
 
   function done (step: Step): boolean {
     const c = app.selected
@@ -32,9 +46,9 @@
     <span>Rigsmith</span>
   </div>
 
-  <nav class="steps" aria-label="Workflow">
+  <nav class="steps" aria-label="Workflow" bind:this={nav}>
     {#each STEPS as step, i (step.id)}
-      <button class="step" class:active={app.step === step.id} class:done={done(step.id)} onclick={() => { app.step = step.id }} use:tooltip={step.hint}>
+      <button class="step" class:active={app.step === step.id} class:done={done(step.id)} aria-current={app.step === step.id ? 'step' : undefined} onclick={() => { app.step = step.id }} use:tooltip={step.hint}>
         <span class="num">{#if done(step.id) && app.step !== step.id}<Check size={11} strokeWidth={3} />{:else}{i + 1}{/if}</span>
         <span>{step.label}</span>
       </button>
@@ -44,7 +58,7 @@
 
   <div class="tools">
     <div class="pop-anchor">
-      <button class="chip" class:busy={app.activeJobs.length > 0} onclick={() => { jobsOpen = !jobsOpen; settingsOpen = false }} use:tooltip={'Background jobs'}>
+      <button class="chip" class:busy={app.activeJobs.length > 0} aria-label="Background jobs" aria-expanded={jobsOpen} onclick={() => { jobsOpen = !jobsOpen; settingsOpen = false }} use:tooltip={'Background jobs'}>
         {#if app.activeJobs.length > 0}
           <LoaderCircle size={14} class="spin" />
           <span>{app.activeJobs.length} running</span>
@@ -69,15 +83,17 @@
     height: 48px;
     flex: none;
     display: grid;
-    grid-template-columns: 272px 1fr 328px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 16px;
     align-items: center;
     border-bottom: 1px solid var(--line);
     background: var(--bg-1);
   }
   .brand { display: flex; align-items: center; gap: 9px; padding-left: 16px; font-weight: 650; letter-spacing: -0.01em; font-size: 14px; }
-  .steps { display: flex; align-items: center; justify-content: center; gap: 4px; }
+  .steps { position: relative; display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .step {
     display: flex;
+    flex: none;
     align-items: center;
     gap: 8px;
     height: 30px;
@@ -107,7 +123,7 @@
   .step.done .num { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
   .step.active { color: var(--text-1); background: var(--bg-3); }
   .step.active .num { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
-  .sep { width: 14px; height: 1px; background: var(--line-strong); }
+  .sep { width: 14px; height: 1px; background: var(--line-strong); flex: none; }
   .tools { display: flex; justify-content: flex-end; align-items: center; gap: 6px; padding-right: 12px; }
   .pop-anchor { position: relative; }
   .chip {
@@ -130,4 +146,6 @@
   .icon-btn:hover { background: var(--bg-3); color: var(--text-1); }
   :global(.spin) { animation: spin 0.9s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @media (max-width: 1099px) { .bar { gap: 8px; } .brand span { display: none; } .steps { justify-content: flex-start; } .step { gap: 5px; padding-right: 8px; } .sep { width: 6px; } }
+  @media (max-width: 599px) { .brand { padding-left: 8px; } .chip span { display: none; } .chip { padding: 0 7px; } .chip .dot { display: block; } .tools { padding-right: 6px; gap: 2px; } }
 </style>

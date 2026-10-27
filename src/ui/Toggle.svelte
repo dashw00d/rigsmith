@@ -1,19 +1,20 @@
 <script lang="ts">
-  interface Props { checked: boolean, label: string, hint?: string, onchange?: (checked: boolean) => void }
-  let { checked = $bindable(), label, hint, onchange }: Props = $props()
+  interface Props { checked: boolean, label: string, hint?: string, disabled?: boolean, onchange?: (checked: boolean) => void }
+  let { checked = $bindable(), label, hint, disabled = false, onchange }: Props = $props()
 </script>
 
-<label class="toggle">
+<label class="toggle" class:disabled>
   <span class="text">
     <span>{label}</span>
     {#if hint}<span class="hint">{hint}</span>{/if}
   </span>
-  <input type="checkbox" bind:checked onchange={() => onchange?.(checked)} />
+  <input type="checkbox" bind:checked {disabled} onchange={() => onchange?.(checked)} />
   <span class="track" aria-hidden="true"><span class="thumb"></span></span>
 </label>
 
 <style>
   .toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; padding: 4px 0; }
+  .toggle.disabled { opacity: 0.5; cursor: default; }
   .text { display: flex; flex-direction: column; gap: 1px; }
   .hint { color: var(--text-3); font-size: 11.5px; }
   input { position: absolute; opacity: 0; pointer-events: none; }

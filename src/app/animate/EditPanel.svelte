@@ -1,17 +1,22 @@
 <script lang="ts">
-  // The animation editor's panel (src/state/clipedit.svelte.ts): start editing the clip playing, then pose and key it in
-  // the viewport; delete keys, hold joints in their ranges, save as a new library clip.
   import { onDestroy } from 'svelte'
-  import { Move3d, PencilRuler, Plus, Rotate3d, Save, ShieldCheck, Sparkles, Trash2, Wand2, X } from '@lucide/svelte'
+  import { Move3d, PencilRuler, Rotate3d, Save, Sparkles, Trash2, Wand2, X } from '@lucide/svelte'
   import { animator, FISTS } from '../../state/animator.svelte.ts'
   import { clipEdit } from '../../state/clipedit.svelte.ts'
+  import { prettyBone } from '../../engine/mixamo.ts'
+  import { allowsShortcut } from '../../ui/shortcuts.ts'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
   import Toggle from '../../ui/Toggle.svelte'
   import { tooltip } from '../../ui/tooltip.ts'
 
   let name = $state('')
-  let seconds = $state(1)
+  let wasEditing = false
+  let seconds = $state<number | undefined>(1)
+  const validLength = $derived(seconds !== undefined && Number.isFinite(seconds) && seconds >= 0.2 && seconds <= 20)
+  const busy = $derived(clipEdit.busy !== null)
+  const bones = $derived([...(animator.character?.bones.keys() ?? [])].sort())
+  const target = $derived(clipEdit.prop !== null ? `prop:${clipEdit.prop}` : clipEdit.selected !== null ? `bone:${clipEdit.selected}` : '')
   const keyHere = $derived.by(() => {
     void animator.time
     const u = clipEdit.phase()
@@ -20,124 +25,158 @@
     return bones + props
   })
   const keyedBones = $derived(Object.keys(clipEdit.keys).length)
-  // (a clip that left the stage ends the editing: another one was played)
   $effect(() => {
     const c = animator.current
-    if (clipEdit.active && (c === null || c.clipId !== clipEdit.base?.clipId)) clipEdit.stop()
+    if (clipEdit.active && (c === null || c.edited !== true || c.clipId !== clipEdit.base?.clipId)) clipEdit.stop()
   })
-  $effect(() => { if (clipEdit.active && name === '') name = clipEdit.held ? 'New clip' : `${clipEdit.base?.name ?? 'Clip'} edit` })
+  $effect(() => {
+    if (!clipEdit.active) name = ''
+    else if (!wasEditing) name = clipEdit.held ? 'New clip' : `${clipEdit.base?.name ?? 'Clip'} edit`
+    wasEditing = clipEdit.active
+  })
   onDestroy(() => { clipEdit.stop() })
 
+  function selectTarget (value: string): void {
+    if (value.startsWith('prop:')) clipEdit.selectProp(value.slice(5))
+    else if (value.startsWith('bone:')) clipEdit.select(value.slice(5))
+    else { clipEdit.select(null); clipEdit.selectProp(null) }
+  }
+
   function onKey (e: KeyboardEvent): void {
-    if (!clipEdit.active || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
+    if (!clipEdit.active || busy || !allowsShortcut(e)) return
     if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); clipEdit.deleteHere() }
     if (e.key === 'Escape') { clipEdit.select(null); clipEdit.selectProp(null) }
-    if (e.key === 'g' || e.key === 'G') clipEdit.setGizmo('move')
-    if (e.key === 'r' || e.key === 'R') clipEdit.setGizmo('rotate')
+    if (e.key.toLowerCase() === 'g') clipEdit.setGizmo('move')
+    if (e.key.toLowerCase() === 'r') clipEdit.setGizmo('rotate')
   }
 </script>
 
 <svelte:window onkeydown={onKey} />
 
 <Section title="Edit animation">
-  {#if !clipEdit.active}
-    <p class="faint small">Pose the clip playing and key it: scrub the timeline, drag a joint (a hand or a foot reaches, any other joint swings its bone; the diamond at the hips crouches and jumps, Shift moves it anyhow), or click one and turn it. Every joint keeps to its human range; no foot goes under the floor. Save makes a new library clip.</p>
-    <Button block disabled={animator.current === null || animator.current.url === '' || clipEdit.busy !== null} onclick={() => clipEdit.start()}>
-      <PencilRuler size={14} /> {animator.current === null ? 'Play a clip to edit it' : `Edit ${animator.current.name}`}
-    </Button>
-    <div class="row">
-      <Button size="sm" variant="ghost" disabled={animator.current === null || animator.current.url === '' || clipEdit.busy !== null} onclick={() => clipEdit.startFromPose(seconds)}><Sparkles size={13} /> New clip from this frame</Button>
-      <label class="field" use:tooltip={'Its length (seconds): you can change it while you work'}><input class="num" type="number" min="0.2" max="20" step="0.1" bind:value={seconds} /> s</label>
-    </div>
-  {:else}
-    <div class="row">
-      <div class="seg" role="group" aria-label="Gizmo">
-        <button class:on={clipEdit.gizmo === 'move'} onclick={() => clipEdit.setGizmo('move')} use:tooltip={'G: move the joint (the limb follows; an arrow for one axis, a square for a plane)'}><Move3d size={13} /> Move</button>
-        <button class:on={clipEdit.gizmo === 'rotate'} onclick={() => clipEdit.setGizmo('rotate')} use:tooltip={'R: turn the joint’s bone'}><Rotate3d size={13} /> Rotate</button>
+  {#if busy}<p class="status small" role="status"><span class="spinner"></span>{clipEdit.busy}…</p>{/if}
+  <fieldset disabled={busy} aria-label="Animation editing tools">
+    {#if !clipEdit.active}
+      <p class="faint small">Edit the playing clip, or hold its current pose to start a new animation. Save creates a new library clip.</p>
+      <Button block disabled={animator.current === null || animator.current.url === ''} onclick={() => clipEdit.start()}>
+        <PencilRuler size={14} /> {animator.current === null ? 'Play a clip to edit it' : 'Edit playing clip'}
+      </Button>
+      <div class="pose-start">
+        <label class="field">Length <input class="num" aria-label="New clip length in seconds" type="number" min="0.2" max="20" step="0.1" bind:value={seconds} aria-invalid={!validLength} /> s</label>
+        <Button size="sm" disabled={animator.current === null || animator.current.url === '' || !validLength} onclick={() => clipEdit.startFromPose(seconds!)}><Sparkles size={13} /> New clip from this frame</Button>
       </div>
-      {#if clipEdit.gizmo === 'rotate'}
-        <div class="seg" role="group" aria-label="Turn about">
-          <button class:on={clipEdit.space === 'local'} onclick={() => clipEdit.setSpace('local')} use:tooltip={'Turn about the bone’s own axes'}>Own axes</button>
-          <button class:on={clipEdit.space === 'world'} onclick={() => clipEdit.setSpace('world')} use:tooltip={'Turn about the world’s axes'}>World</button>
-        </div>
-      {/if}
-    </div>
-    <div class="row">
-      <span class="muted small">{clipEdit.selected ?? 'No joint selected'}</span>
-      <span class="faint small">{keyedBones} bone{keyedBones === 1 ? '' : 's'} keyed · {clipEdit.phases.length} frame{clipEdit.phases.length === 1 ? '' : 's'}</span>
-    </div>
-    <p class="faint small">Letting go of a joint keys it at this frame{clipEdit.held ? '' : " (a bone's first key also pins it at the clip's ends: the change eases in and out)"}. Delete takes this frame's keys off{clipEdit.selected !== null ? ` ${clipEdit.selected}` : ' every bone'}; Esc lets go of the joint.</p>
-    <div class="row">
-      <Button size="sm" variant="ghost" disabled={keyHere === 0} onclick={() => clipEdit.deleteHere()}><Trash2 size={13} /> Delete key{keyHere > 1 ? 's' : ''} here</Button>
-      <Button size="sm" variant="ghost" disabled={keyedBones === 0} onclick={() => clipEdit.clear()}>Clear all</Button>
-    </div>
-    <span use:tooltip={'Hold every joint inside the range it reached across the library’s motion captures (a horse: its template’s clips)'}><Toggle label="Human joint ranges" checked={clipEdit.limitsOn} onchange={(on: boolean) => clipEdit.setLimits(on)} /></span>
-    <Toggle label="Loops" checked={clipEdit.base?.loop ?? false} onchange={(on: boolean) => clipEdit.setLoop(on)} />
-    {#if clipEdit.held}
-      <label class="field">Length <input class="num" type="number" min="0.2" max="20" step="0.1" value={clipEdit.length} onchange={(e) => clipEdit.setLength(Number((e.target as HTMLInputElement).value))} /> s</label>
-    {/if}
-    {#if clipEdit.prop !== null}
-      {@const p = clipEdit.props.find(x => x.name === clipEdit.prop)}
-      {#if p}
-        <div class="propbox">
-          <div class="row">
-            <span class="small"><strong>{p.name}</strong> <span class="faint">on {p.bone}</span></span>
-            <button class="iconbtn" onclick={() => clipEdit.selectProp(null)} aria-label="Let go of the prop"><X size={13} /></button>
-          </div>
-          <span use:tooltip={'Leads: the hands on it follow its path, and the body follows the hands. Off: it rides the hand carrying it, as the clip moves that hand.'}><Toggle label="Leads (the body follows it)" checked={clipEdit.paths[p.name]?.locked ?? false} onchange={(on: boolean) => clipEdit.setLocked(p.name, on)} /></span>
-          <span use:tooltip={'Off: moving or turning it with the gizmo keys its path at this frame. On: the move is put on every frame (the whole path moved and turned by it), to set where it is held through the whole clip.'}><Toggle label="Move every frame" checked={clipEdit.propMoves === 'every'} onchange={(on: boolean) => { clipEdit.propMoves = on ? 'every' : 'frame' }} /></span>
-          {#if clipEdit.busy !== null}<p class="small busy">{clipEdit.busy}…</p>{/if}
-          <p class="faint small">Move or turn it with the gizmo to key its path at this frame (that makes it lead). Switching Leads on, or putting a hand on a socket, fits the prop to the body once over the whole clip (it moves a little: the spear farther out); a hand on a socket sits on the shaft at the socket's spot, clear of the other hand.</p>
-          {#if clipEdit.paths[p.name]?.locked && /^(Left|Right)Hand$/.test(p.bone)}
-            <p class="faint small">The {p.bone.startsWith('Left') ? 'left' : 'right'} hand holds it where its placement has it (Outfit), unless it is on a socket.</p>
-          {/if}
-          <span class="muted small">Hands on it</span>
-          {#each clipEdit.handsOn(p.name) as h (h.hand)}
-            <div class="row socket">
-              <span class="small">{h.hand} hand{h.carries ? ' (carries it)' : ''}</span>
-              <select class="fist" value={clipEdit.fistClip(h.hand)} onchange={(e) => clipEdit.setFist(h.hand, (e.target as HTMLSelectElement).value)} use:tooltip={'How its fingers close round the prop (for this character, in every clip)'} aria-label="{h.hand} fist">
-                {#each FISTS as [id, label] (id)}<option value={id}>{label} fist</option>{/each}
-                {#if !FISTS.some(([id]) => id === clipEdit.fistClip(h.hand))}<option value={clipEdit.fistClip(h.hand)}>{clipEdit.fistClip(h.hand).replace(/^mixamo-/, '')}</option>{/if}
-              </select>
-              {#if h.socket !== null}<button class="iconbtn" onclick={() => clipEdit.release(h.hand, p.name)} use:tooltip={h.carries ? 'Back to holding it as the outfit places it' : `Take the ${h.hand.toLowerCase()} hand off it`} aria-label="Take the {h.hand.toLowerCase()} hand off"><Trash2 size={12} /></button>{/if}
-            </div>
-          {:else}
-            <p class="faint small">None: drag a hand onto it.</p>
-          {/each}
-          <p class="faint small">Drag a hand onto it and let go: it closes on it there. Select a hand on it and its gizmo moves and turns it on the prop, on every frame; a prop that leads stays on its path.</p>
-        </div>
-      {/if}
-    {:else if clipEdit.props.length > 0}
-      <p class="faint small">Click a prop (a weapon) to key its path and put hands on it.</p>
-    {/if}
-    {#if clipEdit.natural}
+      {#if !validLength}<p class="invalid small">Choose a length from 0.2 to 20 seconds.</p>{/if}
+    {:else}
       <div class="row">
-        <span use:tooltip={'Every frame edged toward how the library\'s bodies move (joints working together), and the motion smoothed; the feet free to pivot or slide (never under the floor), the hands kept on their props, your keyed frames held near where you put them. Each press goes a little further; any change after builds it again from your keys.'}><Button size="sm" disabled={clipEdit.busy !== null} onclick={() => clipEdit.naturalize()}><Wand2 size={13} /> Naturalize</Button></span>
-        {#if clipEdit.naturalized}<span class="faint small">naturalized (saved as it is)</span>{/if}
+        <div class="seg" role="group" aria-label="Gizmo">
+          <button aria-pressed={clipEdit.gizmo === 'move'} class:on={clipEdit.gizmo === 'move'} onclick={() => clipEdit.setGizmo('move')} use:tooltip={'Move (G)'}><Move3d size={13} /> Move</button>
+          <button aria-pressed={clipEdit.gizmo === 'rotate'} class:on={clipEdit.gizmo === 'rotate'} onclick={() => clipEdit.setGizmo('rotate')} use:tooltip={'Rotate (R)'}><Rotate3d size={13} /> Rotate</button>
+        </div>
+        {#if clipEdit.gizmo === 'rotate'}
+          <div class="seg" role="group" aria-label="Rotation axes">
+            <button aria-pressed={clipEdit.space === 'local'} class:on={clipEdit.space === 'local'} onclick={() => clipEdit.setSpace('local')}>Local</button>
+            <button aria-pressed={clipEdit.space === 'world'} class:on={clipEdit.space === 'world'} onclick={() => clipEdit.setSpace('world')}>World</button>
+          </div>
+        {/if}
       </div>
+      <label class="field">Target
+        <select aria-label="Edit target" value={target} onchange={(e) => selectTarget(e.currentTarget.value)}>
+          <option value="">Select a joint or prop…</option>
+          {#if clipEdit.props.length > 0}<optgroup label="Props">{#each clipEdit.props as p (p.name)}<option value={`prop:${p.name}`}>{p.name}</option>{/each}</optgroup>{/if}
+          <optgroup label="Joints">{#each bones as bone (bone)}<option value={`bone:${bone}`}>{prettyBone(bone)}</option>{/each}</optgroup>
+        </select>
+      </label>
+      <p class="faint small">{keyedBones} bones keyed · {clipEdit.phases.length} keyed frames. Drag a joint or prop, then release to key this frame.</p>
+      <div class="row">
+        <Button size="sm" variant="ghost" disabled={keyHere === 0} onclick={() => clipEdit.deleteHere()}><Trash2 size={13} /> Delete keys here</Button>
+        <Button size="sm" variant="ghost" disabled={!clipEdit.hasKeys} onclick={() => clipEdit.clear()} title="Remove all joint and prop path keys">Clear all keys</Button>
+      </div>
+      <Toggle label="Joint limits" hint="Keep poses within the rig’s motion ranges" checked={clipEdit.limitsOn} onchange={(on: boolean) => clipEdit.setLimits(on)} />
+      {#if clipEdit.held}
+        <label class="field">Length <input class="num" aria-label="Clip length in seconds" type="number" min="0.2" max="20" step="0.1" value={clipEdit.length} onchange={(e) => { clipEdit.setLength(e.currentTarget.valueAsNumber); e.currentTarget.value = String(clipEdit.length) }} /> s</label>
+      {/if}
+      {#if clipEdit.prop !== null}
+        {@const p = clipEdit.props.find(x => x.name === clipEdit.prop)}
+        {#if p}
+          <div class="propbox">
+            <div class="row"><strong class="small">{p.name}</strong><button class="iconbtn" onclick={() => clipEdit.selectProp(null)} aria-label="Deselect prop"><X size={13} /></button></div>
+            <Toggle label="Prop leads the body" hint="Hands follow its path; the body follows the hands" checked={clipEdit.paths[p.name]?.locked ?? false} onchange={(on: boolean) => clipEdit.setLocked(p.name, on)} />
+            <Toggle label="Move entire path" hint="Apply gizmo changes to every frame" checked={clipEdit.propMoves === 'every'} onchange={(on: boolean) => { clipEdit.propMoves = on ? 'every' : 'frame' }} />
+            {#if p.sockets.length > 0}
+              <span class="muted small">Grip sockets</span>
+              {#each ['Left', 'Right'] as side}
+                {@const hand = side as 'Left' | 'Right'}
+                <label class="field small">{hand} hand
+                  <select aria-label={`${hand} grip socket`} value={clipEdit.attachments.find(a => a.hand === hand && a.prop === p.name)?.socket ?? ''}
+                    onchange={(e) => { if (e.currentTarget.value) void clipEdit.attach(hand, p.name, e.currentTarget.value); else clipEdit.detach(hand) }}>
+                    <option value="">{p.bone === `${hand}Hand` ? 'Outfit placement' : 'Free'}</option>
+                    {#each p.sockets as socket (socket.id)}<option value={socket.id} disabled={clipEdit.attachments.some(a => a.hand !== hand && a.prop === p.name && a.socket === socket.id)}>{socket.name}</option>{/each}
+                  </select>
+                </label>
+              {/each}
+            {/if}
+            {#each clipEdit.handsOn(p.name) as h (h.hand)}
+              <div class="row socket">
+                <span class="small">{h.hand} fist{h.carries ? ' · carrier' : ''}</span>
+                <select class="fist" value={clipEdit.fistClip(h.hand)} onchange={(e) => clipEdit.setFist(h.hand, e.currentTarget.value)} use:tooltip={'Finger pose for this character in every clip'} aria-label={`${h.hand} fist`}>
+                  {#each FISTS as [id, label] (id)}<option value={id}>{label}</option>{/each}
+                  {#if !FISTS.some(([id]) => id === clipEdit.fistClip(h.hand))}<option value={clipEdit.fistClip(h.hand)}>{clipEdit.fistClip(h.hand).replace(/^mixamo-/, '')}</option>{/if}
+                </select>
+                {#if h.socket !== null}<button class="iconbtn" onclick={() => clipEdit.release(h.hand, p.name)} use:tooltip={'Remove this grip socket from the character'} aria-label={`Delete ${h.hand.toLowerCase()} grip socket`}><Trash2 size={12} /></button>{/if}
+              </div>
+            {:else}
+              <p class="faint small">Drag a hand onto the prop to create a grip socket.</p>
+            {/each}
+            <p class="faint small">Grip sockets and fist choices are shared by this character’s clips.</p>
+          </div>
+        {/if}
+      {/if}
+      {#if clipEdit.natural}
+        <div class="row">
+          <Button size="sm" onclick={() => clipEdit.naturalize()}><Wand2 size={13} /> {clipEdit.naturalized ? 'Naturalize again' : 'Naturalize'}</Button>
+          {#if clipEdit.naturalized}<span class="faint small" role="status">Ready to save</span>{/if}
+        </div>
+      {/if}
+      <label class="field">Name <input aria-label="New clip name" bind:value={name} /></label>
+      <div class="row">
+        <Button size="sm" variant="primary" disabled={!clipEdit.canSave || name.trim() === ''} onclick={() => clipEdit.save(name.trim())}><Save size={13} /> Save new clip</Button>
+        <Button size="sm" variant="ghost" onclick={() => clipEdit.stop()}><X size={13} /> Finish editing</Button>
+      </div>
+      <p class="faint small">{clipEdit.canSave ? 'Saved clips appear in Library → Custom. The source clip is preserved.' : 'Make a pose change or naturalize the motion to save a new clip.'}</p>
     {/if}
-    <label class="field">Name <input bind:value={name} /></label>
-    <div class="row">
-      <Button size="sm" variant="primary" disabled={(keyedBones === 0 && clipEdit.attachments.length === 0 && Object.keys(clipEdit.paths).length === 0) || name.trim() === '' || clipEdit.busy !== null} onclick={() => clipEdit.save(name.trim())}><Save size={13} /> Save as a new clip</Button>
-      <Button size="sm" variant="ghost" onclick={() => clipEdit.stop()}><X size={13} /> Done</Button>
-    </div>
-    <p class="faint small"><ShieldCheck size={11} /> Saved clips go in the library tagged custom, in the category of {clipEdit.base?.name}; the clip it came from stays as it was.</p>
-  {/if}
+  </fieldset>
+  <details class="tips">
+    <summary>Editing tips and shortcuts</summary>
+    <p>Scrub to a frame, then drag a joint or prop to add a key. Hands and feet reach; other joints turn their bones. Use the target list to select hidden joints and props.</p>
+    <p><kbd>G</kbd> move · <kbd>R</kbd> rotate · <kbd>Delete</kbd> remove keys here · <kbd>Esc</kbd> deselect · <kbd>Space</kbd> play/pause · <kbd>,</kbd> / <kbd>.</kbd> step a frame.</p>
+    <p>Loop, In place and Mirror are in the timeline. Choose In place and Mirror before editing. Naturalize smooths the motion while keeping keyed poses and hands on props; repeat it to go further. Editing again rebuilds the motion from your keys.</p>
+    <p>Moving a prop keys its path and makes it lead. Turning on “Prop leads the body” or attaching a hand fits the path to the body. Drag a hand onto the prop to create a grip; select the hand to adjust it along the prop.</p>
+  </details>
 </Section>
 
 <style>
+  fieldset { min-width: 0; margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 10px; }
   .small { font-size: 12px; margin: 0; }
-  .busy { color: var(--accent-strong); }
+  .status { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 7px; padding: 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-1); color: var(--accent-strong); }
+  .spinner { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .invalid { color: var(--danger); }
   .row { display: flex; gap: 6px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .pose-start { display: flex; flex-direction: column; gap: 8px; }
   .field { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
-  .propbox { display: flex; flex-direction: column; gap: 5px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent-soft); }
-  .socket { padding: 2px 0; border-top: 1px solid var(--line); }
-  .fist { height: 22px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg-2); font-size: 11px; padding: 0 3px; margin-left: auto; }
+  .propbox { display: flex; flex-direction: column; gap: 7px; padding: 9px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent-soft); }
+  .socket { padding: 4px 0; border-top: 1px solid var(--line); }
+  .fist { max-width: 145px; height: 24px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg-2); font-size: 11px; padding: 0 3px; margin-left: auto; }
   .iconbtn { width: 22px; height: 22px; border: 0; border-radius: 5px; background: transparent; color: var(--text-3); display: grid; place-items: center; }
   .iconbtn:hover { background: var(--bg-3); color: var(--text-1); }
   .seg { display: flex; gap: 2px; padding: 2px; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--line); }
   .seg button { display: flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-2); font-size: 12px; }
   .seg button.on { background: var(--accent-soft); color: var(--accent-strong); }
   .field input.num { flex: none; width: 64px; }
-  .field input { flex: 1; height: 26px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg-2); padding: 0 6px; }
+  .field input, .field select { flex: 1; min-width: 0; height: 28px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg-2); padding: 0 6px; }
+  button:disabled { cursor: default; opacity: 0.4; }
+  .tips { color: var(--text-3); font-size: 12px; }
+  summary { cursor: pointer; color: var(--text-2); }
+  .tips p { margin: 8px 0 0; }
+  kbd { font: inherit; color: var(--text-1); }
 </style>

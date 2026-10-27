@@ -34,9 +34,14 @@
   }
 
   function onKey (e: KeyboardEvent): void {
-    if (e.target instanceof HTMLInputElement) return
+    if (e.defaultPrevented || (e.target instanceof Element && e.target.closest('input, select, textarea, button, a, summary, [contenteditable]'))) return
     if (e.key === 'PageDown' || (e.key === 'ArrowRight' && e.altKey)) { e.preventDefault(); go(library.page + 1) }
     if (e.key === 'PageUp' || (e.key === 'ArrowLeft' && e.altKey)) { e.preventDefault(); go(library.page - 1) }
+  }
+
+  function resetFilters (): void {
+    search = ''
+    library.resetFilters()
   }
 </script>
 
@@ -50,7 +55,7 @@
     </div>
     <label class="search">
       <Search size={14} />
-      <input placeholder="Search walk, sword, idle…" bind:value={search} oninput={() => library.setQuery(search)} />
+      <input aria-label="Search animations" placeholder="Search walk, sword, idle…" bind:value={search} oninput={() => library.setQuery(search)} />
       {#if search}<button class="clear" aria-label="Clear search" onclick={() => { search = ''; library.setQuery('') }}><X size={13} /></button>{/if}
     </label>
   </header>
@@ -65,26 +70,22 @@
     </p>
   {/if}
 
-  <div class="chips" role="tablist" aria-label="Categories">
-    <button role="tab" aria-selected={library.category === '' && library.source === ''} class:active={library.category === '' && library.source === ''} onclick={() => { library.source = ''; library.setCategory('') }}>
-      All <span>{total.toLocaleString()}</span>
-    </button>
-    <!-- (the clips made here: the animation editor's, the scripted ones) -->
-    <button role="tab" aria-selected={library.source === 'custom'} class:active={library.source === 'custom'} class="custom" onclick={() => library.setSource(library.source === 'custom' ? '' : 'custom')}>
-      Custom <span>{(library.data?.custom ?? 0).toLocaleString()}</span>
-    </button>
-    {#each library.data?.categories ?? [] as category (category.id)}
-      {#if category.count > 0}
-        <button role="tab" aria-selected={library.category === category.id} class:active={library.category === category.id} onclick={() => library.setCategory(category.id)}>
-          {category.label} <span>{category.count.toLocaleString()}</span>
-        </button>
-      {/if}
-    {/each}
+  <div class="filters">
+    <div class="chips" role="group" aria-label="Animation source">
+      <button aria-pressed={library.source === ''} class:active={library.source === ''} onclick={() => library.setSource('')}>All clips</button>
+      <button aria-pressed={library.source === 'custom'} class:active={library.source === 'custom'} onclick={() => library.setSource('custom')}>Custom <span>{(library.data?.custom ?? 0).toLocaleString()}</span></button>
+    </div>
+    <select aria-label="Animation category" value={library.category} onchange={(e) => library.setCategory(e.currentTarget.value)}>
+      <option value="">All categories</option>
+      {#each library.data?.categories ?? [] as category (category.id)}
+        {#if category.count > 0}<option value={category.id}>{category.label} ({category.count.toLocaleString()})</option>{/if}
+      {/each}
+    </select>
   </div>
 
   <div class="grid-wrap" bind:this={grid}>
     {#if library.error}
-      <div class="empty"><p class="muted">{library.error}</p></div>
+      <div class="empty"><p class="muted">{library.error}</p><button class="retry" onclick={() => library.load()}>Retry</button></div>
     {:else if library.data !== null && library.data.total === 0}
       <div class="empty">
         <LibraryBig size={22} />
@@ -94,6 +95,7 @@
         {:else}
           <strong>No matches</strong>
           <p class="faint">Try another word or category.</p>
+          <button class="retry" onclick={resetFilters}>Clear filters</button>
         {/if}
       </div>
     {:else}
@@ -125,13 +127,14 @@
 
 <style>
   .library { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px 8px 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px 8px 16px; }
   .title { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
   h2 { margin: 0; font-size: 13px; font-weight: 600; }
   .title span { font-size: 12px; }
   .coverage { margin: 0; padding: 0 16px 8px; font-size: 11px; }
   .search {
     flex: 1;
+    min-width: 150px;
     max-width: 280px;
     display: flex;
     align-items: center;
@@ -147,7 +150,9 @@
   .search:focus-within { border-color: var(--accent); color: var(--text-2); }
   .search input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--text-1); }
   .clear { border: 0; background: transparent; color: var(--text-3); display: grid; place-items: center; padding: 2px; }
-  .chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 2px 14px 10px 16px; border-bottom: 1px solid var(--line); }
+  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 2px 14px 10px 16px; border-bottom: 1px solid var(--line); }
+  .filters select { flex: 1; min-width: 130px; width: 0; height: 28px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-2); font-size: 12px; }
+  .chips { display: flex; gap: 5px; }
   .chips button {
     height: 26px;
     padding: 0 10px;
@@ -168,7 +173,7 @@
   .grid.dim { opacity: 0.55; }
   .empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; color: var(--text-2); }
   .empty p { margin: 0; max-width: 280px; font-size: 12.5px; }
-  footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px 10px 16px; border-top: 1px solid var(--line); }
+  footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px 10px 16px; border-top: 1px solid var(--line); }
   .range { font-size: 12px; white-space: nowrap; }
   .pager { display: flex; align-items: center; gap: 2px; }
   .pager button {
@@ -188,4 +193,5 @@
   .pager button.active { background: var(--accent-soft); color: var(--accent-strong); }
   .pager button:disabled { opacity: 0.3; cursor: default; }
   .gap { color: var(--text-3); padding: 0 4px; }
+  .retry { padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-2); color: var(--text-1); }
 </style>

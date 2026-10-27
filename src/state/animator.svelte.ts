@@ -9,11 +9,11 @@ import { RetargetCache } from '../engine/clips.ts'
 import { renamer } from '../engine/presets/skeletonMap.ts'
 import { Player } from '../engine/Player.ts'
 import { PreviewRenderer } from '../engine/PreviewRenderer.ts'
-import { applyScripts, fistPose, retime, type GripScript } from '../engine/scripts.ts'
-import { applyBoneKeys, applyLift, propTracks } from '../engine/keys.ts'
+import { fistPose, retime, type GripScript } from '../engine/scripts.ts'
+import { applyLift } from '../engine/keys.ts'
+import { bakeEntry, boneRest, clipUrl, entryUrl, withPropTracks } from '../engine/animation.ts'
 import { restUpOf } from '../engine/retarget.ts'
 import { groundFit } from '../engine/ground.ts'
-import { garmentMatrix } from '../engine/placement.ts'
 import { fitRide, freezeClip } from '../engine/mount.ts'
 import type { Stage } from '../engine/Stage.ts'
 
@@ -40,13 +40,7 @@ export const GRIP_CLIP = 'mixamo-Great_Sword_Crouching_6'
 export const FISTS: Array<[string, string]> = [['mixamo-Great_Sword_Crouching_6', 'Great sword'], ['mixamo-Golf_Post-Swing_2', 'Golf club'],
   ['mixamo-Holding_Turn_Right', 'Holding'], ['mixamo-Walk_With_Rifle_3', 'Rifle'], ['mixamo-2hand_Idle', '2hand idle']]
 
-export function clipUrl (clipId: string): string {
-  return `/files/library/clips/${clipId}.glb`
-}
-
-export function entryUrl (entry: AnimationEntry): string {
-  return entry.url ?? clipUrl(entry.clipId)
-}
+export { clipUrl, entryUrl }
 
 class Animator {
   current = $state<NowPlaying | null>(null)
@@ -142,6 +136,7 @@ class Animator {
   }
 
   detach (): void {
+    this.leaveEditor?.()
     this.attachMount(null)
     this.offFrame?.()
     this.offFrame = null
@@ -172,6 +167,7 @@ class Animator {
   /** Play a library clip or an entry from the character's set (an entry with the character's scripts on it). */
   async play (target: NowPlaying, options: { inPlace?: boolean, speed?: number, loop?: boolean, keepTime?: boolean } = {}): Promise<void> {
     if (this.player === null || this.cache === null) return
+    this.leaveEditor?.()
     const token = ++this.token
     this.current = target
     this.loading = true
@@ -253,45 +249,16 @@ class Animator {
    * clips a pace needs), its ground, its bone keys, its props. `record`: the character on stage (its cut kept for the
    * blow's frame). Returns the clip and the same before its keys (what a new key is measured against). */
   private async bake (c: Character, view: CharacterView, cache: RetargetCache, posable: THREE.Object3D, entry: AnimationEntry, record: boolean): Promise<{ clip: THREE.AnimationClip, unkeyed: THREE.AnimationClip }> {
-    const scripts = c.scripts ?? []
-    const build = async (e: AnimationEntry): Promise<THREE.AnimationClip> =>
-      retime(await cache.get(entryUrl(e), { inPlace: e.inPlace, mirror: this.mirror }), e.speed)
-    const clips = new Map([[entry.name, await build(entry)]])
-    for (const s of scripts) {
-      if (s.enabled && s.kind === 'pace' && s.clip === entry.name) {
-        const like = c.animations.find(a => a.name === s.like)
-        if (like !== undefined) clips.set(like.name, await build(like))
-      }
-    }
-    const { clips: out, report } = await applyScripts(posable, clips, scripts, async id => await cache.get(clipUrl(id), { inPlace: true }))
+    const result = await bakeEntry(c, view, cache, posable, entry, { mirror: this.mirror })
     if (record) {
-      const blow = Object.values(report).find(r => (r as { kind?: string, clip?: string }).kind === 'blow' && (r as { clip?: string }).clip === entry.name) as { kept: [number, number], uncut: number, blow: number } | undefined
+      const blow = Object.values(result.report).find(r => (r as { kind?: string, clip?: string }).kind === 'blow' && (r as { clip?: string }).clip === entry.name) as { kept: [number, number], uncut: number, blow: number } | undefined
       this.cut = blow === undefined ? null : { name: entry.name, start: blow.kept[0], end: blow.kept[1], uncut: blow.uncut, blow: blow.blow }
     }
-    const rest = view.rest!
-    const hips = rest.bones.get('Hips') ?? rest.bones.get('hips')
-    let clip = out.get(entry.name)!
-    if (hips !== undefined) clip = applyLift(clip, hips.name, entry.lift ?? 0, hips.localPosition, restUpOf(rest, hips.name))
-    const unkeyed = clip
-    clip = applyBoneKeys(clip, entry.keys?.bones, entry.loop, restOf(view))
-    return { clip: this.withProps(clip, entry.keys?.props, entry.loop, c, view), unkeyed }
+    return result
   }
 
-  /** `clip` with a track for every prop on stage (its placement, then its keys if it has any), so a prop keyed in one
-   * clip is back in place in the next. */
-  private withProps (clip: THREE.AnimationClip, props: Record<string, Array<{ u: number, q: [number, number, number, number], p?: [number, number, number] }>> | undefined, loop: boolean,
-    c: Character | null = app.selected, view: CharacterView | null = this.view): THREE.AnimationClip {
-    if (c === null || view === null) return clip
-    const tracks = [...clip.tracks]
-    for (const g of c.garments ?? []) {
-      if (g.mode !== 'rigid') continue
-      const node = `${g.name.replace(/[^\w]+/g, '_')}_place`
-      if (view.root.getObjectByName(node) === undefined) continue    // (hidden: not on stage)
-      const position = new THREE.Vector3(); const quaternion = new THREE.Quaternion(); const scale = new THREE.Vector3()
-      garmentMatrix(g).decompose(position, quaternion, scale)
-      tracks.push(...propTracks(node, clip.duration, props?.[g.name], loop, { position, quaternion }, g.scale))
-    }
-    return new THREE.AnimationClip(clip.name, clip.duration, tracks)
+  private withProps (clip: THREE.AnimationClip, props: Record<string, ClipKey[]> | undefined, loop: boolean): THREE.AnimationClip {
+    return app.selected === null || this.view === null ? clip : withPropTracks(clip, props, loop, app.selected, this.view.root)
   }
 
   /** A hand's fingers closed round a shaft (local turns): as the character's Hold fist script for that hand closes
@@ -386,6 +353,8 @@ class Animator {
 
   /** While the animation editor is open: what plays is its clip, built again on a refresh (not the clip it edits). */
   editing: (() => void) | null = null
+  /** End the current editor before ordinary playback, even when its source clip id is unchanged. */
+  leaveEditor: (() => void) | null = null
 
   async refresh (keepTime = false): Promise<void> {
     if (this.current === null) return
@@ -395,6 +364,7 @@ class Animator {
   }
 
   stop (): void {
+    this.leaveEditor?.()
     this.token++
     this.player?.stop()
     this.horsePlayer?.stop()
@@ -460,8 +430,5 @@ export const animator = new Animator()
 
 /** A character's bones at rest (local), for clips' keys and frozen bones the clip doesn't move. */
 export function restOf (view: CharacterView): (bone: string) => { q: THREE.Quaternion, p: THREE.Vector3 } | null {
-  return bone => {
-    const b = view.rest?.bones.get(bone)
-    return b === undefined ? null : { q: b.localQuaternion.clone(), p: b.localPosition.clone() }
-  }
+  return boneRest(view)
 }

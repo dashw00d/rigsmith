@@ -66,9 +66,9 @@
 </script>
 
 {#snippet controls(entry: AnimationEntry, i: number)}
-  <button class="flag" class:on={entry.loop} onclick={() => patch(i, { loop: !entry.loop })} use:tooltip={entry.loop ? 'Loops' : 'Plays once'}><Repeat size={13} /></button>
-  <button class="flag" class:on={entry.inPlace} onclick={() => patch(i, { inPlace: !entry.inPlace })} use:tooltip={entry.inPlace ? 'In place (root motion removed)' : 'Root motion kept'}><Footprints size={13} /></button>
-  <select class="speed mono" value={String(entry.speed)} onchange={(e) => patch(i, { speed: Number((e.target as HTMLSelectElement).value) })} aria-label="Speed">
+  <button class="flag" class:on={entry.loop} aria-label={`Loop ${entry.name}`} aria-pressed={entry.loop} onclick={() => patch(i, { loop: !entry.loop })} use:tooltip={entry.loop ? 'Saved setting: loops' : 'Saved setting: plays once'}><Repeat size={13} /></button>
+  <button class="flag" class:on={entry.inPlace} aria-label={`In place ${entry.name}`} aria-pressed={entry.inPlace} onclick={() => patch(i, { inPlace: !entry.inPlace })} use:tooltip={entry.inPlace ? 'Saved setting: in place (root motion removed)' : 'Saved setting: root motion kept'}><Footprints size={13} /></button>
+  <select class="speed mono" value={String(entry.speed)} onchange={(e) => patch(i, { speed: Number((e.target as HTMLSelectElement).value) })} aria-label={`Saved speed for ${entry.name}`}>
     {#each [...new Set([0.5, 0.6, 0.75, 0.8, 1, 1.25, 1.5, 2, entry.speed])].sort((a, b) => a - b) as s}<option value={String(s)}>{s}×</option>{/each}
   </select>
 {/snippet}
@@ -87,7 +87,7 @@
       <ul class="set">
         {#each names as slot (slot)}
           {@const e = filled(slot)}
-          <li class:playing={e !== null && animator.current?.entry === e.i} class:armed={slots.armed === slot} class:empty={e === null}>
+          <li class="slot-row" class:playing={e !== null && animator.current?.entry === e.i} class:armed={slots.armed === slot} class:empty={e === null}>
             <button class="play" disabled={e === null} onclick={() => { if (e !== null) animator.playEntry(e.a, e.i) }} aria-label="Play {slot}"><Play size={12} /></button>
             <span class="slot">{slot}</span>
             <span class="clip" title={e?.a.note ?? e?.a.clipId ?? 'No clip yet'}>{e !== null ? label(e.a) : 'empty'}</span>
@@ -95,7 +95,7 @@
             {#if previewing !== null}
               <button class="use" onclick={() => useForSlot(slot)} use:tooltip={`Use ${previewing.name} for ${slot}`}>Use</button>
             {/if}
-            <button class="flag" class:on={slots.armed === slot} onclick={() => { slots.armed = slots.armed === slot ? null : slot }}
+            <button class="flag" class:on={slots.armed === slot} aria-label={`Fill ${slot} from library`} aria-pressed={slots.armed === slot} onclick={() => { slots.armed = slots.armed === slot ? null : slot }}
               use:tooltip={slots.armed === slot ? 'Armed: a library card fills it' : 'Fill from the library'}><Crosshair size={13} /></button>
             {#if e !== null}<button class="del" onclick={() => slots.clear(slot)} aria-label="Empty {slot}"><X size={13} /></button>{/if}
           </li>
@@ -177,6 +177,9 @@
   .flag.on { color: var(--accent-strong); }
   .del:hover { color: var(--danger); background: var(--danger-soft); }
   .slot { width: 62px; flex: none; font-weight: 600; }
+  .slot-row { flex-wrap: wrap; }
+  .slot-row .slot { width: auto; flex: 1; }
+  .slot-row .clip { order: 1; flex-basis: 100%; padding-left: 28px; font-size: 11px; }
   .clip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-2); }
   li.empty .clip { color: var(--text-4); font-style: italic; }
   .use { height: 22px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--accent); background: transparent; color: var(--accent-strong); font-size: 11px; font-weight: 600; flex: none; }

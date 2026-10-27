@@ -520,6 +520,25 @@ async function editedClip (b: Body, id: string, n: number, move: (t: number) => 
 }
 
 describe.skipIf(!have)('naturalizing a whole clip', () => {
+  it('keeps a keyed loop closed while preserving its root travel', async () => {
+    const b = await body(YBOT, false)
+    await poseFromClip(b, IDLES[0], .3)
+    const times = [0, 1 / 30, .2, .4]
+    const tracks: THREE.KeyframeTrack[] = BODY.map(n => {
+      const q = b.bones.get(n)!.quaternion.clone()
+      const raised = n === 'RightArm' ? q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), 1)) : q
+      return new THREE.QuaternionKeyframeTrack(`${b.bones.get(n)!.name}.quaternion`, times, [...q.toArray(), ...raised.toArray(), ...q.toArray(), ...q.toArray()])
+    })
+    const start = b.bones.get('Hips')!.position.clone()
+    const travel = new THREE.Vector3(0, 0, .4)
+    tracks.push(new THREE.VectorKeyframeTrack(`${b.bones.get('Hips')!.name}.position`, [0, .4], [...start.toArray(), ...start.clone().add(travel).toArray()]))
+    const result = naturalizeClip(b.rig, new THREE.AnimationClip('loop', .4, tracks), { root: b.scene, loop: true, goals: () => [], pull: .05, pullOutside: .5, smoothMotion: 15, sweeps: 3 })
+    const first = result.frames[0]; const last = result.frames.at(-1)!
+    for (let j = 0; j < NB; j++) expect(new THREE.Quaternion().fromArray(first.q, j * 4).normalize().angleTo(new THREE.Quaternion().fromArray(last.q, j * 4).normalize())).toBeLessThan(1e-6)
+    expect(new THREE.Vector3(...last.hips).sub(new THREE.Vector3(...first.hips)).distanceTo(travel)).toBeLessThan(1e-6)
+    expect(result.times.at(-1)).toBe(.4)
+  })
+
   it('meets the hands on every frame, smooths the corrections, holds the floor and beats the plain edit', { timeout: 30000 }, async () => {
     const b = await body(YBOT, false)
     const N = 40

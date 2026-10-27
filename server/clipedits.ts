@@ -38,9 +38,9 @@ async function restOf (base: string): Promise<string> {
   return rest
 }
 
-function check (e: SavedEdit): void {
+export function checkEdit (e: SavedEdit): void {
   if (typeof e.name !== 'string' || e.name.trim() === '' || e.name.length > 80) throw new Error('Name the clip')
-  if (typeof e.base !== 'string' || !/^[\w-]+$/.test(e.base)) throw new Error('Which clip was edited?')
+  if (typeof e.base !== 'string' || !/^[\w.-]+$/.test(e.base)) throw new Error('Which clip was edited?')
   const f = e.frames
   if (f === undefined || !Array.isArray(f.bones) || !Array.isArray(f.rotations) || !Array.isArray(f.hips) || f.rotations.length !== f.hips.length || f.rotations.length < 1 || f.rotations.length > 30 * 120) throw new Error('No frames')
   if (!f.rotations.every(r => Array.isArray(r) && r.length === f.bones.length && r.every(q => Array.isArray(q) && q.length === 4 && q.every(Number.isFinite)))) throw new Error('Bad frames')
@@ -90,7 +90,7 @@ export async function newId (name: string): Promise<string> {
 
 /** Save an edit into the library as clip `id`. */
 export async function saveEdit (id: string, e: SavedEdit, update: (progress: number, message: string) => void): Promise<void> {
-  try { check(e) } catch (error) { reserved.delete(id); throw error }
+  try { checkEdit(e) } catch (error) { reserved.delete(id); throw error }
   const turn = queue.then(async () => {
     update(0.05, 'Finding the skeleton it came from')
     const restFrom = await restOf(e.base)

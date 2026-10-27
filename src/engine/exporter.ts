@@ -2,10 +2,14 @@
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
-import type { AnimationEntry } from '../../server/workspace.ts'
-import type { CharacterView } from './CharacterView.ts'
+import type { AnimationEntry, Character } from '../../server/workspace.ts'
+import { CharacterView } from './CharacterView.ts'
 import type { RetargetCache } from './clips.ts'
 import { addLods } from './export/lods.ts'
+import { bakeEntry } from './animation.ts'
+import { attachProps, type PropAttachment } from './props.ts'
+import { attachGarments } from './garments.ts'
+import { renamer } from './presets/skeletonMap.ts'
 
 export interface ExportOptions {
   boneNames: 'mixamo' | 'mixamorig'
@@ -26,16 +30,19 @@ export function clipName (entry: AnimationEntry, options: ExportOptions): string
   return entry.loop && options.loopSuffix && !/-loop$/i.test(base) ? `${base}-loop` : base
 }
 
-function retime (clip: THREE.AnimationClip, speed: number, name: string): THREE.AnimationClip {
-  const tracks = clip.tracks.map(t => {
-    const copy = t.clone()
-    if (speed !== 1) copy.times = copy.times.map(x => x / speed)
-    return copy
-  })
-  return new THREE.AnimationClip(name, clip.duration / speed, tracks)
+/** Build every export from saved data, with the same outfit whether or not the character is selected. */
+export async function loadExportView (character: Character, urlFor: (file: string | undefined) => string | null, includeProps = true): Promise<CharacterView> {
+  const url = urlFor(character.files.rigged)
+  if (url === null) throw new Error(`${character.name} is not rigged`)
+  const view = await CharacterView.load(url)
+  view.setRename(renamer(character.boneMap))
+  if (includeProps) await attachProps(view, (character.props ?? []) as PropAttachment[])
+  await attachGarments(view, character.garments ?? [], g => urlFor(g.file) ?? '')
+  return view
 }
 
-export async function exportCharacter (view: CharacterView, entries: AnimationEntry[], cache: RetargetCache, urlFor: (entry: AnimationEntry) => string, options: ExportOptions): Promise<Blob> {
+export async function exportCharacter (view: CharacterView, entries: AnimationEntry[], cache: RetargetCache, urlFor: (entry: AnimationEntry) => string, options: ExportOptions,
+  character: Pick<Character, 'animations' | 'scripts' | 'garments'>): Promise<Blob> {
   // Clone with the real materials, not whatever display mode the viewport is in.
   const mode = view.displayMode
   view.setMode('shaded')
@@ -78,11 +85,13 @@ export async function exportCharacter (view: CharacterView, entries: AnimationEn
   const animations: THREE.AnimationClip[] = []
   const used = new Set<string>()
   for (const entry of entries) {
-    const baked = await cache.get(urlFor(entry), { inPlace: entry.inPlace, fps: options.fps })
+    const { clip: baked } = await bakeEntry(character, view, cache, root, entry, { fps: options.fps, urlFor })
     let name = clipName(entry, options)
     for (let i = 2; used.has(name); i++) name = `${clipName(entry, options)} ${i}`
     used.add(name)
-    animations.push(retime(baked, entry.speed, name))
+    const animation = baked.clone()
+    animation.name = name
+    animations.push(animation)
   }
 
   const exporter = new GLTFExporter()

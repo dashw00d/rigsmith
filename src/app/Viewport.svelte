@@ -9,8 +9,10 @@
   import type { Joints } from '../engine/JointEditor.ts'
   import Segmented from '../ui/Segmented.svelte'
   import { tooltip } from '../ui/tooltip.ts'
+  import { allowsShortcut } from '../ui/shortcuts.ts'
   import Timeline from './animate/Timeline.svelte'
   import { animator } from '../state/animator.svelte.ts'
+  import { clipEdit } from '../state/clipedit.svelte.ts'
   import { outfit } from '../state/outfit.svelte.ts'
   import { painter } from '../state/painter.svelte.ts'
   import MaskPainter from './texture/MaskPainter.svelte'
@@ -72,16 +74,16 @@
   const job = $derived(app.selected === null ? undefined : app.jobFor(app.selected.id))
 </script>
 
-<div class="viewport" bind:this={container}>
+<div class="viewport" class:working={clipEdit.busy !== null} bind:this={container}>
   <div class="vignette" aria-hidden="true"></div>
 
   {#if app.selected}
     <div class="toolbar">
-      <Segmented options={modes} bind:value={mode} size="sm" iconsOnly onchange={(m) => viewer.setMode(m)} />
+      <Segmented options={modes} bind:value={mode} size="sm" iconsOnly label="Display mode" onchange={(m) => viewer.setMode(m)} />
       {#if viewer.character?.skeleton}
-        <button class="tool" class:on={viewer.skeleton} onclick={() => viewer.setSkeleton(!viewer.skeleton)} use:tooltip={'Show bones'}><Bone size={14} /></button>
+        <button class="tool" class:on={viewer.skeleton} aria-label="Show bones" aria-pressed={viewer.skeleton} onclick={() => viewer.setSkeleton(!viewer.skeleton)} use:tooltip={'Show bones'}><Bone size={14} /></button>
       {/if}
-      <button class="tool" onclick={() => viewer.focus()} use:tooltip={'Frame character (F)'}><Focus size={14} /></button>
+      <button class="tool" aria-label="Frame character" onclick={() => viewer.focus()} use:tooltip={'Frame character (F)'}><Focus size={14} /></button>
     </div>
     <div class="caption">
       <span class="name">{app.selected.name}</span>
@@ -112,10 +114,10 @@
 
   {#if animator.error}<div class="busy error">{animator.error}</div>{/if}
 
-  {#if job || viewer.loading || animator.loading || outfit.busy || painter.busy || markerBoard.busy || scaleRoom.busy || paint.busyText}
-    <div class="busy">
+  {#if job || viewer.loading || animator.loading || clipEdit.busy || outfit.busy || painter.busy || markerBoard.busy || scaleRoom.busy || paint.busyText}
+    <div class="busy" role="status">
       <div class="ring"></div>
-      <span>{job ? job.message : viewer.loading ? 'Loading model' : markerBoard.busy ?? scaleRoom.busy ?? paint.busyText ?? painter.busy ?? (outfit.busy ? 'Fitting clothes' : 'Retargeting animation')}</span>
+      <span>{job ? job.message : viewer.loading ? 'Loading model' : clipEdit.busy ?? markerBoard.busy ?? scaleRoom.busy ?? paint.busyText ?? painter.busy ?? (outfit.busy ? 'Fitting clothes' : 'Retargeting animation')}</span>
       {#if job?.status === 'running'}<div class="bar"><div style="width: {Math.round(job.progress * 100)}%"></div></div>{/if}
     </div>
   {/if}
@@ -128,7 +130,7 @@
   {/if}
 </div>
 
-<svelte:window onkeydown={(e) => { if (e.key === 'f' && !(e.target instanceof HTMLInputElement)) viewer.focus() }} />
+<svelte:window onkeydown={(e) => { if (e.key.toLowerCase() === 'f' && allowsShortcut(e)) viewer.focus() }} />
 
 <style>
   .viewport {
@@ -136,8 +138,10 @@
     inset: 0;
     background: radial-gradient(120% 90% at 50% 18%, #1b2030 0%, #12151c 45%, #0b0c10 100%);
     overflow: hidden;
+    container-type: size;
   }
   .vignette { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 160px rgb(0 0 0 / 55%); }
+  .working :global(canvas) { pointer-events: none; }
   .toolbar { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; align-items: center; z-index: 2; }
   .tool {
     width: 28px;
@@ -151,7 +155,8 @@
   }
   .tool:hover { color: var(--text-1); }
   .tool.on { color: var(--accent-strong); border-color: rgb(142 162 255 / 40%); background: var(--accent-soft); }
-  .caption { position: absolute; left: 16px; bottom: 14px; display: flex; flex-direction: column; gap: 2px; pointer-events: none; }
+  .caption { position: absolute; left: 16px; right: 16px; top: 52px; display: flex; flex-direction: column; gap: 2px; pointer-events: none; }
+  .caption .name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .caption .name { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
   .caption .mono { font-size: 11px; }
   .joint-label {
@@ -175,7 +180,7 @@
     position: absolute;
     z-index: 10;
     left: 50%;
-    top: 12px;
+    top: 100px;
     transform: translateX(-50%);
     display: flex;
     align-items: center;
@@ -186,6 +191,9 @@
     backdrop-filter: blur(8px);
     border: 1px solid var(--line-strong);
     font-weight: 500;
+    max-width: calc(100% - 24px);
+    width: max-content;
+    font-size: 12px;
   }
   .ring { width: 14px; height: 14px; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
   .busy.error { color: var(--danger); }
@@ -195,4 +203,5 @@
   .hello h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
   .hello p { margin: 0; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @container (max-height: 380px) { .caption { display: none; } .busy { top: 48px; } }
 </style>

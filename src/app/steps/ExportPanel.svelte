@@ -4,10 +4,8 @@
   import { app } from '../../state/app.svelte.ts'
   import { entryUrl } from '../../state/animator.svelte.ts'
   import { viewer } from '../../state/viewer.svelte.ts'
-  import { CharacterView } from '../../engine/CharacterView.ts'
   import { RetargetCache } from '../../engine/clips.ts'
-  import { attachProps, detachProps, type PropAttachment } from '../../engine/props.ts'
-  import { DEFAULT_EXPORT, clipName, exportCharacter, type ExportOptions } from '../../engine/exporter.ts'
+  import { DEFAULT_EXPORT, clipName, exportCharacter, loadExportView, type ExportOptions } from '../../engine/exporter.ts'
   import { fileUrl } from '../../state/api.ts'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
@@ -33,21 +31,9 @@
   const fileName = (c: Character): string => `${c.name.replace(/[^\w .-]+/g, '').trim().replace(/\s+/g, '_') || c.id}.glb`
 
   async function build (c: Character): Promise<Blob> {
-    // The selected character is already loaded in the viewport; others load offscreen.
-    let view = c.id === app.selectedId ? viewer.character : null
-    if (view === null) {
-      const url = fileUrl(c, c.files.rigged)
-      if (url === null) throw new Error(`${c.name} is not rigged`)
-      view = await CharacterView.load(url)
-      await attachProps(view, (c.props ?? []) as PropAttachment[])
-    }
+    const view = await loadExportView(c, file => fileUrl(c, file), includeProps)
     if (view.rest === null) throw new Error(`${c.name} has no skeleton`)
-    if (!includeProps) detachProps(view)
-    try {
-      return await exportCharacter(view, c.animations, new RetargetCache(view.rest), entryUrl, options)
-    } finally {
-      if (!includeProps && c.id === app.selectedId) await attachProps(view, (c.props ?? []) as PropAttachment[])
-    }
+    return await exportCharacter(view, c.animations, new RetargetCache(view.rest), entryUrl, options, c)
   }
 
   async function exportOne (c: Character): Promise<void> {
