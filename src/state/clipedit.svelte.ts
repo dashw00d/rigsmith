@@ -71,6 +71,9 @@ class ClipEdit {
   /** A turn about the bone's own axes or the world's. */
   space = $state<'local' | 'world'>('local')
   busy = $state<string | null>(null)
+  /** Counts openings and stops: an opening whose count is no longer this one is stale. */
+  private opening = 0
+  private loading = false
   /** The frames keyed (phases), for the timeline. */
   phases = $derived([...new Set([...Object.values(this.keys), ...Object.values(this.paths).map(p => p.keys)].flat().filter(k => this.held || !isAnchor(k) || (k.u > 0 && k.u < 1)).map(k => Math.round(k.u * 1e4) / 1e4))].sort((a, b) => a - b))
   /** The selected bone's (or prop's) keyed frames. */
@@ -115,7 +118,7 @@ class ClipEdit {
     const clip = animator.clip
     if (clip === null) { app.toast('error', 'Play a clip first: its frame is where the new one starts'); return }
     await this.start(this.holdOf(clip, animator.time, seconds))
-    this.length = seconds
+    if (this.active && this.held) this.length = seconds
   }
 
   /** A held clip's length changed: its keys keep their place in it. */
@@ -139,20 +142,27 @@ class ClipEdit {
   async start (held?: THREE.AnimationClip): Promise<void> {
     const now = animator.current; const clip = held ?? animator.clip; const view = animator.character; const stage = animator.stage
     if (now === null || clip === null || view === null || stage === null || view.rest === null || now.url === '') { app.toast('error', 'Play a clip first, then edit it'); return }
+    this.stop()
+    // (this opening's turn: a later start or a stop, or another character, makes it stale, and it stops at its next await)
+    const turn = this.opening; const who = app.selected?.id
+    const stale = (): boolean => turn !== this.opening || app.selected?.id !== who || animator.character !== view
     this.busy = 'Opening the clip'
+    this.loading = true
     try {
-      this.stop()
       const template = app.selected?.template
       const rigName = template === undefined || template === 'human' ? 'human' : template
       this.rig = rigName === 'horse' ? HORSE_RIG : HUMAN_RIG
       const source = await loadSource(now.url)
+      if (stale()) return
       this.source = { rest: source.rest, clip: source.clip }
       // (the joints' ranges, mapped onto this character through the retarget's turns)
       const rom = await fetch(`/templates/rom/${rigName}.json`).then(async r => r.ok ? await r.json() as Rom : null).catch(() => null)
+      if (stale()) return
       const rest = view.rest
       const offsets = retargetOffsets(source.rest, rest).offsets
       this.limits = rom === null ? null : new JointLimits(rom, offsets, name => rest.bones.get(name)?.parent ?? null, rigName === 'human' ? 1 : 3, rigName === 'human' ? 5 : 15)
       const poses = rigName === 'human' ? await fetch('/templates/rom/human-pose.json').then(async r => r.ok ? await r.json() as PoseModelData : null).catch(() => null) : null
+      if (stale()) return
       this.model = poses === null ? null : loadPoseModel(poses)
       this.offsets = offsets
       // (the body as solids, fitted to this character's mesh: no part of it ends up inside another; none when the mesh can't be fitted)
@@ -177,18 +187,23 @@ class ClipEdit {
       this.propRest = Object.fromEntries(this.props.map(p => [p.name, view.root.getObjectByName(propNode(p.name))]).filter((x): x is [string, THREE.Object3D] => x[1] !== undefined)
         .map(([n, o]) => [n, { position: o.position.toArray() as [number, number, number], quaternion: o.quaternion.toArray() as [number, number, number, number] }]))
       animator.setPlaying(false)
+      // (the player loops as the edit does: a new clip from a frame plays once)
+      animator.setLoop(this.base.loop)
       this.makeEditor(this.limitsOn)
       this.active = true
       // (a refresh while editing builds the edit again: its props re-attached, say)
       animator.editing = () => { this.show(animator.time) }
       this.show(animator.time)
     } finally {
-      this.busy = null
+      if (turn === this.opening) { this.busy = null; this.loading = false }
     }
   }
 
   /** Leave the editor (the clip edited plays on until another is played). */
   stop (): void {
+    // (an opening still loading is dropped)
+    this.opening++
+    if (this.loading) { this.loading = false; this.busy = null }
     this.editor?.dispose()
     this.editor = null
     this.active = false

@@ -51,7 +51,8 @@ def main():
     inputs = [edit_path, edit['restFrom'], common.COMMON]
     job = {'id': edit['id'], 'sha256': common.sha_of(make, inputs), 'kind': 'clip', 'source': 'custom', 'sourcePath': edit_path,
            'make': make, 'args': ['--edit', edit_path], 'inputs': inputs, 'sourceName': edit['id'], 'name': edit['name'],
-           'originalName': edit['name'], 'description': edit.get('description', ''), 'tags': edit.get('tags', ['custom']), 'category': edit.get('category')}
+           'originalName': edit['name'], 'description': edit.get('description', ''), 'tags': edit.get('tags', ['custom']), 'category': edit.get('category'),
+           'loop': bool(edit.get('loop', True))}
     common.into_library(arm, library, job)
     print(f'EDIT wrote {edit["id"]} ({len(poses)} frames) into {library}')
 

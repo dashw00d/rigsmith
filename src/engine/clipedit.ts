@@ -10,7 +10,7 @@ import { keepOffFloor, reach, setWorldQuaternion, type Leg } from './ik.ts'
 import { bodyBones, solveBody, type BodyState, type HandGoal } from './bodysolve.ts'
 import { FOLLOW, type NaturalGoal, type Obstacle } from './posespace.ts'
 import type { JointLimits } from './limits.ts'
-import { pelvisName, restWorldOf, retargetOffsets, type RestSkeleton } from './retarget.ts'
+import { pelvisName, retargetOffsets, type RestSkeleton } from './retarget.ts'
 import type { PoseRig } from './PoseEditor.ts'
 
 /** A track's value at time `t`, or `fallback` where the clip has none. */
@@ -590,13 +590,25 @@ export function unretarget (clip: THREE.AnimationClip, posable: THREE.Object3D, 
     if (node !== undefined && th !== undefined) {
       const move = node.getWorldPosition(new THREE.Vector3()).sub(th.worldPosition).sub(new THREE.Vector3(0, lift, 0)).divideScalar(scale)
       const at = sh.worldPosition.clone().add(move)
-      // (into the hips' parent's frame: the object holding it when it is a top bone, else its parent bone at rest: a
-      // horse's hips hang below a root bone)
-      const parent = sh.parent === null ? source.parentWorld.get(sHips) : restWorldOf(source, sh.parent)
+      // (into the hips' parent's frame: the object holding it when it is a top bone, else its parent bone as this frame
+      // turns it: a horse's hips hang below a root bone, and a turn of that root is the root's alone)
+      const parent = sh.parent === null ? source.parentWorld.get(sHips) : posedWorldOf(source, sh.parent, order, frame)
       hips.push((parent !== undefined ? at.applyMatrix4(parent.clone().invert()) : at).toArray())
     } else hips.push(sh.localPosition.toArray())
   }
   mixer.stopAllAction()
   mixer.uncacheRoot(posable)
   return { fps: KEY_FPS, bones: order, rotations, hips }
+}
+
+/** A source bone's world matrix in one frame of `rotations` (each bone's local turn, by `order`; a bone above the
+ *  hips keeps its rest offset). */
+function posedWorldOf (source: RestSkeleton, name: string, order: string[], frame: number[][]): THREE.Matrix4 {
+  const b = source.bones.get(name)
+  if (b === undefined) return new THREE.Matrix4()
+  const i = order.indexOf(name)
+  const turn = i < 0 ? b.localQuaternion : new THREE.Quaternion().fromArray(frame[i])
+  const local = new THREE.Matrix4().compose(b.localPosition, turn, b.localScale)
+  const above = b.parent === null ? (source.parentWorld.get(name) ?? new THREE.Matrix4()) : posedWorldOf(source, b.parent, order, frame)
+  return above.clone().multiply(local)
 }

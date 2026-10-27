@@ -45,12 +45,15 @@
   // The blow at the frame playing: where it is in the clip before its cut (the cut's start plus the time played, at
   // the clip's speed), as a phase of that clip.
   const playing = (clip: string): boolean => animator.current?.name === clip && animator.current.entry !== null
+  const BLOW_EDGE = 1 / 30
   function blowHere (id: string, clip: string): void {
     const entry = character.animations.find(a => a.name === clip)
     if (entry === undefined || !playing(clip)) return
     const cut = animator.cut?.name === clip ? animator.cut : null
     const uncut = cut?.uncut ?? animator.duration / entry.speed
     const t = (cut?.start ?? 0) + animator.time / entry.speed
+    // (a blow on the first or last frame cuts the attack down to nothing)
+    if (t < BLOW_EDGE || t > uncut - BLOW_EDGE) { app.toast('error', 'The blow can\'t be the first or last frame: pick a frame inside the clip'); return }
     change(id, { blowU: Math.round(Math.min(1, Math.max(0, t / uncut)) * 1e4) / 1e4, enabled: true })
   }
   // A blow later in the clip than where it must land: say what that costs (its start cut, or its end held).

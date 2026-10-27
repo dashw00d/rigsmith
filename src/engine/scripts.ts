@@ -165,7 +165,9 @@ export function holdFist (clip: THREE.AnimationClip, pose: Map<string, THREE.Qua
 export function blowCut (root: THREE.Object3D, clip: THREE.AnimationClip, s: Pick<BlowScript, 'at' | 'hand' | 'window' | 'blowU' | 'late'>): { clip: THREE.AnimationClip, blow: number, kept: [number, number] } {
   let blow: number
   if (s.blowU !== undefined) {
-    blow = Math.min(1, Math.max(0, s.blowU)) * clip.duration
+    // (kept a frame inside the clip: a blow on its first or last frame would cut it down to nothing)
+    const edge = Math.min(1 / 30, clip.duration / 4)
+    blow = Math.min(clip.duration - edge, Math.max(edge, Math.min(1, Math.max(0, s.blowU)) * clip.duration))
   } else {
     const restore = saveBones(root)
     blow = blowTime(root, clip, s.hand ?? 'RightHand')

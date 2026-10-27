@@ -705,8 +705,13 @@ def run(out, names_path=DEFAULT_NAMES):
         tags += [t for t in m.get("tags", []) if t not in tags]
         if m["id"] in recovered:
             tags += [t for t in recovered[m["id"]].get("tags", []) if t not in tags]
+        # (a clip that says whether it loops (one saved from Rigsmith's editor) keeps that, its tag with it)
+        if isinstance(m.get("loop"), bool):
+            tags = [("loop" if m["loop"] else "one-shot") if t in ("loop", "one-shot") else t for t in tags]
+            if e["category"] != "pose" and "loop" not in tags and "one-shot" not in tags:
+                tags.insert(0, "loop" if m["loop"] else "one-shot")
         e["tags"] = tags
-        e["loop"] = bool(f["loop"]["loopable"])
+        e["loop"] = m["loop"] if isinstance(m.get("loop"), bool) else bool(f["loop"]["loopable"])
         e["inPlace"] = bool(f["inPlace"])
         top = sorted(scores.items(), key=lambda kv: -kv[1])[:3]
         e["features"] = {k: f[k] for k in MANIFEST_FEATURES if k in f}

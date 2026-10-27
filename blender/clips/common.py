@@ -76,7 +76,7 @@ def key_poses(arm, names, parents, xf, poses, fps, action_name):
             bone.keyframe_insert('location', frame=k)
 
 
-META_KEYS = ('id', 'sha256', 'kind', 'source', 'sourcePath', 'sourceName', 'name', 'tags', 'description', 'originalName', 'category')
+META_KEYS = ('id', 'sha256', 'kind', 'source', 'sourcePath', 'sourceName', 'name', 'tags', 'description', 'originalName', 'category', 'loop')
 
 
 def into_library(arm, library, job):

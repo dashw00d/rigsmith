@@ -55,3 +55,26 @@ describe.skipIf(!have)('taking an edited clip back to the library', () => {
     expect(hipsWorst).toBeLessThan(0.005)
   })
 })
+
+describe('a creature\'s hips under a turning root bone', () => {
+  it('keeps the root\'s turn out of the hips\' position', () => {
+    const make = (): THREE.Group => {
+      const scene = new THREE.Group()
+      const root = new THREE.Bone(); root.name = 'root'
+      const hips = new THREE.Bone(); hips.name = 'Hips'; hips.position.set(0, 1, 0.5)
+      const spine = new THREE.Bone(); spine.name = 'Spine'; spine.position.set(0, 0.3, 0)
+      scene.add(root); root.add(hips); hips.add(spine)
+      return scene
+    }
+    const src = make(); const tgt = make()
+    const sRest = captureRest(src, isBone, n => n)
+    const tRest = captureRest(tgt, isBone, n => n)
+    const turned = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4)
+    const clip = new THREE.AnimationClip('turn', 1, [
+      new THREE.QuaternionKeyframeTrack('root.quaternion', [0, 1], [0, 0, 0, 1, ...turned.toArray()]),
+    ])
+    const back = unretarget(clip, tgt, tRest, sRest)
+    const worst = Math.max(...back.hips.map(h => new THREE.Vector3().fromArray(h).distanceTo(new THREE.Vector3(0, 1, 0.5))))
+    expect(worst).toBeLessThan(1e-4)
+  })
+})
