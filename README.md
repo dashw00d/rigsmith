@@ -21,6 +21,7 @@ AI repainting and Godot 4.x for the export check. All data lives in `workspace/`
 | Outfit | Props from the catalog (swords, shields, bows, tools, guns) pinned to sockets with a gizmo. Your own meshes: rigid pieces on a bone, or clothing skinned to the body with a policy (body, upper, lower, cape, skirt, head) so weights never bleed from the wrong bones, plus optional hide-body-underneath. |
 | Texture | Fill the magenta holes AI texture generators leave (filled from nearby paint in 3D, seam-aware). Projection painting: mask an area with the smart brush or region wand (edge-aware), capture the view, let Codex paint `result.png`, preview it projected onto the UVs, keep it. |
 | Animate | The complete named Mixamo collection (2,317 motions + 129 poses), bundled work/combat clips and creature clips. Search names, filenames and descriptions; numbered variants stay distinct. Every card previews the clip on *your* character. Build a per-character set (names, loop, in-place, speed) and copy it to other characters. |
+| Animate: editing | Pose and key any clip in the viewport, props leading the body with both hands on them, Naturalize, save as a new library clip: see [docs/animating.md](docs/animating.md). |
 | Export | GLB for Godot: bone names (`Hips` or `mixamorig:Hips`), texture size and format, `-loop` suffix for looping clips, props as bone attachments. Writes into your export folder (e.g. inside the Godot project). |
 
 ## Layout
