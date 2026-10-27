@@ -47,3 +47,21 @@ describe('applyLift and applyBoneKeys', () => {
     expect(angle(new THREE.Quaternion().fromArray(Array.from(t.values.slice(0, 4))))).toBe(30)
   })
 })
+
+describe('propKeysOf', () => {
+  it('gives back the keys propTracks played', async () => {
+    const { propKeysOf, propTracks } = await import('./keys.ts')
+    const place = { position: new THREE.Vector3(0.1, 0.2, 0.3), quaternion: new THREE.Quaternion().setFromEuler(new THREE.Euler(0.3, -0.5, 0.2)) }
+    const keys = [{ u: 0, q: [0, 0, 0, 1] as [number, number, number, number], p: [0, 0, 0] as [number, number, number] },
+      { u: 0.5, q: new THREE.Quaternion().setFromEuler(new THREE.Euler(0.4, 0.1, -0.2)).toArray() as [number, number, number, number], p: [0.2, -0.1, 0.05] as [number, number, number] },
+      { u: 1, q: [0, 0, 0, 1] as [number, number, number, number], p: [0, 0, 0] as [number, number, number] }]
+    const clip = new THREE.AnimationClip('c', 1.02, propTracks('spear_place', 1.02, keys, false, place, 2))
+    const back = propKeysOf(clip, 'spear_place', place, 2)!
+    const again = new THREE.AnimationClip('c', 1.02, propTracks('spear_place', 1.02, back, false, place, 2))
+    for (const [a, b] of clip.tracks.map((t, i) => [t, again.tracks[i]] as const)) {
+      expect(Array.from(b.times)).toEqual(Array.from(a.times))
+      Array.from(a.values).forEach((v, i) => expect(b.values[i]).toBeCloseTo(v, 4))
+    }
+    expect(propKeysOf(new THREE.AnimationClip('c', 1, propTracks('spear_place', 1, undefined, false, place, 2)), 'spear_place', place, 2)).toBeNull()
+  })
+})

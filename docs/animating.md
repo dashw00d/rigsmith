@@ -86,12 +86,14 @@ centimetre a frame) rather than bend its wrist far. The head keeps looking where
   right: any change after it rebuilds the clip from your keys.
 - **Save:** name the clip and save it. It becomes a new library clip, tagged custom, in the category of the clip it
   came from. Add it to the character's set in Animate like any other clip.
+- **A leading prop's path is saved with the clip.** The library clip plays with the prop where the editor had it, and
+  a slot it fills (on a character with a prop of the same name) gets that path as the prop's keys, which the game
+  export plays. **Use** isn't offered for the editor's own unsaved clip: save it, then use the saved one.
 
 ## Good to know
 
-- **The game holds the prop by its Outfit placement.** If you move the carrying hand's grip far from that in the
-  editor, the hand and the prop won't line up in the game. To change the grip for the game, change the placement in
-  Outfit (step 1).
+- **The game holds the prop by its Outfit placement, moved by the clip's prop path.** The path is saved relative to
+  that placement, so changing the placement in Outfit afterwards moves the prop in every clip that carries a path.
 - **Reload after Rigsmith updates.** An editor that's already open keeps its old code: reload the page
   (Ctrl+Shift+R) and open the clip again.
 - **Slow steps:** turning Leads on fits the whole clip (about 10 seconds); Naturalize takes a few seconds. The

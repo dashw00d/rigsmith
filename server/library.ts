@@ -38,6 +38,8 @@ export interface Clip {
   duplicateOf?: string | null
   /** Skeleton the clip is for: 'human' (Mixamo) or a creature template id. */
   rig?: string
+  /** A clip made with props leading (in the animation editor): each prop's path, as a slot's prop keys (by prop name). */
+  propPaths?: Record<string, Array<{ u: number, q: [number, number, number, number], p?: [number, number, number] }>>
   /** Absolute URL when the clip lives outside workspace/library (bundled clips). */
   href?: string
 }

@@ -1,6 +1,6 @@
 // A character's game slots: the clip names the game plays for it (the game's spec, settings.gameSpec), each filled
 // with a library clip in its animation set under that name. A slot can be armed, so the library's + fills it.
-import type { AnimationEntry } from './api.ts'
+import type { AnimationEntry, Character, ClipKey } from './api.ts'
 import { app } from './app.svelte.ts'
 import { animator } from './animator.svelte.ts'
 
@@ -34,14 +34,15 @@ class Slots {
     return this.game?.clips.includes(name) === true
   }
 
-  /** Fill `slot` with a library clip (replacing what was there: its loop, in place and speed, its tweaks, stay). */
-  async fill (slot: string, clip: { clipId: string, url?: string, inPlace: boolean, loop: boolean }): Promise<void> {
+  /** Fill `slot` with a library clip (replacing what was there: its loop, in place and speed, its tweaks, stay; a clip
+   * made with a prop leading brings that prop's path). */
+  async fill (slot: string, clip: { clipId: string, url?: string, inPlace: boolean, loop: boolean, propPaths?: Record<string, ClipKey[]> }): Promise<void> {
     const c = app.selected
     if (c === null) return
     const was = c.animations.find(a => a.name === slot)
-    const entry: AnimationEntry = was !== undefined
+    const entry: AnimationEntry = withPropPaths(was !== undefined
       ? { ...was, clipId: clip.clipId, url: clip.url, note: undefined }
-      : { clipId: clip.clipId, url: clip.url, name: slot, inPlace: clip.inPlace, loop: clip.loop, speed: 1 }
+      : { clipId: clip.clipId, url: clip.url, name: slot, inPlace: clip.inPlace, loop: clip.loop, speed: 1 }, clip.propPaths, c)
     if (entry.url === undefined) delete entry.url
     if (entry.note === undefined) delete entry.note
     const next = was !== undefined ? c.animations.map(a => (a === was ? entry : a)) : [...c.animations, entry]
@@ -61,3 +62,11 @@ class Slots {
 }
 
 export const slots = new Slots()
+
+/** `entry` with a clip's prop paths as its prop keys (each for a prop `c` has, by name; the entry's own keys for any
+ * other prop stay). */
+export function withPropPaths (entry: AnimationEntry, paths: Record<string, ClipKey[]> | undefined, c: Character): AnimationEntry {
+  const mine = Object.entries(paths ?? {}).filter(([name]) => (c.garments ?? []).some(g => g.name === name && g.mode === 'rigid'))
+  if (mine.length === 0) return entry
+  return { ...entry, keys: { ...entry.keys, props: { ...entry.keys?.props, ...Object.fromEntries(mine) } } }
+}

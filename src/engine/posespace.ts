@@ -1996,8 +1996,9 @@ export function naturalizeClip (rig: NaturalRig, clip: THREE.AnimationClip, o: O
   const fps = o.fps ?? 30
   let root: THREE.Object3D = o.root ?? rig.bones[0]
   if (o.root === undefined) while (root.parent !== null) root = root.parent
+  // (spread evenly to the clip's very end: its last pose kept whatever its length)
   const count = Math.max(1, Math.round(clip.duration * fps))
-  const times = Array.from({ length: count + 1 }, (_, i) => Math.min(clip.duration, i / fps))
+  const times = Array.from({ length: count + 1 }, (_, i) => (i === count ? clip.duration : i * clip.duration / count))
   // (every bone as it was, to put back)
   const saved: Array<[THREE.Object3D, THREE.Vector3, THREE.Quaternion]> = []
   root.traverse(b => { if ((b as THREE.Bone).isBone === true) saved.push([b, b.position.clone(), b.quaternion.clone()]) })

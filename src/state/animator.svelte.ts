@@ -2,7 +2,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
-import type { AnimationEntry, Character, LibraryClip } from './api.ts'
+import type { AnimationEntry, Character, ClipKey, LibraryClip } from './api.ts'
 import { app } from './app.svelte.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
 import { RetargetCache } from '../engine/clips.ts'
@@ -25,6 +25,10 @@ export interface NowPlaying {
   test?: boolean
   /** Index in the character's animation set, or null for a library preview. */
   entry: number | null
+  /** A library clip made with props leading: each prop's path (by prop name), played with it. */
+  propPaths?: Record<string, ClipKey[]>
+  /** The animation editor's clip (an edit, not saved as itself): no slot can take it. */
+  edited?: boolean
 }
 
 const MANNEQUIN = '/files/library/mannequin/ybot.glb'
@@ -206,7 +210,8 @@ class Animator {
         this.unkeyed = retime(unkeyed, 1 / entry.speed)
         clip = retime(rider, 1 / entry.speed)
       } else {
-        clip = this.withProps(await this.cache.get(target.url, { inPlace: this.inPlace, mirror: this.mirror }), undefined, false)
+        // (a clip made with a prop leading plays its path: the prop where the editor had it)
+        clip = this.withProps(await this.cache.get(target.url, { inPlace: this.inPlace, mirror: this.mirror }), target.propPaths, this.loop)
         // (a library clip or a rig test stands on the floor: its flat feet set it, src/engine/ground.ts)
         clip = this.grounded(clip)
         this.unkeyed = null
@@ -367,7 +372,7 @@ class Animator {
   }
 
   playLibrary (clip: LibraryClip): void {
-    void this.play({ clipId: clip.id, url: clip.url, name: clip.name, entry: null }, { inPlace: this.inPlace })
+    void this.play({ clipId: clip.id, url: clip.url, name: clip.name, entry: null, propPaths: clip.propPaths }, { inPlace: this.inPlace })
   }
 
   /** The character's bone map changed: rebuild the retargeting skeleton and previews. */

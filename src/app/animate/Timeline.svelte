@@ -7,8 +7,12 @@
   let scrubbing = $state(false)
   let wasPlaying = false
 
-  const progress = $derived(animator.duration > 0 ? (animator.time % animator.duration) / animator.duration : 0)
   const fps = 30
+  // (where the playhead is in the clip: a loop wraps round, a one-shot stays on its last frame at its end)
+  const at = $derived(animator.duration > 0 ? (animator.loop ? animator.time % animator.duration : Math.min(Math.max(animator.time, 0), animator.duration)) : 0)
+  const progress = $derived(animator.duration > 0 ? at / animator.duration : 0)
+  const frames = $derived(Math.max(1, Math.round(animator.duration * fps)))
+  const frame = $derived(Math.min(frames, Math.floor(progress * frames + 1e-6)))
 
   function seekFrom (e: PointerEvent, bar: HTMLElement): void {
     const r = bar.getBoundingClientRect()
@@ -42,7 +46,7 @@
     <div class="info">
       <div class="row">
         <span class="name">{animator.current.name}</span>
-        <span class="mono faint">{Math.floor((animator.time % Math.max(animator.duration, 1e-6)) * fps)} / {Math.round(animator.duration * fps)}</span>
+        <span class="mono faint">{frame} / {frames}</span>
       </div>
       <div class="bar" role="slider" tabindex="0" aria-label="Scrub" aria-valuenow={Math.round(progress * 100)}
         onpointerdown={(e) => { scrubbing = true; wasPlaying = animator.playing; animator.setPlaying(false); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); seekFrom(e, e.currentTarget as HTMLElement) }}
@@ -60,7 +64,7 @@
       </div>
     </div>
     <div class="flags">
-      <button class:on={animator.loop} onclick={() => animator.setLoop(!animator.loop)} use:tooltip={'Loop'}><Repeat size={14} /></button>
+      <button class:on={animator.loop} onclick={() => { if (clipEdit.active) clipEdit.setLoop(!animator.loop); else animator.setLoop(!animator.loop) }} use:tooltip={'Loop'}><Repeat size={14} /></button>
       <button class:on={animator.inPlace} onclick={() => { animator.inPlace = !animator.inPlace; void animator.refresh() }} use:tooltip={'In place'}><Footprints size={14} /></button>
       <button class:on={animator.mirror} onclick={() => { animator.mirror = !animator.mirror; void animator.refresh() }} use:tooltip={'Mirror left/right'}><FlipHorizontal2 size={14} /></button>
       <select class="mono" value={String(animator.speed)} onchange={(e) => animator.setSpeed(Number((e.target as HTMLSelectElement).value))} aria-label="Playback speed">

@@ -53,6 +53,8 @@ def main():
            'make': make, 'args': ['--edit', edit_path], 'inputs': inputs, 'sourceName': edit['id'], 'name': edit['name'],
            'originalName': edit['name'], 'description': edit.get('description', ''), 'tags': edit.get('tags', ['custom']), 'category': edit.get('category'),
            'loop': bool(edit.get('loop', True))}
+    if edit.get('propPaths'):
+        job['propPaths'] = edit['propPaths']   # (each leading prop's path: the library lists it with the clip)
     common.into_library(arm, library, job)
     print(f'EDIT wrote {edit["id"]} ({len(poses)} frames) into {library}')
 

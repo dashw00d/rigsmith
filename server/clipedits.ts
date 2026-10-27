@@ -6,10 +6,13 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { LIBRARY, ROOT } from './workspace.ts'
+import { LIBRARY, ROOT, type ClipKey } from './workspace.ts'
 
 export interface EditFrames { fps: number, bones: string[], rotations: number[][][], hips: number[][] }
-export interface SavedEdit { name: string, base: string, loop?: boolean, keys?: unknown, frames: EditFrames }
+/** Each prop's path through the clip (by the prop's name: a rigid garment's), as keys from where Outfit places it: what
+ * a slot's prop keys are (ClipKeys.props), so a clip made with a prop leading plays it as the editor showed it. */
+export type PropPaths = Record<string, ClipKey[]>
+export interface SavedEdit { name: string, base: string, loop?: boolean, keys?: unknown, props?: unknown, propPaths?: PropPaths, frames: EditFrames }
 
 const MAKE = 'blender/clips/edit.py'
 
@@ -42,6 +45,19 @@ function check (e: SavedEdit): void {
   if (f === undefined || !Array.isArray(f.bones) || !Array.isArray(f.rotations) || !Array.isArray(f.hips) || f.rotations.length !== f.hips.length || f.rotations.length < 1 || f.rotations.length > 30 * 120) throw new Error('No frames')
   if (!f.rotations.every(r => Array.isArray(r) && r.length === f.bones.length && r.every(q => Array.isArray(q) && q.length === 4 && q.every(Number.isFinite)))) throw new Error('Bad frames')
   if (!f.hips.every(p => Array.isArray(p) && p.length === 3 && p.every(Number.isFinite))) throw new Error('Bad hips')
+  if (!(Number.isFinite(f.fps) && f.fps > 1 && f.fps <= 240)) throw new Error('Bad frame rate')
+  checkPropPaths(e.propPaths)
+}
+
+/** A prop path is a list of keys per prop name (or none). */
+export function checkPropPaths (x: unknown): asserts x is PropPaths | undefined {
+  if (x === undefined) return
+  const key = (k: unknown): boolean => {
+    const c = k as ClipKey
+    return typeof c === 'object' && c !== null && Number.isFinite(c.u) && Array.isArray(c.q) && c.q.length === 4 && c.q.every(Number.isFinite) &&
+      (c.p === undefined || (Array.isArray(c.p) && c.p.length === 3 && c.p.every(Number.isFinite)))
+  }
+  if (typeof x !== 'object' || x === null || !Object.entries(x).every(([n, ks]) => n.length <= 200 && Array.isArray(ks) && ks.length <= 30 * 120 + 1 && ks.every(key))) throw new Error('Bad prop paths')
 }
 
 async function run (command: string, args: string[], onLine: (line: string) => void): Promise<void> {
@@ -86,7 +102,7 @@ export async function saveEdit (id: string, e: SavedEdit, update: (progress: num
     const edit = {
       id, name: e.name.trim(), base: e.base, category: from?.category ?? null, tags: ['custom'],
       description: `Made in Rigsmith's animation editor from ${from?.name ?? e.base}.`,
-      restFrom, loop: e.loop ?? true, keys: e.keys ?? {}, frames: e.frames, createdAt: new Date().toISOString(),
+      restFrom, loop: e.loop ?? true, keys: e.keys ?? {}, props: e.props ?? {}, propPaths: e.propPaths ?? {}, frames: e.frames, createdAt: new Date().toISOString(),
     }
     await writeFile(file, JSON.stringify(edit))
     // its line in the sources: the build makes it with blender/clips/edit.py
@@ -112,7 +128,8 @@ export async function saveEdit (id: string, e: SavedEdit, update: (progress: num
 /** A creature's clip (a horse's: not a library clip) saved as made: its file into workspace/library/creatures/<rig>/,
  * its line in creatures/index.json (server/library.ts lists them beside the bundled ones: source custom, tagged
  * custom, in the category of the clip it came from). */
-export async function saveCreatureClip (p: { rig: string, name: string, base: string, category: string, loop: boolean, inPlace: boolean, duration: number }, glb: Buffer): Promise<{ id: string }> {
+export async function saveCreatureClip (p: { rig: string, name: string, base: string, category: string, loop: boolean, inPlace: boolean, duration: number, propPaths?: PropPaths }, glb: Buffer): Promise<{ id: string }> {
+  checkPropPaths(p.propPaths)
   if (!/^[a-z0-9_-]+$/.test(p.rig)) throw new Error('Which body?')
   if (p.name.trim() === '' || p.name.length > 80) throw new Error('Name the clip')
   if (glb.length < 20 || glb.readUInt32LE(0) !== 0x46546C67) throw new Error('Not a .glb')
@@ -122,7 +139,7 @@ export async function saveCreatureClip (p: { rig: string, name: string, base: st
   return await turn
 }
 
-async function writeCreatureClip (p: { rig: string, name: string, base: string, category: string, loop: boolean, inPlace: boolean, duration: number }, glb: Buffer): Promise<{ id: string }> {
+async function writeCreatureClip (p: { rig: string, name: string, base: string, category: string, loop: boolean, inPlace: boolean, duration: number, propPaths?: PropPaths }, glb: Buffer): Promise<{ id: string }> {
   const dir = path.join(LIBRARY, 'creatures')
   const indexFile = path.join(dir, 'index.json')
   const index = await readJson<{ clips: Array<Record<string, unknown>> }>(indexFile, { clips: [] })
@@ -136,7 +153,7 @@ async function writeCreatureClip (p: { rig: string, name: string, base: string, 
   index.clips = [...index.clips.filter(c => c.id !== id), {
     id, name: p.name.trim(), description: `Made in Rigsmith's animation editor from ${p.base}.`, source: 'custom', nameSource: 'source', file, fps: 30, frames,
     duration: Math.round(p.duration * 1e4) / 1e4, category: p.category, tags: ['custom', p.loop ? 'loop' : 'one-shot', p.inPlace ? 'in-place' : 'root-motion'],
-    loop: p.loop, inPlace: p.inPlace, rig: p.rig, base: p.base, createdAt: new Date().toISOString(),
+    loop: p.loop, inPlace: p.inPlace, rig: p.rig, base: p.base, ...(p.propPaths !== undefined && Object.keys(p.propPaths).length > 0 ? { propPaths: p.propPaths } : {}), createdAt: new Date().toISOString(),
   }]
   await writeFile(indexFile, JSON.stringify(index, null, 1))
   return { id }

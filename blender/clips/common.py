@@ -50,7 +50,9 @@ def key_poses(arm, names, parents, xf, poses, fps, action_name):
     arm.animation_data_create()
     arm.animation_data.action = act
     scene = bpy.context.scene
-    scene.render.fps = int(round(fps))
+    # (a whole rate, and its base for the rest: a clip whose length isn't a whole number of frames keeps its length)
+    scene.render.fps = max(1, int(round(fps)))
+    scene.render.fps_base = scene.render.fps / fps
     scene.frame_start = 0
     scene.frame_end = len(poses) - 1
     for p in pb:
@@ -76,7 +78,7 @@ def key_poses(arm, names, parents, xf, poses, fps, action_name):
             bone.keyframe_insert('location', frame=k)
 
 
-META_KEYS = ('id', 'sha256', 'kind', 'source', 'sourcePath', 'sourceName', 'name', 'tags', 'description', 'originalName', 'category', 'loop')
+META_KEYS = ('id', 'sha256', 'kind', 'source', 'sourcePath', 'sourceName', 'name', 'tags', 'description', 'originalName', 'category', 'loop', 'propPaths')
 
 
 def into_library(arm, library, job):
@@ -93,6 +95,7 @@ def into_library(arm, library, job):
         json.dump(meta, fh, separators=(',', ':'))
     sources_path = os.path.join(library, 'work', 'sources.json')
     sources = json.load(open(sources_path)) if os.path.exists(sources_path) else []
-    sources = [x for x in sources if x.get('id') != job['id']] + [job]
+    # (its line without the prop paths: those are the clip's meta, read from its edit)
+    sources = [x for x in sources if x.get('id') != job['id']] + [{k: v for k, v in job.items() if k != 'propPaths'}]
     with open(sources_path, 'w') as fh:
         json.dump(sources, fh, indent=1)

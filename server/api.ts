@@ -613,9 +613,17 @@ route('POST', /^\/api\/library\/edits$/, async (req, res) => {
 // A creature's clip made in the animation editor (a .glb on its template's skeleton): beside the bundled ones.
 route('POST', /^\/api\/library\/creature-clips$/, async (req, res, _, url) => {
   const q = (k: string): string => url.searchParams.get(k) ?? ''
-  const glb = await readBody(req, 64 * 1024 * 1024)
+  let glb = await readBody(req, 64 * 1024 * 1024)
   try {
-    send(res, 200, await saveCreatureClip({ rig: q('rig'), name: q('name'), base: q('base'), category: q('category') || (await categoryOf(q('base'))) || 'gesture', loop: q('loop') === '1', inPlace: q('inPlace') === '1', duration: Number(q('duration')) || 0 }, glb))
+    // (with props=1 the body is the prop paths first: their JSON's length (4 bytes, little-endian), the JSON, then the .glb)
+    let propPaths: unknown
+    if (q('props') === '1') {
+      const n = glb.length >= 4 ? glb.readUInt32LE(0) : -1
+      if (n < 0 || 4 + n > glb.length) throw new Error('Bad prop paths')
+      propPaths = JSON.parse(glb.subarray(4, 4 + n).toString('utf8'))
+      glb = glb.subarray(4 + n)
+    }
+    send(res, 200, await saveCreatureClip({ rig: q('rig'), name: q('name'), base: q('base'), category: q('category') || (await categoryOf(q('base'))) || 'gesture', loop: q('loop') === '1', inPlace: q('inPlace') === '1', duration: Number(q('duration')) || 0, propPaths: propPaths as never }, glb))
   } catch (error) {
     throw new HttpError(400, (error as Error).message)
   }

@@ -4,7 +4,7 @@
   import type { LibraryClip } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { animator } from '../../state/animator.svelte.ts'
-  import { slots } from '../../state/slots.svelte.ts'
+  import { slots, withPropPaths } from '../../state/slots.svelte.ts'
   import { SPRITE_FRAMES } from '../../engine/PreviewRenderer.ts'
   import { tooltip } from '../../ui/tooltip.ts'
 
@@ -59,7 +59,7 @@
     if (c === null) return
     if (slots.armed !== null) {
       // (an armed game slot: this clip plays there)
-      await slots.fill(slots.armed, { clipId: clip.id, url: clip.source === 'bundled' || clip.url.startsWith('/files/library/creatures/') ? clip.url : undefined, inPlace: clip.inPlace || clip.category === 'locomotion', loop: clip.loop })
+      await slots.fill(slots.armed, { clipId: clip.id, url: clip.source === 'bundled' || clip.url.startsWith('/files/library/creatures/') ? clip.url : undefined, inPlace: clip.inPlace || clip.category === 'locomotion', loop: clip.loop, propPaths: clip.propPaths })
       return
     }
     if (added) {
@@ -68,7 +68,7 @@
     }
     // Many Mixamo clips share a name ("Walking"); name a second one in the set after its description.
     const name = description !== '' && c.animations.some(a => a.name === clip.name) ? description : clip.name
-    const entry = { clipId: clip.id, url: clip.url, name, inPlace: clip.inPlace || clip.category === 'locomotion', loop: clip.loop, speed: 1 }
+    const entry = withPropPaths({ clipId: clip.id, url: clip.url, name, inPlace: clip.inPlace || clip.category === 'locomotion', loop: clip.loop, speed: 1 }, clip.propPaths, c)
     await app.update(c.id, { animations: [...c.animations, entry] })
   }
 </script>

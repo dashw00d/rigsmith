@@ -713,6 +713,8 @@ def run(out, names_path=DEFAULT_NAMES):
         e["tags"] = tags
         e["loop"] = m["loop"] if isinstance(m.get("loop"), bool) else bool(f["loop"]["loopable"])
         e["inPlace"] = bool(f["inPlace"])
+        if isinstance(m.get("propPaths"), dict) and m["propPaths"]:
+            e["propPaths"] = m["propPaths"]   # (a clip made with a prop leading: its path, for the slots it fills)
         top = sorted(scores.items(), key=lambda kv: -kv[1])[:3]
         e["features"] = {k: f[k] for k in MANIFEST_FEATURES if k in f}
         e["features"]["categoryScores"] = {k: round(v, 3) for k, v in top}
@@ -813,7 +815,7 @@ def run(out, names_path=DEFAULT_NAMES):
     order = ["id", "name", "description", "variant", "sourceName", "source", "sourcePath", "file", "bytes", "fps",
              "frames", "duration", "category", "confidence", "tags", "loop", "inPlace", "rest", "duplicateOf",
              "nameSource", "candidates", "motionId", "matchRmsDeg", "categorySource", "featureCategory", "matchedFrom",
-             "matchDistanceDeg", "duplicateNote", "features", "originalName", "sourceRevision", "catalogFrames"]
+             "matchDistanceDeg", "duplicateNote", "features", "originalName", "sourceRevision", "catalogFrames", "propPaths"]
     clip_list = sorted(entries.values(), key=lambda e: (CAT_ORDER[e["category"]], e["name"].lower(),
                                                         (e.get("description") or "").lower(), e["id"]))
     clip_list = [{k: e[k] for k in order if k in e} for e in clip_list]

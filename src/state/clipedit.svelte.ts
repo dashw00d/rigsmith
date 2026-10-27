@@ -16,7 +16,8 @@ import { armOf, buildEdit, fistGrip, frameTimes, GRIP_CLEAR, handGrip, handOn, h
 import { propNode } from './tune.svelte.ts'
 import { clipGlb, framesClip } from '../engine/clipexport.ts'
 import { library } from './library.svelte.ts'
-import { applyBoneKeys, KEY_FPS } from '../engine/keys.ts'
+import { applyBoneKeys, KEY_FPS, propKeysOf } from '../engine/keys.ts'
+import { garmentMatrix } from '../engine/placement.ts'
 import { JointLimits, type Rom } from '../engine/limits.ts'
 import { HORSE_RIG, HUMAN_RIG, PoseEditor, type PoseRig } from '../engine/PoseEditor.ts'
 import { retargetOffsets, type RestSkeleton } from '../engine/retarget.ts'
@@ -73,7 +74,7 @@ class ClipEdit {
   busy = $state<string | null>(null)
   /** Counts openings and stops: an opening whose count is no longer this one is stale. */
   private opening = 0
-  private loading = false
+  private saving = false
   /** The frames keyed (phases), for the timeline. */
   phases = $derived([...new Set([...Object.values(this.keys), ...Object.values(this.paths).map(p => p.keys)].flat().filter(k => this.held || !isAnchor(k) || (k.u > 0 && k.u < 1)).map(k => Math.round(k.u * 1e4) / 1e4))].sort((a, b) => a - b))
   /** The selected bone's (or prop's) keyed frames. */
@@ -147,7 +148,6 @@ class ClipEdit {
     const turn = this.opening; const who = app.selected?.id
     const stale = (): boolean => turn !== this.opening || app.selected?.id !== who || animator.character !== view
     this.busy = 'Opening the clip'
-    this.loading = true
     try {
       const template = app.selected?.template
       const rigName = template === undefined || template === 'human' ? 'human' : template
@@ -195,15 +195,15 @@ class ClipEdit {
       animator.editing = () => { this.show(animator.time) }
       this.show(animator.time)
     } finally {
-      if (turn === this.opening) { this.busy = null; this.loading = false }
+      if (turn === this.opening) this.busy = null
     }
   }
 
   /** Leave the editor (the clip edited plays on until another is played). */
   stop (): void {
-    // (an opening still loading is dropped)
+    // (an opening still loading, a fit still running, are dropped; a save runs on)
     this.opening++
-    if (this.loading) { this.loading = false; this.busy = null }
+    if (!this.saving) this.busy = null
     this.editor?.dispose()
     this.editor = null
     this.active = false
@@ -726,21 +726,27 @@ class ClipEdit {
    * user can edit them after, a drag let go is the authority). */
   async fitPath (prop: string): Promise<FitResult | null> {
     if (this.props.find(x => x.name === prop) === undefined) return null
-    this.paths = { ...this.paths, [prop]: { locked: true, keys: this.paths[prop]?.keys ?? [] } }
+    const mark = { locked: true, keys: this.paths[prop]?.keys ?? [] }
+    this.paths = { ...this.paths, [prop]: mark }
+    // (the fit is dropped if, by the time it's done, this edit was left or the prop's path changed under it)
+    const turn = this.opening
+    const stale = (): boolean => turn !== this.opening || this.paths[prop] !== mark
     this.busy = 'Fitting the prop to the body'
     await new Promise(r => setTimeout(r, 30))
     let result: FitResult | null = null
     try {
-      const input = this.fitInput(prop)
+      const input = stale() ? null : this.fitInput(prop)
       if (input !== null) {
-        result = await fitProp(input, label => { this.busy = label })
-        this.paths = { ...this.paths, [prop]: { locked: true, keys: result.keys } }
+        result = await fitProp(input, label => { if (!stale()) this.busy = label })
+        if (stale()) result = null
+        else this.paths = { ...this.paths, [prop]: { locked: true, keys: result.keys } }
       }
     } catch (error) {
-      app.toast('error', `The prop fit failed: ${(error as Error).message}`)
+      if (!stale()) app.toast('error', `The prop fit failed: ${(error as Error).message}`)
     } finally {
-      this.busy = null
+      if (turn === this.opening) this.busy = null
     }
+    if (turn !== this.opening) return null
     this.show(animator.time)
     if (result !== null) app.toast('ok', `Fitted ${prop}: moved up to ${(result.maxMove * 100).toFixed(1)} cm on ${result.moved} frames, ${result.keys.length} keys, ${(result.ms / 1000).toFixed(1)} s`)
     return result
@@ -953,7 +959,10 @@ class ClipEdit {
     const view = animator.character; const root = this.posable()
     if (view === null || view.rest === null || root === null || this.model === null || this.edited === null) { app.toast('error', 'Naturalize works on a person (the library\'s pose model)'); return }
     this.busy = 'Naturalizing every frame'
+    const turn = this.opening; const was = this.edited
     await new Promise(r => setTimeout(r, 30))
+    // (left, or rebuilt, in the moment before it starts: nothing to naturalize)
+    if (turn !== this.opening || was !== this.edited) { if (turn === this.opening) this.busy = null; return }
     try {
       const bones = new Map<string, THREE.Bone>()
       root.traverse(o => { if ((o as THREE.Bone).isBone === true) bones.set(o.name, o as THREE.Bone) })
@@ -1010,7 +1019,7 @@ class ClipEdit {
       this.edited = out.clip
       this.naturalized = true
       const worst = Math.max(0, ...out.misses)
-      animator.showClip(this.edited, { ...this.base!, name: `${this.base!.name} (naturalized)` }, animator.time)
+      animator.showClip(this.edited, { ...this.base!, name: `${this.base!.name} (naturalized)`, edited: true }, animator.time)
       app.toast('ok', `Naturalized ${out.times.length} frames in ${((performance.now() - t0) / 1000).toFixed(1)} s${attachedHands.length > 0 ? `; hands off their sockets by ${(worst * 100).toFixed(1)} cm at worst` : ''}`)
     } catch (error) {
       app.toast('error', `Naturalize failed: ${(error as Error).message}`)
@@ -1033,9 +1042,22 @@ class ClipEdit {
     const view = animator.character; const base = this.baseClip; const root = this.posable()
     if (view === null || base === null || root === null || this.base === null) return
     this.edited = buildEdit(base, this.keys, this.loop, restOf(view), root, this.rig, 0, this.limitsOn ? this.limits : null, this.propRig(), view.height, this.solver)
-    animator.showClip(this.edited, { ...this.base, name: this.held ? 'New clip (editing)' : `${this.base.name} (editing)` }, time)
+    animator.showClip(this.edited, { ...this.base, name: this.held ? 'New clip (editing)' : `${this.base.name} (editing)`, edited: true }, time)
     // (a hand just put on a prop, or let go of one: its gizmo locks to the prop, or is free again)
     this.editor?.setGripLock(b => this.gripHold(b))
+  }
+
+  /** Each rigid prop `clip` moves off where Outfit places it: its path, frame by frame, as keys from that placement. */
+  private propPathsOf (clip: THREE.AnimationClip): Record<string, ClipKey[]> {
+    const out: Record<string, ClipKey[]> = {}
+    for (const g of app.selected?.garments ?? []) {
+      if (g.mode !== 'rigid') continue
+      const position = new THREE.Vector3(); const quaternion = new THREE.Quaternion()
+      garmentMatrix(g).decompose(position, quaternion, new THREE.Vector3())
+      const keys = propKeysOf(clip, propNode(g.name), { position, quaternion }, g.scale)
+      if (keys !== null) out[g.name] = keys
+    }
+    return out
   }
 
   /** Save the edited clip into the library as a new one: a person's (a library clip) through the library's build, a
@@ -1044,12 +1066,15 @@ class ClipEdit {
     const view = animator.character; const root = this.posable(); const base = this.base; const source = this.source
     if (view === null || view.rest === null || root === null || base === null || source === null || this.edited === null) return
     this.busy = 'Saving the clip into the library'
+    this.saving = true
     try {
       const frames = unretarget(this.edited, root, view.rest, source.rest, source.clip, this.lift)
+      // (each prop the edit moves off its Outfit placement: its path, which the clip carries to the slots it fills)
+      const propPaths = this.propPathsOf(this.edited)
       if (base.url.startsWith('/files/library/clips/')) {
         const r = await fetch('/api/library/edits', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name, base: base.clipId, loop: base.loop, keys: this.keys, props: { paths: this.paths, attachments: this.attachments }, frames, characterId: app.selected?.id }),
+          body: JSON.stringify({ name, base: base.clipId, loop: base.loop, keys: this.keys, props: { paths: this.paths, attachments: this.attachments }, propPaths, frames, characterId: app.selected?.id }),
         })
         const body = await r.json() as { id?: string, error?: string, job?: string }
         if (!r.ok || body.id === undefined) throw new Error(body.error ?? `HTTP ${r.status}`)
@@ -1062,7 +1087,15 @@ class ClipEdit {
         const glb = await clipGlb(src.root, source.rest, framesClip(frames, source.rest, name))
         const rig = app.selected?.template ?? 'human'
         const q = new URLSearchParams({ rig, name, base: base.clipId, loop: base.loop ? '1' : '0', inPlace: base.inPlace ? '1' : '0', duration: String(this.edited.duration) })
-        const r = await fetch(`/api/library/creature-clips?${q.toString()}`, { method: 'POST', body: glb })
+        // (with prop paths: their JSON's length, the JSON, then the .glb)
+        let upload: BodyInit = glb
+        if (Object.keys(propPaths).length > 0) {
+          const json = new TextEncoder().encode(JSON.stringify(propPaths))
+          const head = new Uint8Array(4); new DataView(head.buffer).setUint32(0, json.length, true)
+          upload = new Blob([head, json, glb])
+          q.set('props', '1')
+        }
+        const r = await fetch(`/api/library/creature-clips?${q.toString()}`, { method: 'POST', body: upload })
         const body = await r.json() as { id?: string, error?: string }
         if (!r.ok || body.id === undefined) throw new Error(body.error ?? `HTTP ${r.status}`)
         app.toast('ok', `${name} is in the ${rig}'s library (${body.id}): under Custom`)
@@ -1072,6 +1105,7 @@ class ClipEdit {
       app.toast('error', `The clip didn't save: ${(error as Error).message}`)
     } finally {
       this.busy = null
+      this.saving = false
     }
   }
 }

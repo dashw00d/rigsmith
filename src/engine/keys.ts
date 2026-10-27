@@ -52,11 +52,13 @@ export function sampleKeys (keys: ClipKey[], u: number, loop: boolean): { q: THR
   return out({ q: hermite(q0, q1, q2, q3), p: hermite(k0.v.p, k1.v.p, k2.v.p, k3.v.p) })
 }
 
-/** The times a keyed track is baked at: every frame, and the clip's end. */
-function frames (duration: number): number[] {
+/** A clip's frames as times: as many as KEY_FPS gives it, spread evenly from its start to its very end (a clip whose
+ * length isn't a whole number of frames keeps its last pose, its frames a touch apart from 1/30 s). */
+export function frameTimes (duration: number): number[] {
   const n = Math.max(1, Math.round(duration * KEY_FPS))
-  return Array.from({ length: n + 1 }, (_, i) => Math.min(duration, i / KEY_FPS))
+  return Array.from({ length: n + 1 }, (_, i) => (i === n ? duration : i * duration / n))
 }
+const frames = frameTimes
 
 function trackValue (track: THREE.KeyframeTrack | undefined, t: number, size: number, fallback: number[]): number[] {
   if (track === undefined) return fallback
@@ -130,6 +132,29 @@ export function propTracks (node: string, duration: number, keys: ClipKey[] | un
     qs.push(...place.quaternion.clone().multiply(q).toArray())
   }
   return [new THREE.VectorKeyframeTrack(`${node}.position`, times, ps), new THREE.QuaternionKeyframeTrack(`${node}.quaternion`, times, qs)]
+}
+
+/** propTracks undone: the prop node `node`'s path in `clip`, frame by frame, as keys from its placement (null when the
+ * clip has no track for it, or holds it where it is placed all through). */
+export function propKeysOf (clip: THREE.AnimationClip, node: string, place: { position: THREE.Vector3, quaternion: THREE.Quaternion }, placeScale: number): ClipKey[] | null {
+  const pt = clip.tracks.find(t => t.name === `${node}.position`); const qt = clip.tracks.find(t => t.name === `${node}.quaternion`)
+  if (pt === undefined && qt === undefined) return null
+  const at = (track: THREE.KeyframeTrack | undefined, t: number, fallback: number[]): number[] => track === undefined ? fallback
+    : Array.from((track as unknown as { createInterpolant: () => THREE.Interpolant }).createInterpolant().evaluate(t) as ArrayLike<number>)
+  const unturn = place.quaternion.clone().invert()
+  const round = (v: number): number => Math.round(v * 1e6) / 1e6
+  let moved = false
+  let was = new THREE.Quaternion()
+  const keys = frameTimes(clip.duration).map(t => {
+    const p = new THREE.Vector3().fromArray(at(pt, t, place.position.toArray())).sub(place.position).applyQuaternion(unturn).divideScalar(placeScale || 1)
+    const q = unturn.clone().multiply(new THREE.Quaternion().fromArray(at(qt, t, place.quaternion.toArray()))).normalize()
+    // (the same hemisphere as the frame before: the keys blend component by component)
+    if (q.dot(was) < 0) q.set(-q.x, -q.y, -q.z, -q.w)
+    was = q
+    if (p.length() > 1e-4 || q.angleTo(new THREE.Quaternion()) > 1e-3) moved = true
+    return { u: clip.duration > 0 ? t / clip.duration : 0, q: q.toArray().map(round) as ClipKey['q'], p: p.toArray().map(round) as ClipKey['p'] }
+  })
+  return moved ? keys : null
 }
 
 /** The ground: per frame of `clip` on `root` (a posable copy), the lowest point of `body`'s skin. Leaves the bones as

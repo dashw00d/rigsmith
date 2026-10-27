@@ -25,8 +25,8 @@
     const i = character.animations.findIndex(a => a.name === slot)
     return i < 0 ? null : { a: character.animations[i], i }
   }
-  // A library clip playing now (not an entry): a slot can take it.
-  const previewing = $derived(animator.current !== null && animator.current.entry === null && animator.current.clipId !== 'fists' ? animator.current : null)
+  // A library clip playing now (not an entry, nor the editor's unsaved edit): a slot can take it.
+  const previewing = $derived(animator.current !== null && animator.current.entry === null && animator.current.clipId !== 'fists' && animator.current.edited !== true ? animator.current : null)
   const label = (a: AnimationEntry): string => a.clipId.replace(/^(mixamo|custom|human|horse)-/, '').replace(/[_-]+/g, ' ')
   let dragIndex = $state<number | null>(null)
 
@@ -61,7 +61,7 @@
 
   function useForSlot (slot: string): void {
     if (previewing === null) return
-    void slots.fill(slot, { clipId: previewing.clipId, url: previewing.url.startsWith('/animations/') || previewing.url.startsWith('/files/library/creatures/') ? previewing.url : undefined, inPlace: animator.inPlace, loop: animator.loop })
+    void slots.fill(slot, { clipId: previewing.clipId, url: previewing.url.startsWith('/animations/') || previewing.url.startsWith('/files/library/creatures/') ? previewing.url : undefined, inPlace: animator.inPlace, loop: animator.loop, propPaths: previewing.propPaths })
   }
 </script>
 

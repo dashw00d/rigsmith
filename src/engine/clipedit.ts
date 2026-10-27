@@ -5,7 +5,7 @@
 // library.
 import * as THREE from 'three'
 import type { ClipKey } from '../../server/workspace.ts'
-import { applyBoneKeys, KEY_FPS, sampleKeys } from './keys.ts'
+import { applyBoneKeys, frameTimes, KEY_FPS, sampleKeys } from './keys.ts'
 import { keepOffFloor, reach, setWorldQuaternion, type Leg } from './ik.ts'
 import { bodyBones, solveBody, type BodyState, type HandGoal } from './bodysolve.ts'
 import { FOLLOW, type NaturalGoal, type Obstacle } from './posespace.ts'
@@ -34,11 +34,7 @@ export function keyFor (base: THREE.AnimationClip, bone: THREE.Bone, u: number, 
   return key
 }
 
-/** A clip's frames (KEY_FPS) as times. */
-export function frameTimes (duration: number): number[] {
-  const n = Math.max(1, Math.round(duration * KEY_FPS))
-  return Array.from({ length: n + 1 }, (_, i) => Math.min(duration, i / KEY_FPS))
-}
+export { frameTimes }
 
 function bonesOf (root: THREE.Object3D): Map<string, THREE.Bone> {
   const out = new Map<string, THREE.Bone>()
@@ -468,7 +464,7 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
   const nameOf = (b: THREE.Bone): string => b.name
   // (the frames a drag was let go on: a prop drag's key, a key on a bone; the solve there is not pulled toward the frame
   // before, so what was seen when it was let go stays)
-  const frameOf = (u: number): number => Math.round(u * keyed.duration * KEY_FPS)
+  const frameOf = (u: number): number => Math.round(u * (times.length - 1))
   const letGo = new Set([...(props?.holds ?? []).map(h => frameOf(h.u)), ...Object.values(keys).flat().filter(k => !(k.p === undefined && Math.abs(k.q[3]) > 1 - 1e-9)).map(k => frameOf(k.u))])
   // (each leading prop's node keyed where its path puts it, on its bone as the solve left that: the prop is where it leads
   // to, however the hand carrying it holds it)
@@ -598,7 +594,8 @@ export function unretarget (clip: THREE.AnimationClip, posable: THREE.Object3D, 
   }
   mixer.stopAllAction()
   mixer.uncacheRoot(posable)
-  return { fps: KEY_FPS, bones: order, rotations, hips }
+  // (the frames' own rate: a clip not a whole number of frames long keeps its length)
+  return { fps: clip.duration > 0 ? (times.length - 1) / clip.duration : KEY_FPS, bones: order, rotations, hips }
 }
 
 /** A source bone's world matrix in one frame of `rotations` (each bone's local turn, by `order`; a bone above the
