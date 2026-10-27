@@ -35,7 +35,8 @@ def laplacian(verts, tris, weld_tolerance):
     vals = np.clip(vals, 1e-3, 1e3)
 
     area = 0.5 * np.linalg.norm(np.cross(verts[j] - verts[i], verts[k] - verts[i]), axis=1)
-    mass = np.bincount(np.concatenate([i, j, k]), weights=np.repeat(area / 3.0, 3), minlength=len(verts))
+    # Indices are grouped by triangle corner, not interleaved by triangle.
+    mass = np.bincount(np.concatenate([i, j, k]), weights=np.tile(area / 3.0, 3), minlength=len(verts))
     mass = np.maximum(mass, 1e-12)
 
     # Weld vertices that share a position (UV seams, split normals) with stiff edges.
@@ -62,14 +63,15 @@ class Graph:
     def __init__(self, rows, cols, vals, n):
         order = np.argsort(rows, kind='stable')
         self.rows, self.cols, self.vals = rows[order], cols[order], vals[order]
-        self.starts = np.flatnonzero(np.r_[True, self.rows[1:] != self.rows[:-1]])
+        self.starts = np.flatnonzero(np.r_[True, self.rows[1:] != self.rows[:-1]]) if len(rows) else np.array([], dtype=int)
         self.row_ids = self.rows[self.starts]
         self.degree = np.bincount(rows, weights=vals, minlength=n)
 
     def apply(self, x):
         contribution = self.vals[:, None] * (x[self.rows] - x[self.cols])
         out = np.zeros_like(x)
-        out[self.row_ids] = np.add.reduceat(contribution, self.starts, axis=0)
+        if len(self.starts):
+            out[self.row_ids] = np.add.reduceat(contribution, self.starts, axis=0)
         return out
 
 
@@ -106,6 +108,32 @@ def diffuse(verts, tris, attach, distance, n_bones, heat=1.0):
     rhs[np.arange(len(verts)), attach] = h
     graph.vals = graph.vals.astype(np.float32)
     return np.clip(solve(graph, h.astype(np.float32), rhs), 0.0, 1.0).astype(np.float64)
+
+
+def finalize(verts, weights, attach, max_influences=4, floor=0.02):
+    """Finite, normalized weights with an exact shared answer at split seams.
+
+    A threshold must never leave a vertex unbound (many small influences, isolated
+    vertices or a failed numerical solve). Keep its strongest bone in that case.
+    """
+    w = np.maximum(np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0), 0.0)
+    empty = w.sum(axis=1) <= 1e-12
+    w[empty, attach[empty]] = 1.0
+    tolerance = max(float(np.ptp(verts, axis=0).max()), 1e-9) * 1e-6
+    _, inverse = np.unique(np.round(verts / tolerance).astype(np.int64), axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    shared = np.zeros((int(inverse.max()) + 1, w.shape[1]))
+    np.add.at(shared, inverse, w)
+    shared /= np.bincount(inverse)[:, None]
+    strongest = shared.argmax(axis=1)
+    top = np.argsort(-shared, axis=1, kind='stable')[:, :max_influences]
+    keep = np.zeros_like(shared, dtype=bool)
+    np.put_along_axis(keep, top, True, axis=1)
+    out = np.where(keep & (shared >= floor), shared, 0.0)
+    empty = out.sum(axis=1) <= 1e-12
+    out[empty, strongest[empty]] = 1.0
+    out /= out.sum(axis=1, keepdims=True)
+    return out[inverse]
 
 
 def side_eligible(verts, heads, tails, x_center, height, inside=0.35):

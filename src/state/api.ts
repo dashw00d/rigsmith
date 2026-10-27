@@ -48,6 +48,7 @@ export const api = {
   addNote: async (id: string, note: string) => await call<{ ok: boolean }>('POST', `/api/characters/${id}/journal`, { note }),
   remove: async (id: string) => await call<{ ok: boolean }>('DELETE', `/api/characters/${id}`),
   rig: async (id: string) => await call<Job>('POST', `/api/characters/${id}/rig`),
+  fitFingers: async (id: string, fingers: Character['fingers']) => await call<Character>('POST', `/api/characters/${id}/fingers`, { fingers }),
   setTemplate: async (id: string, template: string, joints?: Record<string, Vec3>, fingers?: Character['fingers']) => await call<Character>('POST', `/api/characters/${id}/template`, { template, joints, fingers }),
   reimport: async (id: string) => await call<Job>('POST', `/api/characters/${id}/reimport`),
   fillTexture: async (id: string) => await call<Job>('POST', `/api/characters/${id}/texture/fill`),

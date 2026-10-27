@@ -23,7 +23,7 @@
     { value: 'none', label: 'None', hint: 'No finger bones; the hand moves as one piece (25 bones)' },
     { value: 'one', label: '1', hint: 'One chain curls all fingers and the thumb together (33 bones)' },
     { value: 'two', label: '2', hint: "Mixamo's mitten: thumb plus one chain for all four fingers (41 bones)" },
-    { value: 'full', label: 'All', hint: 'Every finger traced from the mesh (65 bones)' },
+    { value: 'full', label: 'All', hint: 'A separate chain for each finger (65 bones)' },
   ]
   let fingers = $state<FingerLevel>('full')
   $effect(() => { fingers = (character.fingers ?? 'full') as FingerLevel })
@@ -96,10 +96,19 @@
     markerBoard.open = true
   }
   const jointGroups = $derived(groups(fingers))
+  let fittingFingers = $state(false)
 
   async function setFingers (value: FingerLevel): Promise<void> {
-    await app.update(character.id, { fingers: value })
-    viewer.resetEditor()
+    if (fittingFingers) return
+    fittingFingers = true
+    markerBoard.busy = 'Fitting finger joints'
+    try {
+      app.upsert(await api.fitFingers(character.id, value))
+      viewer.resetEditor()
+    } catch (error) {
+      fingers = (character.fingers ?? 'full') as FingerLevel
+      app.toast('error', (error as Error).message)
+    } finally { fittingFingers = false; markerBoard.busy = null }
   }
 
   async function resetJoints (): Promise<void> {
@@ -229,17 +238,17 @@
 
   {#if human}
     <Section title="Fingers">
-      <Segmented options={fingerOptions} bind:value={fingers} onchange={setFingers} />
+      <fieldset disabled={fittingFingers} style="border: 0; padding: 0; margin: 0"><Segmented options={fingerOptions} bind:value={fingers} onchange={setFingers} /></fieldset>
       <p class="faint small">{fingerOptions.find(f => f.value === fingers)?.hint}. Animations with more fingers still play; missing finger bones are ignored.</p>
     </Section>
   {/if}
 
   <Section>
-    <Button variant="primary" size="lg" block loading={rigging} disabled={character.joints === undefined} onclick={() => app.rig(character.id)}>
+    <Button variant="primary" size="lg" block loading={rigging} disabled={character.joints === undefined || fittingFingers} onclick={() => app.rig(character.id)}>
       {#if !rigging}<Sparkles size={15} />{/if}
       {rigging ? (job?.message ?? 'Rigging') : 'Rig character'}
     </Button>
-    <p class="faint small center">Builds the skeleton and skin weights in Blender, about 5 seconds.</p>
+    <p class="faint small center">Builds the rig and checks its weights against the deformation tests before replacing your previous rig.</p>
   </Section>
 {/if}
 

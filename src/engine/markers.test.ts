@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { edgesOf, fitMarkers, jointsFrom, pinsOf, seed, solve, useMarkerSets, type MarkerSet, type V3 } from './markers.ts'
+import * as THREE from 'three'
+import { edgesOf, fitMarkers, insideDepth, jointsFrom, markerRay, pinsOf, placeMarker, seed, solve, useMarkerSets, type MarkerSet, type V3 } from './markers.ts'
 import { hierarchy } from './mixamo.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..')
@@ -11,6 +12,65 @@ const horse = JSON.parse(readFileSync(path.join(ROOT, 'static', 'templates', 'ho
 const dist = (a: V3, b: V3): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
 
 describe('markers', () => {
+  it('picks the hand inside the camera slab and excludes the leg behind it', () => {
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 2.6, 3.4)
+    camera.position.z = 3
+    camera.updateMatrixWorld()
+    const hand = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 0.2), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }))
+    const leg = hand.clone(); leg.position.z = -1
+    hand.updateMatrixWorld(); leg.updateMatrixWorld()
+    const ray = new THREE.Raycaster()
+    markerRay(ray, camera, new THREE.Vector2(0, 0))
+    const hits = ray.intersectObjects([hand, leg])
+    expect(hits.length).toBeGreaterThanOrEqual(2)
+    expect(hits.every(h => h.object === hand)).toBe(true)
+    expect(insideDepth(hits.map(h => h.distance))).toBeCloseTo(3, 6)
+  })
+
+  it('keeps later fine joint edits when reopening saved markers', () => {
+    const m = seed('horse', json.horse, horse.joints)
+    const edited = { ...jointsFrom(json.horse, m, horse.parents, 0) }
+    edited.head = [edited.head[0], edited.head[1] + 0.04, edited.head[2]]
+    const fitted = fitMarkers('horse', json.horse, m, edited, horse.parents)
+    expect(jointsFrom(json.horse, fitted, horse.parents, 0).head).toEqual(edited.head)
+  })
+
+  it('carries finger tips with a moved wrist, mirrors the other hand, and preserves finger lengths', () => {
+    const J: Record<string, V3> = { LeftForeArm: [0.2, 1, 0], LeftHand: [0.4, 1, 0], LeftHandIndex4: [0.5, 1, 0],
+      RightForeArm: [-0.2, 1, 0], RightHand: [-0.4, 1, 0], RightHandIndex4: [-0.5, 1, 0] }
+    const m = seed('human', json.human, J)
+    const moved = placeMarker(json.human, m, 'wrist_l', [0.2, 1.2, 0], 0, true)
+    expect(dist(moved.positions.index_tip_l, [0.2, 1.3, 0])).toBeLessThan(1e-9)
+    expect(dist(moved.positions.index_tip_r, [-0.2, 1.3, 0])).toBeLessThan(1e-9)
+    const tip = placeMarker(json.human, moved, 'index_tip_l', [0.3, 1.4, 0], 0, false)
+    expect(tip.positions.wrist_l).toEqual(moved.positions.wrist_l)
+    expect(tip.positions.index_tip_r).toEqual(moved.positions.index_tip_r)
+  })
+
+  it('fits the whole finger to its tip instead of bending only the last joint', () => {
+    const J: Record<string, V3> = { LeftHand: [0, 0, 0], LeftHandIndex1: [0, 0.5, 0], LeftHandIndex2: [0, 0.7, 0],
+      LeftHandIndex3: [0, 0.85, 0], LeftHandIndex4: [0, 1, 0] }
+    const set: MarkerSet = { view: 'front', markers: json.human.markers.filter(d => ['wrist', 'index_tip'].includes(d.id)) }
+    const m = seed('human', set, J)
+    m.positions.index_tip_l = [1, 1, 0]
+    const out = jointsFrom(set, m, Object.fromEntries(hierarchy('full')), 0)
+    expect(dist(out.LeftHandIndex1, [0.5, 0.5, 0])).toBeLessThan(1e-6)
+    expect(dist(out.LeftHandIndex3, [0.85, 0.85, 0])).toBeLessThan(1e-6)
+    expect(out.LeftHandIndex4).toEqual([1, 1, 0])
+  })
+
+  it('moves a former mitten chain under its placed index tip on a full hand', () => {
+    const J: Record<string, V3> = { LeftHand: [0, 0, 0], LeftHandIndex1: [0, 0.5, 0], LeftHandIndex2: [0, 0.7, 0],
+      LeftHandIndex3: [0, 0.85, 0], LeftHandIndex4: [-0.3, 1, 0], LeftHandMiddle4: [0, 1.1, 0],
+      LeftHandRing4: [0.15, 1, 0], LeftHandPinky4: [0.3, 0.9, 0] }
+    const m = seed('human', json.human, J)
+    m.positions.index_tip_l = [-0.31, 1, 0.02]
+    const out = jointsFrom(json.human, m, Object.fromEntries(hierarchy('full')), 0)
+    for (let i = 1; i <= 3; i++) expect(Math.abs(out[`LeftHandIndex${i}`][0] + 0.31)).toBeLessThan(0.03)
+    expect(out.LeftHandIndex4).toEqual(m.positions.index_tip_l)
+    expect(out.LeftHandMiddle4).toEqual(J.LeftHandMiddle4)
+  })
+
   it('give back the skeleton they were seeded from when left alone', () => {
     const m = seed('horse', json.horse, horse.joints)
     const out = jointsFrom(json.horse, m, horse.parents, 0)

@@ -7,6 +7,8 @@ to the matching bone, and let heat diffusion (heat.diffuse) produce the soft bor
 Regions are found from the joints plus the front silhouette (arm/torso separation under the armpits),
 so they work with user-edited joints too.
 """
+from itertools import permutations
+
 import numpy as np
 
 from fingers import hand_fingers
@@ -226,6 +228,28 @@ def _chain_for(finger, prefix, idx):
     return []
 
 
+def match_fingers(labeled, prefix, idx, dist):
+    """Match traced surface fingers to the placed chains, not a detector's labels.
+
+    The finger markers are authoritative even when the automatic thumb ordering
+    or the original hand pose differed. Use a one-to-one match to avoid assigning
+    two touching fingers to the same chain. Mitten levels keep their shared chain.
+    """
+    fingers = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']
+    available = [f for f in fingers if all(f'{prefix}Hand{f}{i}' in idx for i in (1, 2, 3))]
+    if len(available) < 5 or not labeled:
+        return {f: f for f in labeled}
+    detected = list(labeled)
+    cost = np.zeros((len(detected), len(available)))
+    for i, f in enumerate(detected):
+        members = np.asarray(labeled[f]['members'], dtype=int)
+        for j, name in enumerate(available):
+            chain = [idx[b] for b in _chain_for(name, prefix, idx)]
+            cost[i, j] = np.mean(np.min(dist[np.ix_(members, chain)], axis=1)) if len(members) else 0
+    best = min(permutations(range(len(available)), len(detected)), key=lambda p: sum(cost[i, j] for i, j in enumerate(p)))
+    return {f: available[j] for f, j in zip(detected, best)}
+
+
 def _attach_hands(verts, tris, names, idx, dist, joints, attach_to, height):
     """Each detected finger's vertices attach only to its own chain (no bleed between touching
     fingers); the palm attaches to the hand."""
@@ -237,6 +261,7 @@ def _attach_hands(verts, tris, names, idx, dist, joints, attach_to, height):
         if hand is None:
             continue
         labeled = hand_fingers(verts, tris, hand, wrist, height)
+        matched = match_fingers(labeled, prefix, idx, dist)
         hand_bone = idx[prefix + 'Hand']
         driven = np.isin(attach_to, [idx[b] for b in names if b.startswith(prefix + 'Hand')])
         in_fingers = np.zeros(len(verts), dtype=bool)
@@ -244,7 +269,7 @@ def _attach_hands(verts, tris, names, idx, dist, joints, attach_to, height):
             members = np.array(f['members'])
             members = members[driven[members]]
             in_fingers[members] = True
-            cand = [hand_bone] + [idx[b] for b in _chain_for(finger, prefix, idx)]
+            cand = [hand_bone] + [idx[b] for b in _chain_for(matched[finger], prefix, idx)]
             sub = dist[np.ix_(members, cand)]
             attach_to[members] = np.array(cand)[np.argmin(sub, axis=1)]
         if labeled:
@@ -252,7 +277,7 @@ def _attach_hands(verts, tris, names, idx, dist, joints, attach_to, height):
             # (it bends with the finger when the hand closes), like Mixamo's knuckle weights.
             palm = np.flatnonzero(driven & ~in_fingers)
             attach_to[palm] = hand_bone
-            firsts = {_chain_for(f, prefix, idx)[0] for f in labeled if _chain_for(f, prefix, idx)}
+            firsts = {_chain_for(f, prefix, idx)[0] for f in matched.values() if _chain_for(f, prefix, idx)}
             cand = [hand_bone] + [idx[b] for b in sorted(firsts)]
             sub = dist[np.ix_(palm, cand)].copy()
             for k, b in enumerate(sorted(firsts), start=1):

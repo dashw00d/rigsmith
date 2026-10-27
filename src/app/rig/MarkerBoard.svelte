@@ -10,7 +10,7 @@
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import type { CharacterView } from '../../engine/CharacterView.ts'
-  import { fitMarkers, insideDepth, jointOf, jointsFrom, keysOf, mirrorX, type MarkerDef, type Markers, type MarkerSet, type SolveCache, type V3 } from '../../engine/markers.ts'
+  import { fitMarkers, insideDepth, jointOf, jointsFrom, keysOf, markerRay, placeMarker, type MarkerDef, type Markers, type MarkerSet, type SolveCache, type V3 } from '../../engine/markers.ts'
   import { markerBoard } from '../../state/markers.svelte.ts'
 
   let { character, view, set, setName, parents }: { character: Character, view: CharacterView, set: MarkerSet, setName: string, parents: Record<string, string | null> } = $props()
@@ -72,7 +72,12 @@
     up.normalize()
     const a = at('HandIndex1'); const b = at('HandPinky1') ?? at('HandThumb1')
     const across = a !== null && b !== null ? a.clone().sub(b) : new THREE.Vector3(1, 0, 0)
-    across.addScaledVector(up, -across.dot(up)).normalize()
+    across.addScaledVector(up, -across.dot(up))
+    if (across.lengthSq() < 1e-10) {
+      across.set(Math.abs(up.x) < 0.8 ? 1 : 0, Math.abs(up.x) < 0.8 ? 0 : 1, 0)
+      across.addScaledVector(up, -across.dot(up))
+    }
+    across.normalize()
     const normal = new THREE.Vector3().crossVectors(across, up).normalize()
     // (looking at its back: from out beside the body)
     const out = wrist.clone().sub(box.getCenter(new THREE.Vector3())); out.y = 0
@@ -130,10 +135,9 @@
   /** The point in the body under a screen point, for a marker: its depth from the mesh (or `keep`'s). */
   function toBody (x: number, y: number, def: MarkerDef, keep: V3 | undefined): V3 {
     const ndc = new THREE.Vector2(x / width * 2 - 1, 1 - y / height * 2)
-    ray.setFromCamera(ndc, camera)
-    ray.near = 0; ray.far = camera.far - camera.near
+    markerRay(ray, camera, ndc)
     const hits = ray.intersectObjects(meshes, false).map(h => h.distance)
-    ray.far = Infinity
+    ray.near = 0; ray.far = Infinity
     const along = insideDepth(hits)
     const origin = ray.ray.origin; const dir = ray.ray.direction
     const on = along !== null ? origin.clone().addScaledVector(dir, along) : null
@@ -189,12 +193,7 @@
   /** A marker moved (and, on a front view, its pair's other side mirrored). */
   function moveMarker (key: string, def: MarkerDef, p: V3): void {
     if (markers === null) return
-    const positions = { ...markers.positions, [key]: p }
-    if (def.pair && set.view === 'front' && markerBoard.mirror) {
-      const other = key.endsWith('_l') ? `${def.id}_r` : `${def.id}_l`
-      if (positions[other] !== undefined) positions[other] = mirrorX(p, xCenter)
-    }
-    markers = { ...markers, positions }
+    markers = placeMarker(set, markers, key, p, xCenter, markerBoard.mirror)
   }
 
   // (the joints the markers were fitted to: a finger level changed while the board is open brings new bones, or takes
@@ -202,10 +201,11 @@
   let fittedTo = ''
   $effect(() => {
     const now = character.joints as Record<string, V3> | undefined
-    const names = now === undefined ? '' : Object.keys(now).sort().join(',')
-    if (markers === null || now === undefined || fittedTo === '' || names === fittedTo || dragging !== null) return
+    const signature = now === undefined ? '' : JSON.stringify(now)
+    if (markers === null || now === undefined || fittedTo === '' || signature === fittedTo || dragging !== null) return
     markers = fitMarkers(setName, set, $state.snapshot(markers) as Markers, now, parents, seedOwn)
-    fittedTo = names
+    fittedTo = signature
+    live.key = undefined
     solveNow()
   })
 
@@ -233,14 +233,14 @@
     // on their joints), else seeded from its joints
     // (a plain copy: the character's own is the app's live state, which can't be cloned as it is)
     if (base !== undefined) markers = fitMarkers(setName, set, saved === undefined ? undefined : $state.snapshot(saved) as Markers, base, parents, seedOwn)
-    fittedTo = base === undefined ? '' : Object.keys(base).sort().join(',')
+    fittedTo = base === undefined ? '' : JSON.stringify(base)
     // (a marker that keeps its joint's depth sits as deep as that joint: markers placed before it kept it move back)
     if (markers !== null) {
       const m = markers
       for (const k of keysOf(set)) {
         const j = jointOf(k.def, k.side)
         const at = m.positions[k.key]
-        if (k.def.depth === 'keep' && j !== null && at !== undefined && m.base[j] !== undefined) at[2] = m.base[j][2]
+        if (k.def.depth === 'keep' && j !== null && at !== undefined && base?.[j] !== undefined) at[2] = base[j][2]
       }
     }
     const fit = (): void => { width = host.clientWidth; height = host.clientHeight; place() }
@@ -306,6 +306,7 @@
         moveMarker(k.key, k.def, toBody(e.clientX - r.left, e.clientY - r.top, k.def, markers.positions[k.key]))
       }
       solveNow()
+      fittedTo = JSON.stringify(joints)
       await app.update(character.id, { markers: $state.snapshot(markers), joints: $state.snapshot(joints), jointsEdited: true })
     } catch (error) {
       app.toast('error', `The markers didn't save: ${(error as Error).message}`)

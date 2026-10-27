@@ -230,7 +230,7 @@ def skin(meshes, armature, verts, tris, steer=True, method='regions'):
         if k > 0:
             band = np.clip(k * radius, CREATURE_BAND_RANGE[0] * H, CREATURE_BAND_RANGE[1] * H)
             w = band_blend(verts, tris, w, attach_to, band)
-    w = limit_and_normalize(w)
+    w = heat.finalize(verts, w, attach_to, MAX_INFLUENCES)
     offset = 0
     for ob in meshes:
         n = len(ob.data.vertices)
@@ -252,3 +252,32 @@ def _bind(ob, armature, w, bone_names):
         nz = np.flatnonzero(w[:, b] > 0)
         for i in nz:
             group.add([int(i)], float(w[i, b]), 'REPLACE')
+
+
+def native_candidate(meshes, armature, verts, fallback):
+    """Blender's volume heat is a useful second candidate for capes and creatures.
+
+    Small disconnected pieces sometimes get no native weights. Use the regional
+    solution there, then enforce the same seam and influence invariants. A solver
+    that misses most of the mesh is not a candidate.
+    """
+    names = [b.name for b in armature.data.bones if b.use_deform]
+    bpy.ops.object.select_all(action='DESELECT')
+    for ob in meshes:
+        ob.vertex_groups.clear()
+        ob.select_set(True)
+    armature.select_set(True)
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.parent_set(type='ARMATURE_AUTO')
+    w = weight_matrix(meshes, names)
+    missing = ~np.isfinite(w).all(axis=1) | (w.sum(axis=1) < 1e-8)
+    if missing.mean() > 0.1:
+        return False
+    w[missing] = fallback[missing]
+    w = heat.finalize(verts, w, fallback.argmax(axis=1), MAX_INFLUENCES)
+    offset = 0
+    for ob in meshes:
+        n = len(ob.data.vertices)
+        _bind(ob, armature, w[offset:offset + n], names)
+        offset += n
+    return True

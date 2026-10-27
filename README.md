@@ -17,7 +17,7 @@ AI repainting and Godot 4.x for the export check. All data lives in `workspace/`
 | Step | What happens |
 | --- | --- |
 | Import | Drop FBX, GLB, OBJ, DAE or ZIP (Tripo zips work as-is), any number at once. Blender normalizes each one and detects whether it's a mesh, a rigged character (Mixamo, Unreal, Rigify, Tripo…) or an animation. |
-| Rig | Humanoids: joints are detected automatically (Mixamo-style markers you can drag, mirrored), then weights are computed in Blender (~5 s). Choose 25/33/41/65 bones. Creatures: pick a body type (horse, fox, bird, dragon, kaiju, spider, snake, fish); the template fits to the model. Already-rigged imports keep their weights; non-Mixamo skeletons are mapped onto Mixamo (auto, editable, savable as presets). **Auto-rig all** does a whole batch. |
+| Rig | Humanoids: place body regions and hand tips, choose 25/33/41/65 bones, then rig in Blender. Switching finger levels fits the new chains at the current wrists. Humans and horses compare regional and volume-heat skinning on deformation tests; rerigging also checks against the previous weights on the new joints. Creatures use fitted body templates. Already-rigged imports keep their weights; non-Mixamo skeletons can be mapped onto Mixamo. **Auto-rig all** does a whole batch. |
 | Outfit | Props from the catalog (swords, shields, bows, tools, guns) pinned to sockets with a gizmo. Your own meshes: rigid pieces on a bone, or clothing skinned to the body with a policy (body, upper, lower, cape, skirt, head) so weights never bleed from the wrong bones, plus optional hide-body-underneath. |
 | Texture | Fill the magenta holes AI texture generators leave (filled from nearby paint in 3D, seam-aware). Projection painting: mask an area with the smart brush or region wand (edge-aware), capture the view, let Codex paint `result.png`, preview it projected onto the UVs, keep it. |
 | Animate | The complete named Mixamo collection (2,317 motions + 129 poses), bundled work/combat clips and creature clips. Search names, filenames and descriptions; numbered variants stay distinct. Every card previews the clip on *your* character. Build a per-character set (names, loop, in-place, speed) and copy it to other characters. |
@@ -44,7 +44,17 @@ tests/godot/    headless Godot import check for exported GLBs
 npm run check                                   # types
 npm test                                        # unit tests incl. retargeting on real library clips
 npm run test:godot -- workspace/exports/X.glb   # imports a GLB in headless Godot, resolves every track
+python3 -m unittest discover -s blender/autorig -p test_heat.py
+python3 tools/verify_autorig.py --out workspace/audits/rigging/generated --native
+node tools/dev/verify_rigs.ts workspace/audits/rigging/generated workspace/audits/rigging/checks.json
 ```
+
+The isolated rig check leaves saved characters alone. It verifies exported joint positions, finite normalized
+weights, four influences, matching split seams, and samples eight poses from each rig test clip. Stretch metrics
+measure deformation; a structurally valid rig can still crease or clip clothing. Native heat fills small unbound
+pieces from the regional solution. Painted edits are reapplied before comparing candidates, and a failed build
+leaves the previous GLB intact. The deformation comparison currently covers humans and horses; other templates
+keep their regular heat solver. Back up `workspace/characters` before a library-wide rebuild.
 
 ## Game units
 

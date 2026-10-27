@@ -2,11 +2,11 @@
 import { randomBytes } from 'node:crypto'
 import { createReadStream, existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path'
 import { enqueue, events, type Job, listJobs, runBlender, runCodex } from './jobs.ts'
-import { optimizeSkin, torchPython } from './skinopt.ts'
+import { optimizeSkin, torchPython, validateSkin } from './skinopt.ts'
 import { categoryOf, queryLibrary } from './library.ts'
 import { newId, saveCreatureClip, saveEdit, type SavedEdit } from './clipedits.ts'
 import { journal, note as note_, record } from './journal.ts'
@@ -113,49 +113,75 @@ async function trainedClips (character: Character): Promise<string[]> {
 async function runRig (id: string, update: Update): Promise<void> {
   const character = (await getCharacter(id))!
   const dir = characterDir(id)
-  const args = ['--input', path.join(dir, character.source.file), '--output', path.join(dir, 'rigged.glb'),
-    '--fingers', character.fingers ?? 'full', '--overrides', texturesDir(id)]
-  const creature = character.template !== undefined && character.template !== 'human'
-  if ((character.jointsEdited === true || creature) && character.joints !== undefined) {
-    const jointsFile = path.join(dir, 'joints.json')
-    await writeJson(jointsFile, character.joints)
-    args.push('--joints', jointsFile)
-  }
-  if (creature) args.push('--template', path.join(ROOT, 'static', 'templates', `${character.template!}.json`))
-  // Pose-optimized weights after Blender (when PyTorch is around), for humanoids (trained on the library). Not for
-  // creatures: on a horse trained on its template's own clips it lowered its own objective while the walk got worse
-  // (mean worst stretch 0.20 -> 0.31, 40 -> 189 vertices past double length) and tore flaps at the front legs and the
-  // flank (2026-10-26); their heat weights stay. RIGSMITH_OPTIMIZE_CREATURES=1 brings it back to try.
-  const templateClips = creature ? await templateAnimations(character.template!) : undefined
-  const optimize = torchPython() !== null && (!creature || (process.env.RIGSMITH_OPTIMIZE_CREATURES === '1' && templateClips !== undefined))
-  const share = optimize ? 0.6 : 1
-  const started = Date.now()
-  const { result } = await runBlender('autorig/rig.py', args, (progress, message) => { update({ progress: progress * share, message }) })
-  const r = result as { joints: Record<string, Vec3>, seconds: number, method: string, warnings: string[] }
-  if (optimize) {
-    try {
-      await optimizeSkin(path.join(dir, 'rigged.glb'), (progress, message) => { update({ progress: share + (1 - share) * progress, message }) }, templateClips, await trainedClips(character))
-      r.method += '+pose-optimized'
-    } catch (error) {
-      // The heat weights are a complete rig on their own; keep them and say what happened.
-      r.warnings.push(`weights not pose-optimized: ${(error as Error).message.slice(0, 200)}`)
+  // Keep the last working rig until building, optimization and painting all finish.
+  const output = path.join(dir, `rigging-${randomBytes(6).toString('hex')}.glb`)
+  const alternative = output.replace(/\.glb$/, '-heat.glb')
+  try {
+    const args = ['--input', path.join(dir, character.source.file), '--output', output,
+      '--fingers', character.fingers ?? 'full', '--overrides', texturesDir(id)]
+    const creature = character.template !== undefined && character.template !== 'human'
+    if (!creature || character.template === 'horse') args.push('--native-output', alternative)
+    if (character.joints !== undefined) {
+      const jointsFile = path.join(dir, 'joints.json')
+      await writeJson(jointsFile, character.joints)
+      args.push('--joints', jointsFile)
+    }
+    if (creature) args.push('--template', path.join(ROOT, 'static', 'templates', `${character.template!}.json`))
+    // Pose-optimized weights after Blender (when PyTorch is around), for humanoids (trained on the library). Not for
+    // creatures: on a horse trained on its template's own clips it lowered its own objective while the walk got worse
+    // (mean worst stretch 0.20 -> 0.31, 40 -> 189 vertices past double length) and tore flaps at the front legs and the
+    // flank (2026-10-26); their heat weights stay. RIGSMITH_OPTIMIZE_CREATURES=1 brings it back to try.
+    const templateClips = creature ? await templateAnimations(character.template!) : undefined
+    const optimize = torchPython() !== null && (!creature || (process.env.RIGSMITH_OPTIMIZE_CREATURES === '1' && templateClips !== undefined))
+    const share = optimize ? 0.6 : 1
+    const started = Date.now()
+    const { result } = await runBlender('autorig/rig.py', args, (progress, message) => { update({ progress: progress * share, message }) })
+    const r = result as { joints: Record<string, Vec3>, seconds: number, method: string, warnings: string[] }
+    if (optimize) {
+      try {
+        await optimizeSkin(output, (progress, message) => { update({ progress: share + (1 - share) * progress, message }) }, templateClips, await trainedClips(character))
+        r.method += '+pose-optimized'
+      } catch (error) {
+        // The heat weights are a complete rig on their own; keep them and say what happened.
+        r.warnings.push(`weights not pose-optimized: ${(error as Error).message.slice(0, 200)}`)
+      }
+      r.seconds = Math.round((Date.now() - started) / 100) / 10
+    }
+    // (the weights painted on it, put back: the source mesh, and its vertex order, are the same)
+    const painted = await weightEdits(id)
+    if (painted.length > 0) {
+      const n = await writeWeights(output, painted)
+      r.warnings.push(`${n} painted vertices put back (Fix weights; Forget the painting to drop them)`)
+    }
+    if (existsSync(alternative)) {
+      if (painted.length > 0) await writeWeights(alternative, painted)
+      update({ progress: 0.96, message: 'Comparing regional and volume heat weights' })
+      const quality = await validateSkin(output, alternative, character.template ?? 'human')
+      if (quality.retained) r.method = 'native-heat'
+    }
+    if (character.files.rigged !== undefined && existsSync(path.join(dir, character.files.rigged))) {
+      update({ progress: 0.98, message: 'Checking deformation against the previous weights' })
+      const quality = await validateSkin(output, path.join(dir, character.files.rigged), character.template ?? 'human')
+      if (quality.retained) {
+        r.method += '+retained-weights'
+        r.warnings.push('Kept the previous weights: they deform better on the test animations with these joint placements')
+      }
     }
     r.seconds = Math.round((Date.now() - started) / 100) / 10
+    await rename(output, path.join(dir, 'rigged.glb'))
+    await updateCharacter(id, c => {
+      c.status = 'rigged'
+      c.files.rigged = 'rigged.glb'
+      c.revision = (c.revision ?? 0) + 1
+      if (JSON.stringify(c.joints) === JSON.stringify(character.joints)) c.joints = r.joints
+      else r.warnings.push('Placements changed during rigging; rig again to use the latest joints')
+      if (c.stats !== undefined) c.stats.bones = Object.keys(r.joints).length
+      c.rigReport = { method: r.method, seconds: r.seconds, warnings: r.warnings }
+    })
+  } finally {
+    await rm(output, { force: true })
+    await rm(alternative, { force: true })
   }
-  // (the weights painted on it, put back: the source mesh, and its vertex order, are the same)
-  const painted = await weightEdits(id)
-  if (painted.length > 0) {
-    const n = await writeWeights(path.join(dir, 'rigged.glb'), painted)
-    r.warnings.push(`${n} painted vertices put back (Fix weights; Forget the painting to drop them)`)
-  }
-  await updateCharacter(id, c => {
-    c.status = 'rigged'
-    c.files.rigged = 'rigged.glb'
-    c.revision = (c.revision ?? 0) + 1
-    c.joints = r.joints
-    if (c.stats !== undefined) c.stats.bones = Object.keys(r.joints).length
-    c.rigReport = { method: r.method, seconds: r.seconds, warnings: r.warnings }
-  })
 }
 
 async function failed (id: string, error: unknown): Promise<never> {
@@ -376,7 +402,10 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/fit-template$/, async (req, res
     let stderr = ''
     child.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
     child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
-    child.on('close', code => { code === 0 ? resolve(stdout) : reject(new HttpError(422, stderr.trim().split('\n').pop() ?? 'fit failed')) })
+    child.on('close', code => {
+      if (code === 0) resolve(stdout)
+      else reject(new HttpError(422, stderr.trim().split('\n').pop() ?? 'fit failed'))
+    })
   })
   send(res, 200, JSON.parse(out))
 })
@@ -386,6 +415,44 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/rig$/, async (req, res, [id]) =
   if (character === null) throw new HttpError(404, 'No such character')
   if (character.kind !== 'mesh') throw new HttpError(400, 'Only unrigged meshes need rigging')
   send(res, 202, rig(character))
+})
+
+// Fit a new finger level before displaying its markers, at the user's current wrists.
+route('POST', /^\/api\/characters\/([a-z0-9-]+)\/fingers$/, async (req, res, [id]) => {
+  const { fingers } = await readJsonBody<{ fingers: Character['fingers'] }>(req)
+  if (!['none', 'one', 'two', 'full'].includes(fingers ?? '')) throw new HttpError(400, 'Bad finger level')
+  const before = await getCharacter(id)
+  if (before === null) throw new HttpError(404, 'No such character')
+  if ((before.template ?? 'human') !== 'human') throw new HttpError(400, 'Finger levels apply to people')
+  const dir = characterDir(id)
+  const file = path.join(dir, `finger-joints-${randomBytes(6).toString('hex')}.json`)
+  try {
+    const placed = { ...before.joints }
+    // Index is the centre of a mitten at reduced levels, but an actual index
+    // finger at full level. Its old chain cannot be reused across that switch.
+    const changesIndex = (before.fingers === 'full') !== (fingers === 'full')
+    if (changesIndex) for (const name of Object.keys(placed)) if (/^(Left|Right)HandIndex[1-4]$/.test(name)) delete placed[name]
+    await writeJson(file, placed)
+    const { result } = await runBlender('autorig/rig.py', ['--input', path.join(dir, before.source.file),
+      '--joints', file, '--fingers', fingers!, '--placements-only'], () => {})
+    const c = await updateCharacter(id, c => {
+      if (JSON.stringify(c.joints) !== JSON.stringify(before.joints) || c.fingers !== before.fingers) {
+        throw new HttpError(409, 'Placements changed while fitting fingers; try again with the latest joints')
+      }
+      c.fingers = fingers
+      c.joints = (result as { joints: Record<string, Vec3> }).joints
+      c.jointsEdited = true
+      if (changesIndex && c.markers !== undefined) {
+        for (const name of Object.keys(c.markers.base)) if (/^(Left|Right)HandIndex[1-4]$/.test(name)) delete c.markers.base[name]
+        delete c.markers.positions.index_tip_l; delete c.markers.positions.index_tip_r
+      }
+    })
+    await record(id, by(req), before, c)
+    events.emit('character', c)
+    send(res, 200, c)
+  } finally {
+    await rm(file, { force: true })
+  }
 })
 
 // Choose the skeleton template. Re-rigging an imported rigged model turns it back into a mesh to rig.

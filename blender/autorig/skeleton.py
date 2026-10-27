@@ -327,3 +327,39 @@ def fit_finger_level(detected, fingers, joints):
             elif name in detected:
                 out[name] = detected[name]
     return out
+
+
+def complete_joints(verts, tris, supplied, fingers):
+    """Fill only missing joints, tracing new fingers at the edited wrists.
+
+    Switching finger level must not mix a fitted body with fingers from the
+    original, unedited detection, or report bones that the rig does not contain.
+    """
+    expected = [b for b, _ in mixamo.hierarchy(fingers)]
+    joints = {k: np.array(v, dtype=float).copy() for k, v in supplied.items() if k in expected}
+    missing = set(expected) - joints.keys()
+    if not missing:
+        return joints
+    core = [b for b, _ in mixamo.hierarchy('none')]
+    if any(b not in joints for b in core):
+        from landmarks import detect_markers
+        sil, markers = detect_markers(verts, tris)
+        auto = build_joints(sil, markers, fingers=fingers)
+        joints.update({b: auto[b] for b in core if b not in joints})
+    height = float(np.ptp(verts[:, 2]))
+    for prefix, side in [('Left', 1), ('Right', -1)]:
+        if not any(b.startswith(prefix + 'Hand') for b in missing):
+            continue
+        wrist, elbow = joints[prefix + 'Hand'], joints[prefix + 'ForeArm']
+        hand = measure_hand(verts, tris, wrist, elbow, side, height)
+        local = {'LeftHand': wrist.copy(), 'LeftForeArm': elbow.copy()}
+        _add_fingers(local, fingers, hand)
+        if hand is not None:
+            labeled = hand_fingers(verts, tris, hand, wrist, height)
+            detected = {f'LeftHand{f}{i}': point for f, points in finger_chains(labeled).items()
+                        for i, point in enumerate(points, 1) if point is not None}
+            local.update(fit_finger_level(detected, fingers, local))
+        for b in expected:
+            if b.startswith(prefix + 'Hand') and b not in joints:
+                joints[b] = local['Left' + b[len(prefix):]]
+    return {b: joints[b] for b in expected}

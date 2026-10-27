@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(HERE, '..'))
 import mixamo  # noqa: E402
 from common import report, scene_io  # noqa: E402
 from landmarks import detect_markers  # noqa: E402
-from skeleton import build_joints  # noqa: E402
+from skeleton import build_joints, complete_joints  # noqa: E402
 from hands import assumed_palm, measure_hand  # noqa: E402
 import weights as weight_tools  # noqa: E402
 
@@ -41,6 +41,8 @@ def parse_args():
     p.add_argument('--template', help='creature template JSON (static/templates/*.json); joints required')
     p.add_argument('--report')
     p.add_argument('--dump')
+    p.add_argument('--native-output', help='optional second skin using native heat, on the same joints')
+    p.add_argument('--placements-only', action='store_true', help='fit joint/finger level without building skin weights')
     p.add_argument('--no-segments', action='store_true', help='plain bone heat (for comparison)')
     return p.parse_args(argv)
 
@@ -189,14 +191,7 @@ def main():
     elif args.joints:
         # User-edited joints arrive in glTF space (Y up, +Z forward).
         joints = {k: np.array(report.from_gltf(v)) for k, v in json.load(open(args.joints)).items()}
-        expected = [b for b, _ in mixamo.hierarchy(args.fingers)]
-        missing = [b for b in expected if b not in joints]
-        if missing:
-            # Joints from a different finger level: fill in from detection.
-            sil, markers = detect_markers(verts, tris)
-            auto = build_joints(sil, markers, fingers=args.fingers)
-            for b in missing:
-                joints[b] = auto[b]
+        joints = complete_joints(verts, tris, joints, args.fingers)
     else:
         sil, markers = detect_markers(verts, tris)
         joints = build_joints(sil, markers, fingers=args.fingers)
@@ -208,6 +203,12 @@ def main():
         if mixamo.FINGER_LEVELS[args.fingers] and not markers.get('fingers_traced', True):
             warnings.append("fingers not separable on this mesh; placed from hand proportions (the 2-chain mitten may suit it better)")
 
+    if any(np.shape(v) != (3,) or not np.isfinite(v).all() for v in joints.values()):
+        raise ValueError('Every joint needs three finite coordinates')
+    if args.placements_only:
+        report.result({'joints': {k: report.to_gltf(v) for k, v in joints.items()}})
+        return
+
     report.progress(0.3, 'Building skeleton')
     if template is not None:
         arm = build_template_armature(joints, template)
@@ -218,6 +219,21 @@ def main():
         arm = build_armature(joints, args.fingers, reference_frames(), palms)
         report.progress(0.45, 'Computing skin weights')
         stats = weight_tools.skin(meshes, arm, verts, tris, steer=not args.no_segments)
+    if args.native_output:
+        names = [b.name for b in arm.data.bones if b.use_deform]
+        regional = weight_tools.weight_matrix(meshes, names)
+        try:
+            report.progress(0.75, 'Building a second skin with volume heat')
+            if weight_tools.native_candidate(meshes, arm, verts, regional):
+                scene_io.export_glb(args.native_output, arm, meshes)
+        except Exception as error:
+            warnings.append(f'Alternative heat skin unavailable: {error}')
+        finally:
+            offset = 0
+            for ob in meshes:
+                n = len(ob.data.vertices)
+                weight_tools._bind(ob, arm, regional[offset:offset + n], names)
+                offset += n
     report.progress(0.85, 'Writing GLB')
     warnings += stats.pop('warnings', [])
 

@@ -92,6 +92,21 @@ export function seed (setName: string, set: MarkerSet, joints: Record<string, V3
  */
 export function fitMarkers (setName: string, set: MarkerSet, saved: Markers | undefined, joints: Record<string, V3>, parents: Record<string, string | null>, seedOwn?: (def: MarkerDef) => V3 | null): Markers {
   if (saved === undefined || saved.set !== setName) return seed(setName, set, joints, seedOwn)
+  // A later 3D edit or reset is authoritative. Reopening the board must not solve
+  // the old markers over it. Keep the old base only while it still describes this rig.
+  const oldNames = Object.keys(saved.base).filter(k => !k.startsWith('marker:'))
+  if (oldNames.length === Object.keys(joints).length && oldNames.every(k => joints[k] !== undefined)) {
+    const center = joints.Hips?.[0] ?? joints.hips?.[0] ?? 0
+    const previous = jointsFrom(set, saved, parents, center)
+    if (oldNames.some(k => previous[k].some((v, i) => Math.abs(v - joints[k][i]) > 1e-4))) {
+      // Saved boards from before whole-finger fitting still describe their old
+      // skeleton. Upgrade that solve; only an unrelated fine edit needs rebasing.
+      const legacy = solve(saved.base, edgesOf(set, parents, saved.base), pinsOf(set, saved, center))
+      if (oldNames.some(k => legacy[k].some((v, i) => Math.abs(v - joints[k][i]) > 1e-4))) {
+        return seed(setName, set, joints, seedOwn)
+      }
+    }
+  }
   const base: Record<string, V3> = {}
   for (const [k, p] of Object.entries(saved.base)) if (k.startsWith('marker:') || joints[k] !== undefined) base[k] = [...p]
   for (const [k, p] of Object.entries(joints)) {
@@ -266,12 +281,87 @@ export function solve (base: Record<string, V3>, edges: Array<[string, string]>,
 /** The skeleton the markers give: `base` moved by them, its joints only. */
 export function jointsFrom (set: MarkerSet, m: Markers, parents: Record<string, string | null>, xCenter: number, iterations = 16, cache?: SolveCache): Record<string, V3> {
   const solved = solve(m.base, edgesOf(set, parents, m.base), pinsOf(set, m, xCenter), iterations, cache)
+  // A finger is a short rigid chain fitted between wrist and tip. The global
+  // skeleton solver otherwise puts most of a tip correction into its last joint,
+  // leaving the knuckles in the neighbouring finger (especially a former mitten).
+  for (const { key, def, side } of keysOf(set)) {
+    if (def.view !== 'hand' || side === null) continue
+    const tipName = jointOf(def, side)!
+    const wristName = `${side === 'left' ? 'Left' : 'Right'}Hand`
+    const baseWrist = m.base[wristName]; const baseTip = m.base[tipName]
+    const wrist = solved[wristName]; const tip = m.positions[key]
+    if (!baseWrist || !baseTip || !wrist || !tip) continue
+    const a = new THREE.Vector3(...baseTip).sub(new THREE.Vector3(...baseWrist))
+    const b = new THREE.Vector3(...tip).sub(new THREE.Vector3(...wrist))
+    if (a.lengthSq() < 1e-12 || b.lengthSq() < 1e-12) continue
+    const scale = b.length() / a.length()
+    const rotation = new THREE.Quaternion().setFromUnitVectors(a.normalize(), b.normalize())
+    const longTips = ['Index', 'Middle', 'Ring', 'Pinky'].map(f => {
+      const def = set.markers.find(d => d.joint === `{Side}Hand${f}4`)
+      return def === undefined ? undefined : m.positions[`${def.id}_${side === 'left' ? 'l' : 'r'}`]
+    }).filter((p): p is V3 => p !== undefined)
+    const changed = baseTip.some((v, i) => Math.abs(v - tip[i]) > 1e-7) || baseWrist.some((v, i) => Math.abs(v - wrist[i]) > 1e-7)
+    // On a full hand the fingers run alongside one another. A misplaced chain
+    // inherited from a mitten must not keep its old sideways kink after a tip
+    // edit. Fit its knuckles down the hand's shared axis under the placed tip.
+    const straight = changed && longTips.length >= 3 && !tipName.includes('Thumb')
+    const forward = straight ? longTips.reduce((sum, p) => sum.add(new THREE.Vector3(...p)), new THREE.Vector3())
+      .divideScalar(longTips.length).sub(new THREE.Vector3(...wrist)).normalize() : null
+    const length = new THREE.Vector3(...tip).sub(new THREE.Vector3(...wrist)).length()
+    const fromTip = [0.45, 0.30, 0.15, 0]
+    for (let i = 1; i <= 4; i++) {
+      const name = tipName.replace(/4$/, String(i)); const base = m.base[name]
+      if (!base) continue
+      solved[name] = (forward !== null ? new THREE.Vector3(...tip).addScaledVector(forward, -length * fromTip[i - 1])
+        : new THREE.Vector3(...base).sub(new THREE.Vector3(...baseWrist)).multiplyScalar(scale)
+          .applyQuaternion(rotation).add(new THREE.Vector3(...wrist))).toArray() as V3
+    }
+    solved[tipName] = [...tip]
+  }
   return Object.fromEntries(Object.entries(solved).filter(([k]) => !k.startsWith('marker:')))
+}
+
+/** Move a body marker without leaving its hand pinned in the old place. Finger
+ * tips follow a moved wrist/elbow rigidly; a finger-tip edit only moves that tip. */
+export function placeMarker (set: MarkerSet, m: Markers, key: string, point: V3, xCenter: number, mirror: boolean): Markers {
+  const positions = { ...m.positions, [key]: point }
+  const entry = keysOf(set).find(k => k.key === key)
+  if (entry === undefined) return { ...m, positions }
+  if (entry.def.pair && set.view === 'front' && mirror) {
+    const other = key.endsWith('_l') ? `${entry.def.id}_r` : `${entry.def.id}_l`
+    if (positions[other] !== undefined) positions[other] = mirrorX(point, xCenter)
+  }
+  if (set.view === 'front' && ['wrist', 'elbow'].includes(entry.def.id)) {
+    for (const side of ['l', 'r']) {
+      const beforeWrist = m.positions[`wrist_${side}`]; const beforeElbow = m.positions[`elbow_${side}`]
+      const wrist = positions[`wrist_${side}`]; const elbow = positions[`elbow_${side}`]
+      if (!beforeWrist || !beforeElbow || !wrist || !elbow) continue
+      const a = new THREE.Vector3(...beforeWrist).sub(new THREE.Vector3(...beforeElbow))
+      const b = new THREE.Vector3(...wrist).sub(new THREE.Vector3(...elbow))
+      const rotation = a.lengthSq() > 1e-12 && b.lengthSq() > 1e-12
+        ? new THREE.Quaternion().setFromUnitVectors(a.normalize(), b.normalize()) : new THREE.Quaternion()
+      for (const k of keysOf(set).filter(k => k.def.view === 'hand' && k.key.endsWith(`_${side}`))) {
+        const tip = m.positions[k.key]
+        if (tip !== undefined) positions[k.key] = new THREE.Vector3(...tip).sub(new THREE.Vector3(...beforeWrist))
+          .applyQuaternion(rotation).add(new THREE.Vector3(...wrist)).toArray() as V3
+      }
+    }
+  }
+  return { ...m, positions }
+}
+
+/** Orthographic rays start at the camera, not its near clipping plane. */
+export function markerRay (ray: THREE.Raycaster, camera: THREE.OrthographicCamera, point: THREE.Vector2): void {
+  ray.setFromCamera(point, camera)
+  ray.near = camera.near
+  ray.far = camera.far
 }
 
 /** Where along a ray a marker sits inside the body: the middle of the first stretch of the body the ray passes
  * through (hit distances, nearest first), else null. */
 export function insideDepth (hits: number[]): number | null {
-  if (hits.length >= 2) return 0.5 * (hits[0] + hits[1])
-  return hits.length === 1 ? hits[0] : null
+  // A ray through a shared triangle edge reports the same surface twice.
+  const unique = hits.filter((d, i) => i === 0 || d - hits[i - 1] > 1e-7)
+  if (unique.length >= 2) return 0.5 * (unique[0] + unique[1])
+  return unique.length === 1 ? unique[0] : null
 }

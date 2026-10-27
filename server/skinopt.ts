@@ -23,11 +23,31 @@ async function run (command: string, args: string[], onLine?: (line: string) => 
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] })
     let err = ''
-    child.stdout.on('data', (d: Buffer) => { for (const line of d.toString().split('\n')) if (line.trim() !== '') onLine?.(line) })
+    let pending = ''
+    child.stdout.on('data', (d: Buffer) => {
+      pending += d.toString()
+      const lines = pending.split('\n'); pending = lines.pop() ?? ''
+      for (const line of lines) if (line.trim() !== '') onLine?.(line)
+    })
     child.stderr.on('data', (d: Buffer) => { err = (err + d.toString()).slice(-4000) })
     child.on('error', reject)
-    child.on('close', code => { code === 0 ? resolve() : reject(new Error(`${path.basename(args[0] ?? command)} failed: ${err.trim().split('\n').slice(-3).join(' ')}`)) })
+    child.on('close', code => {
+      if (pending.trim() !== '') onLine?.(pending)
+      if (code === 0) resolve()
+      else reject(new Error(`${path.basename(args[0] ?? command)} failed: ${err.trim().split('\n').slice(-3).join(' ')}`))
+    })
   })
+}
+
+/** Keep previous weights when the new skin regresses on the rig's deformation
+ * tests. The comparison uses the new skeleton, so joint edits always take effect. */
+export async function validateSkin (candidate: string, previous: string, template: string): Promise<{ compared: boolean, retained: boolean }> {
+  let result: { compared: boolean, retained: boolean } | undefined
+  await run(process.execPath, [path.join(TOOLS, 'validate.ts'), candidate, previous, template], line => {
+    if (line.startsWith('{')) result = JSON.parse(line) as typeof result
+  })
+  if (result === undefined) throw new Error('No skin validation result')
+  return result
 }
 
 // One optimization at a time: they share the GPU (and fall back to the CPU when it's full).
