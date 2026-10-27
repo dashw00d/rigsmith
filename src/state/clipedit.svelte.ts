@@ -23,7 +23,7 @@ import { retargetOffsets, type RestSkeleton } from '../engine/retarget.ts'
 import { reach, setWorldQuaternion } from '../engine/ik.ts'
 import { bodyBones, solveBody } from '../engine/bodysolve.ts'
 import { bodyColliderFor, solidsOf } from '../engine/bodycollide.ts'
-import { bodyBonesNatural, createBodySolver, loadPoseModel, naturalizeClip, NaturalRig, poseTargets, type NaturalGoal, type PoseModel, type PoseModelData } from '../engine/posespace.ts'
+import { bodyBonesNatural, SLIDE, createBodySolver, loadPoseModel, naturalizeClip, NaturalRig, poseTargets, type NaturalGoal, type PoseModel, type PoseModelData } from '../engine/posespace.ts'
 import { FIT, fitProp, type FitResult } from '../engine/propfit.ts'
 
 const IDENTITY: ClipKey['q'] = [0, 0, 0, 1]
@@ -889,7 +889,7 @@ class ClipEdit {
     const shafts: NonNullable<PropRig['shafts']> = {}
     for (const [prop, path] of Object.entries(paths)) {
       const shaft = path.locked ? this.shaftLocal(prop) : null
-      if (shaft !== null) shafts[prop] = { from: shaft.from.toArray() as [number, number, number], to: shaft.to.toArray() as [number, number, number], radius: shaft.radius, gap: this.handGap() }
+      if (shaft !== null) shafts[prop] = { from: shaft.from.toArray() as [number, number, number], to: shaft.to.toArray() as [number, number, number], radius: shaft.radius, gap: this.handGap(), most: SLIDE.most * (animator.character?.height ?? 1) }
     }
     // (where each hand on a socket holds the shaft: the carrying hand has none, its turn is held exactly)
     const grips: NonNullable<PropRig['grips']> = {}

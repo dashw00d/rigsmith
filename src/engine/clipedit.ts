@@ -88,7 +88,7 @@ export interface PropRig {
   fingers: Partial<Record<'Left' | 'Right', Record<string, [number, number, number, number]>>>
   /** By leading prop: its shaft (the end by the hand carrying it and the far end, in its node's frame) and its radius: the
    * body is kept clear of it, but where the hands hold it (propObstacles). */
-  shafts?: Record<string, { from: [number, number, number], to: [number, number, number], radius: number, /** how near two hands' holds may come along it (metres) */ gap?: number }>
+  shafts?: Record<string, { from: [number, number, number], to: [number, number, number], radius: number, /** how near two hands' holds may come along it (metres) */ gap?: number, /** the most a hand slides on it either way (metres) */ most?: number }>
   /** By prop: its node's place on its bone as the outfit has it (local position, turn). A leading prop's node is keyed
    * in the edit to where its path puts it, whatever hand holds it how; a copy posed from an edit is put back to this first. */
   rest?: Record<string, { position: [number, number, number], quaternion: [number, number, number, number] }>
@@ -398,7 +398,8 @@ export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>,
         mine.forEach((g, i) => {
           let lo = length * SHAFT_END; let hi = length * (1 - SHAFT_HEAD)
           along.forEach((o, j) => { if (j === i) return; if (o <= along[i]) lo = Math.max(lo, o + gap); else hi = Math.min(hi, o - gap) })
-          g.slide = { dir: dir.clone(), back: Math.min(0, lo - along[i]), ahead: Math.max(0, hi - along[i]) }
+          const most = shaft.most ?? Infinity
+          g.slide = { dir: dir.clone(), back: Math.max(-most, Math.min(0, lo - along[i])), ahead: Math.min(most, Math.max(0, hi - along[i])) }
         })
       }
     }
