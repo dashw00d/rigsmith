@@ -33,6 +33,15 @@ interface Part {
 
 export interface Edit { mesh: number, vertex: number, weights: Array<[string, number]> }
 
+/** The bone on the other side's name: Left/Right (a person's), and _l/_r, .L/.R, L_/R_ (a creature's: a horse's
+ * front_leg_upper_l). The same name for a middle bone. */
+export function mirrorName (n: string): string {
+  if (/Left|Right/.test(n)) return n.replace(/Left|Right/g, m => (m === 'Left' ? 'Right' : 'Left'))
+  const swapped = n.replace(/([_.])([lLrR])(?=$|[_.\d])/g, (_m, sep: string, c: string) => sep + ({ l: 'r', r: 'l', L: 'R', R: 'L' } as Record<string, string>)[c])
+  if (swapped !== n) return swapped
+  return n.replace(/^([lLrR])(?=[_.])/, c => ({ l: 'r', r: 'l', L: 'R', R: 'L' } as Record<string, string>)[c])
+}
+
 export class WeightPainter {
   readonly parts: Part[] = []
   /** The area marked (point -> 0..1), per part. */
@@ -73,7 +82,7 @@ export class WeightPainter {
       }
       const { twin, side } = twins(mesh, members, tol)
       const names = mesh.skeleton.bones.map(b => b.name)
-      const swap = Int32Array.from(names.map((n, i) => { const j = names.indexOf(n.replace(/Left|Right/g, m => m === 'Left' ? 'Right' : 'Left')); return j >= 0 ? j : i }))
+      const swap = Int32Array.from(names.map((n, i) => { const j = names.indexOf(mirrorName(n)); return j >= 0 ? j : i }))
       this.parts.push({ mesh, point, members, adj, rest: Float32Array.from(pos.array as ArrayLike<number>), twin, swap, side })
       this.area.push(new Map())
       this.edited.push(new Set())

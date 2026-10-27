@@ -39,12 +39,16 @@ export async function load (file: string): Promise<{ scene: THREE.Group, animati
   })
 }
 
-export /** Where an entry's clip comes from: a converted library clip, or one bundled with the app (url /animations/<file>#<name>). */
+export /** Where an entry's clip comes from: a converted library clip, one bundled with the app (url /animations/<file>#<name>), or a creature's saved clip (url /files/library/creatures/<rig>/<id>.glb). */
 async function entrySource (entry: { clipId: string, url?: string }): Promise<{ scene: THREE.Group, clip: THREE.AnimationClip }> {
   if (entry.url !== undefined) {
     const [file, hash] = entry.url.split('#')
-    if (!file.startsWith('/animations/')) throw new Error(`clip ${entry.clipId}: ${entry.url} is not a clip bundled with Rigsmith`)
-    const src = await load(path.join(ROOT, 'static', file))
+    // (bundled with the app, or a creature's clip saved from the animation editor: the library's creatures folder)
+    const CREATURES = '/files/library/creatures/'
+    if (!file.startsWith('/animations/') && !file.startsWith(CREATURES)) throw new Error(`clip ${entry.clipId}: ${entry.url} is not a clip bundled with Rigsmith or a saved creature clip`)
+    const at = file.startsWith(CREATURES) ? path.join(WORKSPACE, 'library', 'creatures', decodeURIComponent(file.slice(CREATURES.length))) : path.join(ROOT, 'static', file)
+    if (!at.startsWith(path.join(WORKSPACE, 'library', 'creatures')) && !at.startsWith(path.join(ROOT, 'static'))) throw new Error(`clip ${entry.clipId}: ${entry.url} leaves its folder`)
+    const src = await load(at)
     const name = hash === undefined ? undefined : decodeURIComponent(hash)
     const clip = name === undefined ? src.animations[0] : src.animations.find(a => a.name === name)
     if (clip === undefined) throw new Error(`clip ${entry.clipId}: no ${name} in ${file}`)

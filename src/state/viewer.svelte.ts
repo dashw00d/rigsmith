@@ -208,11 +208,13 @@ class Viewer {
   get seatNode (): THREE.Group | null { return this.seat }
 
   private async gameHeights (id: string): Promise<{ rider: number | null, horse: number | null }> {
-    let pending = this.heights.get(id)
+    // (keyed by the game's beat too: saving a unit's dimensions gives the new heights)
+    const key = `${id}@${app.gameBeat}`
+    let pending = this.heights.get(key)
     if (pending === undefined) {
       pending = fetch(`/api/characters/${id}/game`).then(async r => (r.ok ? await r.json() : null) as { height: number | null, companion?: { height: number | null } } | null)
         .then(g => ({ rider: g?.height ?? null, horse: g?.companion?.height ?? null }), () => ({ rider: null, horse: null }))
-      this.heights.set(id, pending)
+      this.heights.set(key, pending)
     }
     return await pending
   }

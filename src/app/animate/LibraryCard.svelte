@@ -59,7 +59,7 @@
     if (c === null) return
     if (slots.armed !== null) {
       // (an armed game slot: this clip plays there)
-      await slots.fill(slots.armed, { clipId: clip.id, url: clip.source === 'bundled' ? clip.url : undefined, inPlace: clip.inPlace || clip.category === 'locomotion', loop: clip.loop })
+      await slots.fill(slots.armed, { clipId: clip.id, url: clip.source === 'bundled' || clip.url.startsWith('/files/library/creatures/') ? clip.url : undefined, inPlace: clip.inPlace || clip.category === 'locomotion', loop: clip.loop })
       return
     }
     if (added) {

@@ -289,7 +289,7 @@ async function main (): Promise<void> {
         inPlace: pos.includes('inplace') ? true : pos.includes('moving') ? false : was?.inPlace ?? clip.inPlace,
         speed: kv.speed !== undefined ? Number(kv.speed) : was?.speed ?? 1,
       }
-      if (clip.url.startsWith('/animations/')) entry.url = clip.url
+      if (clip.url.startsWith('/animations/') || clip.url.startsWith('/files/library/creatures/')) entry.url = clip.url
       else delete entry.url
       if (was !== undefined && was.clipId !== clipId) { delete entry.keys; delete entry.lift }
       const animations = was === undefined ? [...c.animations, entry] : c.animations.map(a => a.name === name ? entry : a)

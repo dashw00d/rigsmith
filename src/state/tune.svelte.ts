@@ -69,8 +69,19 @@ class Tune {
     // (a ridden loop holds several of the rider's cycles, fitted to the horse's gait: a key's phase is within one)
     const cycles = Math.max(1, animator.cycles)
     const frames = Math.max(1, Math.round(animator.duration / e.entry.speed / cycles * KEY_FPS))
-    const u = ((animator.time % animator.duration) / animator.duration * cycles) % 1
+    const x = Math.min(1, Math.max(0, animator.time / animator.duration)) * cycles
+    // (a one-shot's end is its end, not its start again: a loop's wraps)
+    const u = e.entry.loop || cycles > 1 ? x % 1 : Math.min(1, x)
     return Math.round(u * frames) / frames
+  }
+
+  /** The time in the clip the frame playing is keyed at: its phase in the rider's cycle playing now (a ridden loop holds
+   * several), so the base pose is read where the key goes. */
+  private keyTime (u: number): number {
+    const cycles = Math.max(1, animator.cycles)
+    if (animator.duration <= 0) return 0
+    const cycle = Math.min(cycles - 1, Math.floor(Math.min(1, Math.max(0, animator.time / animator.duration)) * cycles))
+    return (cycle + u) / cycles * animator.duration
   }
 
   /** Key the target's pose at this frame (what the gizmo left, or as it stands). */
@@ -81,7 +92,7 @@ class Tune {
     const c = app.selected
     if (e === null || target === null || object === null || c === null) return
     const u = this.phase()
-    const t = u * animator.duration
+    const t = this.keyTime(u)
     let key: ClipKey
     const bone = boneOf(target)
     if (bone !== null) {

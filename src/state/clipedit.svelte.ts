@@ -196,6 +196,9 @@ class ClipEdit {
     const view = animator.character
     for (const [prop, r] of Object.entries(this.propRest)) { const n = view?.root.getObjectByName(propNode(prop)); if (n !== undefined) { n.position.fromArray(r.position); n.quaternion.fromArray(r.quaternion); n.updateMatrixWorld(true) } }
     this.propRest = {}
+    // (the fists and grips were this character's: another character's edit takes its own)
+    this.fists = {}
+    this.gripCache = {}
     animator.holding = false
     animator.editing = null
   }

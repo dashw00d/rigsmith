@@ -57,20 +57,24 @@ async function run (command: string, args: string[], onLine: (line: string) => v
 }
 
 let queue: Promise<unknown> = Promise.resolve()
+/** Ids handed out and not yet in the sources (a save still queued): never handed out twice. */
+const reserved = new Set<string>()
 
-/** The id a new clip of this name gets (one the library hasn't). */
+/** The id a new clip of this name gets (one the library hasn't, nor a save still queued), reserved at once. */
 export async function newId (name: string): Promise<string> {
   const base = `custom-${slug(name)}`
   const sources = await readJson<Array<{ id: string }>>(path.join(LIBRARY, 'work', 'sources.json'), [])
   const taken = new Set(sources.map(s => s.id))
+  // (no await from here to the reservation: two calls at once can't pick the same id)
   let id = base
-  for (let k = 2; taken.has(id) || existsSync(path.join(LIBRARY, 'meta', `${id}.json`)); k++) id = `${base}_${k}`
+  for (let k = 2; taken.has(id) || reserved.has(id) || existsSync(path.join(LIBRARY, 'meta', `${id}.json`)); k++) id = `${base}_${k}`
+  reserved.add(id)
   return id
 }
 
 /** Save an edit into the library as clip `id`. */
 export async function saveEdit (id: string, e: SavedEdit, update: (progress: number, message: string) => void): Promise<void> {
-  check(e)
+  try { check(e) } catch (error) { reserved.delete(id); throw error }
   const turn = queue.then(async () => {
     update(0.05, 'Finding the skeleton it came from')
     const restFrom = await restOf(e.base)
@@ -102,7 +106,7 @@ export async function saveEdit (id: string, e: SavedEdit, update: (progress: num
     update(1, `${edit.name} is in the library (${id}, ${edit.category ?? 'its own category'})`)
   })
   queue = turn.catch(() => {})
-  await turn
+  try { await turn } finally { reserved.delete(id) }
 }
 
 /** A creature's clip (a horse's: not a library clip) saved as made: its file into workspace/library/creatures/<rig>/,
@@ -112,6 +116,13 @@ export async function saveCreatureClip (p: { rig: string, name: string, base: st
   if (!/^[a-z0-9_-]+$/.test(p.rig)) throw new Error('Which body?')
   if (p.name.trim() === '' || p.name.length > 80) throw new Error('Name the clip')
   if (glb.length < 20 || glb.readUInt32LE(0) !== 0x46546C67) throw new Error('Not a .glb')
+  // (one save at a time: each reads and rewrites the creatures' index)
+  const turn = queue.then(async () => await writeCreatureClip(p, glb))
+  queue = turn.catch(() => {})
+  return await turn
+}
+
+async function writeCreatureClip (p: { rig: string, name: string, base: string, category: string, loop: boolean, inPlace: boolean, duration: number }, glb: Buffer): Promise<{ id: string }> {
   const dir = path.join(LIBRARY, 'creatures')
   const indexFile = path.join(dir, 'index.json')
   const index = await readJson<{ clips: Array<Record<string, unknown>> }>(indexFile, { clips: [] })

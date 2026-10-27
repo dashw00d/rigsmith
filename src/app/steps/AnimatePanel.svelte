@@ -13,7 +13,7 @@
 
   let { character }: { character: Character } = $props()
 
-  $effect(() => { void slots.load(character.id) })
+  $effect(() => { void app.gameBeat; void slots.load(character.id) })
 
   const rigged = $derived(character.status === 'rigged')
   const others = $derived(app.characters.filter(c => c.id !== character.id && c.status === 'rigged'))
@@ -61,7 +61,7 @@
 
   function useForSlot (slot: string): void {
     if (previewing === null) return
-    void slots.fill(slot, { clipId: previewing.clipId, url: previewing.url.startsWith('/animations/') ? previewing.url : undefined, inPlace: animator.inPlace, loop: animator.loop })
+    void slots.fill(slot, { clipId: previewing.clipId, url: previewing.url.startsWith('/animations/') || previewing.url.startsWith('/files/library/creatures/') ? previewing.url : undefined, inPlace: animator.inPlace, loop: animator.loop })
   }
 </script>
 

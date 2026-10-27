@@ -11,17 +11,22 @@ class Slots {
   /** The slot the library's + fills (null: + adds a trial). */
   armed = $state<string | null>(null)
   private loadedFor = ''
+  private loadedBeat = -1
 
+  /** Load `id`'s game side, and again whenever the game's units change (app.gameBeat: read here, so a calling effect
+   *  runs again on it). */
   async load (id: string | null): Promise<void> {
-    if (id === this.loadedFor) return
+    const beat = app.gameBeat
+    if (id === this.loadedFor && beat === this.loadedBeat) return
+    const other = id !== this.loadedFor
     this.loadedFor = id ?? ''
-    this.armed = null
-    this.game = null
-    if (id === null) return
+    this.loadedBeat = beat
+    if (other) { this.armed = null; this.game = null }
+    if (id === null) { this.game = null; return }
     try {
       const res = await fetch(`/api/characters/${id}/game`)
       const game = res.ok ? await res.json() as GameSide | null : null
-      if (this.loadedFor === id) this.game = game
+      if (this.loadedFor === id && this.loadedBeat === beat) this.game = game
     } catch { /* no game side */ }
   }
 

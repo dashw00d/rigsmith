@@ -151,7 +151,8 @@ export class PoseEditor {
         return
       }
       if (this.prop !== null) { this.proxy.updateMatrixWorld(true); this.events.moveProp?.(this.prop, this.proxy.matrixWorld.clone(), true); return }
-      if (this.gizmoMoved.size > 0) this.events.commit?.([...this.gizmoMoved])
+      // (always: a press that moved nothing commits nothing, but lets the clip play again)
+      this.events.commit?.([...this.gizmoMoved])
     })
     this.gizmo.addEventListener('objectChange', () => {
       if (!this.gizmoDragging) return

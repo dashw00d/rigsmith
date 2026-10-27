@@ -10,7 +10,7 @@ import { keepOffFloor, reach, setWorldQuaternion, type Leg } from './ik.ts'
 import { bodyBones, solveBody, type BodyState, type HandGoal } from './bodysolve.ts'
 import { FOLLOW, type NaturalGoal, type Obstacle } from './posespace.ts'
 import type { JointLimits } from './limits.ts'
-import { pelvisName, retargetOffsets, type RestSkeleton } from './retarget.ts'
+import { pelvisName, restWorldOf, retargetOffsets, type RestSkeleton } from './retarget.ts'
 import type { PoseRig } from './PoseEditor.ts'
 
 /** A track's value at time `t`, or `fallback` where the clip has none. */
@@ -590,7 +590,9 @@ export function unretarget (clip: THREE.AnimationClip, posable: THREE.Object3D, 
     if (node !== undefined && th !== undefined) {
       const move = node.getWorldPosition(new THREE.Vector3()).sub(th.worldPosition).sub(new THREE.Vector3(0, lift, 0)).divideScalar(scale)
       const at = sh.worldPosition.clone().add(move)
-      const parent = source.parentWorld.get(sHips)
+      // (into the hips' parent's frame: the object holding it when it is a top bone, else its parent bone at rest: a
+      // horse's hips hang below a root bone)
+      const parent = sh.parent === null ? source.parentWorld.get(sHips) : restWorldOf(source, sh.parent)
       hips.push((parent !== undefined ? at.applyMatrix4(parent.clone().invert()) : at).toArray())
     } else hips.push(sh.localPosition.toArray())
   }

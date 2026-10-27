@@ -28,7 +28,7 @@ import { MeshoptSimplifier } from 'meshoptimizer'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { compact, simplify } from '../src/engine/export/lods.ts'
 import { garmentMatrix } from '../src/engine/placement.ts'
-import { captureRest, pelvisName, retarget } from '../src/engine/retarget.ts'
+import { captureRest, pelvisName, restUpOf, retarget } from '../src/engine/retarget.ts'
 import { applyScripts, retime, sample, stride, type ClipScript } from '../src/engine/scripts.ts'
 import { applyBoneKeys, applyLift, propTracks } from '../src/engine/keys.ts'
 import { fitRide, freezeClip, repeat, seatMatrix } from '../src/engine/mount.ts'
@@ -174,7 +174,7 @@ async function loadCompanion (unit: string, c: CompanionSpec, names: string[]): 
   const clips = new Map<string, THREE.AnimationClip>()
   for (const [name, entry] of entries) {
     let clip = scripted.get(name)!
-    if (hips !== undefined) clip = applyLift(clip, hips.name, entry.lift ?? 0, hips.localPosition)
+    if (hips !== undefined) clip = applyLift(clip, hips.name, entry.lift ?? 0, hips.localPosition, restUpOf(rest, hips.name))
     clip = applyBoneKeys(clip, entry.keys?.bones, entry.loop, restOf)
     clip = scalePositions(clip, s, floor, top.name)
     clip.name = name
@@ -306,6 +306,10 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   const bones = [...skeleton.bones, root, ...compBones]
   // each bone's rest (game space): a clip's key on a bone the clip doesn't move starts from there
   const restLocal = new Map(bones.map(b => [b.name, { q: b.quaternion.clone(), p: b.position.clone() }]))
+  // (one world unit up in the hips' parent's frame, at rest: the ground lift goes straight up whatever the parent's tilt)
+  const hipsBone = bones.find(b => b.name === 'Hips')
+  hipsBone?.parent?.updateMatrixWorld(true)
+  const hipsUp = hipsBone?.parent == null ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 1, 0).applyMatrix3(new THREE.Matrix3().setFromMatrix4(hipsBone.parent.matrixWorld.clone().invert()))
   // a prop keyed in any clip rides its own bone ("Prop_<name>", at its pivot under the bone it rides), which the clips move
   const keyedProps = new Set(spec.clips.flatMap(n => Object.keys(character.animations.find(a => a.name === n)?.keys?.props ?? {})))
   const propBones: Array<{ bone: THREE.Bone, garment: Garment, rest: { position: THREE.Vector3, quaternion: THREE.Quaternion } }> = []
@@ -557,7 +561,7 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   // moves the prop bones (at rest where it has no keys for them), so a prop keyed in one clip is back in the next.
   for (let i = 0; i < clips.length; i++) {
     const entry = character.animations.find(a => a.name === clips[i].name)!
-    let clip = applyLift(clips[i], 'Hips', (entry.lift ?? 0) * s, restLocal.get('Hips')!.p)
+    let clip = applyLift(clips[i], 'Hips', (entry.lift ?? 0) * s, restLocal.get('Hips')!.p, hipsUp)
     clip = applyBoneKeys(clip, entry.keys?.bones, entry.loop, b => restLocal.get(b) ?? null, s)
     const extra = propBones.flatMap(pb => propTracks(pb.bone.name, clip.duration, entry.keys?.props?.[pb.garment.name], entry.loop, pb.rest, pb.garment.scale, s))
     clips[i] = extra.length > 0 ? new THREE.AnimationClip(clip.name, clip.duration, [...clip.tracks, ...extra]) : clip

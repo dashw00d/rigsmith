@@ -64,18 +64,20 @@ function trackValue (track: THREE.KeyframeTrack | undefined, t: number, size: nu
   return Array.from(interpolant.evaluate(t) as ArrayLike<number>).slice(0, size)
 }
 
-/** The clip with its lift: `dy` added to the Hips' height throughout (its position track, or a constant one at rest). */
-export function applyLift (clip: THREE.AnimationClip, hips: string, dy: number, restPosition: THREE.Vector3): THREE.AnimationClip {
+/** The clip with its lift: the Hips raised `dy` straight up throughout (its position track, or a constant one at rest).
+ * `up`: one world unit up in the hips' parent's frame (retarget.ts restUpOf): a tilted parent (a horse's root) isn't
+ * raised along its own Y. */
+export function applyLift (clip: THREE.AnimationClip, hips: string, dy: number, restPosition: THREE.Vector3, up: THREE.Vector3 = new THREE.Vector3(0, 1, 0)): THREE.AnimationClip {
   if (dy === 0) return clip
   const name = `${hips}.position`
   const tracks = clip.tracks.filter(t => t.name !== name)
   const was = clip.tracks.find(t => t.name === name)
   if (was !== undefined) {
     const copy = was.clone()
-    for (let i = 1; i < copy.values.length; i += 3) copy.values[i] += dy
+    for (let i = 0; i < copy.values.length; i += 3) { copy.values[i] += dy * up.x; copy.values[i + 1] += dy * up.y; copy.values[i + 2] += dy * up.z }
     tracks.push(copy)
   } else {
-    const v = [restPosition.x, restPosition.y + dy, restPosition.z]
+    const v = [restPosition.x + dy * up.x, restPosition.y + dy * up.y, restPosition.z + dy * up.z]
     tracks.push(new THREE.VectorKeyframeTrack(name, [0, clip.duration], [...v, ...v]))
   }
   return new THREE.AnimationClip(clip.name, clip.duration, tracks)

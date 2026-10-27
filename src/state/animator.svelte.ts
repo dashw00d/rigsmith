@@ -11,6 +11,7 @@ import { Player } from '../engine/Player.ts'
 import { PreviewRenderer } from '../engine/PreviewRenderer.ts'
 import { applyScripts, fistPose, retime, type GripScript } from '../engine/scripts.ts'
 import { applyBoneKeys, applyLift, propTracks } from '../engine/keys.ts'
+import { restUpOf } from '../engine/retarget.ts'
 import { groundFit } from '../engine/ground.ts'
 import { garmentMatrix } from '../engine/placement.ts'
 import { fitRide, freezeClip } from '../engine/mount.ts'
@@ -265,7 +266,7 @@ class Animator {
     const rest = view.rest!
     const hips = rest.bones.get('Hips') ?? rest.bones.get('hips')
     let clip = out.get(entry.name)!
-    if (hips !== undefined) clip = applyLift(clip, hips.name, entry.lift ?? 0, hips.localPosition)
+    if (hips !== undefined) clip = applyLift(clip, hips.name, entry.lift ?? 0, hips.localPosition, restUpOf(rest, hips.name))
     const unkeyed = clip
     clip = applyBoneKeys(clip, entry.keys?.bones, entry.loop, restOf(view))
     return { clip: this.withProps(clip, entry.keys?.props, entry.loop, c, view), unkeyed }
@@ -357,7 +358,7 @@ class Animator {
     if (body === undefined || hips === undefined) return clip
     const fit = groundFit(root, body, clip, view.height)
     this.lift = fit.lift
-    return applyLift(clip, hips.node.name, fit.lift, hips.localPosition)
+    return applyLift(clip, hips.node.name, fit.lift, hips.localPosition, restUpOf(view.rest, hips.name))
   }
 
   /** A test of the rig (static/templates/tests.json): a library clip that works its joints hard, in place, looped. */

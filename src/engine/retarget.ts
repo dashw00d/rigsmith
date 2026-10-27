@@ -34,6 +34,22 @@ export interface RestSkeleton {
   palms: Partial<Record<Side, THREE.Vector3>>
 }
 
+/** A rest bone's world matrix: the object holding its top bone, then each bone's rest transform down to it. */
+export function restWorldOf (rest: RestSkeleton, name: string): THREE.Matrix4 {
+  const b = rest.bones.get(name)
+  if (b === undefined) return new THREE.Matrix4()
+  const local = new THREE.Matrix4().compose(b.localPosition, b.localQuaternion, b.localScale)
+  const above = b.parent === null ? (rest.parentWorld.get(name) ?? new THREE.Matrix4()) : restWorldOf(rest, b.parent)
+  return above.clone().multiply(local)
+}
+
+/** One world unit straight up in the frame of a rest bone's parent (what lifting that bone by a unit adds to its local position). */
+export function restUpOf (rest: RestSkeleton, name: string): THREE.Vector3 {
+  const b = rest.bones.get(name)
+  const parent = b === undefined ? undefined : b.parent === null ? rest.parentWorld.get(name) : restWorldOf(rest, b.parent)
+  return parent === undefined ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 1, 0).applyMatrix3(new THREE.Matrix3().setFromMatrix4(parent.clone().invert()))
+}
+
 const PREFIX = /^mixamorig\d*[:_]?/
 
 // Mesh2Motion's human rig (UE-mannequin style) -> Mixamo names, so its clips drive Mixamo characters.
