@@ -1,7 +1,7 @@
 <script lang="ts">
   // The character's clip scripts (src/engine/scripts.ts): switch each on or off, set it, add or remove one. The viewer
   // plays entries with them, and the game export applies the same ones.
-  import { Hand, Plus, Swords, Timer, Trash2 } from '@lucide/svelte'
+  import { Plus, Swords, Timer, Trash2 } from '@lucide/svelte'
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { animator, GRIP_CLIP } from '../../state/animator.svelte.ts'
@@ -12,6 +12,8 @@
   let { character }: { character: Character } = $props()
 
   const scripts = $derived(character.scripts ?? [])
+  // (a hand's fist is set where the hands on a prop are: the animation editor's prop panel)
+  const shown = $derived(scripts.filter(s => s.kind !== 'grip'))
   const names = $derived(character.animations.map(a => a.name))
 
   async function save (next: ClipScript[]): Promise<void> {
@@ -70,25 +72,19 @@
 </script>
 
 <Section title="Scripts">
-  {#if scripts.length === 0}
-    <p class="faint small">Changes on top of the clips (a fist held closed, an attack's blow timed, a walk paced). They play here
+  {#if shown.length === 0}
+    <p class="faint small">Changes on top of the clips (an attack's blow timed, a walk paced; a hand's fist is set on its prop, in the animation editor). They play here
       as the game gets them.</p>
   {:else}
     <ul>
-      {#each scripts as s (s.id)}
+      {#each shown as s (s.id)}
         <li class:off={!s.enabled}>
           <div class="head">
             <Toggle label={describe(s)} hint={s.note ?? hint(s)} checked={s.enabled} onchange={(v) => change(s.id, { enabled: v })} />
             <button class="del" onclick={() => save(scripts.filter(x => x.id !== s.id))} aria-label="Remove script"><Trash2 size={13} /></button>
           </div>
           <div class="params">
-            {#if s.kind === 'grip'}
-              <select value={s.side} onchange={(e) => change(s.id, { side: (e.target as HTMLSelectElement).value as 'Left' | 'Right' })} aria-label="Hand">
-                <option value="Right">Right hand</option><option value="Left">Left hand</option>
-              </select>
-              <input class="mono wide" value={s.clip} aria-label="Grip clip" title="Library clip id whose fist it keeps"
-                onchange={(e) => change(s.id, { clip: (e.target as HTMLInputElement).value.trim() || s.clip })} />
-            {:else if s.kind === 'blow'}
+            {#if s.kind === 'blow'}
               <select value={s.clip} onchange={(e) => change(s.id, { clip: (e.target as HTMLSelectElement).value })} aria-label="Clip">
                 {#each names as n}<option value={n}>{n}</option>{/each}
               </select>
@@ -129,7 +125,6 @@
   {/if}
   <div class="add">
     <span class="faint small"><Plus size={12} /> Add</span>
-    <button onclick={() => add('grip')}><Hand size={13} /> Hold fist</button>
     <button onclick={() => add('blow')}><Swords size={13} /> Blow timing</button>
     <button onclick={() => add('pace')}><Timer size={13} /> Pace</button>
   </div>
@@ -144,7 +139,6 @@
   .params { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 0 4px; font-size: 12px; }
   select, input { height: 24px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg-2); font-size: 12px; padding: 0 4px; }
   input { width: 52px; }
-  input.wide { width: 170px; }
   label { display: flex; align-items: center; gap: 4px; color: var(--text-2); }
   .late { font-size: 11px; }
   .mini { height: 22px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg-2); color: var(--text-2); font-size: 11px; }

@@ -3,7 +3,7 @@
   // the viewport; delete keys, hold joints in their ranges, save as a new library clip.
   import { onDestroy } from 'svelte'
   import { Move3d, PencilRuler, Plus, Rotate3d, Save, ShieldCheck, Sparkles, Trash2, Wand2, X } from '@lucide/svelte'
-  import { animator } from '../../state/animator.svelte.ts'
+  import { animator, FISTS } from '../../state/animator.svelte.ts'
   import { clipEdit } from '../../state/clipedit.svelte.ts'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
@@ -95,6 +95,10 @@
           {#each clipEdit.handsOn(p.name) as h (h.hand)}
             <div class="row socket">
               <span class="small">{h.hand} hand{h.carries ? ' (carries it)' : ''}</span>
+              <select class="fist" value={clipEdit.fistClip(h.hand)} onchange={(e) => clipEdit.setFist(h.hand, (e.target as HTMLSelectElement).value)} use:tooltip={'How its fingers close round the prop (for this character, in every clip)'} aria-label="{h.hand} fist">
+                {#each FISTS as [id, label] (id)}<option value={id}>{label} fist</option>{/each}
+                {#if !FISTS.some(([id]) => id === clipEdit.fistClip(h.hand))}<option value={clipEdit.fistClip(h.hand)}>{clipEdit.fistClip(h.hand).replace(/^mixamo-/, '')}</option>{/if}
+              </select>
               {#if h.socket !== null}<button class="iconbtn" onclick={() => clipEdit.release(h.hand, p.name)} use:tooltip={h.carries ? 'Back to holding it as the outfit places it' : `Take the ${h.hand.toLowerCase()} hand off it`} aria-label="Take the {h.hand.toLowerCase()} hand off"><Trash2 size={12} /></button>{/if}
             </div>
           {:else}
@@ -128,6 +132,7 @@
   .field { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
   .propbox { display: flex; flex-direction: column; gap: 5px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent-soft); }
   .socket { padding: 2px 0; border-top: 1px solid var(--line); }
+  .fist { height: 22px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg-2); font-size: 11px; padding: 0 3px; margin-left: auto; }
   .iconbtn { width: 22px; height: 22px; border: 0; border-radius: 5px; background: transparent; color: var(--text-3); display: grid; place-items: center; }
   .iconbtn:hover { background: var(--bg-3); color: var(--text-1); }
   .seg { display: flex; gap: 2px; padding: 2px; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--line); }

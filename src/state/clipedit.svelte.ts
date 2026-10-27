@@ -358,7 +358,7 @@ class ClipEdit {
       await this.pruneSockets(prop)
     }
     if (snap !== null) {
-      this.fists[snap.hand] ??= await animator.fistOf(snap.hand, GRIP_CLIP).catch(() => ({}))
+      this.fists[snap.hand] ??= await animator.fistOf(snap.hand).catch(() => ({}))
       const sock = this.socketAt(snap.hand, snap.prop, true)
       if (sock !== null) {
         await this.saveSocket(snap.prop, { ...this.clearOfOthers(snap.hand, snap.prop, sock), id: handSocket(snap.hand), name: `${snap.hand} hand` })
@@ -607,6 +607,27 @@ class ClipEdit {
     await this.removeSocket(prop, a.socket)
   }
 
+  /** The library clip a hand's fist is closed as (its Hold fist script's, else the default). */
+  fistClip (hand: 'Left' | 'Right'): string {
+    return (app.selected?.scripts ?? []).find(x => x.kind === 'grip' && x.enabled && x.side === hand)?.clip ?? GRIP_CLIP
+  }
+
+  /** Close `hand`'s fist as `clip` closes it, for the character (its Hold fist script: the viewer and the export use it
+   * too), and build the edit again with it. */
+  async setFist (hand: 'Left' | 'Right', clip: string): Promise<void> {
+    const c = app.selected
+    if (c === null) return
+    const scripts = c.scripts ?? []
+    const had = scripts.find(x => x.kind === 'grip' && x.side === hand)
+    const next = had !== undefined
+      ? scripts.map(x => (x === had ? { ...x, clip, enabled: true } : x))
+      : [...scripts, { id: Math.random().toString(36).slice(2, 10), kind: 'grip' as const, enabled: true, side: hand, clip }]
+    await app.update(c.id, { scripts: next as typeof scripts })
+    this.fists[hand] = await animator.fistOf(hand).catch(() => ({}))
+    delete this.gripCache[hand]
+    this.show(animator.time)
+  }
+
   /** The sockets on a prop no hand is on, deleted (one socket a hand: no pile of old ones). */
   private async pruneSockets (prop: string): Promise<void> {
     const c = app.selected
@@ -629,7 +650,7 @@ class ClipEdit {
    * other hand on the prop (else kept as it is: where the user put it); then, if the prop leads, the prop is fitted again
    * (fitPath). `place: false` puts the hand on the socket as it is. */
   async attach (hand: 'Left' | 'Right', prop: string, socket: string, opts: { place?: boolean } = {}): Promise<void> {
-    this.fists[hand] ??= await animator.fistOf(hand, GRIP_CLIP).catch(() => ({}))
+    this.fists[hand] ??= await animator.fistOf(hand).catch(() => ({}))
     // (a socket made for another grip (an older one: the shaft at the front of the knuckles) put back on the shaft for this one, its spot and roll kept)
     const p = this.props.find(x => x.name === prop); const sock = p?.sockets.find(x => x.id === socket)
     this.attachments = [...this.attachments.filter(a => a.hand !== hand), { hand, prop, socket }]

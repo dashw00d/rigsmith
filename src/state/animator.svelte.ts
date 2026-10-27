@@ -31,6 +31,9 @@ const MANNEQUIN = '/files/library/mannequin/ybot.glb'
 /** The library clip a hand's fist is closed as when nothing says otherwise: of the library's held-object clips, the one
  * whose fingers wrap a shaft most evenly and closely, both hands (a scan of their fists round a spear's shaft). */
 export const GRIP_CLIP = 'mixamo-Great_Sword_Crouching_6'
+/** The fists to choose from (the best of that scan, and the old default): library clip id, name. */
+export const FISTS: Array<[string, string]> = [['mixamo-Great_Sword_Crouching_6', 'Great sword'], ['mixamo-Golf_Post-Swing_2', 'Golf club'],
+  ['mixamo-Holding_Turn_Right', 'Holding'], ['mixamo-Walk_With_Rifle_3', 'Rifle'], ['mixamo-2hand_Idle', '2hand idle']]
 
 export function clipUrl (clipId: string): string {
   return `/files/library/clips/${clipId}.glb`
