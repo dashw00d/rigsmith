@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { edgesOf, jointsFrom, pinsOf, seed, solve, useMarkerSets, type MarkerSet, type V3 } from './markers.ts'
+import { edgesOf, fitMarkers, jointsFrom, pinsOf, seed, solve, useMarkerSets, type MarkerSet, type V3 } from './markers.ts'
+import { hierarchy } from './mixamo.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..')
 const json = JSON.parse(readFileSync(path.join(ROOT, 'static', 'templates', 'markers.json'), 'utf8')) as Record<string, MarkerSet>
@@ -50,5 +51,33 @@ describe('markers', () => {
     expect(out.Hips[1]).toBeLessThan(0.95)
     expect(out.LeftUpLeg[1]).toBeLessThan(0.9)
     expect(out.LeftLeg[1]).toBeCloseTo(0.5, 6)
+  })
+
+  it('placed on a two-finger hand, give all five tips once the hand has five fingers, and none it has lost', () => {
+    const full = Object.fromEntries(hierarchy('full')) as Record<string, string | null>
+    const two = Object.fromEntries(hierarchy('two')) as Record<string, string | null>
+    // (a skeleton of every bone, each a little out from its parent)
+    const place = (parents: Record<string, string | null>): Record<string, V3> => {
+      const out: Record<string, V3> = {}
+      const at = (n: string): V3 => { if (out[n] === undefined) { const p = parents[n]; const q = p === null || p === undefined ? [0, 1, 0] as V3 : at(p); out[n] = [q[0] + 0.01 * (n.length % 5), q[1] - 0.02, q[2] + 0.001 * n.length] } return out[n] }
+      for (const n of Object.keys(parents)) at(n)
+      return out
+    }
+    const jointsTwo = place(two); const jointsFull = { ...place(full), ...jointsTwo }
+    const saved = seed('human', json.human, jointsTwo)
+    // (the hand moved since they were placed: the new fingers' rest moves back with it)
+    saved.base.LeftHand = [saved.base.LeftHand[0] + 0.1, saved.base.LeftHand[1], saved.base.LeftHand[2]]
+    const tips = (m: { positions: Record<string, V3> }): string[] => Object.keys(m.positions).filter(k => k.includes('_tip_')).sort()
+    expect(tips(saved)).toEqual(['index_tip_l', 'index_tip_r', 'thumb_tip_l', 'thumb_tip_r'])
+    const fitted = fitMarkers('human', json.human, saved, jointsFull, full)
+    expect(tips(fitted)).toHaveLength(10)
+    expect(fitted.positions.middle_tip_l).toEqual(jointsFull.LeftHandMiddle4)
+    expect(fitted.base.LeftHandMiddle1[0]).toBeCloseTo(jointsFull.LeftHandMiddle1[0] + 0.1, 9)
+    // the skeleton the markers make has every bone of the five-finger hand
+    expect(Object.keys(jointsFrom(json.human, fitted, full, 0)).sort()).toEqual(Object.keys(jointsFull).sort())
+    // and back to two fingers: the lost fingers' tips and bones leave
+    const back = fitMarkers('human', json.human, fitted, jointsTwo, two)
+    expect(tips(back)).toHaveLength(4)
+    expect(Object.keys(jointsFrom(json.human, back, two, 0)).sort()).toEqual(Object.keys(jointsTwo).sort())
   })
 })

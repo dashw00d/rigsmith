@@ -10,7 +10,7 @@
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import type { CharacterView } from '../../engine/CharacterView.ts'
-  import { insideDepth, jointOf, jointsFrom, keysOf, mirrorX, seed, type MarkerDef, type Markers, type MarkerSet, type SolveCache, type V3 } from '../../engine/markers.ts'
+  import { fitMarkers, insideDepth, jointOf, jointsFrom, keysOf, mirrorX, type MarkerDef, type Markers, type MarkerSet, type SolveCache, type V3 } from '../../engine/markers.ts'
   import { markerBoard } from '../../state/markers.svelte.ts'
 
   let { character, view, set, setName, parents }: { character: Character, view: CharacterView, set: MarkerSet, setName: string, parents: Record<string, string | null> } = $props()
@@ -197,6 +197,18 @@
     markers = { ...markers, positions }
   }
 
+  // (the joints the markers were fitted to: a finger level changed while the board is open brings new bones, or takes
+  // some away, and the markers are fitted again: the new tips to place)
+  let fittedTo = ''
+  $effect(() => {
+    const now = character.joints as Record<string, V3> | undefined
+    const names = now === undefined ? '' : Object.keys(now).sort().join(',')
+    if (markers === null || now === undefined || fittedTo === '' || names === fittedTo || dragging !== null) return
+    markers = fitMarkers(setName, set, $state.snapshot(markers) as Markers, now, parents, seedOwn)
+    fittedTo = names
+    solveNow()
+  })
+
   let ro: ResizeObserver | null = null
   onMount(async () => {
     // (the spinner shows before the board is built: building it takes a moment on a big mesh)
@@ -217,10 +229,11 @@
     build()
     const saved = character.markers
     const base = character.joints as Record<string, V3> | undefined
-    // the character's own markers if they still belong to its skeleton, else seeded from its joints
+    // the character's own markers fitted to its skeleton as it is now (a finger level since changed: its new tips start
+    // on their joints), else seeded from its joints
     // (a plain copy: the character's own is the app's live state, which can't be cloned as it is)
-    if (saved !== undefined && saved.set === setName && base !== undefined && Object.keys(base).every(k => saved.base[k] !== undefined)) markers = $state.snapshot(saved) as Markers
-    else if (base !== undefined) markers = seed(setName, set, base, seedOwn)
+    if (base !== undefined) markers = fitMarkers(setName, set, saved === undefined ? undefined : $state.snapshot(saved) as Markers, base, parents, seedOwn)
+    fittedTo = base === undefined ? '' : Object.keys(base).sort().join(',')
     // (a marker that keeps its joint's depth sits as deep as that joint: markers placed before it kept it move back)
     if (markers !== null) {
       const m = markers

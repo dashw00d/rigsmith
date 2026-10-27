@@ -84,6 +84,33 @@ export function seed (setName: string, set: MarkerSet, joints: Record<string, V3
   return { set: setName, base, positions }
 }
 
+/**
+ * A character's saved markers fitted to its skeleton as it is now (more finger bones than when they were placed, or
+ * fewer): a joint it has gained joins their rest where its nearest kept ancestor's rest puts it (moved with that
+ * ancestor), and its marker starts where the joint is; a joint it has lost leaves, with its marker. Markers of another
+ * set, or none, are seeded afresh.
+ */
+export function fitMarkers (setName: string, set: MarkerSet, saved: Markers | undefined, joints: Record<string, V3>, parents: Record<string, string | null>, seedOwn?: (def: MarkerDef) => V3 | null): Markers {
+  if (saved === undefined || saved.set !== setName) return seed(setName, set, joints, seedOwn)
+  const base: Record<string, V3> = {}
+  for (const [k, p] of Object.entries(saved.base)) if (k.startsWith('marker:') || joints[k] !== undefined) base[k] = [...p]
+  for (const [k, p] of Object.entries(joints)) {
+    if (base[k] !== undefined) continue
+    let anchor = parents[k] ?? null
+    while (anchor !== null && (saved.base[anchor] === undefined || joints[anchor] === undefined)) anchor = parents[anchor] ?? null
+    const d: V3 = anchor === null ? [0, 0, 0] : [0, 1, 2].map(i => saved.base[anchor!][i] - joints[anchor!][i]) as V3
+    base[k] = [p[0] + d[0], p[1] + d[1], p[2] + d[2]]
+  }
+  const positions: Record<string, V3> = {}
+  for (const { key, def, side } of keysOf(set)) {
+    const joint = jointOf(def, side)
+    if (joint === null) { if (saved.positions[key] !== undefined && base[`marker:${def.id}`] !== undefined) positions[key] = [...saved.positions[key]]; continue }
+    if (joints[joint] === undefined) continue
+    positions[key] = saved.positions[key] !== undefined && saved.base[joint] !== undefined ? [...saved.positions[key]] : [...joints[joint]]
+  }
+  return { set: setName, base, positions }
+}
+
 /** What the markers pin: joint (or `marker:<id>`) -> position; a side view's pair mirrored onto the far side. */
 export function pinsOf (set: MarkerSet, m: Markers, xCenter: number): Map<string, V3> {
   const pins = new Map<string, V3>()
