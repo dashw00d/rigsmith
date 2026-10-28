@@ -209,6 +209,8 @@ class Viewer {
     }
     const bone = horse.bones.get(m.bone)
     if (bone === undefined) return
+    // (stood in his own space while a clip is edited: seated again when the editor closes)
+    if (this.standing !== null) return
     if (this.seat === null || this.seatBone !== m.bone) {
       this.seat?.parent?.removeFromParent()
       const group = new THREE.Group()
@@ -225,6 +227,39 @@ class Viewer {
     const k = riderScale(m, { game: h.rider, own: rider.height }, { game: h.horse, own: horse.height })
     this.seat.matrix.identity()
     seatMatrix(m, k).decompose(this.seat.position, this.seat.quaternion, this.seat.scale)
+  }
+
+  /** While a clip is edited: the horse's own place before the rider was stood in his own space (setEditingRider). */
+  private standing: THREE.Matrix4 | null = null
+
+  /** While a clip is edited (src/state/clipedit.svelte.ts) the rider stands in his own space, as the editor's working
+   * copy does, so its goals, keys and gizmo are all in one frame (seated, everything the gizmo moved landed off by the
+   * seat, which the horse's animation moves: a dragged spear keyed a seat's height up, the hand flung after it). The
+   * horse is shown under him where it was. Off: back in the saddle. */
+  setEditingRider (on: boolean): void {
+    const stage = this.stage; const rider = this.character; const horse = this.horse
+    if (stage === null || rider === null || horse === null) return
+    if (on) {
+      if (this.standing !== null || this.seat === null || rider.root.parent === stage.content) return
+      stage.content.updateMatrixWorld(true)
+      const content = stage.content.matrixWorld.clone().invert()
+      const seated = content.clone().multiply(rider.root.matrixWorld)
+      horse.root.updateMatrix()
+      this.standing = horse.root.matrix.clone()
+      seated.invert().multiply(this.standing).decompose(horse.root.position, horse.root.quaternion, horse.root.scale)
+      stage.content.add(rider.root)
+      rider.root.position.set(0, 0, 0); rider.root.quaternion.identity(); rider.root.scale.set(1, 1, 1)
+      stage.content.updateMatrixWorld(true)
+      return
+    }
+    if (this.standing === null) return
+    this.standing.decompose(horse.root.position, horse.root.quaternion, horse.root.scale)
+    this.standing = null
+    if (this.seat !== null) {
+      this.seat.add(rider.root)
+      rider.root.position.set(0, 0, 0); rider.root.quaternion.identity(); rider.root.scale.set(1, 1, 1)
+    }
+    stage.content.updateMatrixWorld(true)
   }
 
   /** The seat holding the rider (for the outfit's gizmo), when he rides. */
@@ -254,6 +289,7 @@ class Viewer {
     this.seat = null
     this.seatBone = ''
     this.horseGearKey = ''
+    this.standing = null
     if (this.horse !== null && stage !== null) this.horse.dispose(stage)
     this.horse = null
     animator.attachMount(null)

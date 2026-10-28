@@ -12,6 +12,7 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { AnimationEntry, ClipKey } from './api.ts'
 import type { PullSocket } from '../../server/workspace.ts'
 import { app } from './app.svelte.ts'
+import { viewer } from './viewer.svelte.ts'
 import { animator, clipUrl, entryUrl, GRIP_CLIP, restOf, type NowPlaying } from './animator.svelte.ts'
 import { withPropPaths } from './slots.svelte.ts'
 import { loadSource } from '../engine/clips.ts'
@@ -164,6 +165,8 @@ class ClipEdit {
     const now = animator.current; const clip = held ?? animator.clip; const view = animator.character; const stage = animator.stage
     if (now === null || clip === null || view === null || stage === null || view.rest === null || now.url === '') { app.toast('error', 'Play a clip first, then edit it'); return }
     this.stop()
+    // (a rider is edited in his own space, as the working copy is: off the moving horse, it shown under him)
+    viewer.setEditingRider(true)
     // (this opening's turn: a later start or a stop, or another character, makes it stale, and it stops at its next await)
     const turn = this.opening; const who = app.selected?.id
     const stale = (): boolean => turn !== this.opening || app.selected?.id !== who || animator.character !== view
@@ -225,6 +228,8 @@ class ClipEdit {
       this.show(animator.time)
     } finally {
       if (turn === this.opening) this.busy = null
+      // (an opening that failed leaves no editor: the rider back in the saddle)
+      if (turn === this.opening && !this.active) viewer.setEditingRider(false)
     }
   }
 
@@ -236,6 +241,7 @@ class ClipEdit {
     this.editor?.dispose()
     this.editor = null
     this.active = false
+    viewer.setEditingRider(false)
     // (the props back where the outfit places them)
     const view = animator.character
     for (const [prop, r] of Object.entries(this.propRest)) { const n = view?.root.getObjectByName(propNode(prop)); if (n !== undefined) { n.position.fromArray(r.position); n.quaternion.fromArray(r.quaternion); n.updateMatrixWorld(true) } }
