@@ -1,80 +1,39 @@
 // Compare generated weights with the previous weights on the NEW skeleton.
 // Transfer only between matching bind geometry; never undo edited joint placements.
 // node tools/skin_opt/validate.ts <candidate.glb> <previous.glb> <human|horse|...>
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
 import * as THREE from 'three'
-import { load, entrySource, isBone, ROOT } from '../lib/node3d.ts'
+import { load, entrySource, isBone } from '../lib/node3d.ts'
+import { deformationTests } from '../lib/deformation.ts'
 import { captureRest, retarget } from '../../src/engine/retarget.ts'
 import { writeWeights, type WeightEdit } from '../../server/weights.ts'
+import { retainReference, selectIslands, surfaceIslands } from './selection.ts'
+import { skinMeshes, transferSkin } from '../lib/skintransfer.ts'
 
 const [candidate, previous, template = 'human'] = process.argv.slice(2)
-const sets = JSON.parse(readFileSync(path.join(ROOT, 'static/templates/tests.json'), 'utf8')) as Record<string, Array<{ id: string, name: string, url?: string }>>
+const sets = deformationTests(true)
 const tests = sets[template] ?? []
 const root = (await load(candidate)).scene
 const oldRoot = (await load(previous)).scene
 root.updateMatrixWorld(true); oldRoot.updateMatrixWorld(true)
-const meshes = (r: THREE.Object3D): THREE.SkinnedMesh[] => {
-  const out: THREE.SkinnedMesh[] = []
-  r.traverse(o => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) out.push(o as THREE.SkinnedMesh) })
-  return out
-}
-const now = meshes(root); const old = meshes(oldRoot)
-const edits: WeightEdit[] = []
-const point = new THREE.Vector3(); const other = new THREE.Vector3()
+const now = skinMeshes(root)
+let edits: WeightEdit[] = []
+const point = new THREE.Vector3()
+let transferReason = 'Geometry or bone set changed'
+let projected = 0
 function transferable (): boolean {
-  if (now.length === 0 || now.length !== old.length) return false
-  for (let part = 0; part < now.length; part++) {
-    const m = now[part]; const was = old[part]
-    const p = m.geometry.attributes.position; const q = was.geometry.attributes.position
-    // Skin addresses belong to vertices; every bind position must have a match.
-    if (p.count !== q.count) return false
-    const allowed = new Set(m.skeleton.bones.map(b => b.name))
-    const wi = was.geometry.attributes.skinIndex; const ww = was.geometry.attributes.skinWeight
-    const box = new THREE.Box3().setFromObject(m)
-    const tolerance = Math.max(box.getSize(new THREE.Vector3()).length() * 0.001, 1e-7)
-    const cells = new Map<string, Array<{ point: THREE.Vector3, weights: Array<[string, number]> }>>()
-    const cell = (v: THREE.Vector3): number[] => [v.x, v.y, v.z].map(x => Math.floor(x / tolerance))
-    for (let v = 0; v < q.count; v++) {
-      other.fromBufferAttribute(q, v).applyMatrix4(was.matrixWorld)
-      const weights: Array<[string, number]> = []
-      for (let k = 0; k < 4; k++) {
-        const w = ww.getComponent(v, k)
-        if (!Number.isFinite(w) || w < 0) return false
-        if (w > 0) {
-          const name = was.skeleton.bones[wi.getComponent(v, k)]?.name
-          if (!name || !allowed.has(name)) return false
-          weights.push([name, w])
-        }
-      }
-      if (Math.abs(weights.reduce((s, [, w]) => s + w, 0) - 1) > 1e-4) return false
-      const key = cell(other).join(',')
-      if (!cells.has(key)) cells.set(key, [])
-      cells.get(key)!.push({ point: other.clone(), weights })
-    }
-    // Importers may reorder vertices and small-hole repair may move a few by a
-    // fraction of a millimetre. Match in bind space, never by incidental GLB order.
-    for (let v = 0; v < p.count; v++) {
-      point.fromBufferAttribute(p, v).applyMatrix4(m.matrixWorld)
-      const c = cell(point)
-      let best: Array<[string, number]> | undefined
-      let distance = tolerance * tolerance
-      for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) {
-        for (const entry of cells.get([c[0]+x, c[1]+y, c[2]+z].join(',')) ?? []) {
-          const d = point.distanceToSquared(entry.point)
-          if (d < distance) { distance = d; best = entry.weights }
-        }
-      }
-      if (best === undefined) return false
-      edits.push({ mesh: part, vertex: v, weights: best })
-    }
+  try {
+    const transfer = transferSkin(root, oldRoot)
+    edits = transfer.edits; projected = transfer.projected
+    return true
+  } catch (error) {
+    transferReason = (error as Error).message
+    return false
   }
-  return true
 }
 if (tests.length === 0) {
   console.log(JSON.stringify({ compared: false, retained: false, reason: `No deformation checks for ${template}` }))
 } else if (!transferable()) {
-  console.log(JSON.stringify({ compared: false, retained: false, reason: 'Geometry or bone set changed' }))
+  console.log(JSON.stringify({ compared: false, retained: false, reason: transferReason }))
 } else {
   const rest = captureRest(root, isBone)
   const clips: THREE.AnimationClip[] = []
@@ -82,45 +41,80 @@ if (tests.length === 0) {
     const src = await entrySource({clipId:test.id,url:test.url})
     clips.push(retarget(src.scene, captureRest(src.scene,isBone),src.clip,rest,{fps:30,inPlace:true}))
   }
+  const positions: number[] = []; const triangles: number[] = []
+  const offsets: number[] = []
   const data = now.map(m => {
     const p = m.geometry.attributes.position
-    const positions = new Float64Array(p.count * 3)
-    for (let v=0;v<p.count;v++) point.fromBufferAttribute(p,v).applyMatrix4(m.matrixWorld).toArray(positions,v*3)
-    const indices = m.geometry.index!; const edges = new Map<string,[number,number]>()
-    for (let i=0;i<indices.count;i+=3) {
-      const t=[indices.getX(i),indices.getX(i+1),indices.getX(i+2)]
-      for(let k=0;k<3;k++){const a=Math.min(t[k],t[(k+1)%3]);const b=Math.max(t[k],t[(k+1)%3]);edges.set(`${a},${b}`,[a,b])}
-    }
-    const dist=(p:Float64Array,a:number,b:number):number=>Math.hypot(p[a*3]-p[b*3],p[a*3+1]-p[b*3+1],p[a*3+2]-p[b*3+2])
-    return {m,positions,dist,edges:[...edges.values()].map(([a,b])=>({a,b,length:dist(positions,a,b)})).filter(e=>e.length>1e-6)}
-  })
-  function score (): number[] {
-    return clips.map(clip=>{
-      const mixer=new THREE.AnimationMixer(root);mixer.clipAction(clip).play()
-      let squared=0,count=0
-      for(let f=0;f<8;f++){
-        mixer.setTime(clip.duration*(f+.5)/8);root.updateMatrixWorld(true)
-        for(const d of data){
-          d.m.skeleton.update();const posed=new Float64Array(d.positions.length)
-          for(let v=0;v<posed.length/3;v++)d.m.getVertexPosition(v,point).applyMatrix4(d.m.matrixWorld).toArray(posed,v*3)
-          for(const e of d.edges){const log=Math.log(Math.max(d.dist(posed,e.a,e.b)/e.length,1e-9));squared+=log*log;count++}
-        }
+    const offset = positions.length / 3; offsets.push(offset)
+    for (let v = 0; v < p.count; v++) positions.push(...point.fromBufferAttribute(p, v).applyMatrix4(m.matrixWorld).toArray())
+    const index = m.geometry.index
+    const indices = index === null ? Array.from({ length: p.count }, (_, i) => i) : Array.from(index.array)
+    for (const i of indices) triangles.push(i + offset)
+    const edges = new Map<string, [number, number]>()
+    for (let i = 0; i < indices.length; i += 3) {
+      for (let k = 0; k < 3; k++) {
+        const a = Math.min(indices[i+k], indices[i+(k+1)%3]) + offset
+        const b = Math.max(indices[i+k], indices[i+(k+1)%3]) + offset
+        edges.set(`${a},${b}`, [a, b])
       }
-      mixer.stopAllAction();mixer.uncacheRoot(root)
-      return Math.sqrt(squared/Math.max(count,1))
+    }
+    const distance = (p: ArrayLike<number>, a: number, b: number): number => Math.hypot(p[a*3]-p[b*3], p[a*3+1]-p[b*3+1], p[a*3+2]-p[b*3+2])
+    return { m, offset, distance, edges: [...edges.values()].map(([a,b]) => ({ a, b, length: distance(positions,a,b) })).filter(e => e.length > 1e-6) }
+  })
+  const islands = surfaceIslands(positions, triangles)
+  const counts = new Float64Array(islands.count)
+  for (const d of data) for (const e of d.edges) counts[islands.labels[e.a]] += 8
+  const edgeCount = counts.reduce((s,x) => s+x, 0)
+  if (edgeCount === 0) throw new Error('No surface edges to validate')
+  function score (): { strain: number[][], severe: number[][] } {
+    const severe: number[][] = []
+    const strain = clips.map(clip => {
+      const mixer = new THREE.AnimationMixer(root); mixer.clipAction(clip).play()
+      const squared = new Array<number>(islands.count).fill(0)
+      const extreme = new Array<number>(islands.count).fill(0); severe.push(extreme)
+      const posed = new Float64Array(positions.length)
+      try {
+        for (let f = 0; f < 8; f++) {
+          mixer.setTime(clip.duration*(f+.5)/8); root.updateMatrixWorld(true)
+          for (const d of data) {
+            d.m.skeleton.update()
+            for (let v = 0; v < d.m.geometry.attributes.position.count; v++) d.m.getVertexPosition(v, point).applyMatrix4(d.m.matrixWorld).toArray(posed, (v+d.offset)*3)
+            for (const e of d.edges) {
+              const log = Math.log(Math.max(d.distance(posed,e.a,e.b)/e.length,1e-9))
+              squared[islands.labels[e.a]] += log*log
+              if (Math.abs(log) > Math.LN2) extreme[islands.labels[e.a]]++
+            }
+          }
+        }
+      } finally { mixer.stopAllAction(); mixer.uncacheRoot(root) }
+      return squared
     })
+    return { strain, severe }
   }
-  const generated=score()
-  for(const e of edits){
-    const m=now[e.mesh];const si=m.geometry.attributes.skinIndex;const sw=m.geometry.attributes.skinWeight
-    for(let k=0;k<4;k++){si.setComponent(e.vertex,k,e.weights[k]?m.skeleton.bones.findIndex(b=>b.name===e.weights[k][0]):0);sw.setComponent(e.vertex,k,e.weights[k]?.[1]??0)}
+  const generatedScores = score()
+  const generatedParts = generatedScores.strain
+  const boneIndices = now.map(m => new Map(m.skeleton.bones.map((b,i) => [b.name,i])))
+  for (const e of edits) {
+    const m = now[e.mesh]; const si = m.geometry.attributes.skinIndex; const sw = m.geometry.attributes.skinWeight
+    for (let k = 0; k < 4; k++) {
+      si.setComponent(e.vertex, k, e.weights[k] ? boneIndices[e.mesh].get(e.weights[k][0])! : 0)
+      sw.setComponent(e.vertex, k, e.weights[k]?.[1] ?? 0)
+    }
   }
-  const prior=score()
-  const average=(a:number[]):number=>a.reduce((s,x)=>s+x,0)/a.length
-  if (![...generated,...prior].every(Number.isFinite)) throw new Error('Non-finite deformation check')
-  // A worse overall result, or a substantial regression on any test, retains the
-  // previous skin. The previous weights are evaluated on exactly these new joints.
-  const retained=average(generated)>average(prior)*1.01 || generated.some((x,i)=>x>prior[i]*1.1)
-  if(retained) await writeWeights(candidate,edits)
-  console.log(JSON.stringify({compared:true,retained,generated:average(generated),previous:average(prior),clips:tests.map((t,i)=>({name:t.name,generated:generated[i],previous:prior[i]}))}))
+  const previousScores = score()
+  const previousParts = previousScores.strain
+  const total = (rows: number[][]): number[] => rows.map(r => Math.sqrt(r.reduce((s,x) => s+x,0)/edgeCount))
+  const generated = total(generatedParts); const prior = total(previousParts)
+  const average = (a: number[]): number => a.reduce((s,x) => s+x,0)/a.length
+  // Retain the whole-model guard, then improve independent islands only when
+  // every test agrees. Cross-mesh material seams share an island too.
+  const extremeCounts = (rows: number[][]): number[] => rows.map(r => r.reduce((s,x) => s+x, 0))
+  const preferPrior = retainReference(generated, prior, extremeCounts(generatedScores.severe), extremeCounts(previousScores.severe))
+  const selection = selectIslands([...generatedParts, ...generatedScores.severe], [...previousParts, ...previousScores.severe], preferPrior)
+  const chosen = edits.filter(e => selection[islands.labels[offsets[e.mesh]+e.vertex]])
+  if (chosen.length > 0) await writeWeights(candidate, chosen)
+  const selected = total(generatedParts.map((r,i) => r.map((x,c) => selection[c] ? previousParts[i][c] : x)))
+  const retained = chosen.length === edits.length
+  const hybrid = chosen.length > 0 && !retained
+  console.log(JSON.stringify({ compared: true, projected, retained, hybrid, islands: islands.count, retainedVertices: chosen.length, generated: average(generated), previous: average(prior), selected: average(selected), clips: tests.map((t,i) => ({ name:t.name, generated:generated[i], previous:prior[i], selected:selected[i] })) }))
 }

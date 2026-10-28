@@ -9,6 +9,26 @@ import mixamo
 from fingers import finger_chains, hand_fingers
 from hands import measure_hand, mirror, symmetric_hand
 
+
+def validate_joints(joints, hierarchy):
+    """Reject invalid placements before geometric fitting or heat diffusion.
+
+    A collapsed limb has no direction: substituting an arbitrary bone tail does
+    not repair its regions, palm frame or weights. Name the conflicting markers.
+    Missing positions are left to the fitter to complete.
+    """
+    if not joints:
+        raise ValueError('No joint placements supplied')
+    for name, point in joints.items():
+        if np.shape(point) != (3,) or not np.isfinite(point).all():
+            raise ValueError(f'{name} needs three finite coordinates')
+    extent = float(np.linalg.norm(np.ptp(np.asarray(list(joints.values())), axis=0)))
+    tolerance = max(extent * 1e-6, 1e-8)
+    for name, parent in hierarchy:
+        if parent in joints and name in joints and np.linalg.norm(np.asarray(joints[name]) - joints[parent]) <= tolerance:
+            raise ValueError(f'{parent} and {name} overlap; move their markers apart before rigging')
+
+
 # Calibrated against Mixamo rigs (mean over 11 stylized A-pose characters).
 SHOULDER_ABOVE_ARMPIT = 0.100      # along the arm axis, from the armpit's projection
 ELBOW_RATIO = 0.554                # shoulder -> wrist

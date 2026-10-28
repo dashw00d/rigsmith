@@ -109,7 +109,7 @@ export function captureRest (root: THREE.Object3D, isJoint: (o: THREE.Object3D) 
     order.push(name)
   })
   const skeleton: RestSkeleton = { bones, order, parentWorld, palms: {} }
-  skeleton.palms = restPalms(root, skeleton, nameOf)
+  skeleton.palms = restPalms(root, skeleton)
   return skeleton
 }
 
@@ -136,30 +136,41 @@ function handDirection (skeleton: RestSkeleton, side: Side): THREE.Vector3 | nul
 }
 
 /**
- * Palms from the skinned mesh: the flattest axis of the vertices the hand bones drive, signed so the
- * thumb points forward. Skeletons without a mesh (clip sources) get the T-pose convention (palms
- * down) when their arms are horizontal.
+ * Palms from bind geometry inside a wrist-to-knuckle region, signed so the thumb
+ * points forward. Painting skin weights must not rotate a hand's animation or
+ * the prop it carries. Skeletons without a mesh get the T-pose convention.
  */
-function restPalms (root: THREE.Object3D, skeleton: RestSkeleton, nameOf: (o: THREE.Object3D) => string): Partial<Record<Side, THREE.Vector3>> {
+function restPalms (root: THREE.Object3D, skeleton: RestSkeleton): Partial<Record<Side, THREE.Vector3>> {
   const out: Partial<Record<Side, THREE.Vector3>> = {}
   const points: Record<Side, THREE.Vector3[]> = { Left: [], Right: [] }
+  const regions = (['Left', 'Right'] as const).flatMap(side => {
+    const wrist = skeleton.bones.get(side + 'Hand')?.worldPosition
+    const direction = handDirection(skeleton, side)
+    if (wrist === undefined || direction === null) return []
+    const knuckles = ['Middle1', 'Index1', 'Ring1', 'Pinky1'].flatMap(n => {
+      const p = skeleton.bones.get(side + 'Hand' + n)?.worldPosition
+      return p === undefined ? [] : [p.clone().sub(wrist).dot(direction)]
+    }).filter(n => n > 1e-5)
+    const forearm = skeleton.bones.get(side + 'ForeArm')?.worldPosition
+    const length = knuckles.length > 0 ? Math.max(...knuckles) : forearm === undefined ? 0 : wrist.distanceTo(forearm) * .35
+    return length <= 1e-5 ? [] : [{ side, wrist, direction, length }]
+  })
+  let hasMesh = false
   const v = new THREE.Vector3()
+  const delta = new THREE.Vector3()
   root.traverse(o => {
     const mesh = o as THREE.SkinnedMesh
     if (mesh.isSkinnedMesh !== true || mesh.skeleton === undefined) return
-    const sideOf = mesh.skeleton.bones.map(b => { const n = nameOf(b); return n.startsWith('LeftHand') ? 'Left' : n.startsWith('RightHand') ? 'Right' : null })
+    hasMesh = true
     const position = mesh.geometry.attributes.position
-    const index = mesh.geometry.attributes.skinIndex
-    const weight = mesh.geometry.attributes.skinWeight
-    if (index === undefined || weight === undefined) return
     for (let i = 0; i < position.count; i++) {
-      const total = { Left: 0, Right: 0 }
-      for (let k = 0; k < 4; k++) {
-        const side = sideOf[index.getComponent(i, k)]
-        if (side !== null && side !== undefined) total[side] += weight.getComponent(i, k)
-      }
-      for (const side of ['Left', 'Right'] as const) {
-        if (total[side] > 0.5) points[side].push(v.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld).clone())
+      v.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld)
+      for (const { side, wrist, direction, length } of regions) {
+        delta.copy(v).sub(wrist)
+        const along = delta.dot(direction)
+        if (along < .05 * length || along > 1.05 * length) continue
+        const radial = delta.addScaledVector(direction, -along).length()
+        if (radial <= .65 * length) points[side].push(v.clone())
       }
     }
   })
@@ -171,7 +182,7 @@ function restPalms (root: THREE.Object3D, skeleton: RestSkeleton, nameOf: (o: TH
     if (measured !== null) {
       const palm = measured.addScaledVector(direction, -measured.dot(direction)).normalize()
       out[side] = palm.dot(expected) < 0 ? palm.negate() : palm
-    } else if (points[side].length === 0 && Math.abs(direction.y) < 0.3) {
+    } else if (!hasMesh && Math.abs(direction.y) < 0.3) {
       out[side] = expected
     }
   }

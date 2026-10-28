@@ -67,3 +67,40 @@ describe('mirrorName', () => {
     expect(mirrorName('tail_lower')).toBe('tail_lower')
   })
 })
+
+describe('surface weight brushes', () => {
+  it('removes the requested share from a rigid weight using the other neighbouring bones', () => {
+    const painter = new WeightPainter([strip()]); painter.mirror = false
+    painter.begin()
+    painter.add(0, new Map([[1, 1], [3, 1]]), 1, .2)
+    painter.remove(0, new Map([[0, 1]]), 0, .5)
+    expect(weight(painter, 0, 0)).toBeCloseTo(.5)
+    expect(weight(painter, 0, 1)).toBeCloseTo(.5)
+    painter.stepBack()
+    expect(weight(painter, 0, 0)).toBe(1)
+  })
+
+  it('stays on the picked surface when another sheet is close behind it', () => {
+    const mesh = strip()
+    const g = mesh.geometry
+    const positions = Array.from(g.attributes.position.array)
+    g.setAttribute('position', new THREE.Float32BufferAttribute([...positions, ...positions.map((x, i) => i % 3 === 2 ? .01 : x)], 3))
+    g.setIndex([...Array.from(g.index!.array), ...Array.from(g.index!.array).map(i => i + 6)])
+    g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(new Array(48).fill(0), 4))
+    g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(Array.from({ length: 12 }, () => [1, 0, 0, 0]).flat(), 4))
+    const painter = new WeightPainter([mesh])
+    const brush = painter.under(0, new THREE.Vector3(.1, .1, 0), 2, [1, 2, 4])
+    expect(brush.size).toBeGreaterThan(2)
+    expect([...brush.keys()].every(p => p < 6)).toBe(true)
+  })
+
+  it('does not average an entirely marked island with no good boundary to heal from', () => {
+    const mesh = strip()
+    const painter = new WeightPainter([mesh]); painter.mirror = false
+    painter.begin(); painter.add(0, new Map([[2, 1]]), 1, 1)
+    const before = Array.from(mesh.geometry.attributes.skinWeight.array)
+    painter.mark(0, new Map(Array.from({ length: 6 }, (_, i) => [i, 1])))
+    expect(painter.heal()).toBe(0)
+    expect(Array.from(mesh.geometry.attributes.skinWeight.array)).toEqual(before)
+  })
+})

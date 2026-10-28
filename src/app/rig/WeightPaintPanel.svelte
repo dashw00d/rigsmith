@@ -37,7 +37,7 @@
     <Paintbrush size={14} /> {paint.active ? 'Done painting' : 'Paint weights'}
   </Button>
   {#if paint.active}
-    <p class="faint small">Pause a test clip on the frame that shows the problem, then paint on the body. Left-drag on the body paints; off it the camera turns.</p>
+    <p class="faint small">Pause a test clip on the frame that shows the problem, then paint on the body. The brush follows the surface. Leave good skin unmarked around an area to heal it. Left-drag on the body paints; off it the camera turns.</p>
     <div class="tools">
       {#each tools as t}
         <button class:on={paint.tool === t.id} onclick={() => { paint.tool = t.id; paint.refreshView() }} use:tooltip={t.hint}>

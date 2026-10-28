@@ -2,7 +2,7 @@
 // WEIGHTS_0 of its skinned primitives (the same accessors, so the rest of the file stays byte for byte), by vertex and
 // bone name. Kept per character (weight_edits.json) and written again after each rig, so a re-rig keeps them.
 import { existsSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { copyFile, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { characterDir } from './workspace.ts'
 
@@ -84,4 +84,34 @@ export async function keepWeightEdits (id: string, edits: WeightEdit[]): Promise
 
 export async function dropWeightEdits (id: string): Promise<void> {
   if (existsSync(editsFile(id))) await writeFile(editsFile(id), '{}')
+}
+
+/** Publish a completed rig together with its remapped painting. Roll back the
+ * rig if publishing its paint record fails; old vertex addresses must never be
+ * paired with a new topology. Temporary paths belong to this rig job. */
+export async function publishRig (id: string, candidate: string, destination: string, painted: WeightEdit[]): Promise<void> {
+  if (painted.length === 0) { await rename(candidate,destination); return }
+  const paint = editsFile(id), staged = candidate + '.paint.json', backup = candidate + '.previous.glb'
+  const previousRig = existsSync(destination)
+  let rigPublished = false, keepBackup = false
+  try {
+    const record = Object.fromEntries(painted.map(e => [`${e.mesh}:${e.vertex}`,e]))
+    await writeFile(staged,JSON.stringify(record))
+    if (previousRig) await copyFile(destination,backup)
+    await rename(candidate,destination); rigPublished = true
+    await rename(staged,paint)
+  } catch (error) {
+    if (rigPublished) {
+      try {
+        if (previousRig) await rename(backup,destination)
+        else await rm(destination,{force:true})
+      } catch (rollback) {
+        keepBackup = true
+        throw new AggregateError([error,rollback],`Rig publication failed; recovery rig retained at ${backup}`,{cause:rollback})
+      }
+    }
+    throw error
+  } finally {
+    await rm(staged,{force:true}); if (!keepBackup) await rm(backup,{force:true})
+  }
 }

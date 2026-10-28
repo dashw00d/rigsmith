@@ -45,16 +45,73 @@ npm run check                                   # types
 npm test                                        # unit tests incl. retargeting on real library clips
 npm run test:godot -- workspace/exports/X.glb   # imports a GLB in headless Godot, resolves every track
 python3 -m unittest discover -s blender/autorig -p test_heat.py
+.venv/bin/python -m unittest discover -s tools/skin_opt -p test_quality.py
 python3 tools/verify_autorig.py --out workspace/audits/rigging/generated --native
 node tools/dev/verify_rigs.ts workspace/audits/rigging/generated workspace/audits/rigging/checks.json
+node tools/dev/verify_rigs.ts workspace/audits/rigging/generated workspace/audits/rigging/extended.json --extended
+node tools/dev/verify_naturalize.ts workspace/audits/motion-checks.json
+node tools/dev/verify_naturalize.ts workspace/audits/dense-motion-checks.json --dense
+node tools/dev/verify_hands.ts workspace/audits/hand-checks.json skirmisher-19c713 mixamo-Grab_And_Slam
+node tools/dev/verify_surfaces.ts workspace/audits/surface-checks.json skirmisher-19c713 mixamo-Grab_And_Slam --frames 24,97
 ```
 
 The isolated rig check leaves saved characters alone. It verifies exported joint positions, finite normalized
-weights, four influences, matching split seams, and samples eight poses from each rig test clip. Stretch metrics
-measure deformation; a structurally valid rig can still crease or clip clothing. Native heat fills small unbound
-pieces from the regional solution. Painted edits are reapplied before comparing candidates, and a failed build
-leaves the previous GLB intact. The deformation comparison currently covers humans and horses; other templates
+weights, four influences, matching split seams, and samples eight poses from each rig test clip. `--extended` adds
+16 catalog motions across eight human movement categories. Stretch, compression and RMS strain metrics measure
+deformation; a structurally valid rig can still crease or clip clothing. Native heat retries failed disconnected
+surfaces independently, then fills unbound pieces from the regional solution. Painted edits are reapplied before comparing candidates, and a failed build
+leaves the previous GLB intact. Independent surface islands can keep different candidate weights when every test
+agrees on both strain and extreme deformation; material and UV seams stay together. Overlapping connected markers
+are reported by name before fitting. The deformation comparison currently covers humans and horses; other templates
 keep their regular heat solver. Back up `workspace/characters` before a library-wide rebuild.
+
+Previous skins are matched in bind space, with barycentric interpolation for small triangle-interior repairs.
+Painted vertices follow that surface across reordered vertices and UV splits; sparse strokes do not spread onto
+unpainted triangles. An ambiguous or missing painted point stops the rebuild and preserves the previous rig.
+Rig and remapped paint publication rolls back if the paint record cannot be written. The surface check reads the
+actual deformed triangles and distinguishes crossings already present at rest and in the source frame. Its crossing
+lengths are intersection contours, not penetration depths; a contour moving across faces is not a new collision.
+
+The pose optimizer refines the selected heat/previous skin, then validates it again, including a spread of additional
+library motions. Its objective penalizes extreme compression and stretching symmetrically; volume is preserved only
+for individually closed, consistently oriented surfaces. Open robes and disconnected parts cannot inflate one another.
+Hand retargeting reads bind geometry around the placed wrist and knuckles, so repainting weights does not rotate the grip.
+
+Weight brushes follow the posed surface instead of reaching through nearby fingers or cloth. Healing needs an
+unmarked boundary; an entirely selected island is left unchanged. Naturalization resets the original pose for each
+sample, infers balance support from grounded heels/toes, and runs in cancellable batches. Failed/cancelled solves
+restore the source scene; the editor retains the previous clip if hand constraints or floor clearance fail.
+Temporal averaging uses orientations and unwraps corrections across 180 degrees. Dense motion verification samples
+every output frame and reports hand/floor error, foot movement, collision depth and angular acceleration. Contact
+increases are compared against the same body-part pair in the same source frame, after final hand/floor corrections.
+Naturalize uses the unedited clip to preserve captured elbow freedom while correcting added bow from edits;
+newly authored held poses retain the anatomical default. Elbow allowances and capsule endcaps vary continuously.
+Measured joint ranges clamp to the nearest allowed cell edge, preventing a tiny boundary crossing from snapping an
+arm to the cell centre and moving its hand off target.
+The finger contact pass first preserves tips with a three-joint redistribution, scores the rendered skin, and
+refines a continuous trajectory. It checks both proper crossings and covered surface estimated from oriented
+solid angles. Bind-area weighting prevents a compressed buried triangle from appearing improved. A whole
+finger is retained unchanged if any frame increases covered area or if RMS or peak angular acceleration rises;
+a constant pad tilt is also considered when a varying correction would add motion. Free fingers can instead
+uncurl gently toward their bind pose, by at most 10 degrees per joint and within the smaller of 0.4% of character
+height or 8% of the finger's length at the tip. A constant relaxation is tried first. If changing contacts prevent
+one adjustment from working throughout, the solver searches a smooth trajectory through each frame's safe
+relaxation interval. Actual float32 interpolants are checked again, unsafe intervals are removed, and the whole
+trajectory is re-solved. The stored quaternion tracks are also replayed at each interval midpoint; an unsafe
+interpolated pose constrains the adjacent choices before the trajectory is solved again. Both forms pass the
+same surface and motion guards. Extra contour length is allowed
+only on frames where covered area decreases.
+Contact trials reuse unaffected vertices and triangle pairs, cache skin transforms and face planes, and score
+intersection length without allocating segment objects. Coverage trials also retain stationary probes outside
+the moving patch's swept bounds when its boundary is unchanged. Open moving boundaries, separating seam
+copies, and probes near the winding threshold use full queries. Full-surface verification remains available.
+Prop carriers, attachments, authored fists, grip scripts and explicit finger keys are
+protected. Loop corrections share their duplicated endpoint; cancellation restores the pose and prior edit.
+Neither crossing length nor sampled coverage measures penetration depth or guarantees collision-free geometry.
+Midpoint checks increase temporal coverage but do not prove safety at every instant between samples.
+The solid-angle query detects enclosed geometry but open wrists and inconsistent orientation need comparison
+against the same source mesh. Boundary fans accelerate queries without approximating the solid-angle field;
+UV copies are cancelled only while their deformed positions coincide exactly.
 
 ## Game units
 

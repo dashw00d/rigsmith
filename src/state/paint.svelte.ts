@@ -52,23 +52,30 @@ class Paint {
     view.setHighlightBone(this.tool === 'area' || this.tool === 'smooth' ? null : this.bone)
     const canvas = stage.renderer.domElement
     this.ring ??= new THREE.Mesh(new THREE.RingGeometry(0.92, 1, 40), new THREE.MeshBasicMaterial({ color: 0xff3df0, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide }))
+    this.ring.visible = false
     this.ring.renderOrder = 999
     stage.scene.add(this.ring)
-    const pick = (e: PointerEvent): { part: number, point: THREE.Vector3, normal: THREE.Vector3 } | null => {
+    const pick = (e: PointerEvent): { part: number, point: THREE.Vector3, normal: THREE.Vector3, face?: number[] } | null => {
       const r = canvas.getBoundingClientRect()
       this.ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, 1 - (e.clientY - r.top) / r.height * 2), stage.camera)
       // (the body as it stands: its bounds follow the pose)
       for (const m of view.skinned) m.computeBoundingSphere()
       const hit = this.ray.intersectObjects(view.skinned, false)[0]
       if (hit === undefined) return null
-      const normal = hit.face?.normal.clone().transformDirection(hit.object.matrixWorld) ?? new THREE.Vector3(0, 0, 1)
-      return { part: view.skinned.indexOf(hit.object as THREE.SkinnedMesh), point: hit.point, normal }
+      const mesh = hit.object as THREE.SkinnedMesh
+      const normal = new THREE.Vector3(0, 0, 1)
+      if (hit.face !== undefined && hit.face !== null) {
+        const points = [hit.face.a, hit.face.b, hit.face.c].map(v => mesh.getVertexPosition(v, new THREE.Vector3()).applyMatrix4(mesh.matrixWorld))
+        normal.crossVectors(points[1].sub(points[0]), points[2].sub(points[0])).normalize()
+        if (normal.dot(this.ray.ray.direction) > 0) normal.negate()
+      }
+      return { part: view.skinned.indexOf(hit.object as THREE.SkinnedMesh), point: hit.point, normal, face: hit.face === undefined || hit.face === null ? undefined : [hit.face.a, hit.face.b, hit.face.c] }
     }
     const brush = (e: PointerEvent): void => {
       const at = pick(e)
       this.showRing(at)
       if (!this.stroking || at === null || this.painter === null) return
-      const points = this.painter.under(at.part, at.point, this.radius * view.height)
+      const points = this.painter.under(at.part, at.point, this.radius * view.height, at.face)
       if (this.tool === 'area') this.painter.mark(at.part, points, !e.altKey)
       else if (this.tool === 'add' && this.boneIndex(at.part) >= 0) this.painter.add(at.part, points, this.boneIndex(at.part), this.strength * 0.25)
       else if (this.tool === 'remove' && this.boneIndex(at.part) >= 0) this.painter.remove(at.part, points, this.boneIndex(at.part), this.strength * 0.25)
@@ -155,9 +162,8 @@ class Paint {
     this.busyText = 'Healing the marked skin'
     try {
       const n = this.painter.heal()
-      this.painter.clearArea()
       this.redraw()
-      app.toast('ok', n > 0 ? `Healed ${n} points from the skin round them` : 'Mark the problem area first')
+      app.toast(n > 0 ? 'ok' : 'error', n > 0 ? `Healed ${n} points from the skin round them${this.marked > 0 ? '; the remaining selection needs some good skin left unmarked around it' : ''}` : 'Leave some good skin unmarked around the area to heal from')
     } finally {
       this.busy = false
       this.busyText = null

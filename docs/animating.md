@@ -85,7 +85,15 @@ centimetre a frame) rather than bend its wrist far. The head keeps looking where
 
 - **Naturalize** edges every frame toward how people move and smooths the motion. The hands stay on the prop, and
   the frames you keyed stay near where you put them. Each press goes a little further. Do it when the clip is mostly
-  right: any change after it rebuilds the clip from your keys.
+  right: any change after it rebuilds the clip from your keys. Captured stretches and crossed-arm movements retain
+  their original elbow freedom; the solver corrects extra elbow bow introduced by your edits.
+- Free fingers get a contact pass that checks the actual skinned hand, including surfaces buried inside it.
+  It first tries to keep the fingertip targets; if needed, a free finger can uncurl slightly to make room for its
+  thickness. Corrections must pass contact and motion checks throughout the clip. A constant correction is also
+  considered when a changing correction would make a held finger pulse. For changing grabs, the solver can
+  vary the slight uncurl smoothly through the clip, checking each proposed pose again before accepting it.
+  Hands carrying props, saved fists, grip scripts and explicitly keyed fingers keep their authored poses. This pass
+  can take longer on detailed hands; **Cancel naturalization** retains your previous edit.
 - **Save:** name the clip and save it. It becomes a new library clip, tagged custom, in the category of the clip it
   came from. Add it to the character's set in Animate like any other clip.
 - **A leading prop's path is saved with the clip.** The library clip plays with the prop where the editor had it, and
@@ -105,7 +113,8 @@ centimetre a frame) rather than bend its wrist far. The head keeps looking where
   (Ctrl+Shift+R) and open the clip again.
 - **Choose In place and Mirror before editing.** These source-motion controls are disabled while the editor is open,
   so the frame your keys and grips were made against stays fixed.
-- **Slow steps:** turning Leads on fits the whole clip (about 10 seconds); Naturalize takes a few seconds. The
-  panel shows what it's doing.
+- **Slow steps:** turning Leads on fits the whole clip; Naturalize solves every frame and shows progress. You can
+  cancel naturalization and keep the current edit. Raised feet do not count as ground support, and a solve that
+  loses hand targets or floor clearance leaves the previous edit in place.
 - **A one-handed clip made two-handed** (Spear Thrust) turns the body side-on at the strike to get the front hand
   forward. That's the solver keeping both hands on the spear at the clip's own speed.

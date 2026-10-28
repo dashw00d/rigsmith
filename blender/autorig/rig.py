@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(HERE, '..'))
 import mixamo  # noqa: E402
 from common import report, scene_io  # noqa: E402
 from landmarks import detect_markers  # noqa: E402
-from skeleton import build_joints, complete_joints  # noqa: E402
+from skeleton import build_joints, complete_joints, validate_joints  # noqa: E402
 from hands import assumed_palm, measure_hand  # noqa: E402
 import weights as weight_tools  # noqa: E402
 
@@ -188,9 +188,11 @@ def main():
         if not args.joints:
             raise SystemExit('A creature template needs joint positions (--joints)')
         joints = {k: np.array(report.from_gltf(v)) for k, v in json.load(open(args.joints)).items()}
+        validate_joints(joints, [(n, template['parents'].get(n)) for n in template['order']])
     elif args.joints:
         # User-edited joints arrive in glTF space (Y up, +Z forward).
         joints = {k: np.array(report.from_gltf(v)) for k, v in json.load(open(args.joints)).items()}
+        validate_joints(joints, mixamo.hierarchy(args.fingers))
         joints = complete_joints(verts, tris, joints, args.fingers)
     else:
         sil, markers = detect_markers(verts, tris)
@@ -203,8 +205,7 @@ def main():
         if mixamo.FINGER_LEVELS[args.fingers] and not markers.get('fingers_traced', True):
             warnings.append("fingers not separable on this mesh; placed from hand proportions (the 2-chain mitten may suit it better)")
 
-    if any(np.shape(v) != (3,) or not np.isfinite(v).all() for v in joints.values()):
-        raise ValueError('Every joint needs three finite coordinates')
+    validate_joints(joints, [(n, template['parents'].get(n)) for n in template['order']] if template else mixamo.hierarchy(args.fingers))
     if args.placements_only:
         report.result({'joints': {k: report.to_gltf(v) for k, v in joints.items()}})
         return

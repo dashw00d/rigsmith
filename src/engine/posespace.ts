@@ -201,6 +201,16 @@ export function expQ (x: number, y: number, z: number, into = new THREE.Quaterni
   return into.set(x * s, y * s, z * s, Math.cos(a / 2))
 }
 
+/** Choose the equivalent rotation vector nearest the reference. The principal
+ * logarithm jumps from +pi to -pi; that jump is not a physical correction. */
+function unwrapRotation (p: Float64Array, reference: ArrayLike<number>, o: number): void {
+  const angle = Math.hypot(p[o], p[o + 1], p[o + 2])
+  if (angle < 1e-9) return
+  const along = (p[o] * reference[o] + p[o + 1] * reference[o + 1] + p[o + 2] * reference[o + 2]) / angle
+  const factor = 1 + 2 * Math.PI * Math.round((along - angle) / (2 * Math.PI)) / angle
+  for (let k = 0; k < 3; k++) p[o + k] *= factor
+}
+
 /**
  * The pose vector of a body in the model's own skeleton (the Y Bot's frames): `turns[i]` is BODY[i]'s local turn, the
  * hips' its WORLD turn. Writes DIM numbers to `out`; returns the hips' heading (what was taken out of the hips' turn).
@@ -294,12 +304,18 @@ export interface NaturalOptions {
    * The `floor` is the one thing held hard.
    */
   feet?: string[]
+  /** Feet supporting the body's balance, independently of feet whose trajectories
+   * and floor clearance are constrained. An empty list is an airborne frame. */
+  supportFeet?: string[]
   /** The feet hard-locked on their place and turn (the first solver's behaviour, and a bake that must not slide). */
   planted?: boolean
   /** The floor (world y) and each sole point's rest height above it (restSoles): no sole point goes under its height. */
   floor?: { y: number, soles: Record<string, number> }
   /** The anatomical elbow cost (default on): an elbow bowing forward (in the chest's frame) off the line from its shoulder to its hand more than the hand's height allows (ELBOW). */
   elbows?: boolean
+  /** Additional forward elbow bow already present in a trusted reference motion
+   * (left/right, world metres). Edits are penalized for adding to it. */
+  elbowSlack?: readonly [number, number]
   /** How many times the usual number of search steps (default 1 in quick mode, 2 in full). */
   effort?: number
   /** Balance and upright (default on when soft `feet` are given, off with `planted`: the first solver's behaviour): the centre of mass over the standing feet's support, the trunk no more bent than the start had it. `false`: lean anywhere. */
@@ -352,7 +368,7 @@ export interface NaturalResult {
   /** The score the search lowers, term by term, where it began (the warm start, or the start) and where it ended (every row on, at the goals' own weights: two solves compare fairly). */
   objective?: { start: ObjectiveTerms, end: ObjectiveTerms }
   /** The deepest any two body parts are into each other past what they may overlap, as the bones stand now (metres; 0: none; only with `collide`), and the pair. */
-  penetration?: { worst: number, pair: [string, string] | null }
+  penetration?: { worst: number, pair: [string, string] | null, increase?: number, increasedPair?: [string, string] | null }
   /** The deepest the body is into an obstacle (metres; with `obstacles`), and the segment. */
   obstacle?: { worst: number, segment: string | null }
 }
@@ -454,8 +470,24 @@ export const ELBOW = {
 export function elbowAllowed (below: number): number {
   const t = ELBOW.table
   if (below <= t[0][0]) return t[0][1]
+  // Monotone cubic interpolation keeps the measured thresholds, with a
+  // continuous slope. Linear segments made an elbow accelerate abruptly when
+  // the hand crossed half an upper arm below the shoulder during a clip.
+  const slope = (k: number): number => {
+    if (k === 0 || k === t.length - 1) return 0
+    const h0 = t[k][0] - t[k - 1][0], h1 = t[k + 1][0] - t[k][0]
+    const d0 = (t[k][1] - t[k - 1][1]) / h0, d1 = (t[k + 1][1] - t[k][1]) / h1
+    if (d0 * d1 <= 0) return 0
+    const w0 = 2 * h1 + h0, w1 = h1 + 2 * h0
+    return (w0 + w1) / (w0 / d0 + w1 / d1)
+  }
   for (let i = 1; i < t.length; i++) {
-    if (below <= t[i][0]) return t[i - 1][1] + (t[i][1] - t[i - 1][1]) * (below - t[i - 1][0]) / (t[i][0] - t[i - 1][0])
+    if (below <= t[i][0]) {
+      const h = t[i][0] - t[i - 1][0], u = (below - t[i - 1][0]) / h
+      const u2 = u * u, u3 = u2 * u
+      return (2*u3 - 3*u2 + 1)*t[i-1][1] + (u3 - 2*u2 + u)*h*slope(i-1)
+        + (-2*u3 + 3*u2)*t[i][1] + (u3 - u2)*h*slope(i)
+    }
   }
   return t[t.length - 1][1]
 }
@@ -468,7 +500,10 @@ export function elbowAllowed (below: number): number {
  * not pushed either way. A limb's contacts with the trunk count once (the deepest of the trunk's overlapping capsules).
  * Not boosted: a hand goal that is hard (a socket) meets its place.
  */
-export const COLLIDE = { weight: 1, cap: 2 }
+// Retain a gentle slope near a resting contact. Saturating at only two
+// centimetres made another five centimetres of penetration almost free during
+// temporal smoothing; a longer range resists that without stiffening contact.
+export const COLLIDE = { weight: 1, cap: 8 }
 /** An obstacle (a held spear's shaft) may be touched this far into a segment (metres of a Y Bot) past the start pose's own before it costs as COLLIDE does (an avoid signal too). */
 export const OBSTACLE = { slack: 0.005 }
 /** A turn that yields round its roll axis: per 5 degrees (boosted goals do not harden it). */
@@ -673,11 +708,11 @@ export class NaturalRig {
    */
   private balanceTerms (feet: ArrayLike<number>, tips: Array<Float64Array | undefined>, out: Float64Array, forward: ArrayLike<number>): void {
     const P = this.P; const Q = this.Q
-    let cx = 0; let cy = 0; let cz = 0
+    let cx = 0; let cz = 0
     for (let i = 0; i < this.segMass.length; i++) {
       const a = this.seg[i * 2]; const b = this.seg[i * 2 + 1]; const m = this.segMass[i]
-      if (b < 0) { cx += m * P[a * 3]; cy += m * P[a * 3 + 1]; cz += m * P[a * 3 + 2] } else {
-        cx += m * 0.5 * (P[a * 3] + P[b * 3]); cy += m * 0.5 * (P[a * 3 + 1] + P[b * 3 + 1]); cz += m * 0.5 * (P[a * 3 + 2] + P[b * 3 + 2])
+      if (b < 0) { cx += m * P[a * 3]; cz += m * P[a * 3 + 2] } else {
+        cx += m * 0.5 * (P[a * 3] + P[b * 3]); cz += m * 0.5 * (P[a * 3 + 2] + P[b * 3 + 2])
       }
     }
     // the support: each standing foot's ankle, ball and toes' tip, on the ground
@@ -1038,7 +1073,7 @@ export class NaturalRig {
     }
 
     // (balance and upright: the start pose's own overhang and trunk tilt are what they are; only worse costs)
-    const feetNames = (opts.feet ?? []).filter(n => INDEX.has(n) && INDEX.has(n.replace('Foot', 'ToeBase')))
+    const feetNames = (opts.supportFeet ?? opts.feet ?? []).filter(n => INDEX.has(n) && INDEX.has(n.replace('Foot', 'ToeBase')))
     const useBalance = (opts.balance ?? opts.planted !== true) && feetNames.length > 0
     const feetIdx = feetNames.map(n => INDEX.get(n)!)
     const feetTips = feetNames.map(n => this.tip.get(n))
@@ -1208,7 +1243,7 @@ export class NaturalRig {
       if (useElbows) {
         for (let side = 0; side < 2; side++) {
           this.elbowTerms(side, elb, shoulderY0[side])
-          const ue = Math.max(0, elb[3] - elb[5]) / unit
+          const ue = Math.max(0, elb[3] - elb[5] - (opts.elbowSlack?.[side] ?? 0)) / unit
           out[r++] = ELBOW.weight * ue * (1 + ue / ELBOW.steep)
         }
         out[r++] = 0
@@ -1284,6 +1319,7 @@ export class NaturalRig {
         // back to the model's frame
         const ls = this.K[PARENT[b]].clone().multiply(held).multiply(this.K[b].clone().invert())
         logTo(model.restInv[b].clone().multiply(ls), limitTarget, b * 3)
+        unwrapRotation(limitTarget, pp, b * 3)
         limited[b] = 1; any = true
       }
       limited[0] = 0
@@ -1477,7 +1513,18 @@ export class NaturalRig {
     this.hold(rows, exempt, opts)
     const res = this.measure(rows, startCost, start, performance.now() - t0, iterations, feetNames)
     res.objective = { start: startTerms, end: endTerms }
-    if (solid !== null) res.penetration = this.worstPenetration(solid)
+    if (solid !== null) {
+      res.penetration = this.worstPenetration(solid)
+      // Compare the same pair at the same frame, after the final hand/floor
+      // projection. A clip-wide maximum can hide a newly introduced contact.
+      let increase = 0; let increasedPair: [string, string] | null = null
+      for (let k = 0; k < nC; k++) {
+        const a = cpairs![k * 2], b = cpairs![k * 2 + 1]
+        const d = solid.depth(a, b) - solid.slack[k] - tol[k]
+        if (d > increase) { increase = d; increasedPair = [solid.shape.segments[a].name, solid.shape.segments[b].name] }
+      }
+      res.penetration.increase = increase; res.penetration.increasedPair = increasedPair
+    }
     if (solid !== null && nO > 0) {
       // (solid's frames are the final pose's: worstPenetration updated them)
       let worst = 0; let segment: string | null = null
@@ -1641,7 +1688,9 @@ export class NaturalRig {
     }
     const now = this.encode()
     const delta = new Float64Array(DIM + EXTRA)
-    for (let d = 0; d < DIM; d++) delta[d] = now.p[d] - start.p[d]
+    delta.set(now.p)
+    for (let d = 0; d < DIM; d += 3) unwrapRotation(delta, start.p, d)
+    for (let d = 0; d < DIM; d++) delta[d] -= start.p[d]
     delta[DIM] = Math.atan2(Math.sin(now.yaw - start.yaw), Math.cos(now.yaw - start.yaw))
     delta[DIM + 1] = now.hips.x - start.hips.x
     delta[DIM + 2] = now.hips.y - start.hips.y
@@ -1888,6 +1937,9 @@ export interface NaturalizeOptions {
   cycleTravel?: THREE.Vector3
   /** Put the rig's bones in the edited clip's frame `i` (and its world matrices up to date). */
   pose: (i: number) => void
+  /** Original motion before editing, when available. Authored elbow contacts
+   * remain valid; the solve still corrects excess introduced by the edit. */
+  referencePose?: (i: number) => void
   /** The goals of frame `i`, called with the rig posed in the edited frame (so a target can be read off it: poseTargets). Hard ones (the hands on their prop's sockets) are met; `hard: false` ones (a keyed bone's) are pulled toward at their weight. */
   goals: (i: number) => NaturalGoal[]
   /** Bones kept hard on their place and turn (a prop's carrier). */
@@ -1896,6 +1948,9 @@ export interface NaturalizeOptions {
   feet?: string[]
   planted?: boolean
   floor?: NaturalOptions['floor']
+  /** Infer balance support from source sole clearance (default true with a floor).
+   * Swinging feet keep their original trajectory but do not support the torso. */
+  contactSupport?: boolean
   /** May the hips move (and the clip get a Hips position track)? Default true. */
   hipsMove?: boolean
   /** 'full' (default) or 'quick' per frame. */
@@ -1931,6 +1986,10 @@ export interface NaturalizedFrame {
   feetMoved: NaturalResult['feetMoved']
   /** The deepest two body parts are into each other (metres; with `collide`). */
   penetration?: number
+  /** Largest increase over this source frame for the same body-part pair,
+   * measured after final hand and floor corrections (metres; with `collide`). */
+  penetrationIncrease?: number
+  increasedPair?: [string, string] | null
 }
 
 /**
@@ -1941,11 +2000,23 @@ export interface NaturalizedFrame {
  * its neighbours'); with `pull` / `pullOutside` every frame edges toward the model's natural poses.
  */
 export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): NaturalizedFrame[] {
+  return finish(naturalizeFrameSteps(rig, o))
+}
+
+function finish<T> (steps: Generator<void, T>): T {
+  let next = steps.next()
+  while (!next.done) next = steps.next()
+  return next.value
+}
+
+function * naturalizeFrameSteps (rig: NaturalRig, o: NaturalizeOptions): Generator<void, NaturalizedFrame[]> {
   const n = o.frames
-  const sweeps = Math.max(1, o.sweeps ?? 2)
+  const sweeps = o.sweeps ?? 2
+  if (!Number.isSafeInteger(n) || n < 1 || !Number.isSafeInteger(sweeps) || sweeps < 1) throw new Error('Naturalize needs positive integer frame and sweep counts')
   const deltas: Array<Float64Array | null> = new Array<Float64Array | null>(n).fill(null)
   // (each frame's pose as the edit has it: what its correction is from)
   const starts: Array<NaturalPose | undefined> = new Array<NaturalPose | undefined>(n)
+  const referenceElbows: Array<[number, number] | undefined> = new Array(n)
   if (o.loop === true) for (let i = 0; i < n; i++) { o.pose(i); starts[i] = rig.encode() }
   const out: NaturalizedFrame[] = new Array<NaturalizedFrame>(n)
   let done = 0
@@ -1953,6 +2024,11 @@ export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): Natura
     const last = s === sweeps - 1
     for (let k = 0; k < n; k++) {
       const i = s % 2 === 0 ? k : n - 1 - k
+      if (o.referencePose !== undefined && referenceElbows[i] === undefined) {
+        o.referencePose(i)
+        const e = rig.elbowsOf()
+        referenceElbows[i] = [Math.max(0, e.left.bow - e.left.allowed), Math.max(0, e.right.bow - e.right.allowed)]
+      }
       o.pose(i)
       starts[i] ??= rig.encode()
       const left = o.loop === true && n > 1 ? (i + n - 1) % n : i - 1
@@ -1970,7 +2046,16 @@ export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): Natura
         if (wm > 0 && a !== null && a !== undefined && b !== null && b !== undefined) {
           const sa = starts[left]!; const sb = starts[right]!; const si = starts[i]!
           const mid = new Float64Array(DIM + EXTRA)
-          for (let d = 0; d < DIM; d++) mid[d] = (sa.p[d] + a[d] + sb.p[d] + b[d]) / 2 - si.p[d]
+          // Average orientations, not their principal logarithms: +179 and
+          // -179 degrees meet at 180, not zero. Keep the target on this frame's
+          // branch so the quadratic smoothing pull is a small correction.
+          for (let d = 0; d < DIM; d += 3) {
+            const qa = expQ(sa.p[d] + a[d], sa.p[d + 1] + a[d + 1], sa.p[d + 2] + a[d + 2])
+            const qb = expQ(sb.p[d] + b[d], sb.p[d + 1] + b[d + 1], sb.p[d + 2] + b[d + 2])
+            logTo(qa.slerp(qb, .5), mid, d)
+            unwrapRotation(mid, si.p, d)
+            for (let k = 0; k < 3; k++) mid[d + k] -= si.p[d + k]
+          }
           const wrap = (x: number): number => Math.atan2(Math.sin(x), Math.cos(x))
           mid[DIM] = (wrap(sa.yaw + a[DIM] - si.yaw) + wrap(sb.yaw + b[DIM] - si.yaw)) / 2
           const ha = sa.hips.clone(); const hb = sb.hips.clone()
@@ -1985,18 +2070,29 @@ export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): Natura
         }
         smooth = { ref, weight }
       }
-      const res = rig.solve(o.goals(i), { keep: o.keep, feet: o.feet, planted: o.planted, floor: o.floor, hipsMove: o.hipsMove ?? true, mode: o.mode ?? 'full', pull: o.pull, pullOutside: o.pullOutside, warm: deltas[i] ?? undefined, smooth, collide: o.collide, obstacles: o.obstacles?.(i) })
+      const supportFeet = o.contactSupport === false || o.floor === undefined ? undefined : contactFeet(rig, o.feet ?? [], o.floor)
+      const res = rig.solve(o.goals(i), { keep: o.keep, feet: o.feet, supportFeet, planted: o.planted, floor: o.floor, hipsMove: o.hipsMove ?? true, mode: o.mode ?? 'full', pull: o.pull, pullOutside: o.pullOutside, warm: deltas[i] ?? undefined, smooth, elbowSlack: referenceElbows[i], collide: o.collide, obstacles: o.obstacles?.(i) })
       deltas[i] = res.delta
       if (last) {
         const q = new Float32Array(NB * 4)
         rig.bones.forEach((b, j) => { b.quaternion.toArray(q, j * 4) })
         const hp = rig.bones[0].position
-        out[i] = { q, hips: [hp.x, hp.y, hp.z], miss: res.miss, keepMiss: res.keepMiss, softMiss: res.softMiss, floorMiss: res.floorMiss, turnMiss: res.turnMiss, cost: res.cost, startCost: res.startCost, feetMoved: res.feetMoved, penetration: res.penetration?.worst }
+        out[i] = { q, hips: [hp.x, hp.y, hp.z], miss: res.miss, keepMiss: res.keepMiss, softMiss: res.softMiss, floorMiss: res.floorMiss, turnMiss: res.turnMiss, cost: res.cost, startCost: res.startCost, feetMoved: res.feetMoved, penetration: res.penetration?.worst, penetrationIncrease: res.penetration?.increase, increasedPair: res.penetration?.increasedPair }
       }
       o.progress?.(++done, n * sweeps)
+      yield
     }
   }
   return out
+}
+
+/** A heel or toe can support a rolling foot. A raised foot cannot enlarge the
+ * support polygon, and a jump has no ground-balance objective at all. */
+export function contactFeet (rig: NaturalRig, feet: string[], floor: NonNullable<NaturalOptions['floor']>): string[] {
+  return feet.filter(foot => [foot, foot.replace('Foot', 'ToeBase'), foot.replace('Foot', 'Toe_End')].some(name => {
+    const b = rig.bone(name); const sole = floor.soles[name]
+    return b !== undefined && sole !== undefined && wp(b).y - sole - floor.y <= .02 * rig.scale
+  }))
 }
 
 /**
@@ -2004,47 +2100,88 @@ export function naturalizeFrames (rig: NaturalRig, o: NaturalizeOptions): Natura
  * `goals(i, t)`, the result as a new dense clip (the 22 body bones' quaternion tracks and, when the hips may move, the
  * Hips position track replaced; every other track as it was) with the per-frame misses.
  */
-export function naturalizeClip (rig: NaturalRig, clip: THREE.AnimationClip, o: Omit<NaturalizeOptions, 'frames' | 'pose' | 'goals'> & { goals: (i: number, t: number) => NaturalGoal[], fps?: number, root?: THREE.Object3D }): { clip: THREE.AnimationClip, times: number[], frames: NaturalizedFrame[], misses: number[] } {
+export type NaturalizeClipOptions = Omit<NaturalizeOptions, 'frames' | 'pose' | 'goals' | 'referencePose'> & {
+  goals: (i: number, t: number) => NaturalGoal[], fps?: number, root?: THREE.Object3D
+  /** The unedited clip on this rig, in the same time coordinates as clip. */
+  referenceClip?: THREE.AnimationClip
+}
+export interface NaturalizedClip { clip: THREE.AnimationClip, times: number[], frames: NaturalizedFrame[], misses: number[] }
+
+export function naturalizeClip (rig: NaturalRig, clip: THREE.AnimationClip, o: NaturalizeClipOptions): NaturalizedClip {
+  return finish(naturalizeClipSteps(rig, clip, o))
+}
+
+/** The same solve in bounded batches, so progress, cancellation and navigation
+ * stay responsive. Closing the iterator always restores its private source rig. */
+export async function naturalizeClipAsync (rig: NaturalRig, clip: THREE.AnimationClip, o: NaturalizeClipOptions & { cancelled?: () => boolean }): Promise<NaturalizedClip> {
+  const steps = naturalizeClipSteps(rig, clip, o)
+  try {
+    let batch = performance.now()
+    while (true) {
+      if (o.cancelled?.() === true) throw new DOMException('Naturalization cancelled', 'AbortError')
+      const next = steps.next()
+      if (next.done) return next.value
+      if (performance.now() - batch >= 12) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+        batch = performance.now()
+      }
+    }
+  } finally { steps.return(undefined as never) }
+}
+
+function * naturalizeClipSteps (rig: NaturalRig, clip: THREE.AnimationClip, o: NaturalizeClipOptions): Generator<void, NaturalizedClip> {
   const fps = o.fps ?? 30
+  if (!Number.isFinite(fps) || fps <= 0 || !Number.isFinite(clip.duration) || clip.duration < 0) throw new Error('Naturalize needs a finite duration and positive frame rate')
+  if (o.referenceClip !== undefined && (!Number.isFinite(o.referenceClip.duration) || o.referenceClip.duration < 0)) throw new Error('Naturalize needs a finite reference duration')
   let root: THREE.Object3D = o.root ?? rig.bones[0]
   if (o.root === undefined) while (root.parent !== null) root = root.parent
   // (spread evenly to the clip's very end: its last pose kept whatever its length)
-  const count = Math.max(1, Math.round(clip.duration * fps))
+  const count = clip.duration === 0 ? 0 : Math.max(1, Math.round(clip.duration * fps))
   const times = Array.from({ length: count + 1 }, (_, i) => (i === count ? clip.duration : i * clip.duration / count))
-  // (every bone as it was, to put back)
-  const saved: Array<[THREE.Object3D, THREE.Vector3, THREE.Quaternion]> = []
-  root.traverse(b => { if ((b as THREE.Bone).isBone === true) saved.push([b, b.position.clone(), b.quaternion.clone()]) })
+  // A mixer restores only keyed properties. The solver also changes unkeyed bones:
+  // reset the complete source pose before sampling, including props and scales.
+  const saved: Array<[THREE.Object3D, THREE.Vector3, THREE.Quaternion, THREE.Vector3]> = []
+  root.traverse(b => saved.push([b, b.position.clone(), b.quaternion.clone(), b.scale.clone()]))
+  const restore = (): void => {
+    for (const [b, p, q, s] of saved) { b.position.copy(p); b.quaternion.copy(q); b.scale.copy(s) }
+    root.updateMatrixWorld(true)
+  }
   const mixer = new THREE.AnimationMixer(root)
-  const pose = (i: number): void => {
+  const poseClip = (i: number, sampled: THREE.AnimationClip): void => {
     mixer.stopAllAction()
-    const a = mixer.clipAction(clip)
+    restore()
+    const a = mixer.clipAction(sampled)
     // (once and held at the end: at its very end a looping action wraps round to its first frame)
     a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true
     a.reset(); a.play()
     mixer.setTime(times[i])
     root.updateMatrixWorld(true)
   }
-  // Solve a loop's seam once. Its duplicate endpoint gets the same local correction, retaining source root travel.
-  pose(0)
-  const first = rig.bones.map(b => ({ q: b.quaternion.clone(), p: b.position.clone() }))
-  const startHips = wp(rig.bones[0])
-  pose(times.length - 1)
-  const end = rig.bones.map(b => ({ q: b.quaternion.clone(), p: b.position.clone() }))
-  const cycleTravel = wp(rig.bones[0]).sub(startHips)
-  const loop = o.loop === true
-  const frames = naturalizeFrames(rig, { ...o, cycleTravel, frames: times.length - (loop ? 1 : 0), pose, goals: i => o.goals(i, times[i]) })
-  if (loop) {
-    const q = new Float32Array(NB * 4)
-    rig.bones.forEach((_, j) => {
-      end[j].q.clone().multiply(first[j].q.clone().invert()).multiply(new THREE.Quaternion().fromArray(frames[0].q, j * 4)).normalize().toArray(q, j * 4)
-    })
-    const hips = end[0].p.clone().sub(first[0].p).add(new THREE.Vector3(...frames[0].hips))
-    frames.push({ ...frames[0], q, hips: hips.toArray() })
+  const pose = (i: number): void => { poseClip(i, clip) }
+  let frames: NaturalizedFrame[]
+  try {
+    // Solve a loop's seam once. Its duplicate endpoint gets the same local correction, retaining source root travel.
+    pose(0)
+    const first = rig.bones.map(b => ({ q: b.quaternion.clone(), p: b.position.clone() }))
+    const startHips = wp(rig.bones[0])
+    pose(times.length - 1)
+    const end = rig.bones.map(b => ({ q: b.quaternion.clone(), p: b.position.clone() }))
+    const cycleTravel = wp(rig.bones[0]).sub(startHips)
+    const loop = o.loop === true && count > 0
+    frames = yield * naturalizeFrameSteps(rig, { ...o, cycleTravel, frames: times.length - (loop ? 1 : 0), pose, referencePose: o.referenceClip === undefined ? undefined : i => { poseClip(i, o.referenceClip!) }, goals: i => o.goals(i, times[i]) })
+    if (loop) {
+      const q = new Float32Array(NB * 4)
+      rig.bones.forEach((_, j) => {
+        end[j].q.clone().multiply(first[j].q.clone().invert()).multiply(new THREE.Quaternion().fromArray(frames[0].q, j * 4)).normalize().toArray(q, j * 4)
+      })
+      const hips = end[0].p.clone().sub(first[0].p).add(new THREE.Vector3(...frames[0].hips))
+      frames.push({ ...frames[0], q, hips: hips.toArray() })
+    }
+  } finally {
+    mixer.stopAllAction()
+    mixer.uncacheRoot(root)
+    restore()
   }
-  mixer.stopAllAction()
-  mixer.uncacheRoot(root)
-  for (const [b, p, q] of saved) { b.position.copy(p); b.quaternion.copy(q) }
-  root.updateMatrixWorld(true)
   const names = new Set(rig.bones.map(b => `${b.name}.quaternion`))
   const hipsMove = o.hipsMove ?? true
   if (hipsMove) names.add(`${rig.bones[0].name}.position`)

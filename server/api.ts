@@ -2,16 +2,16 @@
 import { randomBytes } from 'node:crypto'
 import { createReadStream, existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import path from 'node:path'
 import { enqueue, events, type Job, listJobs, runBlender, runCodex } from './jobs.ts'
-import { optimizeSkin, torchPython, validateSkin } from './skinopt.ts'
+import { mapPainting, optimizeSkin, torchPython, validateSkin } from './skinopt.ts'
 import { categoryOf, queryLibrary } from './library.ts'
 import { newId, saveCreatureClip, saveEdit, type SavedEdit } from './clipedits.ts'
 import { journal, note as note_, record } from './journal.ts'
 import { exportUnits, gameSlots, gameStatus, saveUnits, units, type UnitSpec } from './game.ts'
-import { dropWeightEdits, keepWeightEdits, weightEdits, writeWeights, type WeightEdit } from './weights.ts'
+import { dropWeightEdits, keepWeightEdits, publishRig, weightEdits, writeWeights, type WeightEdit } from './weights.ts'
 import {
   type Character, characterDir, type Garment, type TextureImage, createCharacter, deleteCharacter, getCharacter, getSettings, listCharacters,
   ROOT, saveSettings, updateCharacter, type Vec3, WORKSPACE, writeJson,
@@ -112,10 +112,12 @@ async function trainedClips (character: Character): Promise<string[]> {
 
 async function runRig (id: string, update: Update): Promise<void> {
   const character = (await getCharacter(id))!
+  await updateCharacter(id, c => { c.status = 'rigging' })
   const dir = characterDir(id)
   // Keep the last working rig until building, optimization and painting all finish.
   const output = path.join(dir, `rigging-${randomBytes(6).toString('hex')}.glb`)
   const alternative = output.replace(/\.glb$/, '-heat.glb')
+  const beforeOptimize = output.replace(/\.glb$/, '-before-optimize.glb')
   try {
     const args = ['--input', path.join(dir, character.source.file), '--output', output,
       '--fingers', character.fingers ?? 'full', '--overrides', texturesDir(id)]
@@ -133,42 +135,57 @@ async function runRig (id: string, update: Update): Promise<void> {
     // flank (2026-10-26); their heat weights stay. RIGSMITH_OPTIMIZE_CREATURES=1 brings it back to try.
     const templateClips = creature ? await templateAnimations(character.template!) : undefined
     const optimize = torchPython() !== null && (!creature || (process.env.RIGSMITH_OPTIMIZE_CREATURES === '1' && templateClips !== undefined))
-    const share = optimize ? 0.6 : 1
+    const share = optimize ? 0.45 : 0.85
     const started = Date.now()
     const { result } = await runBlender('autorig/rig.py', args, (progress, message) => { update({ progress: progress * share, message }) })
     const r = result as { joints: Record<string, Vec3>, seconds: number, method: string, warnings: string[] }
-    if (optimize) {
-      try {
-        await optimizeSkin(output, (progress, message) => { update({ progress: share + (1 - share) * progress, message }) }, templateClips, await trainedClips(character))
-        r.method += '+pose-optimized'
-      } catch (error) {
-        // The heat weights are a complete rig on their own; keep them and say what happened.
-        r.warnings.push(`weights not pose-optimized: ${(error as Error).message.slice(0, 200)}`)
-      }
-      r.seconds = Math.round((Date.now() - started) / 100) / 10
-    }
-    // (the weights painted on it, put back: the source mesh, and its vertex order, are the same)
-    const painted = await weightEdits(id)
+    // Re-import can reorder/split vertices. Follow the old bind surface instead
+    // of writing a saved brush stroke onto unrelated new vertex numbers.
+    const savedPainting = await weightEdits(id)
+    const previous = character.files.rigged === undefined ? undefined : path.join(dir,character.files.rigged)
+    if (savedPainting.length > 0 && (previous === undefined || !existsSync(previous))) throw new Error('The previous rig is required to preserve its painted weights')
+    const painted = savedPainting.length === 0 ? [] : await mapPainting(output,previous!,savedPainting)
     if (painted.length > 0) {
       const n = await writeWeights(output, painted)
       r.warnings.push(`${n} painted vertices put back (Fix weights; Forget the painting to drop them)`)
     }
     if (existsSync(alternative)) {
-      if (painted.length > 0) await writeWeights(alternative, painted)
-      update({ progress: 0.96, message: 'Comparing regional and volume heat weights' })
+      if (painted.length > 0) await writeWeights(alternative, await mapPainting(alternative,previous!,savedPainting))
+      update({ progress: share, message: 'Comparing regional and volume heat weights' })
       const quality = await validateSkin(output, alternative, character.template ?? 'human')
       if (quality.retained) r.method = 'native-heat'
+      else if (quality.hybrid === true) r.method += '+hybrid-heat'
     }
     if (character.files.rigged !== undefined && existsSync(path.join(dir, character.files.rigged))) {
-      update({ progress: 0.98, message: 'Checking deformation against the previous weights' })
+      update({ progress: share + 0.05, message: 'Checking deformation against the previous weights' })
       const quality = await validateSkin(output, path.join(dir, character.files.rigged), character.template ?? 'human')
-      if (quality.retained) {
+      if (!quality.compared) r.warnings.push(`Previous weights could not be compared: ${quality.reason ?? 'the bind surface or bone set changed'}`)
+      if (quality.retained || quality.hybrid === true) {
         r.method += '+retained-weights'
-        r.warnings.push('Kept the previous weights: they deform better on the test animations with these joint placements')
+        r.warnings.push(quality.retained ? 'Used the previous weights as the starting skin: they deform better on the test animations with these joint placements' : 'Used previous weights on some surface islands: they deform better on every test animation with these joint placements')
       }
     }
+    if (optimize) {
+      // Refine the best available skin, including native heat and previous paint,
+      // rather than optimizing a regional candidate that may then be discarded.
+      await copyFile(output, beforeOptimize)
+      try {
+        await optimizeSkin(output, (progress, message) => { update({ progress: 0.55 + 0.4 * progress, message }) }, templateClips, await trainedClips(character))
+        if (painted.length > 0) await writeWeights(output, painted)
+        update({ progress: 0.96, message: 'Checking the refined weights on deformation tests' })
+        const quality = await validateSkin(output, beforeOptimize, character.template ?? 'human')
+        if (!quality.retained) r.method += quality.hybrid === true ? '+hybrid-optimized' : '+pose-optimized'
+      } catch (error) {
+        // A failed optimizer or validation cannot replace the accepted heat skin.
+        await copyFile(beforeOptimize, output)
+        r.warnings.push(`weights not pose-optimized: ${(error as Error).message.slice(0, 200)}`)
+      }
+    }
+    // A comparison can select a previous skin; authored paint still wins.
+    if (painted.length > 0) await writeWeights(output,painted)
+    if (JSON.stringify(await weightEdits(id)) !== JSON.stringify(savedPainting)) throw new Error('Painting changed while rigging; the previous rig has been kept. Rig again to include the new painting')
     r.seconds = Math.round((Date.now() - started) / 100) / 10
-    await rename(output, path.join(dir, 'rigged.glb'))
+    await publishRig(id,output,path.join(dir,'rigged.glb'),painted)
     await updateCharacter(id, c => {
       c.status = 'rigged'
       c.files.rigged = 'rigged.glb'
@@ -181,6 +198,7 @@ async function runRig (id: string, update: Update): Promise<void> {
   } finally {
     await rm(output, { force: true })
     await rm(alternative, { force: true })
+    await rm(beforeOptimize, { force: true })
   }
 }
 
@@ -307,6 +325,7 @@ route('GET', /^\/api\/characters\/([a-z0-9-]+)\/game$/, async (req, res, [id]) =
 route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/weights$/, async (req, res, [id]) => {
   const character = await getCharacter(id)
   if (character?.files.rigged === undefined || character.kind !== 'mesh') throw new HttpError(400, 'Only a Rigsmith rig can be painted')
+  if (character.status === 'rigging') throw new HttpError(409, 'Wait for rigging to finish before painting weights')
   const { edits } = await readJsonBody<{ edits?: WeightEdit[] }>(req)
   if (!Array.isArray(edits) || edits.length === 0) throw new HttpError(400, 'No weights to write')
   const written = await writeWeights(path.join(characterDir(id), character.files.rigged), edits)
@@ -317,6 +336,7 @@ route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/weights$/, async (req, res, [id]
   send(res, 200, { written, kept })
 })
 route('DELETE', /^\/api\/characters\/([a-z0-9-]+)\/weights$/, async (req, res, [id]) => {
+  if ((await getCharacter(id))?.status === 'rigging') throw new HttpError(409, 'Wait for rigging to finish before forgetting painting')
   await dropWeightEdits(id)
   await note_(id, by(req), 'painted weights forgotten (the next rig makes them afresh)')
   send(res, 200, { ok: true })

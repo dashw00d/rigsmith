@@ -174,12 +174,50 @@ export class WeightPainter {
     return out
   }
 
-  /** The points under a brush at `at` (world), within `radius`, with their falloff (1 at the middle, 0 at the edge). */
-  under (part: number, at: THREE.Vector3, radius: number): Map<number, number> {
+  /** Distance over the posed surface from the picked triangle. Nearby fingers, the
+   * opposite side of a thin limb, and separate cloth sheets are not brush neighbours. */
+  under (part: number, at: THREE.Vector3, radius: number, face?: readonly number[]): Map<number, number> {
     const out = new Map<number, number>()
-    for (const [p, x] of this.posed(part)) {
-      const d = x.distanceTo(at)
-      if (d < radius) { const t = 1 - d / radius; out.set(p, t * t * (3 - 2 * t)) }
+    if (!Number.isFinite(radius) || radius <= 0) return out
+    const positions = this.posed(part)
+    const { point, adj } = this.parts[part]
+    let seeds: number[]
+    if (face !== undefined) seeds = [...new Set(face.map(v => point[v]))]
+    else {
+      let nearest = -1; let best = Infinity
+      for (const [p, x] of positions) { const d = x.distanceToSquared(at); if (d < best) { best = d; nearest = p } }
+      seeds = nearest < 0 ? [] : [nearest]
+    }
+    const distance = new Map<number, number>()
+    const heap: Array<[number, number]> = []
+    const push = (p: number, d: number): void => {
+      if (d >= radius || d >= (distance.get(p) ?? Infinity)) return
+      distance.set(p, d)
+      let i = heap.length; heap.push([p, d])
+      while (i > 0) {
+        const parent = (i - 1) >> 1
+        if (heap[parent][1] <= d) break
+        heap[i] = heap[parent]; i = parent
+      }
+      heap[i] = [p, d]
+    }
+    for (const p of seeds) { const x = positions.get(p); if (x !== undefined) push(p, x.distanceTo(at)) }
+    while (heap.length > 0) {
+      const [p, d] = heap[0]; const last = heap.pop()!
+      if (heap.length > 0) {
+        let i = 0
+        while (i * 2 + 1 < heap.length) {
+          let child = i * 2 + 1
+          if (child + 1 < heap.length && heap[child + 1][1] < heap[child][1]) child++
+          if (last[1] <= heap[child][1]) break
+          heap[i] = heap[child]; i = child
+        }
+        heap[i] = last
+      }
+      if (d !== distance.get(p)) continue
+      const t = 1 - d / radius
+      out.set(p, t * t * (3 - 2 * t))
+      for (const q of adj.get(p) ?? []) push(q, d + positions.get(p)!.distanceTo(positions.get(q)!))
     }
     return out
   }
@@ -222,7 +260,12 @@ export class WeightPainter {
       const rest = 1 - was
       // (what it gives up goes to the others it has, else to its neighbours' bones)
       if (rest > 1e-4) for (const [b, x] of w) { if (b !== bone) w.set(b, x + (was - now) * x / rest) }
-      else for (const [b, x] of this.average(part, p)) if (b !== bone) w.set(b, (w.get(b) ?? 0) + (was - now) * x)
+      else {
+        const neighbours = [...this.average(part, p)].filter(([b]) => b !== bone)
+        const total = neighbours.reduce((s, [, x]) => s + x, 0)
+        if (total <= 0) continue
+        for (const [b, x] of neighbours) w.set(b, (was - now) * x / total)
+      }
       w.set(bone, now)
       this.set(part, p, w, this.log)
     }
@@ -257,9 +300,18 @@ export class WeightPainter {
     for (let part = 0; part < this.parts.length; part++) {
       const area = this.area[part]
       if (area.size === 0) continue
-      const { mesh, adj } = this.parts[part]
-      const R = [...area.keys()]
-      const inR = new Set(R)
+      const { adj } = this.parts[part]
+      // A closed selection has no reliable boundary. Leave that component alone
+      // instead of diffusing every bone into a constant average over the island.
+      const anchored = new Set<number>()
+      const queue = [...area.keys()].filter(p => [...(adj.get(p) ?? [])].some(q => !area.has(q)))
+      for (let i = 0; i < queue.length; i++) {
+        const p = queue[i]
+        if (anchored.has(p)) continue
+        anchored.add(p)
+        for (const q of adj.get(p) ?? []) if (area.has(q) && !anchored.has(q)) queue.push(q)
+      }
+      const R = [...anchored]
       // 1. harmonic weights: each point the mean of its neighbours, the skin round the area held
       const w = new Map<number, Weights>()
       const weightOf = (p: number): Weights => w.get(p) ?? this.weights(part, p)
@@ -283,6 +335,7 @@ export class WeightPainter {
         const out: Weights = new Map()
         for (const b of new Set([...was.keys(), ...solved.keys()])) out.set(b, (1 - f) * (was.get(b) ?? 0) + f * (solved.get(b) ?? 0))
         this.set(part, p, out, this.log)
+        area.delete(p)
         fixed++
       }
       // (both sides were marked and healed: the body's left sets its right, so they match exactly)

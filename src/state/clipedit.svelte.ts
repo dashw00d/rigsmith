@@ -8,6 +8,7 @@
 // path, and locks it (it leads: the hands on it follow it, the body follows the hands); its sockets (grips, kept on
 // the garment) take a hand each, and an attached hand turned or moved changes its socket.
 import * as THREE from 'three'
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { ClipKey } from './api.ts'
 import { app } from './app.svelte.ts'
 import { animator, GRIP_CLIP, restOf, type NowPlaying } from './animator.svelte.ts'
@@ -25,8 +26,9 @@ import { retargetOffsets, type RestSkeleton } from '../engine/retarget.ts'
 import { reach, setWorldQuaternion } from '../engine/ik.ts'
 import { bodyBones, solveBody } from '../engine/bodysolve.ts'
 import { bodyColliderFor, solidsOf } from '../engine/bodycollide.ts'
-import { bodyBonesNatural, SLIDE, createBodySolver, loadPoseModel, naturalizeClip, NaturalRig, poseTargets, type NaturalGoal, type PoseModel, type PoseModelData } from '../engine/posespace.ts'
+import { bodyBonesNatural, SLIDE, createBodySolver, loadPoseModel, naturalizeClipAsync, NaturalRig, poseTargets, type NaturalGoal, type PoseModel, type PoseModelData } from '../engine/posespace.ts'
 import { FIT, fitProp, type FitResult } from '../engine/propfit.ts'
+import { correctHandContactsAsync } from '../engine/handcontacts.ts'
 
 const IDENTITY: ClipKey['q'] = [0, 0, 0, 1]
 /** A hand's socket on a prop (one a hand). */
@@ -73,6 +75,9 @@ class ClipEdit {
   /** A turn about the bone's own axes or the world's. */
   space = $state<'local' | 'world'>('local')
   busy = $state<string | null>(null)
+  naturalizing = $state(false)
+  private naturalizeCancelled = false
+  private naturalizeRun = 0
   /** Counts openings and stops: an opening whose count is no longer this one is stale. */
   private opening = 0
   private saving = false
@@ -968,13 +973,17 @@ class ClipEdit {
    * pulled out, the whole a little toward the library's poses) and the motion smoothed (jerks pulled to the middle of
    * their neighbours), the hands kept on their props, keyed bones held near their keys. Each press goes a little further. */
   async naturalize (amount: { pull: number, outside: number, motion: number } = NATURALIZE): Promise<void> {
-    const view = animator.character; const root = this.posable()
+    if (this.busy !== null) return
+    const view = animator.character; const posable = this.posable(); const root = posable === null ? null : cloneSkinned(posable)
     if (view === null || view.rest === null || root === null || this.model === null || this.edited === null) { app.toast('error', 'Naturalize works on a person (the library\'s pose model)'); return }
     this.busy = 'Naturalizing every frame'
+    this.naturalizing = true
+    this.naturalizeCancelled = false
+    const run = ++this.naturalizeRun
     const turn = this.opening; const was = this.edited
     await new Promise(r => setTimeout(r, 30))
     // (left, or rebuilt, in the moment before it starts: nothing to naturalize)
-    if (turn !== this.opening || was !== this.edited) { if (turn === this.opening) this.busy = null; return }
+    if (turn !== this.opening || was !== this.edited) { if (run === this.naturalizeRun) this.naturalizing = false; if (turn === this.opening) this.busy = null; return }
     try {
       const bones = new Map<string, THREE.Bone>()
       root.traverse(o => { if ((o as THREE.Bone).isBone === true) bones.set(o.name, o as THREE.Bone) })
@@ -1017,8 +1026,15 @@ class ClipEdit {
       const soles: Record<string, number> = {}
       for (const side of ['Left', 'Right']) for (const n of ['Foot', 'ToeBase', 'Toe_End']) { const b = rest.bones.get(`${side}${n}`); if (b !== undefined) soles[`${side}${n}`] = b.worldPosition.y }
       const t0 = performance.now()
-      const out = naturalizeClip(rig, this.edited, {
+      const previousSocketMiss = Math.max(0, ...socketMisses(was, root, rigP))
+      const out = await naturalizeClipAsync(rig, this.edited, {
         root, fps: KEY_FPS, loop: this.loop,
+        // A captured stretch or crossed-arm contact is intentional. Correct
+        // additional elbow bow from edits; newly authored held poses use the
+        // anatomical default because they have no original motion to preserve.
+        referenceClip: this.held ? undefined : this.baseClip ?? undefined,
+        cancelled: () => this.naturalizeCancelled || turn !== this.opening || was !== this.edited,
+        progress: (done, total) => { if (turn === this.opening) this.busy = `Naturalizing ${Math.round(done / total * 100)}%` },
         goals: (i, t) => [
           // the body's root held where it was seen when a prop was let go, on the frames the drag moved it
           ...rootHeld(i),
@@ -1035,17 +1051,40 @@ class ClipEdit {
         // (the leading props' shafts where the edit has them on each frame: the body kept clear of them but where the hands hold them)
         obstacles: () => propObstacles(rigP, prop => root.getObjectByName(propNode(prop))?.matrixWorld.clone() ?? null, GRIP_CLEAR * view.height),
       })
-      this.edited = out.clip
-      this.naturalized = true
+      if (turn !== this.opening || was !== this.edited) return
       const worst = Math.max(0, ...socketMisses(out.clip, root, rigP))
+      if (!out.frames.every(f => [...f.q, ...f.hips, f.miss, f.floorMiss].every(Number.isFinite))) throw new Error('The solve produced an invalid pose; your edit is unchanged')
+      if (Math.max(...out.misses) > .01 * view.height || worst > Math.max(.01 * view.height, previousSocketMiss + .001 * view.height)) throw new Error('The solve could not keep the hands on their targets; your edit is unchanged')
+      if (Math.max(...out.frames.map(f => f.floorMiss)) > .002 * view.height) throw new Error('The solve could not maintain floor clearance; your edit is unchanged')
+      const protectedFingers = new Set(hands)
+      for (const carrier of Object.values(rigP.carriers)) {
+        const side = /^(Left|Right)Hand$/.exec(carrier)?.[1] as 'Left'|'Right'|undefined
+        if (side !== undefined) protectedFingers.add(side)
+      }
+      for (const side of ['Left','Right'] as const) {
+        if (this.fists[side] !== undefined || Object.entries(this.keys).some(([name,keys]) => name.startsWith(side+'Hand') && name !== side+'Hand' && keys.some(k => !isAnchor(k)))) protectedFingers.add(side)
+      }
+      for (const script of app.selected?.scripts ?? []) if (script.enabled && script.kind === 'grip') protectedFingers.add(script.side)
+      const handOut = await correctHandContactsAsync(root,out.clip,{
+        height:view.height,fps:KEY_FPS,loop:this.loop,protect:[...protectedFingers],tipTolerance:view.height*.004,
+        cancelled:()=>this.naturalizeCancelled || turn !== this.opening || was !== this.edited,
+        progress:(done,total,phase)=>{if(turn===this.opening) this.busy=`${phase==='clearance'?'Checking finger clearance':phase==='relaxation'?'Relaxing free fingers':phase==='trajectory'?'Checking finger trajectory':'Refining fingers'} ${Math.round(done/total*100)}%`},
+      })
+      if (this.naturalizeCancelled) throw new DOMException('Naturalization cancelled','AbortError')
+      if (turn !== this.opening || was !== this.edited) return
+      this.edited = handOut.clip
+      this.naturalized = true
       animator.showClip(this.edited, { ...this.base!, name: `${this.base!.name} (naturalized)`, edited: true }, animator.time)
       app.toast('ok', `Naturalized ${out.times.length} frames in ${((performance.now() - t0) / 1000).toFixed(1)} s${attachedHands.length > 0 ? `; hands off their sockets by ${(worst * 100).toFixed(1)} cm at worst` : ''}`)
     } catch (error) {
-      app.toast('error', `Naturalize failed: ${(error as Error).message}`)
+      if (turn === this.opening) app.toast((error as Error).name === 'AbortError' ? 'ok' : 'error', (error as Error).name === 'AbortError' ? 'Naturalization cancelled; your edit is unchanged' : `Naturalize failed: ${(error as Error).message}`)
     } finally {
-      this.busy = null
+      if (run === this.naturalizeRun) this.naturalizing = false
+      if (turn === this.opening) this.busy = null
     }
   }
+
+  cancelNaturalize (): void { this.naturalizeCancelled = true }
 
   /** The copy of the character the clip is built on, with every prop on stage (copied again when one is missing: a
    * prop loaded after it was made). */

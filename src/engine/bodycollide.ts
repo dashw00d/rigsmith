@@ -242,16 +242,19 @@ function rot (out: Float64Array, o: number, x: number, y: number, z: number, w: 
   out[o + 2] = vz + w * tz + (x * ty - y * tx)
 }
 
-/** The section's radius toward a direction (d, from the axis outward): the ellipse's, in the section's own plane. */
+/** Radius toward d of the segment's ellipsoidal cap. Its two transverse radii
+ * are the fitted section; the axial radius is the smaller one. Including the
+ * axial component makes endpoint contacts continuous: projecting it away made
+ * an almost axial direction suddenly take the entire wide-side radius. */
 function toward (f: Float64Array, o: number, r1: number, r2: number, dx: number, dy: number, dz: number): number {
   const ex = f[o + E.e]; const ey = f[o + E.e + 1]; const ez = f[o + E.e + 2]
   const k = dx * ex + dy * ey + dz * ez
-  const px = dx - k * ex; const py = dy - k * ey; const pz = dz - k * ez
-  const len = Math.hypot(px, py, pz)
+  const len = Math.hypot(dx, dy, dz)
   if (len < 1e-9) return Math.min(r1, r2)
-  const c1 = (px * f[o + E.u1] + py * f[o + E.u1 + 1] + pz * f[o + E.u1 + 2]) / r1
-  const c2 = (px * f[o + E.u2] + py * f[o + E.u2 + 1] + pz * f[o + E.u2 + 2]) / r2
-  const q = c1 * c1 + c2 * c2
+  const c1 = (dx * f[o + E.u1] + dy * f[o + E.u1 + 1] + dz * f[o + E.u1 + 2]) / r1
+  const c2 = (dx * f[o + E.u2] + dy * f[o + E.u2 + 1] + dz * f[o + E.u2 + 2]) / r2
+  const c3 = k / Math.min(r1, r2)
+  const q = c1 * c1 + c2 * c2 + c3 * c3
   return q < 1e-12 ? Math.min(r1, r2) : len / Math.sqrt(q)
 }
 

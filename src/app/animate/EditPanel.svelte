@@ -55,6 +55,7 @@
 
 <Section title="Edit animation">
   {#if busy}<p class="status small" role="status"><span class="spinner"></span>{clipEdit.busy}…</p>{/if}
+  {#if clipEdit.naturalizing}<Button size="sm" variant="ghost" onclick={() => clipEdit.cancelNaturalize()}>Cancel naturalization</Button>{/if}
   <fieldset disabled={busy} aria-label="Animation editing tools">
     {#if !clipEdit.active}
       <p class="faint small">Edit the playing clip, or hold its current pose to start a new animation. Save creates a new library clip.</p>

@@ -11,7 +11,7 @@ import { JointLimits, type Rom } from './limits.ts'
 import { reach, setWorldQuaternion, type Leg } from './ik.ts'
 import { handGrip } from './clipedit.ts'
 import { solveBody } from './bodysolve.ts'
-import { BODY, DIM, FOLLOW, NB, NaturalRig, PoseModel, createBodySolver, encodeSource, elbowAllowed, gripAxisOf, mirrorPose, naturalizeClip, naturalizeFrames, poseTargets, restSoles, type NaturalGoal, type PoseModelData } from './posespace.ts'
+import { BODY, DIM, FOLLOW, NB, NaturalRig, PoseModel, contactFeet, createBodySolver, encodeSource, elbowAllowed, gripAxisOf, mirrorPose, naturalizeClip, naturalizeClipAsync, naturalizeFrames, poseTargets, restSoles, type NaturalGoal, type PoseModelData } from './posespace.ts'
 
 const g = globalThis as Record<string, unknown>
 g.self ??= globalThis
@@ -37,6 +37,26 @@ const wq = (o: THREE.Object3D): THREE.Quaternion => o.getWorldQuaternion(new THR
 const nameOf = (b: THREE.Bone): string => canonical(b.name)
 const median = (xs: number[]): number => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
 const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length
+
+describe('elbow allowance through a moving clip', () => {
+  it('keeps the anatomical thresholds without slope jumps or overshoot', () => {
+    for (const [height, allowed] of [[0,1],[.25,.5],[.5,.08],[.75,.05]]) expect(elbowAllowed(height)).toBeCloseTo(allowed, 12)
+    let previous = elbowAllowed(-.1)
+    for (let x = -.1; x <= 1; x += .001) {
+      const value = elbowAllowed(x)
+      expect(value).toBeLessThanOrEqual(previous + 1e-12)
+      expect(value).toBeGreaterThanOrEqual(.05 - 1e-12)
+      expect(value).toBeLessThanOrEqual(1 + 1e-12)
+      previous = value
+    }
+    const h = 1e-6
+    for (const x of [0,.25,.5,.75]) {
+      const left = (elbowAllowed(x) - elbowAllowed(x-h))/h
+      const right = (elbowAllowed(x+h) - elbowAllowed(x))/h
+      expect(Math.abs(left-right)).toBeLessThan(1e-3)
+    }
+  })
+})
 
 interface Body { rest: RestSkeleton, soles: Record<string, number>, scene: THREE.Group, bones: Map<string, THREE.Bone>, rig: NaturalRig, limits: JointLimits, model: PoseModel, rom: Rom, offsets: Map<string, THREE.Quaternion> | null, legs: Leg[] }
 
@@ -520,6 +540,144 @@ async function editedClip (b: Body, id: string, n: number, move: (t: number) => 
 }
 
 describe.skipIf(!have)('naturalizing a whole clip', () => {
+  it('preserves captured elbow freedom but corrects added bow in an edit', async () => {
+    const b = await body(YBOT, false)
+    await poseFromClip(b, 'mixamo-Arm_Stretching', 4.1)
+    // Isolate the elbow prior: this test is about motion intent, not ROM fitting.
+    const rig = new NaturalRig(b.model, b.bones)
+    const capture = (): THREE.AnimationClip => new THREE.AnimationClip('pose', 0, rig.bones.map(bone => new THREE.QuaternionKeyframeTrack(`${bone.name}.quaternion`, [0], bone.quaternion.toArray())))
+    const reference = capture()
+    const original = rig.encode()
+    const sourceElbow = rig.elbowsOf().left
+    expect(sourceElbow.bow - sourceElbow.allowed).toBeGreaterThan(.02)
+    const options = { root: b.scene, sweeps: 1, goals: () => ['LeftHand', 'RightHand'].map(bone => ({ bone, position: wp(b.bones.get(bone)!), turn: wq(b.bones.get(bone)!), exact: true })) }
+    const result = naturalizeClip(rig, reference, { ...options, referenceClip: reference })
+    const readElbow = (q: Float32Array): ReturnType<NaturalRig['elbowsOf']>['left'] => {
+      rig.bones.forEach((bone, j) => { bone.quaternion.fromArray(q, j * 4) }); b.scene.updateMatrixWorld(true)
+      return rig.elbowsOf().left
+    }
+    expect(Math.abs(readElbow(result.frames[0].q).bow - sourceElbow.bow)).toBeLessThan(.001)
+    rig.apply(original); b.scene.updateMatrixWorld(true)
+    const front = wp(b.bones.get('LeftArm')!).sub(wp(b.bones.get('RightArm')!)).cross(wp(b.bones.get('Neck')!).sub(wp(b.bones.get('Spine1')!))).normalize()
+    reach({ upper: b.bones.get('LeftArm')!, lower: b.bones.get('LeftForeArm')!, end: b.bones.get('LeftHand')! }, wp(b.bones.get('LeftHand')!), { nameOf, pole: front, endFree: true })
+    const editedElbow = rig.elbowsOf().left
+    const edit = capture()
+    const extra = editedElbow.bow - sourceElbow.bow
+    expect(extra).toBeGreaterThan(.01)
+    const corrected = naturalizeClip(rig, edit, { ...options, referenceClip: reference })
+    const after = readElbow(corrected.frames[0].q)
+    console.log('reference elbow', { source: sourceElbow.bow, edited: editedElbow.bow, solved: after.bow })
+    expect(after.bow).toBeLessThan(editedElbow.bow - extra * .5)
+    expect(corrected.frames[0].miss).toBeLessThan(.001)
+  })
+
+  it('does not unwind a steady rotation when its angle crosses 180 degrees', async () => {
+    const b = await body(YBOT, false)
+    // No anatomical limit: this isolates temporal continuity from pose preferences.
+    const rig = new NaturalRig(b.model, b.bones)
+    const start = rig.encode()
+    const joint = BODY.indexOf('Head')
+    const frames = 9
+    const originals: THREE.Quaternion[] = []
+    const pose = (i: number): void => {
+      const p = start.p.slice()
+      p[joint * 3] = THREE.MathUtils.degToRad(170 + 2.5 * i)
+      rig.apply({ ...start, p }); b.scene.updateMatrixWorld(true)
+    }
+    for (let i = 0; i < frames; i++) { pose(i); originals.push(rig.bones[joint].quaternion.clone()) }
+    const result = naturalizeFrames(rig, { frames, pose, goals: () => [], smoothMotion: 15, sweeps: 3 })
+    const errors = result.map((f, i) => THREE.MathUtils.radToDeg(new THREE.Quaternion().fromArray(f.q, joint * 4).normalize().angleTo(originals[i])))
+    expect(Math.max(...errors)).toBeLessThan(1)
+  })
+
+  it('uses a planted heel or toe for support and excludes airborne feet', async () => {
+    const b = await body(YBOT, false)
+    const floor = { y: 0, soles: b.soles }
+    expect(contactFeet(b.rig, FEET, floor)).toEqual(FEET)
+    const left = b.bones.get('LeftFoot')!
+    left.position.copy(left.parent!.worldToLocal(wp(left).add(new THREE.Vector3(0, .2, 0))))
+    b.scene.updateMatrixWorld(true)
+    expect(contactFeet(b.rig, FEET, floor)).toEqual(['RightFoot'])
+    const hips = b.bones.get('Hips')!
+    hips.position.copy(hips.parent!.worldToLocal(wp(hips).add(new THREE.Vector3(0, .5, 0))))
+    b.scene.updateMatrixWorld(true)
+    expect(contactFeet(b.rig, FEET, floor)).toEqual([])
+    const result = b.rig.solve([], { feet: FEET, supportFeet: [], floor, mode: 'full' })
+    expect(result.balance).toBeNull()
+    expect(result.objective!.end.balance).toBe(0)
+    expect(result.floorMiss).toBe(0)
+  })
+
+  it('cancels between frame solves and restores the source pose', async () => {
+    const b = await body(YBOT, false)
+    await poseFromClip(b, IDLES[0], .3)
+    const original = b.rig.bones.map(bone => bone.quaternion.clone())
+    let frames = 0
+    const clip = new THREE.AnimationClip('cancel', .5, [])
+    const referenceClip = new THREE.AnimationClip('reference', .5, [new THREE.QuaternionKeyframeTrack('LeftArm.quaternion', [0, .5], [0, 0, 0, 1, 0, 0, 1, 0])])
+    await expect(naturalizeClipAsync(b.rig, clip, { root: b.scene, referenceClip, goals: () => [], pull: .5, progress: () => { frames++ }, cancelled: () => frames >= 2 })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(frames).toBe(2)
+    b.rig.bones.forEach((bone, i) => expect(bone.quaternion.angleTo(original[i])).toBeLessThan(1e-6))
+  })
+
+  it('produces the same result asynchronously and handles a single static pose', async () => {
+    const b = await body(YBOT, false)
+    await poseFromClip(b, IDLES[0], .3)
+    const clip = new THREE.AnimationClip('static', 0, [])
+    const options = { root: b.scene, goals: () => [], pull: .5, loop: true }
+    const sync = naturalizeClip(b.rig, clip, options)
+    const async = await naturalizeClipAsync(b.rig, clip, options)
+    expect(async.times).toEqual([0])
+    expect(async.frames[0].q).toEqual(sync.frames[0].q)
+    expect(async.frames[0].hips).toEqual(sync.frames[0].hips)
+  })
+
+  it('samples a partial clip from the original pose on every frame and sweep', async () => {
+    const b = await body(YBOT, false)
+    await poseFromClip(b, IDLES[0], .3)
+    const original = b.rig.bones.map(bone => bone.quaternion.clone())
+    const hips = b.rig.bones[0].position.clone()
+    const clip = new THREE.AnimationClip('partial', .1, [
+      new THREE.QuaternionKeyframeTrack('Head.quaternion', [0, .1], [...b.bones.get('Head')!.quaternion.toArray(), ...b.bones.get('Head')!.quaternion.toArray()]),
+    ])
+    const prop = new THREE.Object3D(); prop.name = 'reference_prop'; b.scene.add(prop)
+    const referenceClip = new THREE.AnimationClip('reference', .1, [
+      new THREE.QuaternionKeyframeTrack('LeftArm.quaternion', [0, .1], [0, 0, 0, 1, 0, 0, 1, 0]),
+      new THREE.VectorKeyframeTrack('reference_prop.position', [0, .1], [1, 2, 3, 4, 5, 6]),
+      new THREE.VectorKeyframeTrack('reference_prop.scale', [0, .1], [2, 2, 2, 3, 3, 3]),
+    ])
+    let seen = 0
+    naturalizeClip(b.rig, clip, { root: b.scene, referenceClip, sweeps: 2, pull: .5, goals: () => {
+      b.rig.bones.forEach((bone, i) => expect(bone.quaternion.angleTo(original[i])).toBeLessThan(1e-6))
+      expect(b.rig.bones[0].position.distanceTo(hips)).toBeLessThan(1e-9)
+      expect(prop.position.toArray()).toEqual([0, 0, 0])
+      expect(prop.scale.toArray()).toEqual([1, 1, 1])
+      seen++
+      return []
+    } })
+    expect(seen).toBe(8)
+    expect(prop.position.toArray()).toEqual([0, 0, 0])
+    expect(prop.scale.toArray()).toEqual([1, 1, 1])
+  })
+
+  it('restores the scene after a solve fails, including unkeyed bones and prop transforms', async () => {
+    const b = await body(YBOT, false)
+    await poseFromClip(b, IDLES[0], .3)
+    const prop = new THREE.Object3D(); prop.name = 'test_prop'; b.scene.add(prop)
+    const saved = b.rig.bones.map(bone => ({ q: bone.quaternion.clone(), p: bone.position.clone(), s: bone.scale.clone() }))
+    const clip = new THREE.AnimationClip('failed', .1, [new THREE.VectorKeyframeTrack('test_prop.position', [0, .1], [0, 0, 0, 1, 2, 3])])
+    expect(() => naturalizeClip(b.rig, clip, { root: b.scene, pull: .5, goals: i => {
+      if (i === 1) throw new Error('goal failed')
+      return []
+    } })).toThrow('goal failed')
+    b.rig.bones.forEach((bone, i) => {
+      expect(bone.quaternion.angleTo(saved[i].q)).toBeLessThan(1e-6)
+      expect(bone.position.distanceTo(saved[i].p)).toBeLessThan(1e-9)
+      expect(bone.scale.distanceTo(saved[i].s)).toBeLessThan(1e-9)
+    })
+    expect(prop.position.length()).toBe(0)
+  })
+
   it('keeps a keyed loop closed while preserving its root travel', async () => {
     const b = await body(YBOT, false)
     await poseFromClip(b, IDLES[0], .3)
@@ -895,7 +1053,6 @@ describe.skipIf(!haveSkirmisher)('the elbow: the skirmisher\'s underhand guard, 
     const soles = b.legs.map(l => [l.end, l.ball, l.tip].map(x => (x === null ? -Infinity : wp(x).y)))
     const out: string[] = []
     const res: Record<string, { ahead: number, bow: number, allowed: number, miss: number }> = {}
-    const turn = (): string => ''
     for (const [label, options] of [['old (no elbow cost, exact turn)', { elbows: false, roll: false }], ['default (elbow cost, give)', {}]] as const) {
       const goals = await guard(b, 0.3, 0)
       const solver = createBodySolver(b.model, b.offsets, options)

@@ -2,12 +2,20 @@
 import unittest
 import numpy as np
 import heat
-from skeleton import complete_joints
+from skeleton import complete_joints, validate_joints
 import mixamo
 from regions import match_fingers
 
 
 class HeatTests(unittest.TestCase):
+    def test_collapsed_and_nonfinite_placements_report_the_marker_names(self):
+        hierarchy = [('Hand', 'ForeArm')]
+        with self.assertRaisesRegex(ValueError, 'ForeArm and Hand overlap'):
+            validate_joints({'ForeArm': np.zeros(3), 'Hand': np.zeros(3)}, hierarchy)
+        with self.assertRaisesRegex(ValueError, 'Hand needs three finite'):
+            validate_joints({'Hand': np.array([0, np.nan, 0])}, hierarchy)
+        validate_joints({'ForeArm': np.zeros(3), 'Hand': np.array([0, .1, 0])}, hierarchy)
+
     def test_vertex_areas_and_weights_do_not_depend_on_triangle_order(self):
         v = np.array([[0., 0, 0], [2., 0, 0], [0, 1., 0], [0, 0, 4.]])
         t = np.array([[0, 1, 2], [0, 2, 3]])  # areas 1 and 2

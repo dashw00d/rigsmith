@@ -44,6 +44,31 @@ function bend (bones: Map<string, THREE.Bone>, scene: THREE.Object3D, bone: stri
   return out
 }
 
+describe('continuous joint limit boundaries', () => {
+  const fixture = (cell: number): JointLimits => {
+    const mask = new Uint8Array(Math.ceil(18 * 36 / 8)); mask[cell >> 3] |= 1 << (cell & 7)
+    return new JointLimits({ rig: 'test', bins: [18, 36], bones: { Joint: { axis: [0,1,0], rest: [0,0,0,1], cells: btoa(String.fromCharCode(...mask)), reached: 1, twist: [-180,180] } } }, null, () => null, 0, 0)
+  }
+  const pose = (elevation: number, azimuth: number): THREE.Quaternion => {
+    const e = THREE.MathUtils.degToRad(elevation), a = THREE.MathUtils.degToRad(azimuth)
+    return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), new THREE.Vector3(Math.sin(e)*Math.cos(a),Math.cos(e),Math.sin(e)*Math.sin(a)))
+  }
+  it('clamps to the edge of a reached cell without a jump to its centre', () => {
+    const limits = fixture(8 * 36 + 18) // elevation 80..90, azimuth 0..10
+    const q = pose(90.001, 5), held = limits.clamp('Joint', q)
+    expect(limits.within('Joint', q)).toBe(false)
+    expect(limits.within('Joint', held)).toBe(true)
+    expect(THREE.MathUtils.radToDeg(q.angleTo(held))).toBeLessThan(.002)
+    expect(limits.clamp('Joint', held).angleTo(held)).toBeLessThan(1e-7)
+  })
+  it('finds the nearby cell edge across the azimuth seam', () => {
+    const limits = fixture(8 * 36) // azimuth -180..-170
+    const q = pose(85, 179.999), held = limits.clamp('Joint', q)
+    expect(limits.within('Joint', held)).toBe(true)
+    expect(THREE.MathUtils.radToDeg(q.angleTo(held))).toBeLessThan(.002)
+  })
+})
+
 describe.skipIf(!have)('joint limits from the library', () => {
   it('lets a knee bend one way and not the other', async () => {
     const { scene, bones, limits } = await ybot()

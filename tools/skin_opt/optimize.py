@@ -1,13 +1,14 @@
 """Pose-optimized skin weights: minimize as-rigid-as-possible distortion over hundreds of real poses.
 
-python optimize.py <prefix> [--iters 400] [--smooth 1.0] [--prior 0.05] [--device cuda]
+python optimize.py <prefix> [--iters 400] [--smooth 0.1] [--prior 0.05] [--device cuda]
 reads <prefix>.json/.bin from tools/dev/pose_set.ts, writes <prefix>.opt.bin (per GLB vertex: 4 uint32
 bone indices into the json's boneNames, then 4 float32 weights) and prints the energy before/after.
 
 Linear blend skinning is what Godot runs, so the only freedom is the weights. Each vertex chooses its
-weights among the bones it already has plus the skeleton neighbors of its main bone; the objective is
-the ARAP energy of the skinned mesh (stretch and shear of every one-ring, rotations factored out)
-averaged over the training poses, plus Laplacian smoothness and a weak pull toward the starting weights.
+weights among its existing influences (optionally its main bone's neighbors). The quality objective
+combines symmetric edge strain, an extreme-strain penalty, volume of individually closed shells and
+rigid limb regions over the training poses, plus weight smoothness and a weak prior. Open cloth has
+no volume constraint. An ARAP objective (one-ring distortion with rotations factored out) is optional.
 """
 import argparse
 import json
@@ -17,6 +18,70 @@ import numpy as np
 import torch
 
 LEAF = ('_End', '4')
+
+
+def extreme_strain(log_ratio):
+    """Symmetric stretch/compression tail beyond 1.5x (or its reciprocal).
+
+    RMS alone can spread a few collapsed edges into many stretched ones. This
+    term starts before the 2x acceptance threshold and penalizes both directions.
+    The small floor keeps the derivative finite when no edge exceeds the margin.
+    """
+    return torch.relu(log_ratio.abs() - np.log(1.5)).square().mean().clamp_min(1e-12).sqrt()
+
+
+def closed_volume_regions(vertices, triangles):
+    """Only consistently oriented closed surfaces have a signed volume.
+
+    Open robes and capes must not be inflated to preserve a fictitious volume;
+    disconnected shells must not cancel one another's volume changes either.
+    Components meet across edges, not merely at a shared vertex.
+    """
+    parent = list(range(len(triangles)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    edges = {}
+    for i, tri in enumerate(triangles):
+        for a, b in zip(tri, np.roll(tri, -1)):
+            key = (min(a, b), max(a, b))
+            edges.setdefault(key, []).append((i, 1 if a < b else -1))
+    for uses in edges.values():
+        for i, _ in uses[1:]:
+            parent[find(i)] = find(uses[0][0])
+    invalid = set()
+    for uses in edges.values():
+        if len(uses) != 2 or sum(direction for _, direction in uses) != 0:
+            invalid.add(find(uses[0][0]))
+    groups = {}
+    for i in range(len(triangles)):
+        root = find(i)
+        if root not in invalid:
+            groups.setdefault(root, []).append(i)
+    regions = []
+    for faces in groups.values():
+        tri = triangles[faces]
+        points = vertices[tri]
+        points = points - points.mean(axis=(0, 1))
+        volume = np.einsum('ij,ij->i', points[:, 0], np.cross(points[:, 1], points[:, 2])).sum() / 6
+        extent = np.ptp(points.reshape(-1, 3), axis=0)
+        if abs(volume) > max(float(np.prod(extent)) * 1e-6, 1e-12):
+            regions.append(tri)
+    return regions
+
+
+def region_volumes(positions, regions):
+    """Differentiable signed volume of each closed shell, per pose."""
+    volumes = []
+    for tri in regions:
+        p = positions[:, tri]
+        p = p - p.mean(dim=(1, 2), keepdim=True)
+        volumes.append((p[:, :, 0] * torch.cross(p[:, :, 1], p[:, :, 2], dim=-1)).sum(dim=-1).sum(dim=-1) / 6)
+    return torch.stack(volumes, dim=-1)
 
 
 def load(prefix):
@@ -33,7 +98,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('prefix')
     p.add_argument('--iters', type=int, default=400)
-    p.add_argument('--smooth', type=float, default=1.0)
+    p.add_argument('--smooth', type=float, default=0.1)
     p.add_argument('--prior', type=float, default=0.05)
     p.add_argument('--lr', type=float, default=0.05)
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
@@ -42,6 +107,7 @@ def main():
     p.add_argument('--w-stretch', type=float, default=1.0)
     p.add_argument('--w-volume', type=float, default=1.0)
     p.add_argument('--w-rigid', type=float, default=1.0)
+    p.add_argument('--w-extreme', type=float, default=1.0)
     p.add_argument('--no-mirror', action='store_true', help='let the two sides of the body differ')
     p.add_argument('--stretch-norm', default='rms', choices=['rms', 'abs'])
     p.add_argument('--add-neighbors', action='store_true', help="let a vertex take its main bone's parent and children too")
@@ -49,6 +115,7 @@ def main():
     started = time.time()
     meta, arr = load(a.prefix)
     dev = torch.device(a.device)
+    print(f'device {dev.type}', flush=True)
     names = meta['boneNames']
     B = len(names)
     rest = arr['rest'].reshape(-1, 3).astype(np.float64)
@@ -230,15 +297,10 @@ def main():
         if len(g) >= 8:
             groups.append(g)
     groups_t = [t(g_, torch.int64) for g_ in groups]
-    Tt = t(T, torch.int64)
     rest_len = rest_e.norm(dim=1)
-
-    def volume(Xp):
-        c = Xp.mean(1, keepdim=True)
-        a_, b_, c_ = Xp[:, Tt[:, 0]] - c, Xp[:, Tt[:, 1]] - c, Xp[:, Tt[:, 2]] - c
-        return (a_ * torch.cross(b_, c_, dim=-1)).sum(-1).sum(-1) / 6
-
-    V0 = volume(Vt[None])
+    closed = [t(tri, torch.int64) for tri in closed_volume_regions(Vn, T)]
+    V0 = region_volumes(Vt[None], closed) if closed else None
+    volume_share = V0.abs() / V0.abs().sum() if V0 is not None else None
 
     def rigid_residual(Xp, g_):
         A = Vt[g_]
@@ -262,9 +324,11 @@ def main():
         # cheaper with it gathered on a few: at an armpit it undid the soft shoulders into one hard band that
         # stretched to 2.5-14 times its area with the arms up (the Archer, 2026-10-26).
         stretch = (log_ratio ** 2).mean().clamp_min(1e-12).sqrt() if a.stretch_norm == 'rms' else torch.sqrt(log_ratio ** 2 + 1e-6).mean()
-        vol = ((volume(Xp) / V0 - 1) ** 2).mean().clamp_min(1e-12).sqrt()
+        vol = (((region_volumes(Xp, closed) / V0 - 1) ** 2 * volume_share).sum(-1).mean().clamp_min(1e-12).sqrt()
+               if V0 is not None else torch.zeros((), device=dev))
         rig = torch.stack([rigid_residual(Xp, g_) for g_ in groups_t]).mean() if groups_t else torch.zeros((), device=dev)
-        return a.w_stretch * stretch * 10 + a.w_volume * vol * 10 + a.w_rigid * rig * 100, (stretch.item(), vol.item(), rig.item())
+        extreme = extreme_strain(log_ratio)
+        return a.w_stretch * stretch * 10 + a.w_volume * vol * 10 + a.w_rigid * rig * 100 + a.w_extreme * extreme * 10, (stretch.item(), vol.item(), rig.item(), extreme.item())
 
     def full(W):
         dense = torch.zeros(n, B, device=dev)
@@ -274,7 +338,7 @@ def main():
     objective = (lambda W: energy(W)) if a.objective == 'arap' else quality
     with torch.no_grad():
         e0, parts0 = objective(torch.softmax(logits[src_t], 1))
-    print('start', parts0 if a.objective == 'quality' else '', f'{len(groups)} rigid groups')
+    print('start', parts0 if a.objective == 'quality' else '', f'{len(groups)} rigid groups, {len(closed)} closed volume regions')
     generator = torch.Generator(device='cpu').manual_seed(0)
     for it in range(a.iters):
         W = torch.softmax(logits[src_t], 1)

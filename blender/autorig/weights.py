@@ -257,9 +257,10 @@ def _bind(ob, armature, w, bone_names):
 def native_candidate(meshes, armature, verts, fallback):
     """Blender's volume heat is a useful second candidate for capes and creatures.
 
-    Small disconnected pieces sometimes get no native weights. Use the regional
-    solution there, then enforce the same seam and influence invariants. A solver
-    that misses most of the mesh is not a candidate.
+    Disconnected pieces sometimes get no native weights. Use the regional
+    solution there, then enforce the same seam and influence invariants. Keep any
+    usable native coverage: motion validation can select its successful islands
+    even when other islands failed to bind (robes with separate hands or trim).
     """
     names = [b.name for b in armature.data.bones if b.use_deform]
     bpy.ops.object.select_all(action='DESELECT')
@@ -272,6 +273,57 @@ def native_candidate(meshes, armature, verts, fallback):
     w = weight_matrix(meshes, names)
     missing = ~np.isfinite(w).all(axis=1) | (w.sum(axis=1) < 1e-8)
     if missing.mean() > 0.1:
+        # Blender can abandon an entire object when one disconnected surface
+        # makes its heat system singular. Retry failed islands independently,
+        # transferring by original vertex index without changing export geometry.
+        offset = 0
+        for ob in meshes:
+            n = len(ob.data.vertices)
+            parent = list(range(n))
+
+            def find(v):
+                while parent[v] != v:
+                    parent[v] = parent[parent[v]]
+                    v = parent[v]
+                return v
+
+            for edge in ob.data.edges:
+                a, b = edge.vertices
+                parent[find(a)] = find(b)
+            groups = {}
+            for v in range(n):
+                groups.setdefault(find(v), []).append(v)
+            faces = {}
+            for face in ob.data.polygons:
+                faces.setdefault(find(face.vertices[0]), []).append(list(face.vertices))
+            if len(groups) > 1:
+                for group, members in groups.items():
+                    ids = np.asarray(members) + offset
+                    if not missing[ids].any() or group not in faces:
+                        continue
+                    local = {v: i for i, v in enumerate(members)}
+                    data = bpy.data.meshes.new('heat_island')
+                    temp = bpy.data.objects.new('heat_island', data)
+                    try:
+                        data.from_pydata([ob.data.vertices[v].co[:] for v in members], [],
+                                         [[local[v] for v in face] for face in faces[group]])
+                        bpy.context.scene.collection.objects.link(temp)
+                        temp.matrix_world = ob.matrix_world.copy()
+                        bpy.ops.object.select_all(action='DESELECT')
+                        temp.select_set(True)
+                        armature.select_set(True)
+                        bpy.context.view_layer.objects.active = armature
+                        bpy.ops.object.parent_set(type='ARMATURE_AUTO')
+                        island = weight_matrix([temp], names)
+                        valid = np.isfinite(island).all(axis=1) & (island.sum(axis=1) >= 1e-8)
+                        take = valid & missing[ids]
+                        w[ids[take]] = island[take]
+                    finally:
+                        bpy.data.objects.remove(temp, do_unlink=True)
+                        bpy.data.meshes.remove(data)
+            offset += n
+        missing = ~np.isfinite(w).all(axis=1) | (w.sum(axis=1) < 1e-8)
+    if missing.all():
         return False
     w[missing] = fallback[missing]
     w = heat.finalize(verts, w, fallback.argmax(axis=1), MAX_INFLUENCES)

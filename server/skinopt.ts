@@ -3,10 +3,11 @@
 // the GLB. Needs a Python with PyTorch (the repo's .venv, or RIGSMITH_TORCH_PYTHON); skipped without one.
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { ROOT } from './workspace.ts'
+import type { WeightEdit } from './weights.ts'
 
 const TOOLS = path.join(ROOT, 'tools', 'skin_opt')
 // The repo's .venv (npm run setup:python), else an explicit override, else any older install.
@@ -41,13 +42,27 @@ async function run (command: string, args: string[], onLine?: (line: string) => 
 
 /** Keep previous weights when the new skin regresses on the rig's deformation
  * tests. The comparison uses the new skeleton, so joint edits always take effect. */
-export async function validateSkin (candidate: string, previous: string, template: string): Promise<{ compared: boolean, retained: boolean }> {
-  let result: { compared: boolean, retained: boolean } | undefined
+export async function validateSkin (candidate: string, previous: string, template: string): Promise<{ compared: boolean, retained: boolean, hybrid?: boolean, reason?: string }> {
+  let result: { compared: boolean, retained: boolean, hybrid?: boolean, reason?: string } | undefined
   await run(process.execPath, [path.join(TOOLS, 'validate.ts'), candidate, previous, template], line => {
     if (line.startsWith('{')) result = JSON.parse(line) as typeof result
   })
   if (result === undefined) throw new Error('No skin validation result')
   return result
+}
+
+/** Resolve paint addresses against the old bind surface before writing anything
+ * into a rebuilt skin. A failed mapping leaves the live rig and painting intact. */
+export async function mapPainting (candidate: string, previous: string, painted: WeightEdit[]): Promise<WeightEdit[]> {
+  if (painted.length === 0) return []
+  const input = candidate + '.paint-input.json', output = candidate + '.paint-mapped.json'
+  try {
+    await writeFile(input, JSON.stringify(painted))
+    await run(process.execPath, [path.join(TOOLS, 'painting.ts'), candidate, previous, input, output])
+    return JSON.parse(await readFile(output,'utf8')) as WeightEdit[]
+  } finally {
+    await rm(input,{force:true}); await rm(output,{force:true})
+  }
 }
 
 // One optimization at a time: they share the GPU (and fall back to the CPU when it's full).
@@ -59,7 +74,7 @@ let queue: Promise<unknown> = Promise.resolve()
 export async function optimizeSkin (glb: string, onProgress: (progress: number, message: string) => void, clips?: string, always: string[] = []): Promise<boolean> {
   const python = torchPython()
   if (python === null) return false
-  onProgress(0, 'Waiting for the GPU')
+  onProgress(0, 'Waiting to optimize weights')
   const turn = queue.then(async () => await optimizeNow(python, glb, onProgress, clips, always))
   queue = turn.catch(() => {})
   return await turn
@@ -72,12 +87,14 @@ async function optimizeNow (python: string, glb: string, onProgress: (progress: 
   try {
     onProgress(0, clips === undefined ? 'Posing the rig through 256 library poses' : 'Posing the rig through its animations')
     await run(process.execPath, [path.join(TOOLS, 'pose_set.ts'), glb, prefix, '--poses', '256', ...(clips === undefined ? [] : ['--from', clips]), ...(clips === undefined && always.length > 0 ? ['--with', always.join(',')] : [])])
-    onProgress(0.3, 'Optimizing weights on the GPU')
-    let device = 'GPU'
+    onProgress(0.3, 'Starting weight optimization')
+    let device: string | undefined
     await run(python, [path.join(TOOLS, 'optimize.py'), prefix, '--iters', '300'], line => {
-      if (line.includes('using the CPU')) device = 'CPU'
+      if (line.includes('using the CPU') || line === 'device cpu') device = 'CPU'
+      else if (line === 'device cuda') device = 'GPU'
+      if (line.startsWith('device ') && device !== undefined) onProgress(0.3, `Optimizing weights on the ${device}`)
       const m = /^it\s+(\d+)/.exec(line)
-      if (m !== null) onProgress(0.3 + 0.6 * Number(m[1]) / 300, `Optimizing weights on the ${device}`)
+      if (m !== null) onProgress(0.3 + 0.6 * Number(m[1]) / 300, device === undefined ? 'Optimizing weights' : `Optimizing weights on the ${device}`)
     })
     onProgress(0.95, 'Writing weights')
     await run(process.execPath, [path.join(TOOLS, 'apply.ts'), glb, prefix])

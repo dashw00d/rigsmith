@@ -37,6 +37,24 @@ function centre (cell: number, bins: [number, number]): THREE.Vector3 {
   return new THREE.Vector3(Math.sin(el) * Math.cos(az), Math.cos(el), Math.sin(el) * Math.sin(az))
 }
 
+/** Closest point in a spherical grid cell, just inside its boundary. For a
+ * fixed azimuth, maximizing dot(direction, point) is a one-dimensional sinusoid.
+ * The closest azimuth is either the input's own or one of the wrapped edges. */
+function nearestInCell (dir: THREE.Vector3, cell: number, bins: [number, number]): THREE.Vector3 {
+  const margin = 1e-7
+  const i = Math.floor(cell / bins[1]), j = cell % bins[1]
+  const low = i * Math.PI / bins[0] + margin, high = (i + 1) * Math.PI / bins[0] - margin
+  const left = j * 2 * Math.PI / bins[1] - Math.PI + margin, right = (j + 1) * 2 * Math.PI / bins[1] - Math.PI - margin
+  let az = Math.atan2(dir.z, dir.x)
+  if (az < left || az > right) az = Math.cos(az - left) >= Math.cos(az - right) ? left : right
+  const horizontal = dir.x * Math.cos(az) + dir.z * Math.sin(az)
+  const score = (el: number): number => horizontal * Math.sin(el) + dir.y * Math.cos(el)
+  let el = score(low) >= score(high) ? low : high
+  const peak = Math.atan2(horizontal, dir.y)
+  if (peak >= low && peak <= high && score(peak) > score(el)) el = peak
+  return new THREE.Vector3(Math.sin(el) * Math.cos(az), Math.cos(el), Math.sin(el) * Math.sin(az))
+}
+
 /** The twist (radians, -pi..pi) of a turn about `axis`. */
 export function twistOf (q: THREE.Quaternion, axis: THREE.Vector3): number {
   const t = 2 * Math.atan2(q.x * axis.x + q.y * axis.y + q.z * axis.z, q.w)
@@ -48,7 +66,7 @@ interface Range {
   restInv: THREE.Quaternion
   restDir: THREE.Vector3
   allowed: Uint8Array
-  directions: THREE.Vector3[]
+  directions: Array<{ cell: number, centre: THREE.Vector3 }>
   twist: [number, number]
 }
 
@@ -93,8 +111,8 @@ export class JointLimits {
       const cap = SWING_CAP[name] !== undefined ? rad(SWING_CAP[name]) : null
       // (a capped joint may point only where it was seen within the cap)
       if (cap !== null) for (let c = 0; c < ni * nj; c++) if (allowed[c] === 1 && centre(c, rom.bins).angleTo(restDir) > cap) allowed[c] = 0
-      const directions: THREE.Vector3[] = []
-      for (let c = 0; c < ni * nj; c++) if (allowed[c] === 1) directions.push(centre(c, rom.bins))
+      const directions: Range['directions'] = []
+      for (let c = 0; c < ni * nj; c++) if (allowed[c] === 1) directions.push({ cell: c, centre: centre(c, rom.bins) })
       this.ranges.set(name, {
         axis, restInv: rest.clone().invert(), restDir, allowed, directions,
         twist: [rad(b.twist[0] - twistSlack), rad(b.twist[1] + twistSlack)],
@@ -137,16 +155,24 @@ export class JointLimits {
     const ls = this.toSource(bone, local)
     if (r === undefined || ls === null) return local.clone()
     let q = ls.clone()
-    let dir = r.axis.clone().applyQuaternion(q)
+    const dir = r.axis.clone().applyQuaternion(q)
     // where it points
     let to: THREE.Vector3 | null = null
     if (r.allowed[cellOf(dir, this.rom.bins)] === 0 && r.directions.length > 0) {
-      let best = -2
-      for (const d of r.directions) { const k = d.dot(dir); if (k > best) { best = k; to = d } }
+      let closestCentre = -1
+      for (const d of r.directions) closestCentre = Math.max(closestCentre, d.centre.dot(dir))
+      // A cell farther than the best centre plus two cell radii cannot win.
+      const radius = Math.PI / (2 * this.rom.bins[0]) + Math.PI / this.rom.bins[1]
+      const threshold = Math.cos(Math.min(Math.PI, Math.acos(Math.min(1, closestCentre)) + 2 * radius))
+      let best = -Infinity
+      for (const d of r.directions) {
+        if (d.centre.dot(dir) < threshold) continue
+        const edge = nearestInCell(dir, d.cell, this.rom.bins), score = edge.dot(dir)
+        if (score > best) { best = score; to = edge }
+      }
     }
     if (to !== null) {
       q = new THREE.Quaternion().setFromUnitVectors(dir, to).multiply(q)
-      dir = to
     }
     // its twist
     const tw = twistOf(r.restInv.clone().multiply(q), r.axis)

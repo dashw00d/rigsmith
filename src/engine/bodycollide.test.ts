@@ -8,7 +8,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { describe, expect, it } from 'vitest'
 import { canonical, captureRest, retargetOffsets } from './retarget.ts'
-import { buildBodyCollider } from './bodycollide.ts'
+import { BoundShape, buildBodyCollider, type BodyShape } from './bodycollide.ts'
 import { BODY, DIM, NaturalRig, PoseModel, createBodySolver, encodeSource, restSoles, type PoseModelData } from './posespace.ts'
 
 const g = globalThis as Record<string, unknown>
@@ -58,6 +58,23 @@ async function poseFromClip (b: Awaited<ReturnType<typeof ybot>>, id: string, t:
 
 const IDLES = ['mixamo-Breathing_Idle', 'mixamo-Box_Idle', 'mixamo-Action_Idle_To_Standing_Idle']
 const FEET = ['LeftFoot', 'RightFoot']
+
+describe('elliptical capsule end caps', () => {
+  it('approaches the axial radius continuously and keeps the side radii', () => {
+    const shape: BodyShape = {
+      segments: [{ name: 'segment', a: 'a', b: 'b', ext: 1, tip: [0,0,0], off: [0,0,0], u1: [1,0,0], u2: [0,0,1], r1: .2, r2: .05 }],
+      pairs: [], slack: [], quick: 0, bones: ['a','b'],
+    }
+    const bound = new BoundShape(shape, name => name === 'a' ? 0 : 1)
+    bound.update([0,0,0, 0,1,0], [0,0,0,1, 0,0,0,1])
+    const point = (x: number, y: number, z: number): number => bound.depthOf(0, [x,y,z], [x,y,z], 0)
+    expect(point(0,1.03,0)).toBeCloseTo(.02, 8)
+    expect(point(1e-6,1.03,0)).toBeCloseTo(point(0,1.03,0), 6)
+    expect(point(1e-6,1.12,0)).toBe(0)
+    expect(point(.15,.5,0)).toBeCloseTo(.05, 8)
+    expect(point(0,.5,.04)).toBeCloseTo(.01, 8)
+  })
+})
 
 describe.skipIf(!have)('the body as solids', () => {
   it('fits every character\'s own mesh: sections that grow with the body, a pair list, nothing overlapping at rest', async () => {
@@ -146,11 +163,15 @@ describe.skipIf(!have)('the solver keeps body parts out of one another', () => {
       b.scene.updateMatrixWorld(true)
       const without = c.selfPenetration().worst
       b.rig.apply(start); b.scene.updateMatrixWorld(true)
+      const before = c.selfPenetration()
       const res = b.rig.solve(goals, { keep: hold, mode: 'full', collide: c })
       b.scene.updateMatrixWorld(true)
       const withIt = c.selfPenetration()
       rows.push({ off: depth, weight, without, withIt: withIt.worst, miss: res.softMiss, pair: withIt.pairs[0]?.slice(0, 2).join('+') ?? null })
       expect(res.penetration?.worst).toBeCloseTo(withIt.worst, 3)
+      const increase = Math.max(0, ...withIt.pairs.map(([a, b, d]) => d - (before.pairs.find(([aa, bb]) => a === aa && b === bb)?.[2] ?? 0)))
+      // The public collider omits contacts shallower than ten micrometres.
+      expect(Math.abs(res.penetration!.increase! - increase)).toBeLessThan(1.1e-5)
       expect(plain.objective?.end.collide).toBeDefined()
     }
     console.log('hand to the chest, depth m -> overlap without / with (cm), soft miss cm:\n' + rows.map(r => `  ${r.off} at ${r.weight}: ${(r.without * 100).toFixed(1)} -> ${(r.withIt * 100).toFixed(1)}, miss ${(r.miss * 100).toFixed(1)} ${r.pair ?? ''}`).join('\n'))
