@@ -14,6 +14,7 @@ import { swapImages } from './glbimages.ts'
 import { extentY, transformGlb } from './glbtransform.ts'
 import { exportUnits, gameSlots, gameStatus, saveUnits, units, type UnitSpec } from './game.ts'
 import { dropWeightEdits, keepWeightEdits, publishRig, weightEdits, writeWeights, type WeightEdit } from './weights.ts'
+import { dropShapeEdits, keepShapeEdits, shapeEdits, writeShapes, type ShapeEdit } from './shapes.ts'
 import {
   type Character, characterDir, type Garment, type TextureImage, createCharacter, deleteCharacter, getCharacter, getSettings, listCharacters,
   ROOT, saveSettings, updateCharacter, type Vec3, WORKSPACE, writeJson,
@@ -148,6 +149,14 @@ async function runRig (id: string, update: Update): Promise<void> {
     const started = Date.now()
     const { result } = await runBlender('autorig/rig.py', args, (progress, message) => { update({ progress: progress * share, message }) })
     const r = result as { joints: Record<string, Vec3>, seconds: number, method: string, warnings: string[] }
+    // Lifted skin (Fix weights' Lift) back on the fresh rig first, so the painting below finds the surface it was
+    // painted on: each lift by where its vertices were before it.
+    const lifts = await shapeEdits(id)
+    if (lifts.length > 0) {
+      const n = await writeShapes(output, lifts)
+      if (existsSync(alternative)) await writeShapes(alternative, lifts)
+      r.warnings.push(n >= lifts.length ? `${n} lifted vertices put back (Fix weights' Lift)` : `${n} of ${lifts.length} lifted vertices put back: the rest are not where they were lifted from (Forget the lifts to drop them)`)
+    }
     // Re-import can reorder/split vertices. Follow the old bind surface instead
     // of writing a saved brush stroke onto unrelated new vertex numbers.
     const savedPainting = await weightEdits(id)
@@ -368,6 +377,31 @@ route('DELETE', /^\/api\/characters\/([a-z0-9-]+)\/weights$/, async (req, res, [
   await dropWeightEdits(id)
   await note_(id, by(req), 'painted weights forgotten (the next rig makes them afresh)')
   send(res, 200, { ok: true })
+})
+
+// Lifted skin (Fix weights' Lift): rest positions written into the rig and kept for the next re-rig; DELETE puts them back.
+route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/shape$/, async (req, res, [id]) => {
+  const character = await getCharacter(id)
+  if (character?.files.rigged === undefined || character.kind !== 'mesh') throw new HttpError(400, 'Only a Rigsmith rig can be lifted')
+  if (character.status === 'rigging') throw new HttpError(409, 'Wait for rigging to finish before lifting skin')
+  const { edits } = await readJsonBody<{ edits?: ShapeEdit[] }>(req)
+  if (!Array.isArray(edits) || edits.length === 0) throw new HttpError(400, 'No lifts to write')
+  const written = await writeShapes(path.join(characterDir(id), character.files.rigged), edits, true)
+  const kept = await keepShapeEdits(id, edits)
+  await note_(id, by(req), `skin lifted: ${written} vertices (${kept} kept for re-rigs)`)
+  const after = await updateCharacter(id, c => { c.revision = (c.revision ?? 0) + 1 })
+  events.emit('character', after)
+  send(res, 200, { written, kept })
+})
+route('DELETE', /^\/api\/characters\/([a-z0-9-]+)\/shape$/, async (req, res, [id]) => {
+  const character = await getCharacter(id)
+  if (character === undefined || character === null) throw new HttpError(404, 'No such character')
+  if (character.status === 'rigging') throw new HttpError(409, 'Wait for rigging to finish before forgetting lifts')
+  const n = await dropShapeEdits(id, path.join(characterDir(id), character.files.rigged ?? 'rigged.glb'))
+  await note_(id, by(req), `lifts forgotten: ${n} vertices put back`)
+  const after = await updateCharacter(id, c => { c.revision = (c.revision ?? 0) + 1 })
+  events.emit('character', after)
+  send(res, 200, { ok: true, restored: n })
 })
 
 // The game's models, read only (the scale room sets a unit against them): what there is, and each file.

@@ -9,7 +9,7 @@ import type { CharacterView } from '../engine/CharacterView.ts'
 import { WeightPainter } from '../engine/weightpaint.ts'
 import { GARMENT_FLAG } from '../engine/garments.ts'
 
-export type PaintTool = 'area' | 'add' | 'remove' | 'smooth' | 'follow' | 'rigid'
+export type PaintTool = 'area' | 'add' | 'remove' | 'smooth' | 'follow' | 'rigid' | 'lift'
 
 class Paint {
   active = $state(false)
@@ -18,6 +18,8 @@ class Paint {
   /** Brush radius, a share of the body's height. */
   radius = $state(0.05)
   strength = $state(0.5)
+  /** The Lift brush's gap: how far clear of the skin under it the brushed skin is pushed, a share of the body's height. */
+  gap = $state(0.01)
   /** Strokes land on both sides of the body (each point's mirror twin, its bones swapped for the other side's). */
   mirror = $state(true)
   /** The Bone brush's bone: the one under the brush (hovering), or the stroke's while painting. */
@@ -114,6 +116,7 @@ class Paint {
       else if (this.tool === 'smooth') this.painter.smooth(at.part, points, this.strength * 0.5)
       else if (this.tool === 'follow') this.painter.followUnder(at.part, points, this.strength * 0.5)
       else if (this.tool === 'rigid') this.painter.rigid(at.part, points, this.strength * 0.5)
+      else if (this.tool === 'lift' && this.garment === null) this.painter.lift(at.part, points, this.gap * view.height, this.strength * 0.5)
       this.redraw()
     }
     const down = (e: PointerEvent): void => {
@@ -241,14 +244,18 @@ class Paint {
     const edits = this.painter.edits()
       .filter(e => this.editable.has(this.painter!.parts[e.mesh].mesh))
       .map(e => this.garment === null ? e : { ...e, mesh: (this.painter!.parts[e.mesh].mesh.userData.garmentMesh as number | undefined) ?? 0 })
-    if (edits.length === 0) return
+    // (lifted skin: the body's only)
+    const lifts = this.garment === null ? this.painter.shapeEdits() : []
+    if (edits.length === 0 && lifts.length === 0) return
     this.busy = true
     this.busyText = this.garment === null ? 'Saving the weights into the rig' : 'Saving the garment\'s weights'
     try {
-      const r = this.garment === null ? await api.saveWeights(c.id, edits) : await api.saveGarmentWeights(c.id, this.garment, edits)
+      const said: string[] = []
+      if (lifts.length > 0) said.push(`${(await api.saveShape(c.id, lifts)).written} lifted`)
+      if (edits.length > 0) said.push(`${(this.garment === null ? await api.saveWeights(c.id, edits) : await api.saveGarmentWeights(c.id, this.garment, edits)).written} weighted`)
       this.painter.saved()
       this.edited = 0
-      app.toast('ok', `Weights saved: ${r.written} vertices (kept for re-rigs)`)
+      app.toast('ok', `Saved: ${said.join(', ')} vertices (kept for re-rigs)`)
       // (the rig reloads with them: sync() takes the new one up when it is on stage)
     } catch (error) {
       app.toast('error', (error as Error).message)

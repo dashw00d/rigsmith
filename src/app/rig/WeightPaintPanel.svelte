@@ -2,7 +2,7 @@
   // Fix weights: paint on the body as it stands (pause a test clip on the frame that shows the problem).
   // src/state/paint.svelte.ts, src/engine/weightpaint.ts.
   import { onDestroy } from 'svelte'
-  import { Anchor, Brush, Eraser, FlipHorizontal2, Layers, Paintbrush, RotateCcw, Save, Sparkles, Waves } from '@lucide/svelte'
+  import { Anchor, ArrowUpFromLine, Brush, Eraser, FlipHorizontal2, Layers, Paintbrush, RotateCcw, Save, Sparkles, Waves } from '@lucide/svelte'
   import type { Character, Garment } from '../../state/api.ts'
   import { api } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
@@ -37,8 +37,15 @@
     { id: 'remove', label: 'Remove', hint: 'Take the bone off the brushed skin (its share goes to its other bones)' },
     { id: 'smooth', label: 'Smooth', hint: "Blend the brushed skin's weights with its neighbours'" },
     { id: 'follow', label: 'Follow', hint: 'Make the brushed skin move with what is under it: the skin it covers (the legs under a coat), or the nearest bones where nothing is close under it. For hems and cloth the body should push' },
+    { id: 'lift', label: 'Lift', hint: 'Push the brushed skin out off the skin under it, to the gap below: a cape off the body it follows, so the body and the lining stop showing through. Its inner side goes out with it. Works on the body as it stands (pause on the frame that shows it); saved with the weights and kept through re-rigs' },
     { id: 'rigid', label: 'Bone', hint: 'Paint the brushed skin onto the one bone under the brush, dropping pulls from cloth and bones around it. The bone is the one that already moves most of the skin where you start the stroke (shown below as you hover): start on the face for the head. For a face a hood drags, buckles, plates' },
   ]
+  // (Lift changes the body's shape: not a garment's)
+  const shown = $derived(garment === null ? tools : tools.filter(t => t.id !== 'lift'))
+  async function forgetLifts (): Promise<void> {
+    const r = await api.forgetShape(character.id)
+    app.toast('ok', `Lifts forgotten: ${r.restored} vertices put back where they were`)
+  }
   async function forget (): Promise<void> {
     if (garment !== null) {
       await api.forgetGarmentWeights(character.id, garment.id)
@@ -57,9 +64,9 @@
   {#if paint.active}
     <p class="faint small">Pause a test clip on the frame that shows the problem, then paint on the body. The brush follows the surface. Leave good skin unmarked around an area to heal it. Left-drag on the body paints; off it the camera turns.</p>
     <div class="tools">
-      {#each tools as t}
+      {#each shown as t}
         <button class:on={paint.tool === t.id} onclick={() => { paint.tool = t.id; paint.refreshView() }} use:tooltip={t.hint}>
-          {#if t.id === 'area'}<Sparkles size={12} />{:else if t.id === 'add'}<Brush size={12} />{:else if t.id === 'remove'}<Eraser size={12} />{:else if t.id === 'follow'}<Layers size={12} />{:else if t.id === 'rigid'}<Anchor size={12} />{:else}<Waves size={12} />{/if} {t.label}
+          {#if t.id === 'area'}<Sparkles size={12} />{:else if t.id === 'add'}<Brush size={12} />{:else if t.id === 'remove'}<Eraser size={12} />{:else if t.id === 'follow'}<Layers size={12} />{:else if t.id === 'rigid'}<Anchor size={12} />{:else if t.id === 'lift'}<ArrowUpFromLine size={12} />{:else}<Waves size={12} />{/if} {t.label}
         </button>
       {/each}
     </div>
@@ -72,6 +79,9 @@
           {#each bones as b}<option value={b}>{boneLabel(b)}</option>{/each}
         </select>
       </label>
+    {/if}
+    {#if paint.tool === 'lift'}
+      <label class="field" use:tooltip={'How far clear of the skin under it the brushed skin ends (a share of the height: 1% is about 2 cm on a man)'}>Gap <input type="range" min="0.002" max="0.04" step="0.001" bind:value={paint.gap} /></label>
     {/if}
     <Toggle label="Mirror left and right" checked={paint.mirror} onchange={(on: boolean) => paint.setMirror(on)} />
     <label class="field">Brush <input type="range" min="0.01" max="0.15" step="0.005" bind:value={paint.radius} /></label>
@@ -93,7 +103,7 @@
     {#if garment !== null}
       <p class="faint small">Only {garment.name} is painted; the body under it is there for Follow to take from. Saved weights are kept with it{garment.painted ? ` (${garment.painted} vertices)` : ''} and laid over what it takes from the body. <button class="link" onclick={forget}>Forget the painting</button></p>
     {:else}
-      <p class="faint small">Saved weights go into the rig and are put back after a re-rig. <button class="link" onclick={forget}>Forget the painting</button></p>
+      <p class="faint small">Saved weights and lifts go into the rig and are put back after a re-rig. <button class="link" onclick={forget}>Forget the painting</button> · <button class="link" onclick={forgetLifts}>Forget the lifts</button></p>
     {/if}
   {/if}
 </Section>

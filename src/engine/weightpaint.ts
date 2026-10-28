@@ -9,6 +9,9 @@
 //           where nothing is close under it: cloth the body should push (a hem the legs walk through)
 //   bone    (rigid) the brushed skin moves with only one bone, every other pull dropped (a face a hood drags): the bone
 //           leading where the stroke began
+//   lift    not weights but shape: the brushed skin pushed out off the skin under it to a gap (a cape off the body it
+//           follows, so the body doesn't show through it or its lining), the cloth's own inner side going with it;
+//           measured on the body as it stands, saved as rest positions (server/shapes.ts)
 // Mirror (on by default): each stroke lands on the other side too, on each point's mirror twin with its bones swapped
 // for the other side's (LeftArm for RightArm), and a point on the middle line is evened between its sides; "Copy a
 // side" sets the whole other side from one. Twins are found at rest, across the hips.
@@ -64,7 +67,11 @@ export class WeightPainter {
   readonly area: Array<Map<number, number>> = []
   /** Points changed since the last save, per part. */
   readonly edited: Array<Set<number>> = []
-  private undo: Array<Array<{ part: number, point: number, weights: Weights }>> = []
+  private undo: Array<Array<{ part: number, point: number, weights?: Weights, position?: number[] }>> = []
+  /** Points lifted since the last save, per part (Lift). */
+  readonly shaped: Array<Set<number>> = []
+  /** Each part's positions when the painter took it up (where a lifted vertex was before this session). */
+  private readonly origin: Float32Array[] = []
   /** Strokes land on both sides. */
   mirror = true
 
@@ -102,10 +109,12 @@ export class WeightPainter {
       this.parts.push({ mesh, point, members, adj, rest: Float32Array.from(pos.array as ArrayLike<number>), twin, swap, side })
       this.area.push(new Map())
       this.edited.push(new Set())
+      this.shaped.push(new Set())
+      this.origin.push(Float32Array.from(pos.array as ArrayLike<number>))
     }
   }
 
-  get editedCount (): number { return this.edited.reduce((n, s) => n + s.size, 0) }
+  get editedCount (): number { return this.edited.reduce((n, s) => n + s.size, 0) + this.shaped.reduce((n, s) => n + s.size, 0) }
 
   weights (part: number, p: number): Weights {
     const g = this.parts[part].mesh.geometry
@@ -119,7 +128,7 @@ export class WeightPainter {
   }
 
   /** A point's weights set (on all its vertices): the four largest, summing to one. */
-  private set (part: number, p: number, w: Weights, log: Array<{ part: number, point: number, weights: Weights }> | null): void {
+  private set (part: number, p: number, w: Weights, log: Array<{ part: number, point: number, weights?: Weights, position?: number[] }> | null): void {
     const g = this.parts[part].mesh.geometry
     const si = g.attributes.skinIndex as THREE.BufferAttribute; const sw = g.attributes.skinWeight as THREE.BufferAttribute
     if (log !== null) log.push({ part, point: p, weights: this.weights(part, p) })
@@ -242,7 +251,7 @@ export class WeightPainter {
   begin (): void { this.undo.push([]); this.strokeBone = null }
   /** The bone a Bone stroke holds to (picked on its first dab). */
   private strokeBone: number | null = null
-  private get log (): Array<{ part: number, point: number, weights: Weights }> | null { return this.undo[this.undo.length - 1] ?? null }
+  private get log (): Array<{ part: number, point: number, weights?: Weights, position?: number[] }> | null { return this.undo[this.undo.length - 1] ?? null }
 
   mark (part: number, points: Map<number, number>, on = true): void {
     const a = this.area[part]
@@ -512,7 +521,12 @@ export class WeightPainter {
   stepBack (): boolean {
     const last = this.undo.pop()
     if (last === undefined) return false
-    for (const e of last.reverse()) this.set(e.part, e.point, e.weights, null)
+    const moved = new Set<number>()
+    for (const e of last.reverse()) {
+      if (e.weights !== undefined) this.set(e.part, e.point, e.weights, null)
+      if (e.position !== undefined) { this.place(e.part, e.point, e.position); moved.add(e.part) }
+    }
+    for (const part of moved) this.reshaped(part)
     return true
   }
 
@@ -529,7 +543,168 @@ export class WeightPainter {
     return out
   }
 
-  saved (): void { for (const e of this.edited) e.clear(); this.undo = [] }
+  /** The lifted points' rest positions, to save (every vertex of each point, and where it was before). */
+  shapeEdits (): Array<{ mesh: number, vertex: number, from: [number, number, number], to: [number, number, number] }> {
+    const out: Array<{ mesh: number, vertex: number, from: [number, number, number], to: [number, number, number] }> = []
+    this.parts.forEach(({ mesh, members }, part) => {
+      const pos = mesh.geometry.attributes.position; const o = this.origin[part]
+      for (const p of this.shaped[part]) {
+        for (const v of members.get(p) ?? [p]) out.push({ mesh: part, vertex: v, from: [o[v * 3], o[v * 3 + 1], o[v * 3 + 2]], to: [pos.getX(v), pos.getY(v), pos.getZ(v)] })
+      }
+    })
+    return out
+  }
+
+  saved (): void { for (const e of this.edited) e.clear(); for (const e of this.shaped) e.clear(); this.undo = [] }
+
+  /** A point's rest position set (on all its vertices). */
+  private place (part: number, p: number, at: ArrayLike<number>): void {
+    const { mesh, members, rest } = this.parts[part]
+    const pos = mesh.geometry.attributes.position as THREE.BufferAttribute
+    for (const v of members.get(p) ?? [p]) {
+      pos.setXYZ(v, at[0], at[1], at[2])
+      rest[v * 3] = at[0]; rest[v * 3 + 1] = at[1]; rest[v * 3 + 2] = at[2]
+    }
+  }
+
+  /** A part's shape changed: its geometry redrawn, what Follow found at rest found again. */
+  private reshaped (part: number): void {
+    const g = this.parts[part].mesh.geometry
+    g.attributes.position.needsUpdate = true
+    g.computeBoundingBox(); g.computeBoundingSphere()
+    this.restCache.clear()
+  }
+
+  /** Lift: the brushed skin pushed out off the skin under it until it is `gap` (world units) clear of it, a share
+   * (`strength`) of the way each dab. Measured on the body as it stands: from each point toward its nearest bone, the
+   * first skin facing back out (what it covers; Follow's look) within a short reach; skin already through it (facing
+   * out just beyond it) lifts it past. The cloth's own inner side between (a lining, facing in) goes out with it, so a
+   * cape's two sides move together. Lifts are evened over the brush so the cloth doesn't come up in bumps, and kept as
+   * rest positions (each move undone through the pose's skinning). Returns the points moved. */
+  lift (part: number, points: Map<number, number>, gap: number, strength: number): number {
+    const brushed = new Map(points)
+    if (this.mirror) for (const [p, f] of points) { const q = this.parts[part].twin.get(p); if (q !== undefined && q !== p) brushed.set(q, Math.max(brushed.get(q) ?? 0, f)) }
+    if (brushed.size === 0) return 0
+    const height = Math.max(...this.parts.map((_, q) => this.restOf(q).height))
+    const reach = 0.08 * height; const thick = 0.03 * height
+    // the body as it stands: every part's points, and its bones as segments, in world space
+    const posed = this.parts.map((_, q) => this.posed(q))
+    const { mesh } = this.parts[part]
+    const segments: Array<{ a: THREE.Vector3, b: THREE.Vector3 }> = []
+    for (const bone of mesh.skeleton.bones) {
+      if (/end|leaf|tip$/i.test(bone.name)) continue
+      const a = bone.getWorldPosition(new THREE.Vector3())
+      const children = bone.children.filter(c => (c as THREE.Bone).isBone)
+      if (children.length === 0) segments.push({ a, b: a })
+      for (const c of children) segments.push({ a, b: c.getWorldPosition(new THREE.Vector3()) })
+    }
+    // the triangles near the brush (as far as a ray reaches), posed
+    const span = new THREE.Box3()
+    for (const p of brushed.keys()) span.expandByPoint(posed[part].get(p)!)
+    span.expandByScalar(reach)
+    const tris: Array<{ q: number, pts: [number, number, number], a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, n: THREE.Vector3 }> = []
+    this.parts.forEach(({ mesh: m, point }, q) => {
+      const index = m.geometry.index
+      const count = index !== null ? index.count : m.geometry.attributes.position.count
+      const box = new THREE.Box3()
+      for (let t = 0; t < count; t += 3) {
+        const pts = [0, 1, 2].map(k => point[index !== null ? index.getX(t + k) : t + k]) as [number, number, number]
+        const [a, b, c] = pts.map(x => posed[q].get(x)!)
+        box.setFromPoints([a, b, c])
+        if (!box.intersectsBox(span)) continue
+        const n = b.clone().sub(a).cross(c.clone().sub(a))
+        if (n.lengthSq() < 1e-20) continue
+        tris.push({ q, pts, a, b, c, n: n.normalize() })
+      }
+    })
+    // how far out each brushed point must go, and the inner side that goes with it
+    const need = new Map<number, number>(); const out = new Map<number, THREE.Vector3>()
+    const lining = new Map<number, Set<number>>()
+    const hit = new THREE.Vector3(); const ray = new THREE.Ray()
+    for (const p of brushed.keys()) {
+      const x = posed[part].get(p)!
+      let best = Infinity; let at = x
+      for (const s of segments) {
+        const ab = s.b.clone().sub(s.a); const t = ab.lengthSq() > 1e-12 ? THREE.MathUtils.clamp(x.clone().sub(s.a).dot(ab) / ab.lengthSq(), 0, 1) : 0
+        const y = s.a.clone().addScaledVector(ab, t); const d = y.distanceTo(x)
+        if (d < best) { best = d; at = y }
+      }
+      if (best < 1e-6) continue
+      const inward = at.clone().sub(x).normalize(); const outward = inward.clone().negate()
+      const far = Math.min(best, reach)
+      let under = Infinity; let through = Infinity
+      const inner = new Set<number>()
+      ray.set(x, inward)
+      for (const tri of tris) {
+        if (tri.q === part && tri.pts.includes(p)) continue
+        if (ray.intersectTriangle(tri.a, tri.b, tri.c, false, hit) !== null) {
+          const t = hit.distanceTo(x)
+          if (t > far || t < 1e-5 * height) continue
+          if (tri.n.dot(inward) < 0) under = Math.min(under, t)
+          else if (tri.q === part && t < thick) for (const y of tri.pts) if (!brushed.has(y)) inner.add(y)
+        }
+      }
+      ray.set(x, outward)
+      for (const tri of tris) {
+        if (tri.q === part && (tri.pts.includes(p) || tri.pts.some(y => brushed.has(y)))) continue
+        // (skin already out through this point faces out just beyond it)
+        if (tri.n.dot(outward) <= 0 || ray.intersectTriangle(tri.a, tri.b, tri.c, false, hit) === null) continue
+        const t = hit.distanceTo(x)
+        if (t > 1e-5 * height) through = Math.min(through, t)
+      }
+      const d = through < thick ? through + gap : under < Infinity ? Math.max(0, gap - under) : 0
+      need.set(p, d); out.set(p, outward)
+      if (inner.size > 0) lining.set(p, inner)
+    }
+    // evened over the brush: a point lifts at least as far as its brushed neighbours, on average (no bumps)
+    const { adj } = this.parts[part]
+    for (let it = 0; it < 3; it++) {
+      const next = new Map(need)
+      for (const [p, d] of need) {
+        const n = [...(adj.get(p) ?? [])].filter(q => need.has(q))
+        if (n.length === 0) continue
+        next.set(p, Math.max(d, 0.5 * (d + n.reduce((s, q) => s + need.get(q)!, 0) / n.length)))
+      }
+      for (const [p, d] of next) need.set(p, d)
+    }
+    // the moves, in world space: each brushed point, and its inner side by the most any point above it takes it
+    const moves = new Map<number, THREE.Vector3>()
+    for (const [p, d] of need) {
+      const step = d * Math.min(1, strength * (brushed.get(p) ?? 0))
+      if (step <= 1e-7 * height) continue
+      const m = out.get(p)!.clone().multiplyScalar(step)
+      moves.set(p, m)
+      for (const q of lining.get(p) ?? []) { const was = moves.get(q); if (was === undefined || was.lengthSq() < m.lengthSq()) moves.set(q, m.clone()) }
+    }
+    if (moves.size === 0) return 0
+    // each into rest space through its skinning as posed (the world move undone by its bones' blend)
+    mesh.updateMatrixWorld(true)
+    const g = mesh.geometry
+    const si = g.attributes.skinIndex; const sw = g.attributes.skinWeight
+    const toMesh = new THREE.Matrix3().setFromMatrix4(new THREE.Matrix4().copy(mesh.matrixWorld).invert())
+    const bindInv = new THREE.Matrix3().setFromMatrix4(mesh.bindMatrixInverse)
+    const bind = new THREE.Matrix3().setFromMatrix4(mesh.bindMatrix)
+    const boneM = mesh.skeleton.bones.map((b, i) => new THREE.Matrix3().setFromMatrix4(new THREE.Matrix4().multiplyMatrices(b.matrixWorld, mesh.skeleton.boneInverses[i])))
+    const pos = g.attributes.position
+    for (const [p, m] of moves) {
+      const blend = new THREE.Matrix3().set(0, 0, 0, 0, 0, 0, 0, 0, 0)
+      for (let k = 0; k < 4; k++) {
+        const w = sw.getComponent(p, k)
+        if (w <= 0) continue
+        const e = boneM[si.getComponent(p, k)].elements
+        for (let i = 0; i < 9; i++) blend.elements[i] += w * e[i]
+      }
+      // world move = matrixWorld · bindMatrixInverse · blend · bindMatrix · rest move
+      const L = bindInv.clone().multiply(blend).multiply(bind)
+      if (Math.abs(L.determinant()) < 1e-9) continue
+      const local = m.clone().applyMatrix3(toMesh).applyMatrix3(L.invert())
+      this.log?.push({ part, point: p, position: [pos.getX(p), pos.getY(p), pos.getZ(p)] })
+      this.place(part, p, [pos.getX(p) + local.x, pos.getY(p) + local.y, pos.getZ(p) + local.z])
+      this.shaped[part].add(p)
+    }
+    this.reshaped(part)
+    return moves.size
+  }
 }
 
 /** Each point's mirror twin across the body's middle (the hips' x at rest, in the mesh's own space), within `tol`

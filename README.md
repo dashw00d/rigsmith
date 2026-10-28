@@ -208,7 +208,12 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   (looking in toward its nearest bone at rest: the trousers under a coat), or of the nearest bones where nothing is
   close under it, so the body pushes it (a hem the legs walk through); *Bone*: the brushed skin moves with only the bone
   under the brush, every other pull dropped (a face a hood drags, a buckle): the bone already moving most of the skin
-  where the stroke begins, named in the panel as you hover. Seams never part (their vertices are one point), four bones a vertex.
+  where the stroke begins, named in the panel as you hover; *Lift* (the body only) changes shape, not weights: the
+  brushed skin pushed out off the skin under it until it is the panel's *Gap* clear of it (a cape off the body it
+  follows, so the body and the cape's lining stop showing through), skin already through it lifted out past it, the
+  cloth's own inner side between going out with it; measured on the pose on screen, evened over the brush, kept as rest
+  positions (`server/shapes.ts`, `shape_edits.json` with where each vertex first was: a re-rig finds them there and
+  lifts them again; *Forget the lifts* puts them back). Seams never part (their vertices are one point), four bones a vertex.
   *Mirror left and right* (on): every stroke lands on the other side too, each point's twin taking the other side's
   bone (LeftArm for RightArm), the middle line evened; *Left → right* / *Right → left* set the whole other side from
   one (skin with no twin, a sash across one shoulder, stays as it is).
