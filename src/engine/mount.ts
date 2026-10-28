@@ -161,7 +161,9 @@ export function fitRide (rider: THREE.AnimationClip, horse: THREE.AnimationClip,
     r.name = rider.name
     return { rider: repeat(r, m), horse: repeat(horse, n), report: { cycles: [m, n], fit: +err.toFixed(3) } }
   }
-  if (attack) {
+  // (a clip played once, an attack or not, sets the length: the horse's clip of the name fitted to it, so the rider
+  // doesn't hold his last pose while the horse finishes a longer one; the editor's preview is the rider's length)
+  if (attack || !loop) {
     const h = retime(horse, horse.duration / rider.duration)
     h.name = horse.name
     return { rider, horse: h, report: { fitted: true } }

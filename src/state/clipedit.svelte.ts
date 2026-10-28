@@ -27,6 +27,7 @@ import { viewer } from './viewer.svelte.ts'
 import { animator } from './animator.svelte.ts'
 import { library } from './library.svelte.ts'
 import { boneRest, type PullPlan } from '../engine/bake.ts'
+import { freezeClip } from '../engine/mount.ts'
 import { loadSource, refUrl, type SourceClip } from '../engine/clips.ts'
 import {
   armOf, bonePoseAt, bonesOf, buildEdit, carrierGrip, fistGrip, frameAt, frameSolve, frameTimes, gearObstacles, GRIP_CLEAR, gripName, handGrip, handleMisses,
@@ -1971,9 +1972,17 @@ class ClipEdit {
     this.display(time, this.held ? 'New clip (editing)' : `${this.base.label} (editing)`)
   }
 
+  /** A rider's clip as his slot plays it: his held bones (hips and legs) in the seat (bake.ts bakeRide freezes them the
+   * same), so what the editor shows and saves is what plays (the designer, 2026-10-28: "what I preview and what plays
+   * after save need to be identical"). Anyone else's as it is. */
+  private seated (clip: THREE.AnimationClip): THREE.AnimationClip {
+    const m = this.character?.mount; const rest = animator.view?.rest
+    return m === undefined || rest == null ? clip : freezeClip(clip, m, boneRest(rest))
+  }
+
   private display (time: number, label: string): void {
     if (this.edited === null) return
-    animator.showClip(this.edited, { label, pulls: this.pulls, time, slotId: this.slotId, editing: true })
+    animator.showClip(this.seated(this.edited), { label, pulls: this.pulls, time, slotId: this.slotId, editing: true })
     // (a hand just put on a piece, or let go of one: its gizmo locks to the piece, or is free again)
     this.editor?.setGripLock(b => this.gripHold(b))
   }
@@ -2034,7 +2043,9 @@ class ClipEdit {
   /** Write the edited clip: a person's into the library (the library's build makes it), a creature's (its template's
    * skeleton) as a clip file beside its bundled ones. `replace`: a clip made here before, saved over as itself. */
   private async save (name: string, o: { replace?: string } = {}): Promise<{ ref: ClipRef, gearKeys: Record<string, ClipKey[]>, replaced: boolean } | null> {
-    const view = animator.view; const root = this.posable(); const b = this.base; const source = this.source; const c = this.character; const edited = this.edited
+    const view = animator.view; const root = this.posable(); const b = this.base; const source = this.source; const c = this.character
+    // (saved as it was shown: a rider's held bones in the seat)
+    const edited = this.edited === null ? null : this.seated(this.edited)
     if (view === null || view.rest === null || root === null || b === null || source === null || c === null || edited === null) return null
     this.busy = 'Saving the clip'
     this.saving = true
