@@ -159,7 +159,9 @@ class Outfit {
     const hv = await CharacterView.load(url)
     const heights = await fetch(`/api/characters/${c.id}/game`).then(async x => (x.ok ? await x.json() : null) as { height: number | null, companion?: { height: number | null } } | null).catch(() => null)
     const k = riderScale({}, { game: heights?.height ?? null, own: this.view.height }, { game: heights?.companion?.height ?? null, own: hv.height })
-    const mount: Mount = { character: horseId, rotation: [0, 0, 0], ...straddle(hv, this.view, k) }
+    // (seated again on the same horse: its look for him, its gear and skin, kept)
+    const kept = c.mount?.character === horseId ? { gear: c.mount.gear, skin: c.mount.skin } : {}
+    const mount: Mount = { character: horseId, rotation: [0, 0, 0], ...straddle(hv, this.view, k), ...kept }
     await app.update(c.id, { mount })
   }
 

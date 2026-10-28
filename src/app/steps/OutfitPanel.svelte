@@ -113,6 +113,14 @@
   const mount = $derived(character.mount)
   const horseBones = $derived(animator.horse?.rest?.order.filter(b => animator.horse!.bones.has(b)) ?? [])
   const riderBones = $derived(animator.character?.rest?.order.filter(b => animator.character!.bones.has(b)) ?? [])
+  // (the horse's rigid gear, and which of it his mount names: by name, as the export picks it; an old id is read too)
+  const horseGear = $derived((app.characters.find(c => c.id === mount?.character)?.garments ?? []).filter(g => g.mode === 'rigid' && g.status === 'ready'))
+  const worn = (g: { id: string, name: string }): boolean => (mount?.gear ?? []).some(x => x === g.name || x === g.id)
+  function toggleGear (g: { id: string, name: string }, on: boolean): void {
+    if (mount === undefined) return
+    const rest = (mount.gear ?? []).filter(x => x !== g.name && x !== g.id)
+    void outfit.patchMount({ gear: on ? [...rest, g.name] : rest })
+  }
   function toggleHeld (bone: string, on: boolean): void {
     if (mount === undefined) return
     const freeze = on ? [...new Set([...mount.freeze, bone])] : mount.freeze.filter(b => b !== bone)
@@ -182,6 +190,17 @@
           </label>
         {/each}
       </div>
+      {#if horseGear.length > 0}
+        <p class="faint small">The horse wears for him (its own gear, fitted on the horse):</p>
+        <div class="held">
+          {#each horseGear as g}
+            <label class:on={worn(g)}>
+              <input type="checkbox" checked={worn(g)} onchange={(e) => toggleGear(g, (e.target as HTMLInputElement).checked)} />
+              <span>{g.name}</span>
+            </label>
+          {/each}
+        </div>
+      {/if}
       {#if outfit.mountTarget !== null}
         <Segmented options={modes} bind:value={mode} onchange={(m) => outfit.setMode(m)} />
         <p class="faint small">{outfit.mountTarget === 'seat' ? 'Drag him onto the horse.' : `Turn ${outfit.mountTarget.slice(5)} into the seat.`} Letting go saves it.</p>

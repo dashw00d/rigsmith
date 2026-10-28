@@ -600,7 +600,7 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
     if (ridden && mount !== undefined) {
       const worn: Record<string, unknown> = {}
       for (const g of comp.info.garments ?? []) {
-        if (!(mount.gear ?? []).includes(g.name)) continue
+        if (!(mount.gear ?? []).some(x => x === g.name || x === g.id)) continue
         if (g.status !== 'ready' || g.file === undefined || g.mode !== 'rigid') { worn[g.name] = { left: 'not a ready rigid garment' }; continue }
         const index = bones.findIndex(b => b.name === c.prefix + g.bone)
         if (index < 0) throw new Error(`${unit}: the horse's ${g.name} rides ${g.bone}, not in its skeleton`)

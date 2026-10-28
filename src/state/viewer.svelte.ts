@@ -9,7 +9,7 @@ import { loadTemplate } from '../engine/templates.ts'
 import type { FingerLevel } from '../engine/mixamo.ts'
 import { Stage } from '../engine/Stage.ts'
 import * as THREE from 'three'
-import { restFrame, tickMechanisms } from '../engine/garments.ts'
+import { attachGarments, restFrame, tickMechanisms } from '../engine/garments.ts'
 import { tickPulls } from '../engine/pulls.ts'
 import { riderScale, seatMatrix } from '../engine/mount.ts'
 
@@ -35,6 +35,8 @@ class Viewer {
    * horse bone -> its rest frame undone -> the seat (his placement, at his size) -> his root. */
   horse = $state.raw<CharacterView | null>(null)
   private horseKey = ''
+  /** The horse's gear worn under him (his mount's pick, the horse's garments as they stand): what is on it now. */
+  private horseGearKey = ''
   private horseToken = 0
   private seat: THREE.Group | null = null
   private seatBone = ''
@@ -196,6 +198,15 @@ class Viewer {
     }
     const horse = this.horse
     if (horse === null || rider === null || m === undefined || horseChar === undefined) return
+    // the horse dressed for him: the pieces of its gear his mount names (a saddle, barding), as the game export does
+    const gearKey = `${key}|${(m.gear ?? []).join(',')}|${horseChar.revision ?? 0}|${horseChar.updatedAt}`
+    if (gearKey !== this.horseGearKey) {
+      this.horseGearKey = gearKey
+      const wanted = new Set(m.gear ?? [])
+      const worn = (horseChar.garments ?? []).filter(g => wanted.has(g.name) || wanted.has(g.id))
+      try { await attachGarments(horse, worn, g => fileUrl(horseChar, g.file) ?? '') } catch (error) { this.loadError = `The horse's gear didn't load: ${(error as Error).message}` }
+      if (this.horse !== horse) return
+    }
     const bone = horse.bones.get(m.bone)
     if (bone === undefined) return
     if (this.seat === null || this.seatBone !== m.bone) {
@@ -242,6 +253,7 @@ class Viewer {
     }
     this.seat = null
     this.seatBone = ''
+    this.horseGearKey = ''
     if (this.horse !== null && stage !== null) this.horse.dispose(stage)
     this.horse = null
     animator.attachMount(null)

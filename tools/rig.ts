@@ -225,7 +225,9 @@ async function ride (c: Character, horseWho: string): Promise<string> {
   const u = Object.values(spec()).find(x => x.character === c.id)
   const k = riderScale({}, { game: u?.height ?? null, own: rider.height }, { game: u?.companion?.character === horse.id ? u.companion.height : null, own: hv.height })
   const seat = straddle(hv, rider, k)
-  const mount: Mount = { character: horse.id, rotation: [0, 0, 0], ...seat }
+  // (seated again on the same horse: its gear and skin for him kept)
+  const kept = c.mount?.character === horse.id ? { gear: c.mount.gear, skin: c.mount.skin } : {}
+  const mount: Mount = { character: horse.id, rotation: [0, 0, 0], ...seat, ...kept }
   await patch(c.id, { mount })
   return `${c.name} rides ${horse.name} on its ${seat.bone} at [${r3(seat.position)}] (his size there ${k.toFixed(3)})`
 }
