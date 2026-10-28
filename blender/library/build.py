@@ -105,6 +105,10 @@ def enumerate_sources(selected=None):
     saved_path = os.path.join(OUT, "work", "sources.json")
     saved = json.loads(Path(saved_path).read_text()) if os.path.exists(saved_path) else []
     items = list({i["id"]: i for i in saved + items}.values())
+    # (a source listed by hand in sources.json, as the custom FBX clips are: hashed here like a found one)
+    for it in items:
+        if not it.get("make") and not it.get("sha256") and os.path.isfile(it["sourcePath"]):
+            it["sha256"] = sha256_file(it["sourcePath"], cache)
     # (a clip made by a script, `make`, from library sources, `inputs`: remade when the script or a source changes)
     for it in items:
         if it.get("make"):
