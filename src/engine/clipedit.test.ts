@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 import { captureRest, retarget } from './retarget.ts'
 import {
   bonePoseAt, bonesOf, buildEdit, carrierGrip, editNameOf, frameAt, frameSolve, fromHere, gripName, handleMisses, handOn, handPoseSource, keyFor, legsOf, letGoFrames,
-  mergeWindows, parseWindows, reachGoals, saveToSlotCommands, toHere, unretarget, windowsText, withoutGearKeys, type EditBody, type GearRig,
+  mergeWindows, parseWindows, reachGoals, saveIntoSlotCommands, saveToSlotCommands, toHere, unretarget, windowsText, withoutGearKeys, type EditBody, type GearRig,
 } from './clipedit.ts'
 import { handleRef } from './hands.ts'
 import { makeCharacter, makeGear, makeSlot } from '../model/fixtures.ts'
@@ -247,6 +247,48 @@ describe('saving an edit to its slot', () => {
     const ground = (cmd as { adjustments: Adjustment[] }).adjustments[0]
     expect(ground).toEqual(adjustments[0])
     expect(ground).not.toBe(adjustments[0])
+  })
+})
+
+describe('saving an edit as one of the character\'s slots', () => {
+  const adjustments: Adjustment[] = [
+    { id: 'g', kind: 'ground', enabled: true, lift: 0.02 },
+    { id: 'b', kind: 'blowTiming', enabled: true, at: 0.45 },
+    { id: 'h', kind: 'handPose', enabled: true, hand: 'Left', pose: 'clip', windows: [[0.5, 1]], gear: 'bow' },
+    { id: 'hh', kind: 'handleHold', enabled: true, gear: 'bow', handle: 'draw', windows: [[0.2, 0.6]] },
+  ]
+  const idle: Slot = { id: 's1', name: 'Idle', clip: { id: 'mixamo-Idle' }, speed: 1.2, loop: true, inPlace: true, adjustments }
+  const run: Slot = { id: 's2', name: 'Run', clip: { id: 'mixamo-Run' }, speed: 1.5, loop: true, inPlace: true, adjustments: [{ id: 'old', kind: 'pace', enabled: true, like: 's1' }] }
+  const keys = { bow: [{ u: 0, q: [0, 0, 0, 1] as [number, number, number, number] }] }
+  let n = 0
+  const newId = (): string => `new${++n}`
+  const o = { loop: false, inPlace: false, lift: 0.03, gearKeys: {}, newId }
+
+  it('into the slot it was made on: as saving to it does', () => {
+    expect(saveIntoSlotCommands({ slot: idle, name: 'Idle' }, { slot: idle, mode: 'plays' }, { id: 'x' }, o))
+      .toEqual(saveToSlotCommands(idle, 'plays', { id: 'x' }, { loop: true, gearKeys: {}, newId }).map(c => ({ ...c, adjustments: expect.any(Array) as unknown })))
+  })
+
+  it('over another slot: speed 1, its loop and in place kept, its old adjustments gone, the edit\'s ground, hands and gear keys', () => {
+    const [cmd] = saveIntoSlotCommands({ slot: run, name: 'Run' }, { slot: idle, mode: 'plays' }, { id: 'custom-Run' }, { ...o, gearKeys: keys })
+    expect(cmd).toMatchObject({ type: 'slot.fill', id: 's2', clip: { id: 'custom-Run' }, speed: 1, loop: true, inPlace: true, keepAdjustments: false })
+    const got = (cmd as { adjustments: Adjustment[] }).adjustments
+    expect(got.map(a => a.kind)).toEqual(['ground', 'handPose', 'handleHold', 'keys'])
+    expect(got[0]).toMatchObject({ lift: 0.03 })
+    // (copies with ids of their own: the slot they came from keeps its own)
+    expect(got.every(a => /^new/.test(a.id))).toBe(true)
+    expect(got[1]).not.toBe(adjustments[2])
+  })
+
+  it('a new clip held from a frame, or a library preview: a new slot by the name, the edit\'s loop and in place, no hands copied', () => {
+    const [cmd] = saveIntoSlotCommands({ slot: null, name: 'Attack' }, { slot: null, mode: 'held' }, { id: 'custom-Attack' }, { ...o, lift: 0 })
+    expect(cmd).toMatchObject({ type: 'slot.fill', name: 'Attack', clip: { id: 'custom-Attack' }, loop: false, inPlace: false, adjustments: [] })
+    expect((cmd as { newId?: string }).newId).toMatch(/^new/)
+  })
+
+  it('a slot\'s clip alone saved over another: nothing of the slot it was made on comes with it', () => {
+    const [cmd] = saveIntoSlotCommands({ slot: run, name: 'Run' }, { slot: idle, mode: 'alone' }, { id: 'x' }, { ...o, lift: 0 })
+    expect((cmd as { adjustments: Adjustment[] }).adjustments).toEqual([])
   })
 })
 

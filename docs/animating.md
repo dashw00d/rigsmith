@@ -63,6 +63,11 @@ change something.
 | Take keys off | **Delete keys here** (or Delete): the selected joint's at this frame, or every joint's with nothing selected. **Clear all keys** takes them all. **Esc** deselects. |
 | Undo | **Ctrl+Z**, **Ctrl+Shift+Z** to redo: every pose change, key and grip in this edit. |
 
+Dragging moves only what you drag; hands on gear follow by IK, and the body is never solved while you drag. When an
+arm has ended up in the body, or the body should follow the hands on gear, press **Solve body**: on the frame shown it
+pushes each arm straight out of whatever it is in, a centimetre at a time, until it is clear, then fits the body to the
+hands on gear, and keys what it moved there.
+
 Letting go keys only what you moved, at that frame. A joint's first key also pins it at the clip's ends, so the change
 eases in and out. **Joint limits** keeps poses within the rig's range of motion. **Loop** is in the timeline. Choose
 In place and Mirror before editing: the frame your keys and grips were made against stays fixed while the editor is
@@ -122,13 +127,14 @@ centimetre a frame) rather than bend its wrist far. The head keeps looking where
 - Free fingers get a contact pass that checks the actual skinned hand, including surfaces buried inside it (how it
   works: [rigging.md](rigging.md#the-finger-contact-pass)). Hands carrying gear, saved fists, hands held in every clip
   and explicitly keyed fingers keep their poses. This pass can take longer on detailed hands.
-- **Save to <slot>**: the slot plays the edit as a new clip (one you made before that only this slot plays is saved
-  over; one another slot uses is never changed). As it plays: its speed, timing and bone keys are baked in, the ground
-  stays an adjustment, the gear's path becomes the slot's gear keys, and its hand poses and holds stay. The clip alone:
-  its speed and adjustments stay as they were.
-- **Save as a library clip**: a copy under Library → Custom, in the category of the clip it came from; the slot is
-  unchanged. A leading gear's path is saved with it (by the gear's name): a slot it fills on a character with gear of
-  that name gets that path as gear keys, which the game export plays.
+- **Save as <clip>**: choose which of the character's clips the edit becomes (Attack, Run, any the game plays, a
+  trial, or **A new clip…** by name) and save. That clip plays the edit from then on, exactly as shown, whatever it
+  played before (Undo in Activity puts it back). It starts on the clip you opened. Every save is a new clip under
+  Library → Custom (named after the character and the clip); nothing is saved over. Saved over the clip it was opened
+  on as it plays, its speed, timing and bone keys are baked in, the ground stays an adjustment, the gear's path becomes
+  its gear keys, and its hand poses and holds stay; the clip alone keeps its speed and adjustments. Saved as another
+  clip, it plays at speed 1 with its own loop and in place, standing as it stood here, with the gear's path as its
+  gear keys (and, opened as it plays, the hand poses and holds of the clip it came from).
 - **Finish** closes the editor (asking first when there are unsaved edits).
 
 ## Good to know

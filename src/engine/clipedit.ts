@@ -854,6 +854,31 @@ export function saveToSlotCommands (slot: Slot, mode: Exclude<EditMode, 'held'>,
   return [{ type: 'slot.fill', id: slot.id, clip, speed: 1, loop: o.loop, inPlace: slot.inPlace, keepAdjustments: false, adjustments: [...copy, ...keys] }]
 }
 
+/**
+ * The one batch that puts an edit, saved as library clip `clip`, into a slot of the character chosen by name (the
+ * editor's one save, "Save as Attack"; the designer, 2026-10-28: "I super just need to be able to save animations with
+ * the character as a replacement to attack or run"). The slot it was made on: as saveToSlotCommands puts it there. Any
+ * other (a slot the game plays, a trial, or a new one by `target.name`) plays it as it was shown: at speed 1, its own
+ * loop and in place kept (a new one: the edit's), what it had for its old clip gone, the ground the edit stood on
+ * (`lift`), the gear keys the edit moved, and, made 'as it plays' on a slot, that slot's hand poses and handle holds
+ * (copied: their windows are phases of the clip as it played, which is the saved clip).
+ */
+export function saveIntoSlotCommands (target: { slot: Slot | null, name: string }, from: { slot: Slot | null, mode: EditMode }, clip: ClipRef,
+  o: { loop: boolean, inPlace: boolean, lift: number, gearKeys: Record<string, ClipKey[]>, newId: () => string }): Command[] {
+  const t = target.slot
+  if (t !== null && from.slot !== null && t.id === from.slot.id && from.mode !== 'held') return saveToSlotCommands(t, from.mode, clip, { loop: t.loop, gearKeys: o.gearKeys, newId: o.newId })
+  const hands = from.mode === 'plays' && from.slot !== null ? from.slot.adjustments.filter(a => a.enabled && (a.kind === 'handPose' || a.kind === 'handleHold')) : []
+  const lift = Math.round(o.lift * 1e4) / 1e4
+  const adjustments: Adjustment[] = [
+    ...(Math.abs(lift) >= 1e-4 ? [{ id: o.newId(), kind: 'ground', enabled: true, lift } as Adjustment] : []),
+    // (copies, with ids of their own: the slot they came from may be live app state, and keeps its own)
+    ...(JSON.parse(JSON.stringify(hands)) as Adjustment[]).map(a => ({ ...a, id: o.newId() })),
+    ...(Object.keys(o.gearKeys).length > 0 ? [{ id: o.newId(), kind: 'keys', enabled: true, gear: o.gearKeys } as Adjustment] : []),
+  ]
+  if (t !== null) return [{ type: 'slot.fill', id: t.id, clip, speed: 1, loop: t.loop, inPlace: t.inPlace, keepAdjustments: false, adjustments, note: null }]
+  return [{ type: 'slot.fill', name: target.name, newId: o.newId(), clip, loop: o.loop, inPlace: o.inPlace, adjustments }]
+}
+
 /** A slot's adjustments with its keys adjustment's keys on the pieces `gear` (by gear id) taken off, the adjustment
  * gone when nothing is left on it: an edit opened again from its record, whose paths for those pieces make that motion
  * again. Copies; the slot is left as it is. */

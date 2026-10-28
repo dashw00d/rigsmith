@@ -5,23 +5,24 @@
 // frame, as a turn from where the clip had it (src/engine/clipedit.ts). On a clip with motion of its own a bone's first
 // key also pins it at the clip's ends, so a change eases in and back out. Keys tween smoothly; every joint stays in
 // its range (src/engine/limits.ts); no foot goes under the floor. Bone-attached gear (by gear id) is clicked to select
-// it: moving or turning it keys its path and makes it lead (the hands on its handles follow it, the body the hands),
-// or, moving in the hand, moves it there. Hands take hold of its grip handles (letting a free hand go on it makes one).
+// it: moving or turning it keys its path and makes it lead (the hands on its handles follow it by IK), or, moving in the
+// hand, moves it there. Hands take hold of its grip handles (letting a free hand go on it makes one). The body is solved
+// only when asked (solveBody: an arm in the body pushed straight out first, then the body fitted to the hands on gear),
+// never while a drag lasts, and what the solve moved is keyed on that frame.
 //
 // The edit itself (keys, paths, which hand is on which handle, the root holds) lives here until it is saved, with an
 // undo and redo stack. What it changes on the character on the way (handles made or moved, hand poses, windows) are
 // commands, journaled as they are made; the session remembers their journal entries, and discarding the edit offers
-// to undo them. Leaving with unsaved edits (Finish, another clip, another step or character) asks first. Saving
-// writes a library clip (a person's: the library's build; a creature's: a clip file of its own) and, to a slot, points
-// the slot at it with its adjustments sorted by kind (clipedit.ts saveToSlotCommands): a made clip only this slot
-// plays is saved over, any other is forked.
+// to undo them. Leaving with unsaved edits (Finish, another clip, another step or character) asks first. Saving (one
+// way: saveAs) writes a new library clip (a person's: the library's build; a creature's: a clip file of its own) and
+// points the slot chosen at it, whatever it played before (clipedit.ts saveIntoSlotCommands).
 import * as THREE from 'three'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { Command } from '../model/command-types.ts'
 import { newId } from '../model/ids.ts'
-import { carryHandle, gearById, gearKeysFromPaths, handSide, slotById } from '../model/select.ts'
+import { carryHandle, gearById, gearKeysFromPaths, handSide, slotById, slotByName } from '../model/select.ts'
 import type { Adjustment, Character, ClipKey, ClipRef, Gear, Handle, HandPose, HandPoseRef, Placement, Quat, Side, Slot, Vec3, Window } from '../model/types.ts'
-import { api, ApiError, type LibraryClip } from './api.ts'
+import { api, type LibraryClip } from './api.ts'
 import { app } from './app.svelte.ts'
 import { viewer } from './viewer.svelte.ts'
 import { animator } from './animator.svelte.ts'
@@ -30,27 +31,28 @@ import { boneRest, type PullPlan } from '../engine/bake.ts'
 import { freezeClip } from '../engine/mount.ts'
 import { loadSource, refUrl, type SourceClip } from '../engine/clips.ts'
 import {
-  armOf, bonePoseAt, bonesOf, buildEdit, carrierGrip, fistGrip, frameAt, frameSolve, frameTimes, gearObstacles, GRIP_CLEAR, gripName, handGrip, handleMisses,
-  handOn, handPoseSource, holdAt, keyFor, legsOf, letGoFrames, nodePath, onPath, reachGoals, ROOT_HOLD, rootPath, saveToSlotCommands, unretarget, withoutGearKeys,
-  type Attachment, type EditMode, type EditSeed, type GearPath, type GearRig, type Grip, type HandPoseSource, type PlacedHandle, type RootHold,
+  armOf, bonesOf, buildEdit, carrierGrip, fistGrip, frameAt, frameSolve, frameTimes, gearObstacles, GRIP_CLEAR, gripName, handGrip, handleMisses,
+  handOn, handPoseSource, holdAt, keyFor, legsOf, nodePath, onPath, reachGoals, ROOT_HOLD, rootPath, saveIntoSlotCommands, unretarget, withoutGearKeys,
+  type Attachment, type EditMode, type GearPath, type GearRig, type Grip, type HandPoseSource, type PlacedHandle, type RootHold,
 } from '../engine/clipedit.ts'
 import { clipGlb, framesClip } from '../engine/clipexport.ts'
 import { restFrame } from '../engine/garments.ts'
-import { gearNode, principalAxis, wp, wq } from '../engine/geom.ts'
+import { gearNode, principalAxis } from '../engine/geom.ts'
 import { handLayers, handleRef, poseOfRef } from '../engine/hands.ts'
 import { applyBoneKeys, KEY_FPS, propKeysOf, sampleKeys } from '../engine/keys.ts'
 import { garmentMatrix, placementFromMatrix } from '../engine/placement.ts'
 import { JointLimits, type Rom } from '../engine/limits.ts'
 import { HORSE_RIG, HUMAN_RIG, PoseEditor, type PoseRig } from '../engine/PoseEditor.ts'
 import { retargetOffsets } from '../engine/retarget.ts'
-import { reach, setWorldQuaternion, type Leg } from '../engine/ik.ts'
+import { reach, setWorldQuaternion } from '../engine/ik.ts'
 import { colliderFor, type CharacterCollider } from '../engine/bodycollide.ts'
 import {
-  bodyBones, createBodySolver, loadPoseModel, naturalizeClipAsync, NaturalRig, poseTargets, seedOf, SLIDE, type BodySolveOptions, type BodySolver, type BodyState,
-  type HandGoal, type NaturalGoal, type PoseModel, type PoseModelData, type SeedPose,
+  createBodySolver, loadPoseModel, naturalizeClipAsync, NaturalRig, poseTargets, SLIDE, type BodySolver,
+  type NaturalGoal, type PoseModel, type PoseModelData,
 } from '../engine/posespace.ts'
 import { FIT, fitProp, type FitResult } from '../engine/propfit.ts'
 import { correctHandContactsAsync } from '../engine/handcontacts.ts'
+import { pushClear } from '../engine/pushclear.ts'
 
 const IDENTITY: Quat = [0, 0, 0, 1]
 const SIDES = ['Left', 'Right'] as const
@@ -68,15 +70,12 @@ const HAND_GAP = 0.005
 const UNDO_DEPTH = 100
 /** A shaft's radius, as a share of the body's height, when the piece's own isn't measured. */
 const SHAFT_RADIUS = 0.011
-/** A drag's live solve (the body solved round it on every move, quickly): what one may take (ms) before the drag goes on
- * by IK alone, after how many overruns in a row (the first solve of a drag builds the solver's rig, and isn't timed). */
-const LIVE = { budget: 12, overruns: 2 }
-const NONE: ReadonlySet<string> = new Set()
 const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-4
 const isAnchor = (k: ClipKey): boolean => k.p === undefined && Math.abs(k.q[3]) > 1 - 1e-9
 const r5 = (v: number[]): number[] => v.map(x => Math.round(x * 1e5) / 1e5)
 const r6 = (v: number): number => Math.round(v * 1e6) / 1e6
 const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+const cm = (metres: number): string => `${(metres * 100).toFixed(1)} cm`
 
 /** The range-of-motion and pose model files, fetched once a page (a failure is asked again next time). */
 const fetched = new Map<string, Promise<unknown>>()
@@ -117,33 +116,6 @@ export interface EditBase {
   made?: { ref: ClipRef, gear: string[] }
 }
 
-/** A drag live (startLive): the body solved round it on each move, quickly, as the build solves this frame (frameSolve). */
-interface Live {
-  /** The frame it is on (phase), its time in the clip and its index (frameTimes). */
-  u: number
-  t: number
-  i: number
-  /** The bones the solve moves (bodyBones), and their local pose in the clip as keyed at this frame: where each move
-   * starts (with the drag's moves on it), as the build's solve of this frame will. */
-  names: string[]
-  keyed: Map<string, { q: THREE.Quaternion, p: THREE.Vector3 }>
-  /** The last move's pose before its solve (null until a move was solved): the next move starts from it, and letting go
-   * keys it. */
-  pre: Map<string, { q: THREE.Quaternion, p: THREE.Vector3 }> | null
-  /** The last solve's pose (before the first, the frame as last built): where the next move's solve starts, and the
-   * build's solve of this frame once the drag is let go (EditSeed). */
-  seed: SeedPose | null
-  legs: Leg[]
-  soles: number[][]
-  /** As shown when the drag began: the hips' place and the chest's turn (a gear drag holds the body's root there, as
-   * the build will: RootHold). */
-  root: { hips: THREE.Vector3, chest: THREE.Quaternion } | null
-  solves: number
-  overruns: number
-  /** A solve ran over its budget: the rest of the drag is IK alone. */
-  slow: boolean
-}
-
 /** The edit as it stands, for undo. */
 interface Snapshot {
   keys: Record<string, ClipKey[]>
@@ -175,6 +147,8 @@ class ClipEdit {
   /** The slot this edits (by id); null for a library clip, a rig test or a new clip. */
   slotId = $state<string | null>(null)
   slot = $derived(this.slotId === null || this.character === null ? null : slotById(this.character, this.slotId) ?? null)
+  /** The slot playing when it opened (a new clip held from one of its frames too): what the save offers first. */
+  fromSlotId = $state<string | null>(null)
   /** A new clip made from a held pose (no motion of its own: keys hold until the next, no pins at the ends). */
   held = $derived(this.mode === 'held')
   /** Its windows (a hand opening, a pull held) are the slot's, edited here only on the clip as it plays. */
@@ -270,10 +244,6 @@ class ClipEdit {
   private solver: BodySolver | null = null
   /** The character on stage's collider (the one collision model: bodycollide.ts). */
   private collider: CharacterCollider | null = null
-  private live: Live | null = null
-  /** Each frame's solve state in the last build, as it was handed it (the frame before's): a live drag of a frame follows
-   * the frame before as the build does. */
-  private states: Array<BodyState | null> = []
   /** Edit records asked for (by clip id; null: none), for EditPanel's "Open the edit it was made from". */
   private records = new Map<string, Promise<EditRecord | null>>()
   /** The library's pose model, and the retarget's turns (for Naturalize). */
@@ -367,6 +337,7 @@ class ClipEdit {
       this.characterId = c.id
       this.mode = mode
       this.slotId = mode === 'held' ? null : slot?.id ?? null
+      this.fromSlotId = slot?.id ?? null
       this.base = {
         // (a slot loops as it is saved; a preview as the timeline has it, one opened again as it was saved)
         label: mode === 'held' ? 'New clip' : slot?.name ?? reopen?.record.name ?? now.label, clip: ref,
@@ -468,9 +439,8 @@ class ClipEdit {
     return baked === null ? null : { clip: baked.clip, lift: baked.lift, pulls: baked.pulls }
   }
 
-  /** The clip the edit is made on baked again (its hands, windows or gear changed), the edit kept on it. `seed`: a live
-   * drag's solve of the frame it was let go at. */
-  private async rebuild (seed: EditSeed | null = null): Promise<void> {
+  /** The clip the edit is made on baked again (its hands, windows or gear changed), the edit kept on it. */
+  private async rebuild (): Promise<void> {
     this.fists = {}
     this.gripCache = {}
     const c = this.character
@@ -479,7 +449,7 @@ class ClipEdit {
     const t = animator.time
     if (this.mode === 'held') {
       const fists = await this.closeHands()
-      if (turn === this.opening && run === this.rebuilds) { this.fists = { ...fists, ...this.fists }; this.show(t, seed) }
+      if (turn === this.opening && run === this.rebuilds) { this.fists = { ...fists, ...this.fists }; this.show(t) }
       return
     }
     this.busy = 'Building the clip again'
@@ -493,7 +463,7 @@ class ClipEdit {
       this.baseClip = baked.clip
       this.lift = baked.lift
       this.pulls = baked.pulls
-      this.show(Math.min(t, baked.clip.duration), seed)
+      this.show(Math.min(t, baked.clip.duration))
     } catch (error) {
       if (turn === this.opening) app.toast('error', `The clip didn't build: ${reason(error)}`)
     } finally {
@@ -532,8 +502,6 @@ class ClipEdit {
     this.redoStack = []
     this.issued = []
     this.pending = []
-    this.live = null
-    this.states = []
     animator.holding = false
   }
 
@@ -604,11 +572,10 @@ class ClipEdit {
       begin: () => {
         animator.setPlaying(false); animator.holding = true; this.dragPlaces = this.leadingPlaces()
         this.dragFrom = new Map([...this.pieceNodes()].map(([n, node]) => { node.updateMatrix(); return [n, node.matrix.clone()] }))
-        this.startLive()
       },
       commit: bones => { void this.commit(bones) },
-      restore: () => { this.restoreLive() },
-      constrain: (moving, moved) => { this.keepLeading(); this.solveLive(moving, moved) },
+      // (a drag is IK alone: the body is solved only when asked, solveBody)
+      constrain: moving => { this.keepLeading(); this.handsLive(moving) },
       moveGear: (g, place, done) => { if (done) this.commitGear(g, place); else this.gearLive(g, place) },
     }, 0, () => this.pieceNodes())
     this.editor.setMode(this.gizmo)
@@ -717,7 +684,6 @@ class ClipEdit {
   /** Key the bones a drag moved, at the playhead (only those: the solve does the rest). */
   private async commit (moved: string[]): Promise<void> {
     const view = animator.view; const base = this.baseClip
-    const live = this.takeLive()
     if (view === null || base === null || moved.length === 0) { animator.holding = false; return }
     // (a free hand let go near a piece's shaft snaps onto it there: its fingers close as the clip has them first,
     // the drag's pose held meanwhile, so nothing below waits on anything)
@@ -728,9 +694,6 @@ class ClipEdit {
       if (turn !== this.opening) return
       this.fists[snap.hand] ??= fist
     }
-    // (a drag solved live: the bones as it left them before its last solve, which is what is keyed and what the build's
-    // solve of this frame starts from; that solve is where it starts)
-    const seed = this.endLive(live)
     if (snap !== null) snap = this.snapTarget(moved)
     const u = this.phase()
     const t = u * base.duration
@@ -778,7 +741,7 @@ class ClipEdit {
       this.attachments = attachments
       this.issue(commands)
     }
-    this.show(t, seed)
+    this.show(t)
   }
 
   /** The bones held by a hand on gear (an arm on a handle with the fingers closed on it, an arm carrying a piece that
@@ -1396,10 +1359,8 @@ class ClipEdit {
   /** A piece moved or turned by the gizmo, let go at `place` (world): a key on its path at the playhead (and it leads;
    * without the pose model it moves in the hand). */
   private commitGear (id: string, place: THREE.Matrix4): void {
-    // (a drag solved live: the bones back as it left them before its last solve; that solve is where the build's starts)
-    const seed = this.endLive(this.takeLive())
-    if (this.inHand || !this.natural) { this.commitInHand(id, place, seed); return }
-    if (this.moves === 'every') { this.offsetGear(id, place, seed); return }
+    if (this.inHand || !this.natural) { this.commitInHand(id, place); return }
+    if (this.moves === 'every') { this.offsetGear(id, place); return }
     const base = this.baseClip
     if (base === null) return
     const u = this.phase(); const t = u * base.duration
@@ -1422,13 +1383,13 @@ class ClipEdit {
     this.holdRoot(id, u, before, after)
     // (moving a piece makes it lead)
     this.paths = { ...this.paths, [id]: after }
-    this.show(t, seed)
+    this.show(t)
   }
 
   /** A piece moved in the hand by its gizmo (let go at `place`, world): the move and turn in its own placed frame from
    * where it sat as the drag began. This frame: a key of its move in the hand in this clip (tweened between keys: a bow
    * let go of on a death). Every frame: how it sits on its bone, its placement, in every clip (a command). */
-  private commitInHand (id: string, place: THREE.Matrix4, seed: EditSeed | null): void {
+  private commitInHand (id: string, place: THREE.Matrix4): void {
     const view = animator.view; const base = this.baseClip; const p = this.pieceOf(id)
     const node = p === undefined ? undefined : view?.root.getObjectByName(gearNode(p.gear))
     const from = this.dragFrom.get(id)
@@ -1456,7 +1417,7 @@ class ClipEdit {
       this.issue(commands)
       this.revision++
       app.toast('ok', `${p.name} now sits this way on ${p.bone} in every clip`)
-      if (this.held) { this.baseClip = rebaseNode(base, gearNode(p.gear), change); this.show(t, seed) } else void this.rebuild(seed)
+      if (this.held) { this.baseClip = rebaseNode(base, gearNode(p.gear), change); this.show(t) } else void this.rebuild()
       return
     }
     // this frame: its move in the hand keyed here (on top of what this clip already moves it), tweened between keys
@@ -1473,12 +1434,12 @@ class ClipEdit {
     ks = [...ks, key].sort((x, y) => x.u - y.u)
     this.record()
     this.paths = { ...this.paths, [id]: { locked: false, keys: ks } }
-    this.show(t, seed)
+    this.show(t)
   }
 
   /** A piece moved or turned by its gizmo with "every frame" on, let go at `place`: its whole path moved and turned by
    * that, on every frame (about the piece's own place there), and it leads. */
-  private offsetGear (id: string, place: THREE.Matrix4, seed: EditSeed | null): void {
+  private offsetGear (id: string, place: THREE.Matrix4): void {
     const base = this.baseClip
     if (base === null) return
     const u = this.phase(); const t = u * base.duration
@@ -1500,7 +1461,7 @@ class ClipEdit {
     }))
     this.record()
     this.paths = { ...this.paths, [id]: { locked: true, keys: moved } }
-    this.show(t, seed)
+    this.show(t)
   }
 
   /** A gear drag let go at `u` (its path `before` and `after`): on each frame the drag moved the piece, how much of it
@@ -1540,13 +1501,12 @@ class ClipEdit {
     this.holds = [...this.holds.filter(h => h !== had), { gear: id, u, frames }]
   }
 
-  /** While a piece is dragged: the hands on it follow it (the hand carrying it first, so it goes where it's dragged), and
-   * the body them (solved live, as for a joint's drag). */
+  /** While a piece is dragged: the hands on it follow it by IK (the hand carrying it first, so it goes where it's
+   * dragged); the body stays as it is until it is solved (solveBody). */
   private gearLive (id: string, place: THREE.Matrix4): void {
     const view = animator.view; const p = this.pieceOf(id)
     const node = p === undefined ? undefined : view?.root.getObjectByName(gearNode(p.gear))
     if (view === null || p === undefined || node === undefined) return
-    this.restoreLive()
     const side = handSide(p.bone)
     if (this.inHand || !this.natural) {
       // (in the hand: it moves, whatever holds it stays; other hands on it follow)
@@ -1554,14 +1514,7 @@ class ClipEdit {
       node.parent.updateMatrixWorld(true)
       node.parent.matrixWorld.clone().invert().multiply(place).decompose(node.position, node.quaternion, node.scale)
       node.updateMatrixWorld(true)
-      this.solveLive(null, NONE, { id, place, leads: false })
-      return
-    }
-    if (this.live !== null && !this.live.slow) {
-      // (it leads from here: held where it is dragged, the hand carrying it and the body solved to it)
-      this.dragPlaces.set(id, place.clone())
-      this.keepLeading()
-      this.solveLive(null, NONE, { id, place, leads: true })
+      this.handsLive(null)
       return
     }
     const nameOf = (b: THREE.Bone): string => b.name
@@ -1606,8 +1559,8 @@ class ClipEdit {
     }
   }
 
-  /** The hands on handles put back on their pieces by IK, as the body stands (while a joint or a piece is dragged and
-   * the body isn't solved live): but the one being moved. In turn: a piece may ride a hand put back before it. */
+  /** The hands on handles put back on their pieces by IK, as the body stands (while a joint or a piece is dragged): but
+   * the one being moved. In turn: a piece may ride a hand put back before it. */
   private handsLive (moving: string | null): void {
     const view = animator.view
     if (view === null) return
@@ -1622,133 +1575,78 @@ class ClipEdit {
     }
   }
 
-  // ---- a drag, live: the body solved round it ----------------------------------------------------------------------
-
-  /** A drag begins: where the body follows the hands (the pose model, and a hand on gear, or a piece about to lead),
-   * each move is solved quickly with the goals the build will give this frame, from the clip as keyed here with the
-   * drag's moves on it, so letting go doesn't jump; else the drag is IK alone (handsLive), as the build is then. */
-  private startLive (): void {
-    this.live = null
-    const view = animator.view; const base = this.baseClip; const root = this.posable()
-    if (this.solver === null || view === null || view.rest === null || base === null || root === null) return
-    // (a piece dragged that isn't moved in the hand leads from here: the hand carrying it holds it by its handle)
-    const leads = this.gear !== null && !this.inHand
-    const rig = this.gearRig(leads ? { ...this.paths, [this.gear!]: { locked: true, keys: [] } } : this.paths)
-    if (rig.attachments.length === 0) return
-    const u = this.phase(); const t = u * base.duration
-    const legs = legsOf(view.bones, this.rig)
-    const hands = SIDES.filter(h => rig.attachments.some(a => a.hand === h))
-    const names = bodyBones(hands.map(hand => ({ hand, fingers: this.fists[hand] })), legs)
-    const keyed = bonePoseAt(applyBoneKeys(base, this.keys, this.loop, boneRest(view.rest)), root, t)
-    const rest = view.rest
-    const soles = legs.map(l => [l.end, l.ball, l.tip].map(b => (b === null ? -Infinity : rest.bones.get(b.name)?.worldPosition.y ?? -Infinity)))
-    const hips = view.bones.get(this.rig.hips); const chest = view.bones.get(ROOT_HOLD.chest)
-    const i = frameAt(u, frameTimes(base.duration).length)
-    this.live = {
-      // (the first move's solve starts from the frame as last built, shown now)
-      u, t, i, names, keyed, pre: null, seed: seedOf(view.bones), legs, soles, solves: 0, overruns: 0, slow: false,
-      root: hips === undefined || chest === undefined ? null : { hips: wp(hips), chest: wq(chest) },
-    }
-  }
-
-  /** Before each move of a drag solved live: the body back where the move starts (the keyed pose, the drag's moves on it). */
-  private restoreLive (): void {
-    const live = this.live
-    if (live === null || live.slow) return
-    this.putPose(live.pre ?? live.keyed, live.names)
-    this.keepLeading()
-  }
-
-  /** After each move of a drag: the body solved round it, quickly, as the build will solve this frame once the drag is
-   * let go (liveSolve; `gear`: a piece dragged, where it is now and whether it leads); without a live solve (or after one
-   * too slow), the hands put back on their handles by IK. */
-  private solveLive (moving: string | null, moved: ReadonlySet<string>, gear: { id: string, place: THREE.Matrix4, leads: boolean } | null = null): void {
-    const live = this.live; const view = animator.view; const solver = this.solver
-    if (live === null || live.slow || view === null || solver === null) { this.handsLive(moving); return }
-    live.pre = this.poseOf(live.names)
-    const { goals, opts } = this.liveSolve(live, moved, gear)
-    if (goals.length === 0) { live.seed = null; return }
-    const t0 = performance.now()
-    // (following the frame before as the last build did, when this frame isn't one let go on)
-    solver(view.bones, goals, opts, this.states[live.i] ?? null)
-    const ms = performance.now() - t0
-    this.keepLeading()
-    live.seed = seedOf(view.bones)
-    // (too slow for a drag (the first solve builds the solver's rig: not counted): the rest of it is IK alone, from where
-    // this move was before its solve)
-    live.overruns = live.solves++ > 0 && ms > LIVE.budget ? live.overruns + 1 : 0
-    if (live.overruns >= LIVE.overruns) {
-      live.slow = true
-      live.seed = null
-      this.putPose(live.pre, live.names)
-      this.keepLeading()
-      this.handsLive(moving)
-    }
-  }
+  // ---- the body solved, when asked -----------------------------------------------------------------------------------
 
   /**
-   * A live solve of the drag's frame: the build's (clipedit.ts frameSolve) as it will be once the drag is let go, quick.
-   * The pieces where they are now (a leading piece's path is in that place); a hand on a handle the drag moved held where
-   * it is, by its grip, as letting go places its handle there; the body's root held as the build will hold it; the frame
-   * let go on when it is one already or letting go will key or hold it (else it follows the frame before); and the last
-   * move's solve as where it starts.
+   * Solve the body on the frame shown, when asked (never while a drag lasts: the designer, 2026-10-28, "the solver needs
+   * to run when you ask it to"). Each arm inside another body part is first pushed straight out of it, a little at a
+   * time (src/engine/pushclear.ts); then, where hands hold gear, the body is solved to them from there (the natural-pose
+   * solver, with the goals the frame's hands and gear give: clipedit.ts frameSolve), unless that leaves a body part
+   * deeper in another than the push did; whatever is still in is pushed out again. Every bone it moved is keyed on this
+   * frame (an arm on a handle too: the build's IK starts from it, so its elbow stays where the solve put it).
    */
-  private liveSolve (live: Live, moved: ReadonlySet<string>, gear: { id: string, place: THREE.Matrix4, leads: boolean } | null): { goals: HandGoal[], opts: BodySolveOptions } {
-    const view = animator.view!
-    const places = new Map(this.dragPlaces)
-    const paths: Record<string, GearPath> = { ...this.paths }
-    if (gear !== null && gear.leads) {
-      if (paths[gear.id]?.locked !== true) paths[gear.id] = { locked: true, keys: [] }
-      places.set(gear.id, gear.place)
+  async solveBody (): Promise<void> {
+    if (!this.active || this.busy !== null || this.collider === null) return
+    const turn = this.opening
+    this.busy = 'Solving the body'
+    try {
+      // (the spinner shown before the solve holds the page)
+      await new Promise(resolve => setTimeout(resolve, 0))
+      const view = animator.view; const base = this.baseClip; const collider = this.collider
+      if (turn !== this.opening || view === null || view.rest === null || base === null || collider === null) return
+      if (collider.body === null) { app.toast('error', `The body can't be solved: ${collider.problem ?? 'its mesh has no body to fit'}`); return }
+      const u = this.phase(); const t = u * base.duration
+      // (the frame as shown)
+      animator.seek(animator.time)
+      const all = [...view.bones.keys()]
+      const before = this.poseOf(all)
+      const nameOf = (b: THREE.Bone): string => b.name
+      const limits = this.limitsOn ? this.limits : null
+      const heldBones = this.heldBones()
+      const held = new Set(SIDES.filter(h => heldBones.has(`${h}Hand`)))
+      const push = (): number => pushClear(view.bones, collider, { height: view.height, limits, nameOf, held }).worst
+      const deep = (): number => collider.selfPenetration().worst
+      const was = deep()
+      let left = push()
+      if (this.solver !== null && this.attachments.length + held.size > 0) {
+        const pushed = this.poseOf(all)
+        const rest = view.rest
+        const legs = legsOf(view.bones, this.rig)
+        const soles = legs.map(l => [l.end, l.ball, l.tip].map(b => (b === null ? -Infinity : rest.bones.get(b.name)?.worldPosition.y ?? -Infinity)))
+        const frames = frameTimes(base.duration).length
+        // (the leading pieces stay where they are shown: the hands go to them)
+        this.dragPlaces = this.leadingPlaces()
+        const { goals, opts } = frameSolve(view.root, view.bones, this.gearRig(), { u, i: frameAt(u, frames), loop: this.loop, places: this.dragPlaces, letGo: true },
+          { hips: this.rig.hips, legs, soles, floor: 0, height: view.height, limits })
+        if (goals.length > 0) {
+          this.solver(view.bones, goals, opts, null)
+          this.keepLeading()
+          // (the solve put a body part deeper in another than the push left it: the push's pose, the hands back on their handles)
+          if (deep() > left + 1e-3) { this.putPose(pushed, all); this.keepLeading(); this.handsLive(null) }
+          left = push()
+        }
+      }
+      // (a held hand's fingers are its handle's fist in every build: not keyed)
+      const changed = all.filter(n => !(heldBones.has(n) && !/^(Left|Right)(Arm|ForeArm|Hand)$/.test(n))).filter(n => {
+        const b = view.bones.get(n); const w = before.get(n)
+        // (over a tenth of a degree: angleTo of two turns the same reads ~1e-4 from rounding alone)
+        return b !== undefined && w !== undefined && (b.quaternion.angleTo(w.q) > 2e-3 || (n === this.rig.hips && b.position.distanceTo(w.p) > 1e-4))
+      })
+      if (changed.length === 0) {
+        this.show(t)
+        app.toast('info', was > 1e-4 ? `Nothing could be moved out: ${cm(was)} still inside` : 'Nothing to solve: no part of the body is in another')
+        return
+      }
+      const next = { ...this.keys }
+      this.keyBones(next, changed, u)
+      this.record()
+      this.groups = [...this.groups.filter(g => !(near(g.u, u) && g.bones.some(b => changed.includes(b)))), { u, bones: changed }]
+      this.keys = next
+      this.show(t)
+      app.toast(left > 1e-4 ? 'info' : 'ok', `Solved: ${changed.length} ${changed.length === 1 ? 'joint' : 'joints'} keyed on this frame${left > 1e-4 ? `, ${cm(left)} still inside` : ''}`)
+    } finally {
+      if (turn === this.opening) this.busy = null
     }
-    const rig = this.gearRig(paths)
-    const grips = { ...rig.grips }
-    for (const a of rig.attachments) {
-      if (!moved.has(armOf(a.hand).end)) continue
-      // (letting go puts the handle where the hand is (commit): a grip handle, or the carry handle of a piece that leads;
-      // placed, the hand holds it by its grip, as the build will)
-      const place = this.placeAt(a.hand, a.gear, false, true)
-      if (place === null) continue
-      rig.handles[a.gear] = (rig.handles[a.gear] ?? []).map(h => (h.id === a.handle ? { ...h, place, exact: true } : h))
-      if (grips[a.hand] === undefined) { const grip = this.gripOf(a.hand, a.gear); if (grip !== null) grips[a.hand] = grip }
-    }
-    rig.grips = grips
-    // (a piece led to a new place on this frame holds the body's root where it was seen as the drag began, as letting go
-    // will (holdRoot), unless this key already holds it; otherwise the root's holds, as the build)
-    const soft: NaturalGoal[] | undefined = gear !== null && gear.leads && this.moves === 'frame' && live.root !== null && !this.holds.some(h => h.gear === gear.id && near(h.u, live.u))
-      ? [
-          { bone: this.rig.hips, position: live.root.hips.clone(), weight: ROOT_HOLD.weight, hard: false },
-          { bone: ROOT_HOLD.chest, turn: live.root.chest.clone(), weight: ROOT_HOLD.weight, hard: false },
-        ]
-      : undefined
-    const frames = frameTimes(this.baseClip?.duration ?? 0).length
-    const letGo = letGoFrames(this.keys, this.holds, frames).has(live.i) || this.dragLetsGo(moved, gear)
-    return frameSolve(view.root, view.bones, rig, { u: live.u, i: live.i, loop: this.loop, places, letGo, seed: live.seed ?? undefined, soft, quick: true },
-      { hips: this.rig.hips, legs: live.legs, soles: live.soles, floor: 0, height: view.height, limits: this.limitsOn ? this.limits : null })
-  }
-
-  /** Whether letting go of the drag so far makes its frame one let go on (letGoFrames): a piece led to a new place on it
-   * (commitGear holds the root there), or a bone moved that no hand on gear holds (commit keys it). */
-  private dragLetsGo (moved: ReadonlySet<string>, gear: { leads: boolean } | null): boolean {
-    if (gear !== null) return gear.leads && this.moves === 'frame'
-    const held = this.heldBones()
-    return [...moved].some(b => !held.has(b))
-  }
-
-  /** The drag's live solve, ended (nothing restores or solves after this). */
-  private takeLive (): Live | null {
-    const live = this.live
-    this.live = null
-    return live
-  }
-
-  /** A live solve let go: the bones back as the drag left them before its last solve (what is keyed, and what the
-   * build's solve of this frame starts from), and that solve as where it starts. Null when none ran. */
-  private endLive (live: Live | null): EditSeed | null {
-    if (live === null || live.slow || live.pre === null || live.seed === null) return null
-    this.putPose(live.pre, live.names)
-    this.keepLeading()
-    return { u: live.u, pose: live.seed }
   }
 
   /** The bones `names` on stage as they stand (local turns; the hips' place too). */
@@ -1960,15 +1858,13 @@ class ClipEdit {
     return root
   }
 
-  /** The edited clip, built again and shown at `time`. `seed`: a live drag's solve of the frame it was let go at (that
-   * frame's solve starts there, so letting go doesn't jump). */
-  private show (time: number, seed: EditSeed | null = null): void {
+  /** The edited clip, built again and shown at `time`: the keys, the hands put on their handles by IK (the body is
+   * solved only when asked: solveBody keys what it moves). */
+  private show (time: number): void {
     this.naturalized = false
     const view = animator.view; const base = this.baseClip; const root = this.posable()
     if (!this.active || view === null || view.rest === null || base === null || root === null || this.base === null) return
-    const states: Array<BodyState | null> = []
-    this.edited = buildEdit(base, this.keys, this.loop, boneRest(view.rest), root, this.rig, 0, this.limitsOn ? this.limits : null, this.gearRig(), view.height, this.solver, { seed, states })
-    this.states = states
+    this.edited = buildEdit(base, this.keys, this.loop, boneRest(view.rest), root, this.rig, 0, this.limitsOn ? this.limits : null, this.gearRig(), view.height)
     this.display(time, this.held ? 'New clip (editing)' : `${this.base.label} (editing)`)
   }
 
@@ -2002,47 +1898,41 @@ class ClipEdit {
   }
 
   /**
-   * Save the edit as the clip of the slot it edits (DESIGN.md §6 rows 1-2): a clip made here before that only this slot
-   * plays is saved over as itself, anything else is forked (a new clip; the server checks again and refuses a save over
-   * a clip another slot took up meanwhile, which then forks). The slot then plays it, its adjustments sorted by kind
-   * (clipedit.ts saveToSlotCommands), as one batch.
+   * The editor's one save (the designer, 2026-10-28: "I super just need to be able to save animations with the character
+   * as a replacement to attack or run"): the edit written as a new library clip, and the slot `target` names plays it
+   * (one of the character's, by id while it is there, else by name; none of that name: a new one), as
+   * saveIntoSlotCommands puts it there, in one batch. What the slot played before is replaced, nothing asked ("we also
+   * do not need to care about losing a player animation, just make a new one"): its old clip stays in the library, and
+   * Undo in Activity puts it back.
    */
-  async saveToSlot (name: string): Promise<void> {
-    const c = this.character; const slot = this.slot; const b = this.base; const mode = this.mode
-    if (!this.active || this.busy !== null || c === null || slot === null || b === null || mode === 'held') return
-    let replace: string | undefined
-    // (the clip made here before: the one it was opened on, or the one its record was opened from)
-    const mine = b.made?.ref ?? b.clip
-    // (a clip made here is saved over, whoever else plays it: the slot gets exactly what was edited)
-    if (mine.id.startsWith('custom-')) replace = mine.id
-    const saved = await this.save(name, { replace })
-    const now = this.character; const s = this.slot
-    if (saved === null || now === null || s === null || !this.active) return
-    // (the slot keeps its own loop: saving an Attack must not make it loop, which on a rider repeats it to the horse's gait)
-    const entry = await app.do(now.id, saveToSlotCommands(s, mode, saved.ref, { loop: s.loop, gearKeys: saved.gearKeys, newId }))
+  async saveAs (target: { slotId: string | null, name: string }): Promise<void> {
+    const c = this.character; const b = this.base
+    if (!this.active || this.busy !== null || c === null || b === null) return
+    const name = target.name.trim()
+    if (name === '') { app.toast('error', 'Choose the clip to save it as'); return }
+    const into = (x: Character): Slot | null => (target.slotId === null ? undefined : slotById(x, target.slotId)) ?? slotByName(x, name) ?? null
+    const saved = await this.save(`${c.name} ${name}`, { slot: into(c) })
+    const now = this.character
+    if (saved === null || now === null || !this.active) return
+    const slot = into(now)
+    const commands = saveIntoSlotCommands({ slot, name: slot?.name ?? name }, { slot: this.slot, mode: this.mode }, saved.ref, {
+      loop: this.loop, inPlace: b.inPlace, lift: now.mount === undefined ? this.lift : 0, gearKeys: saved.gearKeys, newId,
+    })
+    const entry = await app.do(now.id, commands, `save as ${name}`)
     // (refused: the reason is toasted; the clip is in the library, the edit still open)
     if (entry === null) return
-    if (saved.replaced) animator.forgetClip(refUrl(saved.ref))
     this.savedAt = this.revision
     this.issued = []
     const after = app.byId(now.id)
+    const played = after === null ? null : into(after)
     this.stop()
-    if (after !== null) await animator.playSlot(after, s.id)
-    app.toast('ok', `${s.name} now plays ${name} (${saved.ref.id})${saved.replaced ? ', saved over the clip it had' : ''}`)
+    if (after !== null && played !== null) await animator.playSlot(after, played.id)
+    app.toast('ok', `${name} now plays the edit (${saved.ref.id})`)
   }
 
-  /** Save the edit as a library clip of its own (no slot changes). */
-  async saveAsClip (name: string): Promise<void> {
-    if (!this.active || this.busy !== null) return
-    const saved = await this.save(name)
-    if (saved === null) return
-    this.savedAt = this.revision
-    this.issued = []
-  }
-
-  /** Write the edited clip: a person's into the library (the library's build makes it), a creature's (its template's
-   * skeleton) as a clip file beside its bundled ones. `replace`: a clip made here before, saved over as itself. */
-  private async save (name: string, o: { replace?: string } = {}): Promise<{ ref: ClipRef, gearKeys: Record<string, ClipKey[]>, replaced: boolean } | null> {
+  /** Write the edited clip as a new one: a person's into the library (the library's build makes it), a creature's (its
+   * template's skeleton) as a clip file beside its bundled ones. `slot`: the slot it is saved for (its record says so). */
+  private async save (name: string, o: { slot: Slot | null }): Promise<{ ref: ClipRef, gearKeys: Record<string, ClipKey[]> } | null> {
     const view = animator.view; const root = this.posable(); const b = this.base; const source = this.source; const c = this.character
     // (saved as it was shown: a rider's held bones in the seat)
     const edited = this.edited === null ? null : this.seated(this.edited)
@@ -2057,18 +1947,14 @@ class ClipEdit {
       const nameOf = (id: string): string => gearById(c, id)?.name ?? id
       const propPaths = Object.fromEntries(Object.entries(gearKeys).map(([id, ks]) => [nameOf(id), ks]))
       const making = {
-        mode: this.mode, ...(this.slot !== null ? { slot: this.slot.name } : {}), character: c.id, keys: this.keys,
+        mode: this.mode, ...(o.slot !== null ? { slot: o.slot.name } : {}), character: c.id, keys: this.keys,
         gear: Object.fromEntries(Object.entries(this.paths).filter(([, p]) => p.locked || p.keys.length > 0).map(([id, p]) => [nameOf(id), p])),
         ...(this.held ? { length: this.length } : {}),
       }
-      const write = async (replace: string | undefined): Promise<ClipRef> => {
+      const write = async (): Promise<ClipRef> => {
         if (c.skeleton.template === 'human') {
-          // (saved over the clip it was edited on: the clip is now what was edited, its record no edit of anything, so
-          // opening it again shows exactly it, not the keys laid over it a second time)
-          const over = replace !== undefined && replace === b.clip.id
-          const record = over ? { ...making, keys: {}, gear: {} } : making
-          const loop = this.slot?.loop ?? this.loop
-          const r = await api.saveEdit({ name, base: b.clip.id, loop, propPaths, frames, making: record, characterId: c.id, slot: this.slotId ?? undefined, replace })
+          const loop = o.slot?.loop ?? this.loop
+          const r = await api.saveEdit({ name, base: b.clip.id, loop, propPaths, frames, making, characterId: c.id, slot: o.slot?.id })
           this.busy = `Writing ${name} into the library`
           const job = await app.jobDone(r.job)
           if (job.status !== 'done') throw new Error(job.error ?? (job.status === 'cancelled' ? 'the save was cancelled' : 'the save failed'))
@@ -2076,26 +1962,16 @@ class ClipEdit {
         }
         const glb = await clipGlb(source.root, source.rest, framesClip(frames, source.rest, name))
         const r = await api.saveCreatureClip({
-          rig: c.skeleton.template, name, base: b.clip.id, loop: this.loop, inPlace: b.inPlace, duration: edited.duration, characterId: c.id,
-          ...(this.slotId !== null ? { slot: this.slotId } : {}), ...(replace !== undefined ? { replace } : {}),
+          rig: c.skeleton.template, name, base: b.clip.id, loop: o.slot?.loop ?? this.loop, inPlace: b.inPlace, duration: edited.duration, characterId: c.id,
+          ...(o.slot !== null ? { slot: o.slot.id } : {}),
         }, new Uint8Array(glb), propPaths)
         return { id: r.id, url: r.url }
       }
-      let ref: ClipRef
-      let replaced = o.replace !== undefined
-      try {
-        ref = await write(o.replace)
-      } catch (error) {
-        // (another slot took it up since it was asked: a new clip instead)
-        if (o.replace === undefined || !(error instanceof ApiError) || error.status !== 409) throw error
-        replaced = false
-        ref = await write(undefined)
-      }
+      const ref = await write()
       library.reload()
       // (its record is this edit's now)
       this.records.delete(ref.id)
-      app.toast('ok', `${name} is in the library (${ref.id}): under Custom`)
-      return { ref, gearKeys, replaced }
+      return { ref, gearKeys }
     } catch (error) {
       app.toast('error', `The clip didn't save: ${reason(error)}`)
       return null

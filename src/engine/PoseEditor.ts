@@ -53,7 +53,7 @@ export interface PoseEditorEvents {
    * far): what holds (a hand on gear) puts it back on, but the joint being moved; the body may be solved round it. */
   constrain: (moving: string | null, moved: ReadonlySet<string>) => void
   /** Before every move or turn: the bones put back where the last `constrain` found them (what it moved undone). */
-  restore: () => void
+  restore?: () => void
   /** A piece of gear picked (its id), or none. */
   selectGear: (gear: string | null) => void
   /** A piece of gear moved or turned by the gizmo, to `place` (world): `done` when let go. */

@@ -1,16 +1,17 @@
 <script lang="ts">
   // The clip editor (DESIGN.md §4.7, embedded by the Motion step): open what plays (a slot as it plays or its clip
   // alone, a library clip) or hold its frame as a new clip; pose it in the viewport and key it; gear leads the body or
-  // moves in the hand, hands take its handles; naturalize; save to the slot or as a library clip. A clip made here opens
-  // again as the edit it was made from (its record). The edit lives in src/state/clipedit.svelte.ts until it is saved;
-  // leaving with unsaved edits asks first.
+  // moves in the hand, hands take its handles; solve the body when asked; naturalize; save it as one of the character's
+  // clips (Attack, Run, a new one), replacing what that played. A clip made here opens again as the edit it was made
+  // from (its record). The edit lives in src/state/clipedit.svelte.ts until it is saved; leaving with unsaved edits asks
+  // first.
   import { onDestroy } from 'svelte'
-  import { FolderOpen, Move3d, PencilRuler, Redo2, Rotate3d, Save, Sparkles, Trash2, Undo2, WandSparkles, X } from '@lucide/svelte'
+  import { FolderOpen, Move3d, PencilRuler, PersonStanding, Redo2, Rotate3d, Save, Sparkles, Trash2, Undo2, WandSparkles, X } from '@lucide/svelte'
   import type { Character, Side } from '../../state/api.ts'
   import { animator } from '../../state/animator.svelte.ts'
   import { clipEdit } from '../../state/clipedit.svelte.ts'
-  import { handSide, slotById } from '../../model/select.ts'
-  import { editNameOf } from '../../engine/clipedit.ts'
+  import { slots } from '../../state/slots.svelte.ts'
+  import { handSide, slotById, slotByName } from '../../model/select.ts'
   import { prettyBone } from '../../engine/mixamo.ts'
   import HandPoseSelect from '../hands/HandPoseSelect.svelte'
   import WindowsField from './WindowsField.svelte'
@@ -30,8 +31,9 @@
   let { character }: { character: Character } = $props()
 
   const SIDES: Side[] = ['Left', 'Right']
+  /** The save's choice for a clip of a new name. */
+  const NEW = '\u0000new'
 
-  let name = $state('')
   let wasEditing = false
   let seconds = $state(1)
   const validLength = $derived(Number.isFinite(seconds) && seconds >= 0.2 && seconds <= 20)
@@ -77,10 +79,26 @@
   const piece = $derived(clipEdit.gear === null ? undefined : clipEdit.pieceOf(clipEdit.gear))
   const modeText = $derived(clipEdit.mode === 'held' ? 'a new clip' : clipEdit.mode === 'alone' ? 'the clip alone' : clipEdit.slot !== null ? 'as it plays' : 'as it previews')
 
+  // (what the edit is saved as: one of the clips the game plays, a trial kept beside them, or a new one)
+  const gameNames = $derived(slots.names)
+  const saveOptions = $derived([
+    ...gameNames.map(n => ({ value: n, label: slotByName(character, n) === undefined ? `${n} (empty)` : n, group: 'The game plays' })),
+    ...character.clips.filter(s => !gameNames.includes(s.name)).map(s => ({ value: s.name, label: s.name, group: 'Trials' })),
+    { value: NEW, label: 'A new clip…' },
+  ])
+  let saveTo = $state('')
+  let newName = $state('')
+  const saveName = $derived(saveTo === NEW ? newName.trim() : saveTo)
+  const sameSlot = $derived(clipEdit.slot !== null && !clipEdit.held && clipEdit.slot.name === saveName)
+
   $effect(() => {
     const on = editing
-    if (!on) name = ''
-    else if (!wasEditing) name = clipEdit.held ? 'New clip' : editNameOf(clipEdit.base?.label ?? 'Clip')
+    // (opened: offered as the clip it was opened on, or held from; else the first the game plays)
+    if (on && !wasEditing) {
+      const from = slotById(character, clipEdit.slotId ?? clipEdit.fromSlotId ?? '')?.name
+      saveTo = from ?? gameNames[0] ?? NEW
+      newName = ''
+    }
     wasEditing = on
   })
   onDestroy(() => { clipEdit.stop() })
@@ -251,31 +269,36 @@
 
       {#if clipEdit.natural}
         <div class="row">
+          <span use:tooltip={'On the frame shown: any arm inside the body is pushed straight out of it, a little at a time; then the body is fitted to the hands on gear. What it moves is keyed here. Dragging never solves the body.'}>
+            <Button size="sm" onclick={() => { void clipEdit.solveBody() }}><PersonStanding size={13} /> Solve body</Button>
+          </span>
           <Button size="sm" onclick={() => { void clipEdit.naturalize() }}><WandSparkles size={13} /> {clipEdit.naturalized ? 'Naturalize again' : 'Naturalize'}</Button>
           {#if clipEdit.naturalized}<span class="faint small" role="status">Ready to save</span>{/if}
         </div>
       {/if}
-      <Field label="Name">
-        <TextField size="sm" label="Clip name" bind:value={name} maxlength={80} />
+      <Field label="Save as">
+        <Select size="sm" label="Save the edit as" value={saveTo} options={saveOptions} onchange={(v) => { saveTo = v }} />
       </Field>
+      {#if saveTo === NEW}
+        <Field label="New clip">
+          <TextField size="sm" label="New clip name" placeholder="Attack 2, Block…" bind:value={newName} maxlength={80} />
+        </Field>
+      {/if}
       <div class="row">
-        {#if clipEdit.slot !== null && !clipEdit.held}
-          <Button size="sm" variant="primary" disabled={!clipEdit.canSave || name.trim() === ''} onclick={() => { void clipEdit.saveToSlot(name.trim()) }}>
-            <Save size={13} /> Save to {clipEdit.slot.name}
-          </Button>
-        {/if}
-        <Button size="sm" variant={clipEdit.slot !== null && !clipEdit.held ? 'secondary' : 'primary'} disabled={!clipEdit.canSave || name.trim() === ''}
-          onclick={() => { void clipEdit.saveAsClip(name.trim()) }}><Save size={13} /> Save as a library clip</Button>
+        <Button size="sm" variant="primary" disabled={!clipEdit.canSave || saveName === ''}
+          onclick={() => { void clipEdit.saveAs({ slotId: slotByName(character, saveName)?.id ?? null, name: saveName }) }}>
+          <Save size={13} /> Save as {saveName === '' ? '…' : saveName}
+        </Button>
         <Button size="sm" variant="ghost" onclick={() => { void clipEdit.finish() }}><X size={13} /> Finish</Button>
       </div>
       <p class="faint small">
         {#if !clipEdit.canSave}
           Make a pose change or naturalize the motion to save.
-        {:else if clipEdit.slot !== null && !clipEdit.held}
-          Save to {clipEdit.slot.name}: it plays the edit, a new clip (one you made before that only {clipEdit.slot.name} plays is saved over){clipEdit.mode === 'plays' ? '; its speed, timing and keys are baked in' : '; its speed and adjustments stay'}.
-          Save as a library clip: a copy under Library → Custom, {clipEdit.slot.name} unchanged.
+        {:else if saveName === ''}
+          Name the new clip to save it.
         {:else}
-          Saved clips appear under Library → Custom; the clip it came from stays as it is.
+          {saveName} plays the edit from now on, as shown here{sameSlot && clipEdit.mode === 'alone' ? ' (its speed and adjustments stay)' : ''};
+          {slotByName(character, saveName) === undefined ? 'it is a new clip of this character' : 'what it played before is replaced (Undo in Activity brings it back)'}.
         {/if}
       </p>
     {/if}
@@ -284,6 +307,7 @@
     <summary>Editing tips and shortcuts</summary>
     <p>Scrub to a frame, then drag a joint or gear to key it. Hands and feet reach; other joints turn their bones. Use the target list to select hidden joints and gear. Hold Shift while dragging the hips to move them freely.</p>
     <p><kbd>G</kbd> move · <kbd>R</kbd> rotate · <kbd>Delete</kbd> remove keys here · <kbd>Esc</kbd> deselect · <kbd>Ctrl+Z</kbd> undo · <kbd>Ctrl+Shift+Z</kbd> redo · <kbd>Space</kbd> play/pause · <kbd>,</kbd> / <kbd>.</kbd> step a frame.</p>
+    <p>Dragging moves only what you drag (hands on gear follow by IK). When an arm ends up in the body, or the body should follow the hands, press Solve body: it pushes the arm straight out a little at a time, fits the body, and keys this frame.</p>
     <p>Loop is in the timeline; choose In place and Mirror before editing. Naturalize smooths the motion while keeping keyed poses and hands on gear; repeat it to go further. Any later change builds the motion again from your keys.</p>
     <p>Moving gear keys its path and makes it lead (with “Moves in the hand” on, it moves in the hand instead: this frame, tweened; or in every clip, its placement). Turning on “Leads the body” or putting a hand on it fits the path to the body. Let a free hand go on gear to grip it there; select the hand to slide it along.</p>
   </details>

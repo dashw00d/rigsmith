@@ -24,9 +24,11 @@ Revision 2 (after a design review against the code; see §11 for what it changed
 3. **Creature templates**: human and horse are supported. Fox, bird, dragon, kaiju, spider, snake and shark stay as
    data behind `templates.ts`'s registry with `status: 'experimental'`, offered under "Other creatures".
 4. **Codex texture repaint stays** in the Look step.
-5. **The editor's save is per-character by default.** "Save to slot" writes a new library clip and points the slot at
-   it; it overwrites a `custom-` clip in place only when no other slot of any character uses it (the server checks).
-   "Save as a library clip" (shared, no slot change) remains an explicit second action.
+5. **The editor has one save: "Save as <clip>".** It writes a new library clip and points the slot chosen (one the
+   game plays, a trial, or a new one by name) at it, whatever it played before (`clipedit.ts saveIntoSlotCommands`;
+   the designer, 2026-10-28: "I super just need to be able to save animations with the character as a replacement to
+   attack or run ... just make a new one"). Nothing is saved over in place; the old clip stays in the library and Undo
+   puts the slot back. The separate "Save as a library clip" is gone (every save is in the library anyway).
 6. **The game export's output does not change on purpose.** In particular a rider's `mount.gear` (horse tack and
    barding) has never shipped (v1 matched ids against names); it still doesn't, and the Ship checks say so. Whether
    to ship it is a question for the owner (§10).
@@ -541,8 +543,13 @@ PUT/DELETE `/weights` (body and gear) run as `lock: 'files'` jobs (or answer 409
 
 - Delete `bodysolve.ts`. Without a pose model (non-human templates) the editor builds edits from keys and IK only;
   prop leading and Naturalize are offered only where the natural rig exists (as now).
-- **Fast mode while dragging**: when a natural rig exists, a drag runs `NaturalRig` in `mode: 'quick'` with the
-  same goals the release build will use, so letting go does not jump; the release build starts from that pose.
+- **The body is solved only when asked** (the designer, 2026-10-28: the solve on every gizmo move "freaks out" when
+  it takes two moves to get an arm away from the body). A drag is IK alone (hands on gear follow by IK), and so is the
+  build. **Solve body** (`clipEdit.solveBody`) works on the frame shown: each arm inside another body part is first
+  pushed straight out of it in small steps (`pushclear.ts`: a free hand carried out along the contact's normal, an
+  elbow swung round the shoulder-to-wrist line; the first step that clears is kept), then, where hands hold gear, the
+  natural-pose solver fits the body to them (`frameSolve`'s goals), its result dropped if it leaves a part deeper in
+  another; what it moved is keyed on that frame.
 - **One pose-quality model**: `JointLimits` (ROM) is the only joint-range model (hard clamp in IK, soft penalty in
   the solver, and the bounds handcontacts uses come from it instead of its own 35°/10° constants where the tests
   allow); the PCA model and the hand-written costs stay inside `posespace.ts` as the one "is this pose human" score;

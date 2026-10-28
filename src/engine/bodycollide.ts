@@ -30,9 +30,15 @@ export interface BodyCollider {
   // (the depth is what is past what the pair may overlap, ALLOW: a hand rests on a thigh; `pairs` lists those past it, deepest first)
 }
 
+/** Two body segments' contact as the bones stand: how deep `a` is into `b` (metres, 0: apart) and the way straight out of
+ * it for `a` (unit, world: from `b`'s nearest point to `a`'s). */
+export interface Contact { depth: number, normal: THREE.Vector3 }
+
 /** A BodyCollider that also carries its fitted shape (what the pose solver reads). `selfPenetration().pairs` lists only the pairs that overlap now, deepest first. */
 export interface SolidBody extends BodyCollider {
   readonly shape: BodyShape
+  /** Segments `a` and `b` (by name) as the bones stand; null when either isn't one of the body's. */
+  contact (a: string, b: string): Contact | null
 }
 
 /** A vertex counts for a bone when at least this much of it is weighted there. */
@@ -226,6 +232,23 @@ export class BoundShape {
     const ra = dist < 1e-9 ? Math.min(sa.r1, sa.r2) : toward(f, a, sa.r1, sa.r2, vx, vy, vz)
     const rb = dist < 1e-9 ? Math.min(sb.r1, sb.r2) : toward(f, b, sb.r1, sb.r2, -vx, -vy, -vz)
     return Math.max(0, ra + rb - dist)
+  }
+
+  /** The way straight out of segment j for segment i (unit, world, into `out`), in the frames last updated: from j's
+   * nearest point on its axis to i's; where the axes cross, from j's axis to i's middle (else j's first section direction). */
+  apart (i: number, j: number, out: THREE.Vector3): THREE.Vector3 {
+    const f = this.frames; const a = i * FR; const b = j * FR
+    const t = this.tmp
+    nearest(f, a + E.p0, f, a + E.p1, f, b + E.p0, f, b + E.p1, t)
+    out.set(t[0] - t[3], t[1] - t[4], t[2] - t[5])
+    if (out.lengthSq() > 1e-12) return out.normalize()
+    // (i's middle off j's axis)
+    const ex = f[b + E.e]; const ey = f[b + E.e + 1]; const ez = f[b + E.e + 2]
+    out.set(f[a + E.c] - f[b + E.p0], f[a + E.c + 1] - f[b + E.p0 + 1], f[a + E.c + 2] - f[b + E.p0 + 2])
+    const k = out.x * ex + out.y * ey + out.z * ez
+    out.set(out.x - k * ex, out.y - k * ey, out.z - k * ez)
+    if (out.lengthSq() > 1e-12) return out.normalize()
+    return out.set(f[b + E.u1], f[b + E.u1 + 1], f[b + E.u1 + 2])
   }
 
   /** How deep the capsule p–q of `radius` is into segment i (metres; 0: apart). */
@@ -494,6 +517,12 @@ export function colliderOf (shape: BodyShape, bones: Map<string, THREE.Bone>): S
       pairs.sort((x, y) => y[2] - x[2])
       return { worst, pairs }
     },
+    contact (a, b) {
+      const i = shape.segments.findIndex(x => x.name === a); const j = shape.segments.findIndex(x => x.name === b)
+      if (i < 0 || j < 0) return null
+      read()
+      return { depth: bound.depth(i, j), normal: bound.apart(i, j, new THREE.Vector3()) }
+    },
   }
 }
 
@@ -577,6 +606,10 @@ export class CharacterCollider implements BodyCollider {
 
   selfPenetration (): { worst: number, pairs: Array<[string, string, number]> } {
     return this.body?.selfPenetration() ?? { worst: 0, pairs: [] }
+  }
+
+  contact (a: string, b: string): Contact | null {
+    return this.body?.contact(a, b) ?? null
   }
 
   /** How deep the deepest of `obstacles` is in the body as it stands now (metres), each but the segments it lets
