@@ -74,6 +74,8 @@ class Viewer {
   private unmountHooks = new Set<(mount: MountView) => void>()
   private loaded: Loaded | null = null
   private mounted: Mounted | null = null
+  /** While a clip is edited: the horse's own place before the rider was stood in his own space (setEditingRider). */
+  private standing: THREE.Matrix4 | null = null
   // (what each hook gave back for the view, and the horse, on stage now)
   private hookCleanups = new Map<LoadHook, () => void>()
   private mountCleanups = new Map<MountHook, () => void>()
@@ -432,8 +434,37 @@ class Viewer {
     mounted.frame.scale.set(1, 1, 1)
     mounted.frame.applyMatrix4(at.invert())
     node.add(mounted.frame)
-    mount.seat.add(rider.view.root)
+    // (stood in his own space while a clip is edited: seated again when the editor closes)
+    if (this.standing === null) mount.seat.add(rider.view.root)
     return true
+  }
+
+  /** While a clip is edited (src/state/clipedit.svelte.ts) the rider stands in his own space, as the editor's working
+   * copy does, so its goals, keys and gizmo are all in one frame (seated, everything the gizmo moved landed off by the
+   * seat, which the horse's animation moves: a dragged spear keyed a seat's height up, the hand flung after it; the
+   * designer, 2026-10-28). The horse is shown under him where it was. Off: back in the saddle. */
+  setEditingRider (on: boolean): void {
+    const stage = this.stage; const rider = this.loaded?.view; const mount = untrack(() => this.mount)
+    if (stage === null || rider === undefined || mount === null) { if (!on) this.standing = null; return }
+    const horse = mount.view.root
+    if (on) {
+      if (this.standing !== null || rider.root.parent !== mount.seat) return
+      stage.content.updateMatrixWorld(true)
+      const seated = stage.content.matrixWorld.clone().invert().multiply(rider.root.matrixWorld)
+      horse.updateMatrix()
+      this.standing = horse.matrix.clone()
+      seated.invert().multiply(this.standing).decompose(horse.position, horse.quaternion, horse.scale)
+      stage.content.add(rider.root)
+      rider.root.position.set(0, 0, 0); rider.root.quaternion.identity(); rider.root.scale.set(1, 1, 1)
+      stage.content.updateMatrixWorld(true)
+      return
+    }
+    if (this.standing === null) return
+    this.standing.decompose(horse.position, horse.quaternion, horse.scale)
+    this.standing = null
+    mount.seat.add(rider.root)
+    rider.root.position.set(0, 0, 0); rider.root.quaternion.identity(); rider.root.scale.set(1, 1, 1)
+    stage.content.updateMatrixWorld(true)
   }
 
   /** The seat placed: the rider's placement, at his size against the horse (the game's heights when Ship has them). */
@@ -480,6 +511,7 @@ class Viewer {
     if (mounted === null) return
     this.mount = null
     this.mounted = null
+    this.standing = null
     if (mount !== null) {
       for (const fn of [...this.unmountHooks]) {
         try { fn(mount) } catch (error) { report('a mount unload hook', error) }

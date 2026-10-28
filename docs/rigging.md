@@ -42,6 +42,12 @@ paint routes write `rigged.glb` skin data or `weight_edits.json`, and they refus
   strokes do not spread onto unpainted triangles. An ambiguous or missing painted point stops the rebuild and keeps
   the previous rig. Rig and remapped paint publication rolls back if the paint record cannot be written
   (`server/weights.ts`).
+- **Lifted skin (Lift brush).** Not weights but shape: the brushed skin pushed out off the skin under it until it is
+  the panel's Gap clear of it (a cape off the body it follows, so the body and the lining stop showing through), skin
+  already through it lifted past, the cloth's inner side between going out with it; measured on the pose on screen,
+  evened over the brush. Kept as rest positions in `shape_edits.json` with where each vertex first was
+  (`server/shapes.ts`): a fresh rig is made from the unlifted model, so the rig job finds them there and lifts them
+  again before the painting is carried over. Forget the lifts puts them back. Body only.
 - **Pose-optimized weights.** Blender's weights are sharp at every joint but the shoulders, which bend over a tenth of
   the height (`blender/autorig/weights.py` soft_shoulders: an arm raised overhead turns ~125° from an A pose, and sharp
   weights put all of it in the armpit's first rows of triangles). After Blender rigs a humanoid, `server/skinopt.ts`

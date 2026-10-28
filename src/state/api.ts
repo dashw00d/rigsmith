@@ -166,6 +166,8 @@ export const api = {
   rig: async (id: string) => await call<Job>('POST', `${of(id)}/rig`),
   saveWeights: async (id: string, edits: WeightEdit[]) => await call<Job>('PUT', `${of(id)}/weights`, { edits }),
   forgetWeights: async (id: string) => await call<Job>('DELETE', `${of(id)}/weights`),
+  saveShape: async (id: string, edits: Array<{ mesh: number, vertex: number, from: [number, number, number], to: [number, number, number] }>) => await call<Job>('PUT', `${of(id)}/shape`, { edits }),
+  forgetShape: async (id: string) => await call<Job>('DELETE', `${of(id)}/shape`),
 
   // ---- gear ----
   /** New gear from a model file (its import runs as a job). */

@@ -4,7 +4,7 @@
   // src/engine/weightpaint.ts. The body's painting goes into the rig and is put back after every re-rig; a gear
   // piece's is kept beside it.
   import { onDestroy } from 'svelte'
-  import { Anchor, Brush, Eraser, FlipHorizontal2, Layers, Lock, Paintbrush, RotateCcw, Save, Sparkles, Waves } from '@lucide/svelte'
+  import { Anchor, ArrowUpFromLine, Brush, Eraser, FlipHorizontal2, Layers, Lock, Paintbrush, RotateCcw, Save, Sparkles, Waves } from '@lucide/svelte'
   import type { Character, Gear } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { paint, paintableGear, type PaintTool } from '../../state/paint.svelte.ts'
@@ -44,6 +44,7 @@
     { id: 'remove', label: 'Remove', hint: 'Take the bone off the brushed skin (its share goes to its other bones)' },
     { id: 'smooth', label: 'Smooth', hint: "Blend the brushed skin's weights with its neighbours'" },
     { id: 'follow', label: 'Follow', hint: 'Make the brushed skin move with what is under it: the skin it covers (the legs under a coat), or the nearest bones where nothing is close under it. For hems and cloth the body should push' },
+    { id: 'lift', label: 'Lift', hint: 'Push the brushed skin out off the skin under it, to the gap below: a cape off the body it follows, so the body and the lining stop showing through. Its inner side goes out with it. Works on the body as it stands (pause on the frame that shows it); saved with the weights and kept through re-rigs' },
     { id: 'rigid', label: 'Bone', hint: 'Paint the brushed skin onto the one bone under the brush, dropping pulls from cloth and bones around it. The bone is the one that already moves most of the skin where you start the stroke (shown below as you hover): start on the face for the head. For a face a hood drags, buckles, plates' },
   ]
   const boneName = (name: string | null): string => paint.bones.find(b => b.name === name)?.label ?? name ?? '–'
@@ -53,6 +54,10 @@
     else await paint.start(character, gear ?? null)
   }
 
+  async function forgetLifts (): Promise<void> {
+    const ok = await app.confirm({ title: 'Forget the lifts?', body: 'Every vertex the Lift brush moved goes back where it was.', confirm: 'Forget', danger: true })
+    if (ok && await paint.forgetLifts(character)) app.toast('ok', 'Lifts forgotten: the skin is back where it was')
+  }
   async function forget (): Promise<void> {
     const ok = await app.confirm({
       title: gear === undefined ? 'Forget the body\'s painting?' : `Forget ${gear.name}'s painting?`,
@@ -86,9 +91,9 @@
     {:else}
       <p class="faint small">Pause a test clip on the frame that shows the problem, then paint on {gear === undefined ? 'the body' : gear.name}. Left-drag on it paints; off it the camera turns.{gear !== undefined && !pulled ? ' The body under it is there for Follow to take from, not painted.' : ''}</p>
       <div class="tools">
-        {#each tools as t (t.id)}
+        {#each (gear === undefined ? tools : tools.filter(t => t.id !== 'lift')) as t (t.id)}
           <button class:on={paint.tool === t.id} onclick={() => { paint.tool = t.id; paint.refreshView() }} use:tooltip={t.hint}>
-            {#if t.id === 'area'}<Sparkles size={12} />{:else if t.id === 'add'}<Brush size={12} />{:else if t.id === 'remove'}<Eraser size={12} />{:else if t.id === 'follow'}<Layers size={12} />{:else if t.id === 'rigid'}<Anchor size={12} />{:else}<Waves size={12} />{/if} {t.label}
+            {#if t.id === 'area'}<Sparkles size={12} />{:else if t.id === 'add'}<Brush size={12} />{:else if t.id === 'remove'}<Eraser size={12} />{:else if t.id === 'follow'}<Layers size={12} />{:else if t.id === 'rigid'}<Anchor size={12} />{:else if t.id === 'lift'}<ArrowUpFromLine size={12} />{:else}<Waves size={12} />{/if} {t.label}
           </button>
         {/each}
       </div>
@@ -103,6 +108,9 @@
       {/if}
       {#if !pulled}
         <Toggle label="Mirror left and right" checked={paint.mirror} onchange={(on: boolean) => paint.setMirror(on)} />
+      {/if}
+      {#if paint.tool === 'lift'}
+        <label class="field" use:tooltip={'How far clear of the skin under it the brushed skin ends (a share of the height: 1% is about 2 cm on a man)'}>Gap <input type="range" min="0.002" max="0.04" step="0.001" bind:value={paint.gap} /></label>
       {/if}
       <label class="field">Brush <input type="range" min="0.01" max="0.15" step="0.005" bind:value={paint.radius} /></label>
       {#if paint.tool !== 'area'}<label class="field">Strength <input type="range" min="0.05" max="1" step="0.05" bind:value={paint.strength} /></label>{/if}
@@ -132,6 +140,7 @@
       {painted > 0 ? `${painted} ${painted === 1 ? 'point' : 'points'} painted by hand.` : 'Nothing painted by hand yet.'} Its painting is kept with it, over the weights it takes {pulled ? 'from its pulls' : 'from the body'}.
     {/if}
     {#if painted > 0 && !locked}<button class="link" disabled={paint.busy} onclick={forget}>Forget the painting</button>{/if}
+    {#if gear === undefined && !locked}<button class="link" disabled={paint.busy} onclick={forgetLifts}>Forget the lifts</button>{/if}
   </p>
 </Section>
 

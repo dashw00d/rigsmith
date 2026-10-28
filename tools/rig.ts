@@ -383,7 +383,10 @@ async function ride (c: Character, horseWho: string): Promise<string> {
   const u = Object.values(spec()).find(x => x.character === c.id)
   const k = riderScale({}, { game: u?.height ?? null, own: rider.height }, { game: u?.companion?.character === horse.id ? u.companion.height : null, own: hv.height })
   const seat = straddle(hv, rider, k)
-  const mount: Mount = { character: horse.id, rotation: [0, 0, 0], ...seat }
+  // (seated again on the same horse: its gear and skin for him kept, as the app's Rides does)
+  const was = c.mount?.character === horse.id ? c.mount : undefined
+  const kept = { ...(was?.skin !== undefined ? { skin: was.skin } : {}), ...(was?.gear !== undefined ? { gear: was.gear } : {}) }
+  const mount: Mount = { character: horse.id, rotation: [0, 0, 0], ...seat, ...kept }
   await run(c, [{ type: 'mount.set', mount }])
   const unitName = Object.entries(spec()).find(([, x]) => x.character === c.id)?.[0]
   const note = u !== undefined && u.companion?.character !== horse.id

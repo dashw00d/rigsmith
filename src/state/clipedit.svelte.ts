@@ -23,6 +23,7 @@ import { carryHandle, gearById, gearKeysFromPaths, handSide, slotById } from '..
 import type { Adjustment, Character, ClipKey, ClipRef, Gear, Handle, HandPose, HandPoseRef, Placement, Quat, Side, Slot, Vec3, Window } from '../model/types.ts'
 import { api, ApiError, type LibraryClip } from './api.ts'
 import { app } from './app.svelte.ts'
+import { viewer } from './viewer.svelte.ts'
 import { animator } from './animator.svelte.ts'
 import { library } from './library.svelte.ts'
 import { boneRest, type PullPlan } from '../engine/bake.ts'
@@ -420,6 +421,8 @@ class ClipEdit {
       animator.setPlaying(false)
       // (the player loops as the edit does: a new clip from a frame plays once)
       animator.setLoop(this.base.loop)
+      // (a rider is edited in his own space, as the working copy is: off the moving horse, it shown under him)
+      viewer.setEditingRider(true)
       this.makeEditor(this.limitsOn)
       this.active = true
       this.offGuard = app.guard(async () => {
@@ -505,6 +508,7 @@ class ClipEdit {
     this.editor?.dispose()
     this.editor = null
     this.active = false
+    viewer.setEditingRider(false)
     this.offGuard?.()
     this.offGuard = null
     if (animator.guard === this.animatorGuard) animator.guard = null

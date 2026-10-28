@@ -168,7 +168,7 @@ export function unitChecks (i: UnitCheckInput): Check[] {
   } else if (m !== undefined) {
     add('mount', 'info', `Rides ${m.character} here, but the unit doesn't ride: the game gets him on foot`)
   }
-  if (m !== undefined && (m.gear ?? []).length > 0) add('mount-gear', 'info', `The horse's gear (${plural(m.gear!.length, 'piece')}) isn't exported: the game has never had it`)
+  if (m !== undefined && (m.gear ?? []).length > 0) add('mount-gear', 'info', `The horse wears ${plural(m.gear!.length, 'piece')} of its gear for him in the game`)
 
   if (spec.draft === true) add('draft', 'info', "A draft: the game's build skips it unless it is named (Export names it, and it stops being a draft)")
   return out

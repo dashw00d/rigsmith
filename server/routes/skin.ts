@@ -26,6 +26,7 @@ import {
 } from '../skinopt.ts'
 import { characterDir, getCharacter, paths, readJson, ROOT, updateCharacter, withFiles, writeJson } from '../store.ts'
 import { checkEdits, dropWeightEdits, publishRig, savePainting, skinnedParts, type WeightEdit, weightEdits, writeWeights } from '../weights.ts'
+import { dropShapeEdits, keepShapeEdits, type ShapeEdit, shapeEdits, writeShapes } from '../shapes.ts'
 import { applyRig, assertUnlocked, jointsBack, rigRefusal } from './skin-policy.ts'
 
 export { assertUnlocked, rigRefusal }
@@ -99,6 +100,15 @@ async function runRig (id: string, who: string, update: Update, signal: AbortSig
       optimizer: optimize ? { ran: false, why: '' }
         : torch === null ? { ran: false, why: 'No PyTorch here (npm run setup:python sets it up)' }
           : { ran: false, why: 'Creatures keep their heat weights: on the horse the optimizer made the walk worse' },
+    }
+
+    // Lifted skin (Fix weights' Lift) back on the fresh rig first, so the painting below finds the surface it was
+    // painted on: each lift by where its vertices were before it.
+    const lifts = await shapeEdits(id)
+    if (lifts.length > 0) {
+      const n = await writeShapes(output, lifts)
+      if (existsSync(alternative)) await writeShapes(alternative, lifts)
+      warnings.push(n >= lifts.length ? `${n} lifted vertices put back (Fix weights' Lift)` : `${n} of ${lifts.length} lifted vertices put back: the rest are not where they were lifted from (Forget the lifts to drop them)`)
     }
 
     // Re-import can reorder/split vertices. Follow the old bind surface instead
@@ -270,6 +280,46 @@ route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/weights$/, async (req, res, [id]
         x.revision = (x.revision ?? 0) + 1
         x.skin.painted = kept
       }, { by: who, what: 'weights', changes: [`weights painted: ${written} vertices (${kept} kept for re-rigs)`] })
+    })
+  }, { lock: 'files' }))
+})
+
+// Lifted skin (Fix weights' Lift): rest positions written into rigged.glb and kept for the next rig
+// (shape_edits.json, with where each vertex first was); DELETE puts them back.
+route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/shape$/, async (req, res, [id]) => {
+  const c = await found(id)
+  const refused = paintRefusal(c)
+  if (refused !== null) throw refused
+  assertUnlocked(c)
+  const running = busy(id, 'files')
+  if (running !== undefined) throw new HttpError(409, `Wait for ${running.label} to finish`)
+  const { edits } = await readJsonBody<{ edits?: ShapeEdit[] }>(req)
+  if (!Array.isArray(edits) || edits.length === 0) throw new HttpError(400, 'No lifts to write')
+  const who = by(req)
+  send(res, 202, enqueue('paint', `Save ${c.name}'s lifted skin`, id, async (_job, update) => {
+    update({ message: 'Writing the lifts into the rig' })
+    await withFiles(id, async () => {
+      const now = await found(id)
+      assertUnlocked(now)
+      const written = await writeShapes(path.join(characterDir(id), now.files.rigged!), edits, true)
+      const kept = await keepShapeEdits(id, edits)
+      await updateCharacter(id, x => { x.revision = (x.revision ?? 0) + 1 },
+        { by: who, what: 'weights', changes: [`skin lifted: ${written} vertices (${kept} kept for re-rigs)`] })
+    })
+  }, { lock: 'files' }))
+})
+route('DELETE', /^\/api\/characters\/([a-z0-9-]+)\/shape$/, async (req, res, [id]) => {
+  const c = await found(id)
+  assertUnlocked(c)
+  const running = busy(id, 'files')
+  if (running !== undefined) throw new HttpError(409, `Wait for ${running.label} to finish`)
+  const who = by(req)
+  send(res, 202, enqueue('paint', `Forget ${c.name}'s lifts`, id, async () => {
+    await withFiles(id, async () => {
+      const now = await found(id)
+      assertUnlocked(now)
+      const n = await dropShapeEdits(id, path.join(characterDir(id), now.files.rigged ?? 'rigged.glb'))
+      await updateCharacter(id, x => { x.revision = (x.revision ?? 0) + 1 }, { by: who, what: 'weights', changes: [`lifts forgotten: ${n} vertices put back`] })
     })
   }, { lock: 'files' }))
 })

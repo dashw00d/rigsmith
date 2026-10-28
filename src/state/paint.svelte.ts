@@ -22,7 +22,7 @@ import { api, type Character, type Gear, type WeightEdit } from './api.ts'
 import { app } from './app.svelte.ts'
 import { viewer } from './viewer.svelte.ts'
 
-export type PaintTool = 'area' | 'add' | 'remove' | 'smooth' | 'follow' | 'rigid'
+export type PaintTool = 'area' | 'add' | 'remove' | 'smooth' | 'follow' | 'rigid' | 'lift'
 export interface PaintBone { name: string, label: string }
 
 /** Gear the weight brushes work on: worn on the skin, or a piece with pull handles. */
@@ -48,6 +48,8 @@ class Paint {
   /** Brush radius, a share of the body's height. */
   radius = $state(0.05)
   strength = $state(0.5)
+  /** The Lift brush's gap: how far clear of the skin under it the brushed skin is pushed, a share of the body's height. */
+  gap = $state(0.01)
   /** Strokes land on both sides of the body (each point's mirror twin, its bones swapped for the other side's). */
   mirror = $state(true)
   /** The Bone brush's bone: the one under the brush (hovering), or the stroke's while painting. */
@@ -254,6 +256,7 @@ class Paint {
       else if (this.tool === 'smooth') painter.smooth(at.part, points, this.strength * 0.5)
       else if (this.tool === 'follow') painter.followUnder(at.part, points, this.strength * 0.5)
       else if (this.tool === 'rigid') painter.rigid(at.part, points, this.strength * 0.5)
+      else if (this.tool === 'lift' && this.gear === null) painter.lift(at.part, points, this.gap * view.height, this.strength * 0.5)
       this.redraw()
     }
     const down = (e: PointerEvent): void => {
@@ -393,21 +396,41 @@ class Paint {
     const painter = this.painter
     if (c === null || painter === null || this.busy) return
     const edits = this.editsToSave()
-    if (edits.length === 0) return
     const gear = this.gear
+    // (lifted skin, Lift: the body's only)
+    const lifts = gear === null ? painter.shapeEdits() : []
+    if (edits.length === 0 && lifts.length === 0) return
     await this.working(gear === null ? 'Saving the weights into the rig' : 'Saving the gear\'s weights', async () => {
       try {
-        const job = gear === null ? await api.saveWeights(c.id, edits) : await api.saveGearWeights(c.id, gear, edits)
-        const done = await app.jobDone(job.id)
-        // (a failed job is toasted by the app; the strokes stay to save again)
-        if (done.status !== 'done') return
+        if (lifts.length > 0) {
+          const lifted = await app.jobDone((await api.saveShape(c.id, lifts)).id)
+          if (lifted.status !== 'done') return
+        }
+        if (edits.length > 0) {
+          const job = gear === null ? await api.saveWeights(c.id, edits) : await api.saveGearWeights(c.id, gear, edits)
+          const done = await app.jobDone(job.id)
+          // (a failed job is toasted by the app; the strokes stay to save again)
+          if (done.status !== 'done') return
+        }
         painter.saved()
         if (this.painter === painter) this.edited = 0
-        app.toast('ok', `Weights saved: ${edits.length} vertices${gear === null ? ' (kept for re-rigs)' : ''}`)
+        const said = [lifts.length > 0 ? `${lifts.length} lifted` : '', edits.length > 0 ? `${edits.length} weighted` : ''].filter(Boolean).join(', ')
+        app.toast('ok', `Saved: ${said} vertices${gear === null ? ' (kept for re-rigs)' : ''}`)
       } catch (error) {
         app.toast('error', (error as Error).message)
       }
     })
+  }
+
+  /** Forget a character's lifts: the rig's lifted vertices put back where they were. */
+  async forgetLifts (c: Character): Promise<boolean> {
+    try {
+      const done = await app.jobDone((await api.forgetShape(c.id)).id)
+      return done.status === 'done'
+    } catch (error) {
+      app.toast('error', (error as Error).message)
+      return false
+    }
   }
 
   /** Forget a character's painting (its body's, or a gear piece's): the body's live rig keeps the weights until the

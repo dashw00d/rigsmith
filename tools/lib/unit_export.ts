@@ -7,7 +7,8 @@
 //          bone (on a Prop_<gear> bone of its own when a clip keys it), skin and spot gear skinned to the body as the
 //          viewer skins them (tools/lib/gearskin.ts), each pull handle a Prop_<gear>_<handle> bone the clips draw
 // A companion (a pony beside it, the horse under it) is built the same way under the unit's root, its bones prefixed.
-// A rider's horse gear (mount.gear) is not exported: it never has been (DESIGN.md §0.6).
+// A rider's horse gear (mount.gear: a saddle, barding) is built into the unit on the horse's bones (the designer,
+// 2026-10-28: the horse's tack and barding ship).
 //
 // Written per unit:
 //   <models dir>/<unit>.glb          the character at its game height, soles at y = 0, facing +Z, a "root" bone above
@@ -90,7 +91,6 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     const mount = c.mount
     if (mount === undefined || mount.character !== comp.spec.character) throw new Error(`${unit}: rides ${comp.spec.character} in the spec, but ${c.name}'s mount in Rigsmith is ${mount?.character ?? 'none'}`)
     ride = { horse: comp, mount }
-    if ((mount.gear ?? []).length > 0) warn(`its horse's gear (${mount.gear!.length} pieces) is not exported: the game has never had it`)
     for (const slot of slots) {
       const b = baked.get(slot.name)!
       const r = await bakeRide(b, { c: comp.c, ctx: comp.ctx, slotName: slot.name }, mount, { loop: slot.loop, attack: b.cut !== undefined, rest: me.ctx.rest })
@@ -362,9 +362,48 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     const pick = ride?.mount.skin
     const skin = pick === undefined ? undefined : comp.c.look.skins?.find(k => k.name === pick)
     if (ride !== null) {
-      compReport.gear = {}
       if (pick !== undefined && skin === undefined) warn(`the horse has no skin ${pick}: its own texture`)
       compReport.skin = skin?.name
+      // the horse's gear his mount names (its ids; a name is read too), each piece rigid on the horse's bone
+      const worn: Record<string, unknown> = {}
+      for (const want of ride.mount.gear ?? []) {
+        const g = comp.c.gear.find(x => x.id === want) ?? comp.c.gear.find(x => x.name === want)
+        if (g === undefined) { worn[want] = { left: 'not the horse\'s' }; warn(`the horse has no gear ${want}`); continue }
+        if (g.status !== 'ready' || g.model === undefined || g.attach.kind !== 'bone') { worn[g.name] = { left: 'not a ready piece on a bone' }; continue }
+        const bone = g.attach.bone
+        const index = bones.findIndex(b => b.name === comp.spec.prefix + bone)
+        if (index < 0) throw new Error(`${unit}: the horse's ${g.name} rides ${bone}, not in its skeleton`)
+        const file = path.join(comp.dir, g.model)
+        const { scene: gs } = await load(file)
+        gs.updateMatrixWorld(true)
+        const at = new THREE.Matrix4().multiplyMatrices(place, garmentMatrix(g.attach.place))
+        const geos: THREE.BufferGeometry[] = []; const mats: THREE.Material[] = []
+        gs.traverse(o => {
+          const m = o as THREE.Mesh
+          if (m.isMesh !== true) return
+          const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(at, m.matrixWorld))
+          for (const name of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv'].includes(name)) geo.deleteAttribute(name)
+          geos.push(geo)
+          const loaded = Array.isArray(m.material) ? m.material[0] : m.material
+          mats.push(new THREE.MeshStandardMaterial({ name: /^Main(\.\d+)?$/.test(loaded.name) ? `Atlas_${comp.spec.material}` : loaded.name }))
+        })
+        if (geos.length === 0) continue
+        const geo = geos.length === 1 ? geos[0] : mergeGeometries(geos, true)
+        const n = geo.attributes.position.count
+        const si = new Uint16Array(n * 4); const sw = new Float32Array(n * 4)
+        for (let i = 0; i < n; i++) { si[i * 4] = index; sw[i * 4] = 1 }
+        geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4))
+        geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4))
+        const name = `${comp.spec.prefix}${g.name}`
+        if (mats.length === 1) addLevels(name, geo, mats[0], (partReport[name] = []))
+        else {
+          if (geo.attributes.uv !== undefined && geo.index !== null) geo.computeTangents()
+          out.add(skinnedMesh(name, geo, mats, meshes))
+          partReport[name] = [triangles(geo)]
+        }
+        worn[g.name] = { bone, place: g.attach.place, mesh: createHash('sha256').update(readFileSync(file)).digest('hex') }
+      }
+      compReport.gear = worn
     }
     const img = skin !== undefined
       ? { bytes: readFileSync(path.join(comp.dir, skin.file)), ext: path.extname(skin.file).slice(1).replace('jpeg', 'jpg') }
