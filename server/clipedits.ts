@@ -12,7 +12,11 @@ export interface EditFrames { fps: number, bones: string[], rotations: number[][
 /** Each prop's path through the clip (by the prop's name: a rigid garment's), as keys from where Outfit places it: what
  * a slot's prop keys are (ClipKeys.props), so a clip made with a prop leading plays it as the editor showed it. */
 export type PropPaths = Record<string, ClipKey[]>
-export interface SavedEdit { name: string, base: string, loop?: boolean, keys?: unknown, props?: unknown, propPaths?: PropPaths, frames: EditFrames }
+export interface SavedEdit {
+  name: string, base: string, loop?: boolean, keys?: unknown, props?: unknown, propPaths?: PropPaths, frames: EditFrames
+  /** A clip made here before (custom-…) to save over, as itself (same id): the clips using it get the new one. */
+  replace?: string
+}
 
 const MAKE = 'blender/clips/edit.py'
 
@@ -77,6 +81,15 @@ let queue: Promise<unknown> = Promise.resolve()
 const reserved = new Set<string>()
 
 /** The id a new clip of this name gets (one the library hasn't, nor a save still queued), reserved at once. */
+/** The id an edit saves as: the made clip it replaces (one made here before), else a new one. */
+export async function editId (e: SavedEdit): Promise<string> {
+  if (typeof e.replace === 'string' && /^custom-[A-Za-z0-9_]+$/.test(e.replace) && existsSync(path.join(LIBRARY, 'meta', `${e.replace}.json`)) && !reserved.has(e.replace)) {
+    reserved.add(e.replace)
+    return e.replace
+  }
+  return await newId(e.name)
+}
+
 export async function newId (name: string): Promise<string> {
   const base = `custom-${slug(name)}`
   const sources = await readJson<Array<{ id: string }>>(path.join(LIBRARY, 'work', 'sources.json'), [])

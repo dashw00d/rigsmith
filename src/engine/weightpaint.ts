@@ -5,6 +5,10 @@
 //           the mean of its neighbours, the skin round the area held): skin pulled by a wrong bone goes with what
 //           surrounds it
 //   add / remove / smooth   a chosen bone's weight under the brush, by hand
+//   follow  the brushed skin takes the weights of what it covers (the legs under a coat), or of the nearest bones
+//           where nothing is close under it: cloth the body should push (a hem the legs walk through)
+//   bone    (rigid) the brushed skin moves with only one bone, every other pull dropped (a face a hood drags): the bone
+//           leading where the stroke began
 // Mirror (on by default): each stroke lands on the other side too, on each point's mirror twin with its bones swapped
 // for the other side's (LeftArm for RightArm), and a point on the middle line is evened between its sides; "Copy a
 // side" sets the whole other side from one. Twins are found at rest, across the hips.
@@ -32,6 +36,18 @@ interface Part {
 }
 
 export interface Edit { mesh: number, vertex: number, weights: Array<[string, number]> }
+
+/** A part's rest shape for the Follow brush (WeightPainter.followUnder), in the mesh's own space. */
+interface Rest {
+  height: number
+  /** each bone as segments to its children (a bone with none, a point) */
+  bones: Array<{ bone: number, a: THREE.Vector3, b: THREE.Vector3 }>
+  tris: Int32Array
+  normals: THREE.Vector3[]
+  boxes: THREE.Box3[]
+  /** point -> the covered skin under it (a mesh painted on, a triangle and where on it), or null when none is close */
+  under: Map<number, { part: number, face: number, bary: [number, number, number] } | null>
+}
 
 /** The bone on the other side's name: Left/Right (a person's), and _l/_r, .L/.R, L_/R_ (a creature's: a horse's
  * front_leg_upper_l). The same name for a middle bone. */
@@ -223,7 +239,9 @@ export class WeightPainter {
   }
 
   /** A stroke begins (one undo step). */
-  begin (): void { this.undo.push([]) }
+  begin (): void { this.undo.push([]); this.strokeBone = null }
+  /** The bone a Bone stroke holds to (picked on its first dab). */
+  private strokeBone: number | null = null
   private get log (): Array<{ part: number, point: number, weights: Weights }> | null { return this.undo[this.undo.length - 1] ?? null }
 
   mark (part: number, points: Map<number, number>, on = true): void {
@@ -290,6 +308,151 @@ export class WeightPainter {
     }
     for (const [p, w] of next) this.set(part, p, w, this.log)
     this.follow(part, next.keys())
+  }
+
+  /** Follow: the brushed skin takes on the weights of what is under it, so whatever it covers pushes it (a coat's
+   * hem over the legs). Found at rest: looking in from each point toward its nearest bone, the first skin facing
+   * back out (the hidden trousers under a coat; the cloth's own inner side faces away and is passed), within a short
+   * reach; with nothing that close, the nearest bones themselves. */
+  followUnder (part: number, points: Map<number, number>, strength: number): void {
+    // (every target first: a stroke can cover both a coat and the skin under it)
+    const targets = new Map<number, Weights>()
+    for (const p of points.keys()) targets.set(p, this.beneath(part, p))
+    for (const [p, f] of points) {
+      const w = this.weights(part, p); const target = targets.get(p)!
+      const k = Math.min(1, strength * f)
+      const out: Weights = new Map()
+      for (const b of new Set([...w.keys(), ...target.keys()])) out.set(b, (1 - k) * (w.get(b) ?? 0) + k * (target.get(b) ?? 0))
+      this.set(part, p, out, this.log)
+    }
+    this.follow(part, points.keys())
+  }
+
+  private readonly restCache = new Map<number, Rest>()
+
+  /** A part's rest shape for Follow: its bones as segments (each bone to its children; a bone with none, a point) and
+   * its triangles, in the mesh's own space. */
+  private restOf (part: number): Rest {
+    const cached = this.restCache.get(part)
+    if (cached !== undefined) return cached
+    const { mesh, rest } = this.parts[part]
+    const skeleton = mesh.skeleton
+    const at = skeleton.bones.map((_, i) => new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().copy(skeleton.boneInverses[i]).invert()).applyMatrix4(mesh.bindMatrixInverse))
+    const bones: Array<{ bone: number, a: THREE.Vector3, b: THREE.Vector3 }> = []
+    skeleton.bones.forEach((bone, i) => {
+      // (an end marker moves nothing)
+      if (/end|leaf|tip$/i.test(bone.name)) return
+      const children = bone.children.map(c => skeleton.bones.indexOf(c as THREE.Bone)).filter(c => c >= 0)
+      if (children.length === 0) bones.push({ bone: i, a: at[i], b: at[i] })
+      for (const c of children) bones.push({ bone: i, a: at[i], b: at[c] })
+    })
+    const g = mesh.geometry
+    const index = g.index !== null ? Int32Array.from(g.index.array as ArrayLike<number>) : Int32Array.from({ length: rest.length / 3 }, (_, i) => i)
+    const corner = (v: number): THREE.Vector3 => new THREE.Vector3(rest[v * 3], rest[v * 3 + 1], rest[v * 3 + 2])
+    const normals: THREE.Vector3[] = []; const boxes: THREE.Box3[] = []
+    for (let t = 0; t < index.length; t += 3) {
+      const a = corner(index[t]); const b = corner(index[t + 1]); const c = corner(index[t + 2])
+      normals.push(b.clone().sub(a).cross(c.clone().sub(a)).normalize())
+      boxes.push(new THREE.Box3().setFromPoints([a, b, c]))
+    }
+    const box = new THREE.Box3().setFromArray(rest)
+    const out: Rest = { height: Math.max(box.max.y - box.min.y, 1e-6), bones, tris: index, normals, boxes, under: new Map() }
+    this.restCache.set(part, out)
+    return out
+  }
+
+  /** The bone moving most of the skin under the brush (the brush's edge counting less): what a Bone stroke begun
+   * here would paint. */
+  leadingBone (part: number, points: Map<number, number>): number | null {
+    const lead: Weights = new Map()
+    for (const [p, f] of points) for (const [b, x] of this.weights(part, p)) lead.set(b, (lead.get(b) ?? 0) + x * f)
+    return [...lead].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+  }
+
+  /** The bone the stroke under way holds to (a Bone stroke), if any. */
+  get strokeBoneIndex (): number | null { return this.strokeBone }
+
+  /** Bone (rigid): the brushed skin moves with only one bone, every other pull dropped (a face a hood drags, a buckle, a
+   * plate): the bone leading where the stroke began, held for the whole stroke. */
+  rigid (part: number, points: Map<number, number>, strength: number): void {
+    this.strokeBone ??= this.leadingBone(part, points)
+    const bone = this.strokeBone
+    if (bone === null) return
+    for (const [p, f] of points) {
+      const w = this.weights(part, p)
+      const k = Math.min(1, strength * f)
+      const out: Weights = new Map()
+      for (const [b, x] of w) out.set(b, (1 - k) * x)
+      out.set(bone, (out.get(bone) ?? 0) + k)
+      this.set(part, p, out, this.log)
+    }
+    this.follow(part, points.keys())
+  }
+
+  /** One mesh's bone indices as another's (by name; the same skeleton maps to itself), -1 where it has no such bone. */
+  private boneMap (from: number, to: number): Int32Array {
+    const a = this.parts[from].mesh.skeleton; const b = this.parts[to].mesh.skeleton
+    if (a === b) return Int32Array.from(a.bones, (_, i) => i)
+    const names = b.bones.map(x => x.name)
+    return Int32Array.from(a.bones, x => names.indexOf(x.name))
+  }
+
+  /** What a point follows (see followUnder). */
+  private beneath (part: number, p: number): Weights {
+    const r = this.restOf(part)
+    const { rest, point } = this.parts[part]
+    const x = new THREE.Vector3(rest[p * 3], rest[p * 3 + 1], rest[p * 3 + 2])
+    const toward = (s: { a: THREE.Vector3, b: THREE.Vector3 }): THREE.Vector3 => {
+      const ab = s.b.clone().sub(s.a); const t = ab.lengthSq() > 1e-12 ? THREE.MathUtils.clamp(x.clone().sub(s.a).dot(ab) / ab.lengthSq(), 0, 1) : 0
+      return s.a.clone().addScaledVector(ab, t)
+    }
+    const near = r.bones.map(s => ({ bone: s.bone, d: toward(s).distanceTo(x), at: toward(s) })).sort((a, b) => a.d - b.d)
+    if (near.length === 0) return this.weights(part, p)
+    if (!r.under.has(p)) {
+      // (as far as a garment sits off the skin: by the character's size, the tallest mesh painted on, not a small piece's)
+      const height = Math.max(...this.parts.map((_, q) => this.restOf(q).height))
+      const reach = Math.min(near[0].d, 0.08 * height)
+      const dir = near[0].at.clone().sub(x).normalize()
+      const ray = new THREE.Ray(x, dir)
+      const span = new THREE.Box3().setFromPoints([x, x.clone().addScaledVector(dir, reach)])
+      const hit = new THREE.Vector3(); let best: { part: number, face: number, bary: [number, number, number], t: number } | null = null
+      // (every mesh painted on: a garment's skin under it is the body's; the meshes share the body's rest space)
+      for (let q = 0; q < this.parts.length; q++) {
+        const o = q === part ? r : this.restOf(q)
+        const orest = this.parts[q].rest
+        for (let f = 0; f < o.normals.length; f++) {
+          if (o.normals[f].dot(dir) >= 0 || !o.boxes[f].intersectsBox(span)) continue
+          const v = [o.tris[f * 3], o.tris[f * 3 + 1], o.tris[f * 3 + 2]]
+          if (q === part && v.some(i => point[i] === p)) continue
+          const [a, b, c] = v.map(i => new THREE.Vector3(orest[i * 3], orest[i * 3 + 1], orest[i * 3 + 2]))
+          if (ray.intersectTriangle(a, b, c, false, hit) === null) continue
+          const t = hit.distanceTo(x)
+          if (t < 1e-4 * r.height || t > reach || (best !== null && t >= best.t)) continue
+          const bary = THREE.Triangle.getBarycoord(hit, a, b, c, new THREE.Vector3())
+          if (bary !== null) best = { part: q, face: f, bary: [bary.x, bary.y, bary.z], t }
+        }
+      }
+      r.under.set(p, best === null ? null : { part: best.part, face: best.face, bary: best.bary })
+    }
+    const under = r.under.get(p)
+    const out: Weights = new Map()
+    if (under !== undefined && under !== null) {
+      // the covered skin's weights as they are now (painted ones included), its bones as this mesh's
+      const o = this.restOf(under.part)
+      const map = this.boneMap(under.part, part)
+      for (let k = 0; k < 3; k++) {
+        for (const [b, w] of this.weights(under.part, this.parts[under.part].point[o.tris[under.face * 3 + k]])) {
+          const to = map[b]
+          if (to >= 0) out.set(to, (out.get(to) ?? 0) + w * under.bary[k])
+        }
+      }
+      if (out.size > 0) return out
+    }
+    // nothing close under it: the nearest bones, the nearer far more (two, so a border between them stays soft)
+    const two = near.filter((s, i) => i === 0 || s.bone !== near[0].bone).slice(0, 2)
+    const inv = two.map(s => 1 / Math.max(s.d, 1e-6) ** 4); const total = inv.reduce((a, b) => a + b, 0)
+    two.forEach((s, i) => out.set(s.bone, (out.get(s.bone) ?? 0) + inv[i] / total))
+    return out
   }
 
   /** Heal the marked area: its weights filled in smoothly from the skin round it (each point the mean of its

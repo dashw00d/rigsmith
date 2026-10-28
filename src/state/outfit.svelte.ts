@@ -4,12 +4,14 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { api, fileUrl, type Garment, type Mount } from './api.ts'
 import { app } from './app.svelte.ts'
 import { CharacterView } from '../engine/CharacterView.ts'
-import { attachGarments, garmentMatrix, restFrame } from '../engine/garments.ts'
+import { attachGarments, GARMENT_FLAG, garmentMatrix, restFrame } from '../engine/garments.ts'
 import { riderScale, straddle } from '../engine/mount.ts'
 import { animator } from './animator.svelte.ts'
+import { paint } from './paint.svelte.ts'
 import {
-  applyOffset, attachProps, CATALOG, defaultPlacement, defaultScale, readOffset, type PropAttachment, type Socket,
+  applyOffset, attachProps, CATALOG, defaultPlacement, defaultScale, gripFrame, readOffset, type PropAttachment, type Socket,
 } from '../engine/props.ts'
+import { strandNear, type PullSocket } from '../engine/pulls.ts'
 import type { Stage } from '../engine/Stage.ts'
 
 export type GizmoMode = 'translate' | 'rotate' | 'scale'
@@ -19,6 +21,10 @@ class Outfit {
   /** Garment being fitted, with the gizmo: a rigid one on its bone (move it at any pose or frame), a clothing one shown
    * unbound until it is bound again. */
   fitting = $state<string | null>(null)
+  /** The accessory whose settings are open (stays when a clothing piece is bound again: to paint it, or pin a part). */
+  focus = $state<string | null>(null)
+  /** Picking a part's spot on the body: the next click on the body sets it. */
+  picking = $state<string | null>(null)
   mode = $state<GizmoMode>('translate')
   busy = $state(false)
   /** What the gizmo moves for a rider: his seat on the horse ('seat'), or one of his held bones ('bone:<name>'). */
@@ -92,6 +98,8 @@ class Outfit {
           const objects = await attachGarments(view, this.garments, g => fileUrl(character, g.file) ?? '', fitting)
           if (token === this.garmentToken) {
             this.garmentObjects = objects
+            // (a garment being painted is a new mesh now: paint on it)
+            paint.rebuild()
             // (the clip playing carries the props' placements: play it again with these)
             if (animator.current !== null) void animator.refresh(true)
           }
@@ -199,6 +207,7 @@ class Outfit {
   }
 
   fit (id: string | null): void {
+    if (id !== null) this.focus = id
     this.fitting = id
     this.selected = null
     void this.sync(app.step === 'outfit')
@@ -217,11 +226,11 @@ class Outfit {
     })
   }
 
-  async upload (file: File): Promise<void> {
+  async upload (file: File, kind: 'prop' | 'clothing' | 'part' = 'clothing'): Promise<void> {
     const c = app.selected
     if (c === null) return
     try {
-      app.upsert(await api.uploadGarment(c.id, file))
+      app.upsert(await api.uploadGarment(c.id, file, kind))
     } catch (error) {
       app.toast('error', (error as Error).message)
     }
@@ -288,9 +297,172 @@ class Outfit {
     await app.update(c.id, { garments: this.garments.map(g => (g.id === id ? { ...g, ...change } : g)) })
   }
 
+  /** Show or switch off an accessory. Shown in a switch set, the others of its set are switched off. */
+  async setShown (id: string, shown: boolean): Promise<void> {
+    const c = app.selected
+    const g = this.garments.find(x => x.id === id)
+    if (c === null || g === undefined) return
+    const set = g.group?.trim() ?? ''
+    await app.update(c.id, {
+      garments: this.garments.map(x => x.id === id ? { ...x, hidden: !shown }
+        : shown && set !== '' && (x.group?.trim() ?? '') === set ? { ...x, hidden: true } : x),
+    })
+  }
+
+  /** The switch sets there are, by name. */
+  get groups (): string[] {
+    return [...new Set(this.garments.map(g => g.group?.trim() ?? '').filter(x => x !== ''))].sort()
+  }
+
+  /** Pin a part to the spot on the body clicked next (its rest position: the same skin whatever the pose). */
+  pickSpot (id: string | null): void {
+    this.picking = id
+    const stage = this.stage
+    const view = this.view
+    if (id === null || stage === null || view === null) return
+    const canvas = stage.renderer.domElement
+    const ray = new THREE.Raycaster()
+    const down = (e: PointerEvent): void => {
+      if (e.button !== 0) return
+      const r = canvas.getBoundingClientRect()
+      ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, 1 - (e.clientY - r.top) / r.height * 2), stage.camera)
+      const body = view.skinned.filter(m => m.userData[GARMENT_FLAG] === undefined)
+      for (const m of body) m.computeBoundingSphere()
+      const hit = ray.intersectObjects(body, false)[0]
+      if (hit === undefined || hit.face === undefined || hit.face === null) return   // (off the body: the camera turns)
+      e.stopPropagation(); e.preventDefault()
+      canvas.removeEventListener('pointerdown', down, { capture: true })
+      const mesh = hit.object as THREE.SkinnedMesh
+      // where on the triangle as it stands, then that point of it at rest
+      const corners = [hit.face.a, hit.face.b, hit.face.c]
+      const posed = corners.map(v => mesh.getVertexPosition(v, new THREE.Vector3()).applyMatrix4(mesh.matrixWorld))
+      const bary = THREE.Triangle.getBarycoord(hit.point, posed[0], posed[1], posed[2], new THREE.Vector3()) ?? new THREE.Vector3(1 / 3, 1 / 3, 1 / 3)
+      const pos = mesh.geometry.attributes.position
+      const rest = corners.map(v => new THREE.Vector3().fromBufferAttribute(pos, v).applyMatrix4(mesh.bindMatrix))
+      const at = rest[0].multiplyScalar(bary.x).addScaledVector(rest[1], bary.y).addScaledVector(rest[2], bary.z)
+      this.picking = null
+      const r4 = (v: number): number => Math.round(v * 1e4) / 1e4
+      void this.patchGarment(id, { anchor: [r4(at.x), r4(at.y), r4(at.z)] })
+    }
+    canvas.addEventListener('pointerdown', down, { capture: true })
+    this.stopPicking = () => { canvas.removeEventListener('pointerdown', down, { capture: true }); this.picking = null }
+  }
+  stopPicking: () => void = () => { this.picking = null }
+
+  // ---- pulls (a prop's points another bone draws: a bowstring) -------------------------------------------------
+
+  /** Add a pull to a prop: drawn by `bone` (its grip: the socket's, where a hand closes); resting on the prop's
+   * longest thinnest piece (a bowstring), at its middle. */
+  async addPull (id: string, bone = 'RightHand'): Promise<void> {
+    const g = this.garments.find(x => x.id === id)
+    const node = this.garmentObjects.get(id)
+    const view = this.view
+    if (g === undefined || node === undefined || view === null) return
+    const meshes: THREE.Mesh[] = []
+    node.traverse(o => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh) })
+    const rest = strandMiddle(meshes) ?? new THREE.Vector3()
+    const grip = gripFrame(view, bone as Socket)?.anchor ?? new THREE.Vector3()
+    const r4 = (v: number): number => Math.round(v * 1e5) / 1e5
+    const pull: PullSocket = {
+      id: Math.random().toString(36).slice(2, 10), name: (g.pulls ?? []).length === 0 ? 'Draw' : `Pull ${(g.pulls ?? []).length + 1}`,
+      bone, grip: [r4(grip.x), r4(grip.y), r4(grip.z)], rest: [r4(rest.x), r4(rest.y), r4(rest.z)], holds: {},
+    }
+    await this.patchGarment(id, { pulls: [...(g.pulls ?? []), pull] })
+  }
+
+  /** Where `bone` holds things (a hand's grip socket; any other bone: the bone itself), in its rest frame. */
+  gripOf (bone: string): [number, number, number] {
+    const view = this.view
+    const grip = view === null ? null : gripFrame(view, bone as Socket)?.anchor ?? null
+    const r5 = (v: number): number => Math.round(v * 1e5) / 1e5
+    return grip === null ? [0, 0, 0] : [r5(grip.x), r5(grip.y), r5(grip.z)]
+  }
+
+  async patchPull (id: string, pullId: string, change: Partial<PullSocket>): Promise<void> {
+    const g = this.garments.find(x => x.id === id)
+    if (g === undefined) return
+    await this.patchGarment(id, { pulls: (g.pulls ?? []).map(p => (p.id === pullId ? { ...p, ...change } : p)) })
+  }
+
+  async removePull (id: string, pullId: string): Promise<void> {
+    const g = this.garments.find(x => x.id === id)
+    if (g === undefined) return
+    const pulls = (g.pulls ?? []).filter(p => p.id !== pullId)
+    await this.patchGarment(id, { pulls: pulls.length > 0 ? pulls : undefined })
+  }
+
+  /** Set a pull's point on its prop: the next click on the prop (the camera turns off it). */
+  pickPullPoint (id: string, pullId: string): void {
+    const stage = this.stage
+    const node = this.garmentObjects.get(id)
+    if (stage === null || node === undefined) return
+    this.picking = `${id}:${pullId}`
+    const canvas = stage.renderer.domElement
+    const ray = new THREE.Raycaster()
+    const down = (e: PointerEvent): void => {
+      if (e.button !== 0) return
+      const r = canvas.getBoundingClientRect()
+      ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, 1 - (e.clientY - r.top) / r.height * 2), stage.camera)
+      const meshes: THREE.Mesh[] = []
+      node.traverse(o => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh) })
+      for (const m of meshes) if ((m as THREE.SkinnedMesh).isSkinnedMesh) (m as THREE.SkinnedMesh).computeBoundingSphere()
+      const hit = ray.intersectObjects(meshes, false)[0]
+      if (hit === undefined) return
+      e.stopPropagation(); e.preventDefault()
+      canvas.removeEventListener('pointerdown', down, { capture: true })
+      this.picking = null
+      // (in the prop's own space: where it is on the prop, wherever the prop is)
+      const at = node.worldToLocal(hit.point.clone())
+      const r5 = (v: number): number => Math.round(v * 1e5) / 1e5
+      void this.patchPull(id, pullId, { rest: [r5(at.x), r5(at.y), r5(at.z)] })
+    }
+    canvas.addEventListener('pointerdown', down, { capture: true })
+    this.stopPicking = () => { canvas.removeEventListener('pointerdown', down, { capture: true }); this.picking = null }
+  }
+
+  /** When a clip holds a pull, found by playing it: from when its bone's grip first comes to the strand the pull
+   * rests on (anywhere along it: a hand nocks by the bow's grip, then draws), until the clip's release (its blow
+   * script, if that comes after) or until the grip goes past a full draw (most of the strand's length away). */
+  async findHolds (id: string, pullId: string, entryIndex: number): Promise<Array<[number, number]>> {
+    const c = app.selected
+    const g = this.garments.find(x => x.id === id)
+    const pull = g?.pulls?.find(p => p.id === pullId)
+    const node = this.garmentObjects.get(id)
+    const view = this.view
+    const entry = c?.animations[entryIndex]
+    if (c === null || g === undefined || pull === undefined || node === undefined || view === null || entry === undefined) return []
+    animator.playEntry(entry, entryIndex)
+    for (let i = 0; i < 100 && (animator.current?.entry !== entryIndex || animator.duration === 0); i++) await new Promise(r => setTimeout(r, 50))
+    animator.setPlaying(false)
+    const hand = view.bones.get(pull.bone)
+    const strand = strandSegment(node, pull)
+    if (hand === undefined || strand === null || animator.duration === 0) return []
+    const reach = view.height * 0.03
+    const samples = 120
+    const dist: number[] = []
+    const grip = new THREE.Vector3(); const on = new THREE.Vector3()
+    for (let i = 0; i <= samples; i++) {
+      animator.seek(animator.duration * i / samples)
+      view.root.updateMatrixWorld(true)
+      grip.set(...pull.grip).applyMatrix4(hand.matrixWorld).applyMatrix4(node.matrixWorld.clone().invert())
+      dist.push(grip.distanceTo(strand.closestPointToPoint(grip, true, on)))
+    }
+    animator.seek(0)
+    const start = dist.findIndex(d => d <= reach)
+    if (start < 0) return []
+    const blow = (c.scripts ?? []).find(s => s.kind === 'blow' && s.enabled && s.clip === entry.name) as { at: number } | undefined
+    let end = start
+    if (blow !== undefined && blow.at > start / samples) end = Math.round(blow.at * samples)
+    else while (end + 1 <= samples && dist[end + 1] <= strand.distance() * 0.6) end++
+    const holds: Array<[number, number]> = [[+(start / samples).toFixed(3), +(end / samples).toFixed(3)]]
+    await this.patchPull(id, pullId, { holds: { ...(pull.holds ?? {}), [entry.name]: holds } })
+    return holds
+  }
+
   async removeGarment (id: string): Promise<void> {
     const c = app.selected
     if (c === null) return
+    if (this.focus === id) this.focus = null
     if (this.fitting === id) this.fitting = null
     await app.update(c.id, { garments: this.garments.filter(g => g.id !== id) })
   }
@@ -392,4 +564,45 @@ function thinnestAxis (pts: THREE.Vector3[], c: THREE.Vector3): THREE.Vector3 {
   }
   const k = [0, 1, 2].reduce((best, i) => (a[i][i] < a[best][best] ? i : best), 0)
   return new THREE.Vector3(v[0][k], v[1][k], v[2][k]).normalize()
+}
+
+/** The middle of a prop's longest thinnest piece (a bowstring), in the prop's own space; null without meshes. */
+function strandMiddle (meshes: THREE.Mesh[]): THREE.Vector3 | null {
+  let best: { score: number, at: THREE.Vector3 } | null = null
+  for (const m of meshes) {
+    const geometry = m.geometry
+    const pos = geometry.attributes.position
+    const seen = new Set<number>()
+    for (let i = 0; i < pos.count; i++) {
+      if (seen.has(i)) continue
+      const strand = strandNear(geometry, new THREE.Vector3().fromBufferAttribute(pos, i))
+      for (const v of strand.vertices) seen.add(v)
+      // thickness: how far its vertices stray from its long axis
+      const c = new THREE.Vector3()
+      for (const v of strand.vertices) c.add(new THREE.Vector3().fromBufferAttribute(pos, v))
+      c.divideScalar(strand.vertices.size)
+      let thick = 0
+      for (const v of strand.vertices) {
+        const d = new THREE.Vector3().fromBufferAttribute(pos, v).sub(c)
+        thick = Math.max(thick, d.sub(strand.axis.clone().multiplyScalar(d.dot(strand.axis))).length())
+      }
+      const score = strand.length / Math.max(thick, 1e-6)
+      if (best === null || score > best.score) best = { score, at: c.applyMatrix4(m.matrix) }
+    }
+  }
+  return best?.at ?? null
+}
+
+/** The strand a pull rests on, end to end (its prop's own space): what a hand takes hold of, anywhere along it. */
+function strandSegment (node: THREE.Object3D, pull: PullSocket): THREE.Line3 | null {
+  let mesh: THREE.Mesh | null = null
+  node.traverse(o => { if (mesh === null && (o as THREE.Mesh).isMesh) mesh = o as THREE.Mesh })
+  if (mesh === null) return null
+  const geometry = (mesh as THREE.Mesh).geometry
+  const rest = new THREE.Vector3(...pull.rest)
+  const { vertices, axis } = strandNear(geometry, rest)
+  const v = new THREE.Vector3()
+  let lo = Infinity; let hi = -Infinity
+  for (const i of vertices) { const t = v.fromBufferAttribute(geometry.attributes.position, i).sub(rest).dot(axis); lo = Math.min(lo, t); hi = Math.max(hi, t) }
+  return new THREE.Line3(rest.clone().addScaledVector(axis, lo), rest.clone().addScaledVector(axis, hi))
 }

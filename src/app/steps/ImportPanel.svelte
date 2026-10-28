@@ -5,6 +5,7 @@
   import { app } from '../../state/app.svelte.ts'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
+  import { viewer } from '../../state/viewer.svelte.ts'
 
   let { character }: { character: Character } = $props()
 
@@ -20,7 +21,25 @@
     if (next !== '' && next !== character.name) await app.update(character.id, { name: next })
   }
 
+  // Size and floor: measured on the model shown (its rest), changed in place (server: POST /fit)
+  const shown = $derived(viewer.character !== null && !viewer.loading && app.selectedId === character.id ? viewer.character : null)
+  const measured = $derived(shown === null ? null : { height: shown.box.max.y - shown.box.min.y, floor: shown.box.min.y })
+  let heightInput = $state(0)
+  $effect(() => { if (measured !== null) heightInput = Math.round(measured.height * 1000) / 1000 })
+  let fitting = $state(false)
+  async function fit (height?: number): Promise<void> {
+    if (fitting) return
+    fitting = true
+    try {
+      app.upsert(await api.fit(character.id, height))
+      app.toast('ok', height === undefined ? `${character.name} is on the floor` : `${character.name} is ${height} tall now, on the floor`)
+    } catch (error) {
+      app.toast('error', (error as Error).message)
+    } finally { fitting = false }
+  }
+
   async function remove (): Promise<void> {
+    if (!confirm(`Delete ${character.name}?\n\nIt's moved to workspace/trash, out of Rigsmith (put its folder back in workspace/characters to undo).`)) return
     await app.remove(character.id)
   }
 </script>
@@ -42,10 +61,26 @@
     <dl>
       <dt>Triangles</dt><dd class="mono">{character.stats.triangles.toLocaleString()}</dd>
       <dt>Vertices</dt><dd class="mono">{character.stats.vertices.toLocaleString()}</dd>
-      <dt>Height</dt><dd class="mono">{character.stats.height.toFixed(3)} m</dd>
+      <dt>Height</dt><dd class="mono">{(measured?.height ?? character.stats.height).toFixed(3)} m</dd>
       <dt>Meshes</dt><dd class="mono">{character.stats.meshes}</dd>
       {#if character.stats.bones > 0}<dt>Bones</dt><dd class="mono">{character.stats.bones}</dd>{/if}
     </dl>
+  </Section>
+{/if}
+
+{#if character.kind !== 'animation' && measured !== null}
+  <Section title="Size">
+    <div class="size">
+      <label class="field">Height <input class="num" type="number" min="0.05" step="0.01" bind:value={heightInput} aria-label="Height" /> m</label>
+      <Button size="sm" loading={fitting} disabled={fitting || !(heightInput > 0) || Math.abs(heightInput - measured.height) < 0.0005}
+        onclick={() => fit(heightInput)}>Resize</Button>
+    </div>
+    {#if Math.abs(measured.floor) > 0.002}
+      <div class="warn"><TriangleAlert size={14} /><span>Its lowest point is {Math.abs(measured.floor * 100).toFixed(1)} cm {measured.floor < 0 ? 'below' : 'above'} the floor.</span></div>
+      <Button size="sm" variant="primary" loading={fitting} disabled={fitting} onclick={() => fit()}>Put it on the floor</Button>
+    {/if}
+    <p class="faint small">Resizing (or standing it on the floor) changes the files in place: a rigged character keeps its weights and
+      painting, and its joints, markers and props follow. Later imports and rigs keep the size.</p>
   </Section>
 {/if}
 
@@ -69,11 +104,14 @@
   {/if}
   <div class="row">
     <Button size="sm" variant="ghost" onclick={async () => { await api.reimport(character.id) }}><RotateCcw size={13} /> Re-import</Button>
-    <Button size="sm" variant="danger" onclick={remove}><Trash2 size={13} /> Remove</Button>
+    <Button size="sm" variant="danger" onclick={remove}><Trash2 size={13} /> Delete</Button>
   </div>
 </Section>
 
 <style>
+  .size { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .field { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+  .num { width: 80px; height: 28px; border-radius: var(--r-1); border: 1px solid var(--line-strong); background: var(--bg-1); padding: 0 6px; }
   .title {
     width: 100%;
     font-size: 18px;

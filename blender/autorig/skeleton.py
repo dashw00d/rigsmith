@@ -6,7 +6,7 @@ workspace/rigdev/gt (see dev/fit_stats in the rig notes). All lengths are fracti
 import numpy as np
 
 import mixamo
-from fingers import finger_chains, hand_fingers
+from fingers import finger_chains, hand_fingers, space_evenly
 from hands import measure_hand, mirror, symmetric_hand
 
 
@@ -318,7 +318,7 @@ def detect_finger_joints(verts, tris, joints, height, x_center):
         labeled = hand_fingers(verts, tris, hand, wrist, height)
         if not labeled:
             continue
-        chains = finger_chains(labeled)
+        chains = space_evenly(finger_chains(labeled, wrist, hand['axis']), verts, hand, wrist)
         out = {}
         for finger, points in chains.items():
             for i, p in enumerate(points, start=1):
@@ -376,7 +376,7 @@ def complete_joints(verts, tris, supplied, fingers):
         _add_fingers(local, fingers, hand)
         if hand is not None:
             labeled = hand_fingers(verts, tris, hand, wrist, height)
-            detected = {f'LeftHand{f}{i}': point for f, points in finger_chains(labeled).items()
+            detected = {f'LeftHand{f}{i}': point for f, points in space_evenly(finger_chains(labeled, wrist, hand['axis']), verts, hand, wrist).items()
                         for i, point in enumerate(points, 1) if point is not None}
             local.update(fit_finger_level(detected, fingers, local))
         for b in expected:

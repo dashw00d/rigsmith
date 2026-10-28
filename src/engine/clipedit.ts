@@ -76,8 +76,9 @@ export function carrierGrip (prop: string, hand: 'Left' | 'Right', placement: TH
   return { id: `carrier:${prop}`, name: `${hand} hand (carries it)`, position: at.toArray(), rotation: turn.toArray() }
 }
 
-/** A prop's path through the clip: locked, it leads (the hands on it follow it, the body follows the hands); its keys are
- * moves and turns from where it rode in the clip (in the world, about its own origin). */
+/** A prop's path through the clip: locked, it leads (the hands on it follow it, the body follows the hands), its keys
+ * moves and turns from where it rode in the clip (in the world, about its own origin). Not locked, its keys adjust its
+ * socket: moves and turns in its own placed frame from where its bone holds it (whatever holds it stays). */
 export interface PropPath { locked: boolean, keys: ClipKey[] }
 
 /** What the props do in an edit: their paths, the hands on them, their sockets and fingers. */
@@ -460,7 +461,9 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
   solver: { solve: typeof solveBody, bones: typeof bodyBones } = { solve: solveBody, bones: bodyBones }): THREE.AnimationClip {
   const keyed = applyBoneKeys(base, keys, loop, rest)
   const active = props !== null && (props.attachments.length > 0 || Object.values(props.paths).some(p => p.locked))
-  if (Object.keys(keys).length === 0 && !active) return keyed
+  // (a socket adjusted is an edit too, with nothing to solve)
+  const socketing = props !== null && Object.values(props.paths).some(p => !p.locked && p.keys.length > 0)
+  if (Object.keys(keys).length === 0 && !active && !socketing) return keyed
   const bones = bonesOf(posable)
   const legs = legsOf(bones, rig)
   // (the soles' heights at rest above the floor)
@@ -500,13 +503,25 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
   // (each leading prop's node keyed where its path puts it, on its bone as the solve left that: the prop is where it leads
   // to, however the hand carrying it holds it)
   const leading = active ? Object.keys(props!.paths).filter(p => props!.paths[p].locked && posable.getObjectByName(props!.node(p)) !== undefined) : []
-  const propAt = new Map(leading.map(p => [p, { position: [] as number[], quaternion: [] as number[] }]))
+  // (a prop that doesn't lead, with keys: its socket adjusted, frame by frame, the keys being moves and turns in its own
+  // placed frame from where its bone holds it; whatever holds it stays, other hands on it follow)
+  const socketed = props === null ? [] : Object.keys(props.paths).filter(p => !props.paths[p].locked && props.paths[p].keys.length > 0 && posable.getObjectByName(props.node(p)) !== undefined)
+  if (socketed.length > 0) changed = true
+  const propAt = new Map([...leading, ...socketed].map(p => [p, { position: [] as number[], quaternion: [] as number[] }]))
   for (const [i, t] of times.entries()) {
     pose(base, t)
     const was = sunk(legs, soles, floor)
     // (where each locked prop rode before the edit)
     const rode = active ? new Map(Object.keys(props!.paths).filter(p => props!.paths[p].locked).map(p => [p, posable.getObjectByName(props!.node(p))?.matrixWorld.clone()]).filter((x): x is [string, THREE.Matrix4] => x[1] !== undefined)) : null
     pose(keyed, t)
+    for (const prop of socketed) {
+      const node = posable.getObjectByName(props!.node(prop))!
+      const { q, p } = sampleKeys(props!.paths[prop].keys, keyed.duration > 0 ? t / keyed.duration : 0, loop)
+      node.updateMatrix()
+      node.matrix.multiply(new THREE.Matrix4().compose(p, q, new THREE.Vector3(1, 1, 1)))
+      node.matrix.decompose(node.position, node.quaternion, node.scale)
+      node.updateMatrixWorld(true)
+    }
     if (active) {
       const u = keyed.duration > 0 ? t / keyed.duration : 0
       const goals = handGoals(posable, bones, props!, u, loop, rode)
@@ -528,6 +543,11 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
     }
     for (const b of touched) values.get(b.name)!.push(...b.quaternion.toArray())
     if (hipsBone !== undefined) hipsAt.push(...hipsBone.position.toArray())
+    for (const prop of socketed) {
+      const node = posable.getObjectByName(props!.node(prop))!
+      const at = propAt.get(prop)!
+      at.position.push(...node.position.toArray()); at.quaternion.push(...node.quaternion.toArray())
+    }
     if (leading.length > 0) {
       posable.updateMatrixWorld(true)
       const u = keyed.duration > 0 ? t / keyed.duration : 0

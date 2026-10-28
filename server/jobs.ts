@@ -115,7 +115,9 @@ function lastError (log: string): string | null {
 
 /** Run the Codex CLI non-interactively in `dir` (it may write files there), with images attached. */
 export async function runCodex (dir: string, prompt: string, images: string[], onMessage?: (message: string) => void, timeoutMs = 15 * 60_000): Promise<void> {
-  const args = ['exec', '-C', dir, '--skip-git-repo-check', '--ephemeral', '-s', 'workspace-write', '--json']
+  // (low reasoning: the work is one image edit a view, so a long think first only costs time; $CODEX_EFFORT overrides)
+  const effort = process.env.CODEX_EFFORT ?? 'low'
+  const args = ['exec', '-C', dir, '--skip-git-repo-check', '--ephemeral', '-s', 'workspace-write', '--json', '-c', `model_reasoning_effort="${effort}"`]
   for (const image of images) args.push('-i', path.join(dir, image))
   // `-i` takes several files, so the prompt goes through stdin ('-') rather than as a trailing argument.
   args.push('-')

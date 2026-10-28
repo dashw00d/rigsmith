@@ -5,11 +5,12 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { AnimationEntry, Character, ClipKey, LibraryClip } from './api.ts'
 import { app } from './app.svelte.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
-import { RetargetCache } from '../engine/clips.ts'
+import { forgetClip, RetargetCache } from '../engine/clips.ts'
 import { renamer } from '../engine/presets/skeletonMap.ts'
 import { Player } from '../engine/Player.ts'
 import { PreviewRenderer } from '../engine/PreviewRenderer.ts'
-import { fistPose, retime, type GripScript } from '../engine/scripts.ts'
+import { DEFAULT_FIST, fistPose, handScripts, retime, type GripScript } from '../engine/scripts.ts'
+import { handPose, type HandPose } from '../engine/handposes.ts'
 import { applyLift } from '../engine/keys.ts'
 import { bakeEntry, boneRest, clipUrl, entryUrl, withPropTracks } from '../engine/animation.ts'
 import { restUpOf } from '../engine/retarget.ts'
@@ -29,13 +30,15 @@ export interface NowPlaying {
   propPaths?: Record<string, ClipKey[]>
   /** The animation editor's clip (an edit, not saved as itself): no slot can take it. */
   edited?: boolean
+  /** An edit of one of the character's clips: that clip's name (what its props' pulls are held in). */
+  slot?: string
 }
 
 const MANNEQUIN = '/files/library/mannequin/ybot.glb'
 
 /** The library clip a hand's fist is closed as when nothing says otherwise: of the library's held-object clips, the one
  * whose fingers wrap a shaft most evenly and closely, both hands (a scan of their fists round a spear's shaft). */
-export const GRIP_CLIP = 'mixamo-Great_Sword_Crouching_6'
+export const GRIP_CLIP = DEFAULT_FIST
 /** The fists to choose from (the best of that scan, and the old default): library clip id, name. */
 export const FISTS: Array<[string, string]> = [['mixamo-Great_Sword_Crouching_6', 'Great sword'], ['mixamo-Golf_Post-Swing_2', 'Golf club'],
   ['mixamo-Holding_Turn_Right', 'Holding'], ['mixamo-Walk_With_Rifle_3', 'Rifle'], ['mixamo-2hand_Idle', '2hand idle']]
@@ -266,9 +269,27 @@ class Animator {
   async fistOf (side: 'Left' | 'Right', clipId?: string): Promise<Record<string, [number, number, number, number]>> {
     const root = this.posableCopy()
     if (root === null || this.cache === null) return {}
-    const grip = (app.selected?.scripts ?? []).find((x): x is GripScript => x.enabled && x.kind === 'grip' && x.side === side)
-    const clip = await this.cache.get(clipUrl(clipId ?? grip?.clip ?? GRIP_CLIP), { inPlace: true })
+    const grip = handScripts(app.selected ?? {}).find((x): x is GripScript => x.enabled && x.kind === 'grip' && x.side === side && x.during === undefined)
+    // (one of the character's hand poses, or the fist a clip closes)
+    const named = clipId?.startsWith('pose:') === true ? app.selected?.handPoses?.find(p => p.id === clipId.slice(5)) : clipId === undefined ? grip?.hand : undefined
+    if (named !== undefined) return Object.fromEntries([...handPose(root, side, named)].map(([n, q]) => [n, q.toArray() as [number, number, number, number]]))
+    const clip = await this.cache.get(clipUrl(clipId !== undefined && !clipId.startsWith('pose:') ? clipId : grip?.clip ?? GRIP_CLIP), { inPlace: true })
     return Object.fromEntries([...fistPose(root, clip, side).pose].map(([n, q]) => [n, q.toArray() as [number, number, number, number]]))
+  }
+
+  /** The rest pose with one hand posed (the Rig step's Hand poses, previewing one). */
+  playHandPose (side: 'Left' | 'Right', pose: HandPose): void {
+    if (this.player === null || this.view === null) return
+    this.token++
+    this.handPosePreview = { side, id: pose.id }
+    this.posable ??= cloneSkinned(this.view.root)
+    const tracks: THREE.KeyframeTrack[] = []
+    for (const [n, q] of handPose(this.posable, side, pose)) tracks.push(new THREE.QuaternionKeyframeTrack(`${n}.quaternion`, [0, 1], [...q.toArray(), ...q.toArray()]))
+    this.player.stop()
+    this.horsePlayer?.stop()
+    this.current = { clipId: 'handpose', url: '', name: `Hand pose: ${pose.name}`, entry: null }
+    this.player.play(new THREE.AnimationClip(`Hand pose: ${pose.name}`, 1, tracks))
+    this.duration = 1
   }
 
   /** The rest pose with the hands closed as the character's Hold fist scripts close them (both hands round a shaft, as
@@ -281,12 +302,12 @@ class Animator {
     this.loading = true
     this.error = null
     try {
-      const grips = (app.selected?.scripts ?? []).filter((x): x is GripScript => x.enabled && x.kind === 'grip')
-      const hands = grips.length > 0 ? grips.map(g => ({ side: g.side, clip: g.clip })) : (['Left', 'Right'] as const).map(side => ({ side, clip: GRIP_CLIP }))
+      const grips = handScripts(app.selected ?? {}).filter((x): x is GripScript => x.enabled && x.kind === 'grip' && x.during === undefined)
+      const hands = grips.length > 0 ? grips.map(g => ({ side: g.side, clip: g.clip, hand: g.hand })) : (['Left', 'Right'] as const).map(side => ({ side, clip: GRIP_CLIP, hand: undefined }))
       this.posable ??= cloneSkinned(this.view.root)
       const tracks: THREE.KeyframeTrack[] = []
       for (const h of hands) {
-        const { pose } = fistPose(this.posable, await cache.get(clipUrl(h.clip), { inPlace: true }), h.side)
+        const pose = h.hand !== undefined ? handPose(this.posable, h.side, h.hand) : fistPose(this.posable, await cache.get(clipUrl(h.clip), { inPlace: true }), h.side).pose
         for (const [n, q] of pose) tracks.push(new THREE.QuaternionKeyframeTrack(`${n}.quaternion`, [0, 1], [...q.toArray(), ...q.toArray()]))
       }
       if (token !== this.token || this.player === null) return
@@ -342,6 +363,12 @@ class Animator {
     void this.play({ clipId: clip.id, url: clip.url, name: clip.name, entry: null, propPaths: clip.propPaths }, { inPlace: this.inPlace })
   }
 
+  /** A clip file written again (an edit saved over it): loaded and retargeted afresh next time it plays. */
+  forgetClip (url: string): void {
+    forgetClip(url)
+    this.cache?.forget(url)
+  }
+
   /** The character's bone map changed: rebuild the retargeting skeleton and previews. */
   rebind (): void {
     if (this.view === null || this.player === null) return
@@ -356,10 +383,19 @@ class Animator {
   /** End the current editor before ordinary playback, even when its source clip id is unchanged. */
   leaveEditor: (() => void) | null = null
 
+  /** The hand pose shown (the Rig step's Hand poses), to show again as it is now when the character changes. */
+  private handPosePreview: { side: 'Left' | 'Right', id: string } | null = null
+
   async refresh (keepTime = false): Promise<void> {
     if (this.current === null) return
     if (this.editing !== null) { this.editing(); return }
     if (this.current.clipId === 'fists') { await this.playFists(); return }
+    if (this.current.clipId === 'handpose') {
+      const shown = this.handPosePreview
+      const pose = shown === null ? undefined : app.selected?.handPoses?.find(p => p.id === shown.id)
+      if (shown !== null && pose !== undefined) this.playHandPose(shown.side, pose)
+      return
+    }
     await this.play(this.current, { keepTime })
   }
 

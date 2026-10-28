@@ -9,7 +9,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone } from 'three/addons/utils/SkeletonUtils.js'
 import { captureRest, restUpOf, retarget } from '../../src/engine/retarget.ts'
-import { applyScripts, retime } from '../../src/engine/scripts.ts'
+import { applyScripts, handScripts, retime } from '../../src/engine/scripts.ts'
 import { applyBoneKeys, applyLift, propTracks } from '../../src/engine/keys.ts'
 import { garmentMatrix } from '../../src/engine/placement.ts'
 
@@ -62,7 +62,7 @@ for (const name of names) {
   const entry = c.animations.find((a: { name: string }) => a.name === name)
   const clips = new Map([[name, retime(await clipOf(entry), entry.speed)]])
   for (const sc of c.scripts ?? []) if (sc.enabled && sc.kind === 'pace' && sc.clip === name) { const like = c.animations.find((a: { name: string }) => a.name === sc.like); clips.set(like.name, retime(await clipOf(like), like.speed)) }
-  const { clips: out } = await applyScripts(clone(scene), clips, c.scripts ?? [], async id => await clipOf({ clipId: id, inPlace: true }))
+  const { clips: out } = await applyScripts(clone(scene), clips, handScripts(c), async id => await clipOf({ clipId: id, inPlace: true }))
   let clip = applyLift(out.get(name)!, 'Hips', entry.lift ?? 0, rest.bones.get('Hips')!.localPosition, restUpOf(rest, 'Hips'))
   clip = applyBoneKeys(clip, entry.keys?.bones, entry.loop, b => { const r = rest.bones.get(b); return r === undefined ? null : { q: r.localQuaternion.clone(), p: r.localPosition.clone() } })
   const tracks = [...clip.tracks]

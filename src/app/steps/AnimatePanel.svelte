@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ArrowRight, Copy, Crosshair, Footprints, GripVertical, Play, Repeat, Trash2, X } from '@lucide/svelte'
+  import { ArrowRight, Copy, Crosshair, Footprints, GripVertical, Hand, Play, Repeat, Trash2, X } from '@lucide/svelte'
+  import { handPoses } from '../../state/handposes.svelte.ts'
   import type { AnimationEntry, Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { animator } from '../../state/animator.svelte.ts'
@@ -137,6 +138,14 @@
   {#if character.animations.length > 0}
     <TunePanel {character} />
     <ScriptsPanel {character} />
+    <Section title="Send hand pose">
+      <p class="faint small">Keep a hand's fingers as they are on the frame shown (pause on it) as a named pose in Rig → Hand poses: the
+        drawstring hand of a shot, a pinch, a relaxed hand. Sockets can then close a hand into it.</p>
+      <div class="row-send">
+        <Button size="sm" disabled={animator.current === null} onclick={() => handPoses.capture('Left')}><Hand size={12} /> Left hand</Button>
+        <Button size="sm" disabled={animator.current === null} onclick={() => handPoses.capture('Right')}><Hand size={12} /> Right hand</Button>
+      </div>
+    </Section>
   {/if}
 
   {#if game === null && others.length > 0 && character.animations.length > 0}
@@ -189,4 +198,5 @@
   .name:focus { outline: none; border-color: var(--accent); background: var(--bg-1); }
   .speed { height: 24px; border-radius: 5px; border: 1px solid var(--line); background: var(--bg-1); font-size: 11px; padding: 0 2px; }
   .small { font-size: 12px; margin: 0; }
+  .row-send { display: flex; gap: 6px; }
 </style>

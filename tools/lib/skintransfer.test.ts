@@ -48,6 +48,18 @@ describe('bind surface skin transfer', () => {
   })
 })
 
+describe('a rig whose model was moved since (stood on the floor)', () => {
+  it('meets the moved surface and keeps its painting', () => {
+    const before = surface(); before.position.set(0, -.5, 0); before.updateMatrixWorld(true)
+    const t = transferSkin(surface(), before)
+    expect(t.projected).toBe(0)
+    expect(t.samples[0].map(s => s[0][0])).toEqual([0, 1, 2, 3])
+    const paint = [{mesh:0,vertex:2,weights:[['A',.3],['B',.7]] as Array<[string,number]>}]
+    const moved = surface(); moved.position.set(0, -.5, 0); moved.updateMatrixWorld(true)
+    expect(transferPainting(surface(), moved, paint)).toEqual(paint)
+  })
+})
+
 describe('paint preservation across a rebuild', () => {
   it('keeps unchanged vertex addresses and exact authored weights', () => {
     const paint = [{mesh:0,vertex:1,weights:[['A',.123],['B',.877]] as Array<[string,number]>}]

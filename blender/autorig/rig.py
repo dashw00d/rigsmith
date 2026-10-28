@@ -38,6 +38,7 @@ def parse_args():
     p.add_argument('--fingers', default='full', choices=list(mixamo.FINGER_LEVELS))
     p.add_argument('--joints')
     p.add_argument('--overrides')
+    p.add_argument('--scale', type=float, default=1.0, help="the character's size against its file (Import -> Size)")
     p.add_argument('--template', help='creature template JSON (static/templates/*.json); joints required')
     p.add_argument('--report')
     p.add_argument('--dump')
@@ -176,6 +177,11 @@ def main():
     warnings = []
     scene_io.reset()
     meshes = scene_io.import_any(args.input, args.overrides)
+    # (an unrigged mesh stood on the floor, as its import (jobs/inspect.py --ground) stood it: the joints are placed on that)
+    grounded = 0.0
+    if not any(o.type == 'ARMATURE' for o in bpy.data.objects):
+        scene_io.scale_model(meshes, args.scale)
+        grounded = scene_io.ground(meshes)
     if not meshes:
         raise SystemExit('No meshes found in ' + args.input)
     scene_io.strip_existing_rigs(meshes)
@@ -192,6 +198,13 @@ def main():
     elif args.joints:
         # User-edited joints arrive in glTF space (Y up, +Z forward).
         joints = {k: np.array(report.from_gltf(v)) for k, v in json.load(open(args.joints)).items()}
+        # (joints placed on the model before it was stood on the floor (imported before that): moved up with it, when
+        # their feet are where the floor was rather than where it is)
+        if abs(grounded) > 1e-3 and joints:
+            low = min(p[2] for p in joints.values())
+            if abs(low + grounded) < abs(low):
+                joints = {k: p + np.array([0.0, 0.0, grounded]) for k, p in joints.items()}
+                warnings.append(f'Joints moved up {grounded:.3f} with the model (placed before it was stood on the floor)')
         validate_joints(joints, mixamo.hierarchy(args.fingers))
         joints = complete_joints(verts, tris, joints, args.fingers)
     else:

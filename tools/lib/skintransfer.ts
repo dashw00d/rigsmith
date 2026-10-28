@@ -20,7 +20,38 @@ export const skinMeshes = (root: THREE.Object3D): THREE.SkinnedMesh[] => {
  * Small repairs may place a vertex inside an old triangle; interpolate there
  * rather than accepting distant vertices or silently abandoning validation.
  * A new surface outside the narrow bind-space tolerance is rejected. */
+/**
+ * A previous rig of the same surface standing elsewhere (the model stood on the floor since: moved, nothing else)
+ * moved onto the new one, so its points meet the new ones. Only a pure move: the surfaces' extents must be the same
+ * size. Returns the move, or null when there was none to make.
+ */
+export function alignRest (target: THREE.Object3D, source: THREE.Object3D): THREE.Vector3 | null {
+  target.updateMatrixWorld(true); source.updateMatrixWorld(true)
+  const extent = (root: THREE.Object3D): THREE.Box3 => {
+    const box = new THREE.Box3(); const v = new THREE.Vector3()
+    for (const m of skinMeshes(root)) {
+      const p = m.geometry.attributes.position
+      for (let i = 0; i < p.count; i++) box.expandByPoint(v.fromBufferAttribute(p, i).applyMatrix4(m.matrixWorld))
+    }
+    return box
+  }
+  const a = extent(target); const b = extent(source)
+  if (a.isEmpty() || b.isEmpty()) return null
+  const size = a.getSize(new THREE.Vector3())
+  const tolerance = Math.max(size.length() * 1e-3, 1e-7)
+  if (size.distanceTo(b.getSize(new THREE.Vector3())) > tolerance) return null
+  const shift = a.min.clone().sub(b.min)
+  if (shift.length() <= tolerance) return null
+  // (in the world: the source's own parent, if any, undone)
+  const parent = source.parent
+  const local = parent === null ? shift : shift.clone().applyMatrix3(new THREE.Matrix3().setFromMatrix4(parent.matrixWorld).invert())
+  source.position.add(local)
+  source.updateMatrixWorld(true)
+  return shift
+}
+
 export function transferSkin (target: THREE.Object3D, source: THREE.Object3D, requireBones = true): SkinTransfer {
+  alignRest(target, source)
   target.updateMatrixWorld(true); source.updateMatrixWorld(true)
   const now = skinMeshes(target), old = skinMeshes(source)
   if (now.length === 0 || now.length !== old.length) throw new Error('Skinned primitive count changed')

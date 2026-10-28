@@ -3,7 +3,7 @@ import * as THREE from 'three'
 import type { AnimationEntry, Character, ClipKey } from '../../server/workspace.ts'
 import type { CharacterView } from './CharacterView.ts'
 import type { RetargetCache } from './clips.ts'
-import { applyScripts, retime } from './scripts.ts'
+import { applyScripts, handScripts, retime } from './scripts.ts'
 import { applyBoneKeys, applyLift, propTracks } from './keys.ts'
 import { garmentMatrix } from './placement.ts'
 import { restUpOf } from './retarget.ts'
@@ -41,7 +41,8 @@ export async function bakeEntry (character: Pick<Character, 'animations' | 'scri
     clip: THREE.AnimationClip, unkeyed: THREE.AnimationClip, report: Record<string, unknown>
   }> {
   if (view.rest === null) throw new Error('The character has no skeleton')
-  const scripts = character.scripts ?? []
+  // (its own scripts and its hands' poses round what they carry)
+  const scripts = handScripts(character)
   const build = async (e: AnimationEntry): Promise<THREE.AnimationClip> => retime(await cache.get((options.urlFor ?? entryUrl)(e), {
     inPlace: e.inPlace, mirror: options.mirror, fps: options.fps,
   }), e.speed)

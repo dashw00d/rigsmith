@@ -9,15 +9,18 @@
 // the garment) take a hand each, and an attached hand turned or moved changes its socket.
 import * as THREE from 'three'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
-import type { ClipKey } from './api.ts'
+import type { AnimationEntry, ClipKey } from './api.ts'
+import type { PullSocket } from '../../server/workspace.ts'
 import { app } from './app.svelte.ts'
-import { animator, GRIP_CLIP, restOf, type NowPlaying } from './animator.svelte.ts'
+import { animator, clipUrl, entryUrl, GRIP_CLIP, restOf, type NowPlaying } from './animator.svelte.ts'
+import { withPropPaths } from './slots.svelte.ts'
 import { loadSource } from '../engine/clips.ts'
 import { armOf, buildEdit, carrierGrip, fistGrip, frameTimes, GRIP_CLEAR, handGrip, handOn, holdAt, keyFor, nodePath, onPath, propObstacles, ROOT_HOLD, rootPath, socketMisses, unretarget, type Attachment, type Grip, type PropPath, type PropRig, type RootHold, type Socket } from '../engine/clipedit.ts'
 import { propNode } from './tune.svelte.ts'
 import { clipGlb, framesClip } from '../engine/clipexport.ts'
 import { library } from './library.svelte.ts'
-import { applyBoneKeys, KEY_FPS, propKeysOf } from '../engine/keys.ts'
+import { applyBoneKeys, KEY_FPS, propKeysOf, sampleKeys } from '../engine/keys.ts'
+import { handScripts } from '../engine/scripts.ts'
 import { garmentMatrix } from '../engine/placement.ts'
 import { restFrame } from '../engine/garments.ts'
 import { JointLimits, type Rom } from '../engine/limits.ts'
@@ -50,6 +53,9 @@ class ClipEdit {
   active = $state(false)
   /** The clip being edited, as it was started on. */
   base = $state<NowPlaying & { loop: boolean, inPlace: boolean } | null>(null)
+  /** The character's clip (its name in the set: Attack) this edit is of; null for a new clip or a clip not in the set.
+   * Where a hand opens, or holds a pull, is kept under it. */
+  slot = $state<string | null>(null)
   keys = $state.raw<Record<string, ClipKey[]>>({})
   /** The props on stage (rigid garments, shown): their names, the bones they ride, their sockets. */
   props = $derived((app.selected?.garments ?? []).filter(g => g.mode === 'rigid' && g.hidden !== true).map(g => ({ name: g.name, bone: g.bone, sockets: ((g.sockets ?? []) as Socket[]).filter(x => !x.name.endsWith('(carries it)')) })))
@@ -57,6 +63,11 @@ class ClipEdit {
   prop = $state<string | null>(null)
   /** What the gizmo on a prop moves: this frame only (a key on its path) or every frame (the whole path, by the move). */
   propMoves = $state<'frame' | 'every'>('frame')
+  /** Dragging a prop adjusts its socket (whatever holds it stays; this frame keys it, tweened; every frame changes the
+   * socket itself, in every clip) instead of leading (the hands following it). */
+  socketDrag = $state(false)
+  /** Each prop's node (its placed frame on its bone) as a drag began. */
+  private dragFrom = new Map<string, THREE.Matrix4>()
   /** Each prop's path: locked (it leads), and its keys. */
   paths = $state.raw<Record<string, PropPath>>({})
   /** The hands on sockets. */
@@ -179,7 +190,12 @@ class ClipEdit {
       this.solver = this.model === null ? { solve: solveBody, bones: bodyBones } : { solve: createBodySolver(this.model, offsets, { hipsMove: true, collide }), bones: bodyBonesNatural }
       this.natural = this.model !== null
       this.held = held !== undefined
-      this.base = { ...now, entry: null, loop: this.held ? false : animator.loop, inPlace: animator.inPlace }
+      // (named as the clip is, without the "(editing)" an edit shown before added)
+      const name = now.name.replace(/( \((editing|naturalized)\))+$/, '')
+      this.base = { ...now, name, entry: null, loop: this.held ? false : animator.loop, inPlace: animator.inPlace }
+      // (the character's clip this edits: the one playing, the one an edit shown was of, or the one this library clip fills)
+      const set = app.selected?.animations ?? []
+      this.slot = this.held ? null : now.entry !== null ? set[now.entry]?.name ?? null : now.slot ?? set.find(a => a.clipId === now.clipId)?.name ?? null
       this.baseClip = clip
       this.edited = clip
       // (a library clip plays stood on the floor: its hips raised by this; a saved clip is the source's height again)
@@ -252,7 +268,10 @@ class ClipEdit {
       select: b => { this.selected = b },
       hover: b => { this.hovered = b },
       selectProp: p => { this.prop = p },
-      begin: () => { animator.setPlaying(false); animator.holding = true; this.dragPlaces = this.leadingPlaces() },
+      begin: () => {
+        animator.setPlaying(false); animator.holding = true; this.dragPlaces = this.leadingPlaces()
+        this.dragFrom = new Map([...this.propNodes()].map(([n, node]) => { node.updateMatrix(); return [n, node.matrix.clone()] }))
+      },
       commit: bones => { void this.commit(bones) },
       constrain: moving => { this.keepLeading(); this.handsLive(moving) },
       moveProp: (p, place, done) => { if (done) this.commitProp(p, place); else this.propLive(p, place) },
@@ -628,7 +647,8 @@ class ClipEdit {
     const bone = this.props.find(p => p.name === prop)?.bone
     const out: Array<{ hand: 'Left' | 'Right', socket: string | null, carries: boolean }> = this.attachments.filter(a => a.prop === prop).map(a => ({ hand: a.hand, socket: a.socket, carries: bone === `${a.hand}Hand` }))
     const side = /^(Left|Right)Hand$/.exec(bone ?? '')?.[1] as 'Left' | 'Right' | undefined
-    if (side !== undefined && this.paths[prop]?.locked === true && !out.some(h => h.hand === side)) out.push({ hand: side, socket: null, carries: true })
+    // (the hand carrying it is always on it: its carry socket, the Outfit placement)
+    if (side !== undefined && !out.some(h => h.hand === side)) out.push({ hand: side, socket: null, carries: true })
     return out.sort((x, y) => x.hand.localeCompare(y.hand))
   }
 
@@ -640,8 +660,90 @@ class ClipEdit {
   }
 
   /** The library clip a hand's fist is closed as (its Hold fist script's, else the default). */
+  /** What a hand's pose dropdown shows: a carrying hand's carry pose ('' the default fist), else its Hold fist script's. */
+  handPoseOf (hand: 'Left' | 'Right'): string {
+    const c = app.selected
+    const own = (c?.scripts ?? []).find(x => x.kind === 'grip' && x.side === hand)
+    const carried = (c?.garments ?? []).find(g => g.mode === 'rigid' && g.status === 'ready' && g.hidden !== true && g.bone === `${hand}Hand`)
+    if (carried !== undefined && (own === undefined || !own.enabled)) return carried.carryPose ?? ''
+    return own === undefined ? '' : own.enabled ? (own as { clip: string }).clip : 'open'
+  }
+
+  /** Where in this clip the hand carrying `prop` opens (parts of it), and set them. */
+  carryOpen (prop: string): Array<[number, number]> {
+    const name = this.slot
+    return name === null ? [] : app.selected?.garments?.find(g => g.name === prop)?.carryOpen?.[name] ?? []
+  }
+
+  async setCarryOpen (prop: string, windows: Array<[number, number]>): Promise<void> {
+    const c = app.selected; const name = this.slot
+    if (c === null || name === null) return
+    await app.update(c.id, {
+      garments: (c.garments ?? []).map(g => {
+        if (g.name !== prop) return g
+        const open = { ...(g.carryOpen ?? {}) }
+        if (windows.length > 0) open[name] = windows; else delete open[name]
+        return { ...g, carryOpen: Object.keys(open).length > 0 ? open : undefined }
+      }),
+    })
+    await this.reopen()
+  }
+
+  /** The prop's pull sockets (a bowstring's Draw): another hand's socket on it, held in parts of a clip. */
+  pullsOn (prop: string): PullSocket[] {
+    return app.selected?.garments?.find(g => g.name === prop)?.pulls ?? []
+  }
+
+  /** Where in this clip a pull is held (parts of it). */
+  pullHolds (prop: string, pull: string): Array<[number, number]> {
+    const name = this.slot
+    return name === null ? [] : this.pullsOn(prop).find(p => p.id === pull)?.holds?.[name] ?? []
+  }
+
+  /** Change a pull socket (its hand pose, where this clip holds it), and build the clip again with it. */
+  async patchPull (prop: string, pull: string, change: (p: PullSocket) => PullSocket): Promise<void> {
+    const c = app.selected
+    if (c === null) return
+    await app.update(c.id, { garments: (c.garments ?? []).map(g => g.name !== prop ? g : { ...g, pulls: (g.pulls ?? []).map(p => (p.id === pull ? change(p) : p)) }) })
+    await this.reopen()
+  }
+
+  async setPullHolds (prop: string, pull: string, windows: Array<[number, number]>): Promise<void> {
+    const name = this.slot
+    if (name === null) return
+    await this.patchPull(prop, pull, p => {
+      const holds = { ...(p.holds ?? {}) }
+      if (windows.length > 0) holds[name] = windows; else delete holds[name]
+      return { ...p, holds }
+    })
+  }
+
+  /** The hands' poses changed (a socket's pose, where a clip opens a hand): the clip the edit starts from made again
+   * with them, the edit kept (its keys, paths, grips, the frame shown). */
+  private async reopen (): Promise<void> {
+    this.fists = {}
+    this.gripCache = {}
+    if (!this.active || this.held) { this.show(animator.time); return }
+    const t = animator.time; const prop = this.prop
+    const kept = { keys: this.keys, paths: this.paths, attachments: this.attachments, holds: this.holds, groups: this.groups }
+    // (the character's clip this edits played again as the game gets it, its hands' poses with it; else the clip as it was)
+    const set = app.selected?.animations ?? []
+    const index = this.slot === null ? -1 : set.findIndex(a => a.name === this.slot)
+    const entry = index < 0 ? undefined : set[index]
+    const from = this.base?.clipId
+    this.stop()
+    if (entry !== undefined && entry.clipId === from) await animator.play({ clipId: entry.clipId, url: entryUrl(entry), name: entry.name, entry: index }, { keepTime: true })
+    else await animator.refresh(true)
+    await this.start()
+    if (!this.active) return
+    this.keys = kept.keys; this.paths = kept.paths; this.attachments = kept.attachments; this.holds = kept.holds; this.groups = kept.groups
+    animator.seek(t)
+    if (prop !== null) this.editor?.selectProp(prop)
+    this.show(t)
+  }
+
   fistClip (hand: 'Left' | 'Right'): string {
-    return (app.selected?.scripts ?? []).find(x => x.kind === 'grip' && x.enabled && x.side === hand)?.clip ?? GRIP_CLIP
+    return (handScripts(app.selected ?? {}).find(x => x.kind === 'grip' && x.enabled && x.side === hand) as { clip?: string } | undefined)?.clip ?? GRIP_CLIP
   }
 
   /** Close `hand`'s fist as `clip` closes it, for the character (its Hold fist script: the viewer and the export use it
@@ -651,12 +753,22 @@ class ClipEdit {
     if (c === null) return
     const scripts = c.scripts ?? []
     const had = scripts.find(x => x.kind === 'grip' && x.side === hand)
-    const next = had !== undefined
-      ? scripts.map(x => (x === had ? { ...x, clip, enabled: true } : x))
-      : [...scripts, { id: Math.random().toString(36).slice(2, 10), kind: 'grip' as const, enabled: true, side: hand, clip }]
-    await app.update(c.id, { scripts: next as typeof scripts })
+    // (a hand carrying a prop: the pose is its carry socket's, unless the character has a Hold fist script of its own)
+    const carried = (c.garments ?? []).find(g => g.mode === 'rigid' && g.status === 'ready' && g.hidden !== true && g.bone === `${hand}Hand`)
+    if (carried !== undefined && (had === undefined || !had.enabled)) {
+      // ('' the default fist, 'open' the clip's own hand, a hand pose or a fist clip)
+      await app.update(c.id, { garments: (c.garments ?? []).map(g => g.id !== carried.id ? g : { ...g, carryPose: clip === '' ? undefined : clip }) })
+    } else if (clip === 'open') {
+      if (had !== undefined) await app.update(c.id, { scripts: scripts.map(x => (x === had ? { ...x, enabled: false } : x)) as typeof scripts })
+    } else {
+      const to = clip === '' ? GRIP_CLIP : clip
+      const next = had !== undefined
+        ? scripts.map(x => (x === had ? { ...x, clip: to, enabled: true } : x))
+        : [...scripts, { id: Math.random().toString(36).slice(2, 10), kind: 'grip' as const, enabled: true, side: hand, clip: to }]
+      await app.update(c.id, { scripts: next as typeof scripts })
+    }
+    await this.reopen()
     this.fists[hand] = await animator.fistOf(hand).catch(() => ({}))
-    delete this.gripCache[hand]
     this.show(animator.time)
   }
 
@@ -797,6 +909,7 @@ class ClipEdit {
 
   /** A prop moved or turned by the gizmo, let go at `place` (world): a key on its path at the playhead (and it leads). */
   private commitProp (prop: string, place: THREE.Matrix4): void {
+    if (this.socketDrag) { void this.commitSocket(prop, place); return }
     if (this.propMoves === 'every') { this.offsetProp(prop, place); return }
     const base = this.baseClip
     if (base === null) return
@@ -818,6 +931,74 @@ class ClipEdit {
     this.holdRoot(prop, u, before, after)
     // (moving a prop makes it lead)
     this.paths = { ...this.paths, [prop]: after }
+    this.show(t)
+  }
+
+  /** A prop's socket adjusted by its gizmo (let go at `place`, world): the move and turn in its own placed frame from
+   * where it sat as the drag began. This frame: a key of its socket's adjustment in this clip (tweened between keys:
+   * a bow let go of on a death). Every frame: the socket itself, its placement on its bone, in every clip. */
+  private async commitSocket (prop: string, place: THREE.Matrix4): Promise<void> {
+    const view = animator.character; const base = this.baseClip
+    const node = view?.root.getObjectByName(propNode(prop))
+    const from = this.dragFrom.get(prop)
+    if (view === null || base === null || node === undefined || node.parent === null || from === undefined) return
+    const u = this.phase(); const t = u * base.duration
+    const path = this.paths[prop]
+    if (path?.locked === true) {
+      app.toast('info', `${prop} leads in this clip: turn off “Prop leads the body” to adjust its socket`)
+      this.show(t)
+      return
+    }
+    node.parent.updateMatrixWorld(true)
+    const target = node.parent.matrixWorld.clone().invert().multiply(place)
+    // (the adjustment, in the prop's own frame: from where it sat to where it was let go)
+    const delta = from.clone().invert().multiply(target)
+    const dp = new THREE.Vector3(); const dq = new THREE.Quaternion(); delta.decompose(dp, dq, new THREE.Vector3())
+    const r6 = (v: number): number => Math.round(v * 1e6) / 1e6
+    if (this.propMoves === 'every') {
+      // the socket itself: its placement P such that, here, it sits where it was let go (P' = M Δ M⁻¹ P, M where it sat)
+      const g = app.selected?.garments?.find(x => x.name === prop)
+      const c = app.selected
+      if (g === undefined || c === null) return
+      const P = garmentMatrix(g)
+      const pure = new THREE.Matrix4().compose(dp, dq, new THREE.Vector3(1, 1, 1))
+      const change = from.clone().multiply(pure).multiply(from.clone().invert())
+      const next = change.clone().multiply(P)
+      const at = new THREE.Vector3(); const turn = new THREE.Quaternion(); const size = new THREE.Vector3()
+      next.decompose(at, turn, size)
+      const e = new THREE.Euler().setFromQuaternion(turn)
+      // (the clip being edited moved with it: its tracks of the prop's node changed the same way)
+      this.baseClip = rebaseNode(base, propNode(prop), change)
+      const r = this.propRest[prop]
+      if (r !== undefined) {
+        const m = change.clone().multiply(new THREE.Matrix4().compose(new THREE.Vector3(...r.position), new THREE.Quaternion(...r.quaternion), new THREE.Vector3(g.scale, g.scale, g.scale)))
+        const rp = new THREE.Vector3(); const rq = new THREE.Quaternion(); m.decompose(rp, rq, new THREE.Vector3())
+        this.propRest = { ...this.propRest, [prop]: { position: rp.toArray(), quaternion: rq.toArray() } }
+      }
+      await app.update(c.id, {
+        garments: (c.garments ?? []).map(x => x.name !== prop ? x : {
+          ...x,
+          position: at.toArray().map(v => Math.round(v * 1e4) / 1e4) as [number, number, number],
+          rotation: [e.x, e.y, e.z].map(v => Math.round(THREE.MathUtils.radToDeg(v) * 10) / 10) as [number, number, number],
+        }),
+      })
+      app.toast('ok', `${prop}'s socket changed: it sits this way on ${g.bone} in every clip`)
+      this.show(t)
+      return
+    }
+    // this frame: its socket's adjustment keyed here (on top of what this clip already adjusts), tweened between keys
+    const keys = path?.keys ?? []
+    const now = keys.length > 0 ? sampleKeys(keys, u, this.loop) : { q: new THREE.Quaternion(), p: new THREE.Vector3() }
+    const total = new THREE.Matrix4().compose(now.p, now.q, new THREE.Vector3(1, 1, 1)).multiply(new THREE.Matrix4().compose(dp, dq, new THREE.Vector3(1, 1, 1)))
+    const kp = new THREE.Vector3(); const kq = new THREE.Quaternion(); total.decompose(kp, kq, new THREE.Vector3())
+    const key: ClipKey = { u, q: kq.toArray().map(r6) as ClipKey['q'], p: kp.toArray().map(r6) as ClipKey['p'] }
+    let ks = keys.filter(k => !near(k.u, u))
+    if (ks.length === 0 && !this.held) {
+      if (!near(u, 0)) ks.push({ u: 0, q: [...IDENTITY] as ClipKey['q'], p: [0, 0, 0] })
+      if (!this.loop && !near(u, 1)) ks.push({ u: 1, q: [...IDENTITY] as ClipKey['q'], p: [0, 0, 0] })
+    }
+    ks = [...ks, key].sort((x, y) => x.u - y.u)
+    this.paths = { ...this.paths, [prop]: { locked: false, keys: ks } }
     this.show(t)
   }
 
@@ -887,6 +1068,16 @@ class ClipEdit {
   private propLive (prop: string, place: THREE.Matrix4): void {
     const view = animator.character
     if (view === null) return
+    if (this.socketDrag) {
+      // (in its socket: it moves, whatever holds it stays; other hands on it follow)
+      const node = view.root.getObjectByName(propNode(prop))
+      if (node === undefined || node.parent === null) return
+      node.parent.updateMatrixWorld(true)
+      node.parent.matrixWorld.clone().invert().multiply(place).decompose(node.position, node.quaternion, node.scale)
+      node.updateMatrixWorld(true)
+      this.handsLive(null)
+      return
+    }
     const nameOf = (b: THREE.Bone): string => b.name
     const limits = this.limitsOn ? this.limits ?? undefined : undefined
     const p = this.props.find(x => x.name === prop)
@@ -1064,7 +1255,7 @@ class ClipEdit {
       for (const side of ['Left','Right'] as const) {
         if (this.fists[side] !== undefined || Object.entries(this.keys).some(([name,keys]) => name.startsWith(side+'Hand') && name !== side+'Hand' && keys.some(k => !isAnchor(k)))) protectedFingers.add(side)
       }
-      for (const script of app.selected?.scripts ?? []) if (script.enabled && script.kind === 'grip') protectedFingers.add(script.side)
+      for (const script of handScripts(app.selected ?? {})) if (script.enabled && script.kind === 'grip') protectedFingers.add(script.side)
       const handOut = await correctHandContactsAsync(root,out.clip,{
         height:view.height,fps:KEY_FPS,loop:this.loop,protect:[...protectedFingers],tipTolerance:view.height*.004,
         cancelled:()=>this.naturalizeCancelled || turn !== this.opening || was !== this.edited,
@@ -1074,7 +1265,7 @@ class ClipEdit {
       if (turn !== this.opening || was !== this.edited) return
       this.edited = handOut.clip
       this.naturalized = true
-      animator.showClip(this.edited, { ...this.base!, name: `${this.base!.name} (naturalized)`, edited: true }, animator.time)
+      animator.showClip(this.edited, { ...this.base!, name: `${this.base!.name} (naturalized)`, edited: true, slot: this.slot ?? undefined }, animator.time)
       app.toast('ok', `Naturalized ${out.times.length} frames in ${((performance.now() - t0) / 1000).toFixed(1)} s${attachedHands.length > 0 ? `; hands off their sockets by ${(worst * 100).toFixed(1)} cm at worst` : ''}`)
     } catch (error) {
       if (turn === this.opening) app.toast((error as Error).name === 'AbortError' ? 'ok' : 'error', (error as Error).name === 'AbortError' ? 'Naturalization cancelled; your edit is unchanged' : `Naturalize failed: ${(error as Error).message}`)
@@ -1100,7 +1291,7 @@ class ClipEdit {
     const view = animator.character; const base = this.baseClip; const root = this.posable()
     if (view === null || base === null || root === null || this.base === null) return
     this.edited = buildEdit(base, this.keys, this.loop, restOf(view), root, this.rig, 0, this.limitsOn ? this.limits : null, this.propRig(), view.height, this.solver)
-    animator.showClip(this.edited, { ...this.base, name: this.held ? 'New clip (editing)' : `${this.base.name} (editing)`, edited: true }, time)
+    animator.showClip(this.edited, { ...this.base, name: this.held ? 'New clip (editing)' : `${this.base.name} (editing)`, edited: true, slot: this.slot ?? undefined }, time)
     // (a hand just put on a prop, or let go of one: its gizmo locks to the prop, or is free again)
     this.editor?.setGripLock(b => this.gripHold(b))
   }
@@ -1118,11 +1309,36 @@ class ClipEdit {
     return out
   }
 
+  /**
+   * Save the edit as the clip of the character's clip it edits (its slot: Attack). A clip made here before is saved
+   * over as itself; a library clip stays, the edit saved as a new clip that takes its place in the slot. The slot's
+   * keys and speed are in the edit now (the clip it saves is what played), so the slot takes it as it is.
+   */
+  async saveToSlot (name: string): Promise<void> {
+    const c = app.selected; const slot = this.slot; const base = this.base
+    if (c === null || slot === null || base === null) return
+    const replace = base.clipId.startsWith('custom-') && base.url.startsWith('/files/library/clips/') ? base.clipId : undefined
+    const saved = await this.save(name, replace)
+    const now = app.selected
+    if (saved === null || now === null || now.id !== c.id) return
+    const index = now.animations.findIndex(a => a.name === slot)
+    if (index < 0) return
+    const was = now.animations[index]
+    const rest: AnimationEntry = { ...was, clipId: saved.id, speed: 1 }
+    delete rest.keys; delete rest.url; delete rest.note
+    const entry = withPropPaths(rest, saved.propPaths, now)
+    await app.update(now.id, { animations: now.animations.map((a, i) => (i === index ? entry : a)) })
+    animator.forgetClip(clipUrl(saved.id))
+    this.stop()
+    animator.playEntry(entry, index, true)
+    app.toast('ok', `${slot} now plays the edit (${saved.id})`)
+  }
+
   /** Save the edited clip into the library as a new one: a person's (a library clip) through the library's build, a
    * creature's (its template's skeleton) as a clip file beside its bundled ones. */
-  async save (name: string): Promise<void> {
+  async save (name: string, replace?: string): Promise<{ id: string, propPaths: Record<string, ClipKey[]> } | null> {
     const view = animator.character; const root = this.posable(); const base = this.base; const source = this.source
-    if (view === null || view.rest === null || root === null || base === null || source === null || this.edited === null) return
+    if (view === null || view.rest === null || root === null || base === null || source === null || this.edited === null) return null
     this.busy = 'Saving the clip into the library'
     this.saving = true
     try {
@@ -1132,7 +1348,7 @@ class ClipEdit {
       if (base.url.startsWith('/files/library/clips/')) {
         const r = await fetch('/api/library/edits', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name, base: base.clipId, loop: base.loop, keys: this.keys, props: { paths: this.paths, attachments: this.attachments }, propPaths, frames, characterId: app.selected?.id }),
+          body: JSON.stringify({ name, base: base.clipId, loop: base.loop, keys: this.keys, props: { paths: this.paths, attachments: this.attachments }, propPaths, frames, characterId: app.selected?.id, replace }),
         })
         const body = await r.json() as { id?: string, error?: string, job?: string }
         if (!r.ok || body.id === undefined) throw new Error(body.error ?? `HTTP ${r.status}`)
@@ -1140,6 +1356,8 @@ class ClipEdit {
         const done = await waitForJob(body.job ?? '')
         if (done !== null) throw new Error(done)
         app.toast('ok', `${name} is in the library (${body.id}): under Custom`)
+        library.reload()
+        return { id: body.id, propPaths }
       } else {
         const src = await loadSource(base.url)
         const glb = await clipGlb(src.root, source.rest, framesClip(frames, source.rest, name))
@@ -1157,10 +1375,12 @@ class ClipEdit {
         const body = await r.json() as { id?: string, error?: string }
         if (!r.ok || body.id === undefined) throw new Error(body.error ?? `HTTP ${r.status}`)
         app.toast('ok', `${name} is in the ${rig}'s library (${body.id}): under Custom`)
+        library.reload()
+        return { id: body.id, propPaths }
       }
-      library.reload()
     } catch (error) {
       app.toast('error', `The clip didn't save: ${(error as Error).message}`)
+      return null
     } finally {
       this.busy = null
       this.saving = false
@@ -1182,3 +1402,20 @@ async function waitForJob (id: string): Promise<string | null> {
 }
 
 export const clipEdit = new ClipEdit()
+
+/** `clip` with `node`'s position and turn tracks moved by `change` (on its parent's side): a prop's frames as its new
+ * socket places it. */
+function rebaseNode (clip: THREE.AnimationClip, node: string, change: THREE.Matrix4): THREE.AnimationClip {
+  const pt = clip.tracks.find(t => t.name === `${node}.position`); const qt = clip.tracks.find(t => t.name === `${node}.quaternion`)
+  if (pt === undefined || qt === undefined || pt.times.length !== qt.times.length) return clip
+  const ps: number[] = []; const qs: number[] = []
+  const m = new THREE.Matrix4(); const p = new THREE.Vector3(); const q = new THREE.Quaternion(); const sc = new THREE.Vector3()
+  for (let i = 0; i < pt.times.length; i++) {
+    m.compose(p.fromArray(pt.values, i * 3), q.fromArray(qt.values, i * 4), new THREE.Vector3(1, 1, 1))
+    change.clone().multiply(m).decompose(p, q, sc)
+    ps.push(...p.toArray()); qs.push(...q.toArray())
+  }
+  const tracks = clip.tracks.filter(t => t !== pt && t !== qt)
+  tracks.push(new THREE.VectorKeyframeTrack(pt.name, Array.from(pt.times), ps), new THREE.QuaternionKeyframeTrack(qt.name, Array.from(qt.times), qs))
+  return new THREE.AnimationClip(clip.name, clip.duration, tracks)
+}

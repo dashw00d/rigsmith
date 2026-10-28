@@ -9,6 +9,7 @@
   import { api } from '../../state/api.ts'
   import SkeletonMapping from './SkeletonMapping.svelte'
   import WeightPaintPanel from '../rig/WeightPaintPanel.svelte'
+  import HandPosesPanel from '../rig/HandPosesPanel.svelte'
   import { markerBoard } from '../../state/markers.svelte.ts'
   import { tooltip } from '../../ui/tooltip.ts'
   import { jointOf, keysOf } from '../../engine/markers.ts'
@@ -98,12 +99,12 @@
   const jointGroups = $derived(groups(fingers))
   let fittingFingers = $state(false)
 
-  async function setFingers (value: FingerLevel): Promise<void> {
+  async function setFingers (value: FingerLevel, redetect = false): Promise<void> {
     if (fittingFingers) return
     fittingFingers = true
-    markerBoard.busy = 'Fitting finger joints'
+    markerBoard.busy = redetect ? 'Detecting the fingers' : 'Fitting finger joints'
     try {
-      app.upsert(await api.fitFingers(character.id, value))
+      app.upsert(await api.fitFingers(character.id, value, redetect))
       viewer.resetEditor()
     } catch (error) {
       fingers = (character.fingers ?? 'full') as FingerLevel
@@ -173,6 +174,7 @@
     </div>
   </Section>
   {#if character.kind === 'mesh'}<WeightPaintPanel {character} />{/if}
+  {#if human}<HandPosesPanel />{/if}
   <Section>
     <Button variant="ghost" block onclick={adjust}><Wrench size={14} /> Adjust joints and re-rig</Button>
   </Section>
@@ -236,10 +238,16 @@
     {/if}
   </Section>
 
+  {#if human && character.status === 'rigged'}<HandPosesPanel />{/if}
   {#if human}
     <Section title="Fingers">
       <fieldset disabled={fittingFingers} style="border: 0; padding: 0; margin: 0"><Segmented options={fingerOptions} bind:value={fingers} onchange={setFingers} /></fieldset>
       <p class="faint small">{fingerOptions.find(f => f.value === fingers)?.hint}. Animations with more fingers still play; missing finger bones are ignored.</p>
+      {#if fingers !== 'none'}
+        <Button size="sm" variant="ghost" disabled={fittingFingers} onclick={() => setFingers(fingers, true)}
+          ><RotateCcw size={13} /> Detect fingers again</Button>
+        <p class="faint small">Traces every finger from the mesh again (the rest of the skeleton stays): for fingers placed before the detection improved, or moved too far by hand.</p>
+      {/if}
     </Section>
   {/if}
 

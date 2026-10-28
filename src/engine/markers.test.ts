@@ -71,6 +71,31 @@ describe('markers', () => {
     expect(out.LeftHandMiddle4).toEqual(J.LeftHandMiddle4)
   })
 
+  it('lays a full hand as the detection does when a tip moves: knuckles in proportion, evenly spaced, fingers straight', () => {
+    // (a hand along +y; knuckles squeezed out by the tips, the ring's crowded against the pinky's)
+    const xs: Record<string, number> = { Index: -0.3, Middle: -0.1, Ring: 0.1, Pinky: 0.3 }
+    const J: Record<string, V3> = { LeftForeArm: [0, -1, 0], LeftHand: [0, 0, 0] }
+    for (const [f, x] of Object.entries(xs)) {
+      const kx = f === 'Ring' ? 0.28 : x
+      J[`LeftHand${f}1`] = [kx, 0.85, 0]; J[`LeftHand${f}2`] = [x, 0.9, 0]; J[`LeftHand${f}3`] = [x, 0.95, 0]; J[`LeftHand${f}4`] = [x, 1, 0]
+    }
+    const m = seed('human', json.human, J)
+    m.positions.middle_tip_l = [-0.1, 1.05, 0]
+    const out = jointsFrom(json.human, m, Object.fromEntries(hierarchy('full')), 0)
+    // knuckles: no further out than ~57% of the tip's reach, the four evenly across
+    for (const f of ['Index', 'Middle', 'Ring', 'Pinky']) expect(out[`LeftHand${f}1`][1]).toBeLessThan(0.62)
+    const ks = ['Index', 'Middle', 'Ring', 'Pinky'].map(f => out[`LeftHand${f}1`][0])
+    expect(ks[1] - ks[0]).toBeCloseTo(ks[2] - ks[1], 6)
+    expect(ks[2] - ks[1]).toBeCloseTo(ks[3] - ks[2], 6)
+    // each finger straight from its knuckle to its tip, the moved tip where it was put
+    expect(out.LeftHandMiddle4).toEqual([-0.1, 1.05, 0])
+    for (const f of ['Index', 'Middle', 'Ring', 'Pinky']) {
+      const [k, a, b, t] = [1, 2, 3, 4].map(i => new THREE.Vector3(...out[`LeftHand${f}${i}`]))
+      const line = new THREE.Line3(k, t)
+      for (const p of [a, b]) expect(line.closestPointToPoint(p, false, new THREE.Vector3()).distanceTo(p)).toBeLessThan(1e-9)
+    }
+  })
+
   it('give back the skeleton they were seeded from when left alone', () => {
     const m = seed('horse', json.horse, horse.joints)
     const out = jointsFrom(json.horse, m, horse.parents, 0)

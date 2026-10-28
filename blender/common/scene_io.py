@@ -230,6 +230,41 @@ def strip_existing_rigs(meshes):
         ob.matrix_world.identity()
 
 
+def scale_model(meshes, s):
+    """Resize a model about its origin (its whole hierarchy: Import → Size's scale)."""
+    if abs(s - 1) < 1e-9:
+        return
+    roots = set()
+    for ob in meshes:
+        while ob.parent is not None:
+            ob = ob.parent
+        roots.add(ob)
+    for ob in roots:
+        ob.scale = ob.scale * s
+        ob.location = ob.location * s
+    bpy.context.view_layer.update()
+
+
+def ground(meshes):
+    """Stand a model on the floor: its lowest point moved to z = 0 (its whole hierarchy moved, nothing scaled).
+    A model exported centred on its origin would otherwise stand half in the ground. Returns how far it moved."""
+    verts, _ = mesh_arrays(meshes)
+    if not len(verts):
+        return 0.0
+    dz = -float(verts[:, 2].min())
+    if abs(dz) < 1e-5:
+        return 0.0
+    roots = set()
+    for ob in meshes:
+        while ob.parent is not None:
+            ob = ob.parent
+        roots.add(ob)
+    for ob in roots:
+        ob.location.z += dz
+    bpy.context.view_layer.update()
+    return dz
+
+
 def mesh_arrays(meshes):
     """World-space vertices and triangles of all meshes, concatenated in order."""
     verts, tris, offset = [], [], 0

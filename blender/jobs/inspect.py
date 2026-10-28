@@ -1,7 +1,8 @@
 """Inspect an imported file: what is it (mesh, rigged character, animation), which rig preset, stats.
 Writes a normalized preview GLB and, for unrigged humanoid meshes, auto-detected joint positions.
 
-blender -b --factory-startup --python inspect.py -- --input <file> --out <dir>
+blender -b --factory-startup --python inspect.py -- --input <file> --out <dir> [--animations]
+--animations keeps the model's own animations in the preview (an accessory's: a mechanism's moving parts).
 """
 import argparse
 import os
@@ -24,6 +25,9 @@ def main():
     p.add_argument('--out', required=True)
     p.add_argument('--fingers', default='two')
     p.add_argument('--overrides')
+    p.add_argument('--scale', type=float, default=1.0, help="a character's size against its file (Import -> Size)")
+    p.add_argument('--ground', action='store_true', help='a character: an unrigged mesh stood on the floor (lowest point at 0)')
+    p.add_argument('--animations', action='store_true')
     a = p.parse_args(report.args())
     os.makedirs(a.out, exist_ok=True)
     warnings = []
@@ -53,6 +57,12 @@ def main():
         if preset == 'mixamo':
             normalize_bone_names(arm, meshes)
 
+    if kind == 'mesh' and a.ground:
+        scene_io.scale_model(meshes, a.scale)
+        moved = scene_io.ground(meshes)
+        if abs(moved) > 1e-3:
+            warnings.append(f'Stood on the floor: moved {moved:+.3f} up (its lowest point was off the ground).')
+
     report.progress(0.4, 'Measuring')
     verts, tris = scene_io.mesh_arrays(meshes) if meshes else (np.zeros((0, 3)), np.zeros((0, 3), dtype=int))
     stats = {
@@ -80,10 +90,11 @@ def main():
     report.progress(0.8, 'Writing preview')
     if kind == 'rigged':
         scene_io.apply_rig_scale(arm, meshes)
-        scene_io.export_glb(os.path.join(a.out, 'model.glb'), arm, meshes)
+        scene_io.export_glb(os.path.join(a.out, 'model.glb'), arm, meshes, animations=a.animations)
     elif kind == 'mesh':
-        scene_io.strip_existing_rigs(meshes)
-        scene_io.export_glb(os.path.join(a.out, 'model.glb'), None, meshes)
+        if not a.animations:
+            scene_io.strip_existing_rigs(meshes)
+        scene_io.export_glb(os.path.join(a.out, 'model.glb'), None, meshes, animations=a.animations)
 
     report.result({'kind': kind, 'rigPreset': preset, 'stats': stats, 'joints': joints,
                    'model': 'model.glb' if kind != 'animation' else None, 'animated': has_action, 'warnings': warnings})

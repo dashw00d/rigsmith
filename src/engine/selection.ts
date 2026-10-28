@@ -15,7 +15,7 @@ export interface Analysis {
 }
 
 /** Perceptual-ish color distance in YCbCr, 0..~1. */
-function colorDistance (c: Uint8ClampedArray, i: number, r: number, g: number, b: number): number {
+export function colorDistance (c: Uint8ClampedArray, i: number, r: number, g: number, b: number): number {
   const dr = c[i] - r
   const dg = c[i + 1] - g
   const db = c[i + 2] - b

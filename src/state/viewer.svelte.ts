@@ -9,7 +9,8 @@ import { loadTemplate } from '../engine/templates.ts'
 import type { FingerLevel } from '../engine/mixamo.ts'
 import { Stage } from '../engine/Stage.ts'
 import * as THREE from 'three'
-import { restFrame } from '../engine/garments.ts'
+import { restFrame, tickMechanisms } from '../engine/garments.ts'
+import { tickPulls } from '../engine/pulls.ts'
 import { riderScale, seatMatrix } from '../engine/mount.ts'
 
 class Viewer {
@@ -43,8 +44,18 @@ class Viewer {
   attach (container: HTMLElement): () => void {
     this.stage = new Stage(container)
     const off = this.stage.onFrame(() => { if (this.hoveredJoint !== null || this.selectedJoint !== null) this.frame++ })
+    // (worn mechanisms play their own animation, whatever the character does)
+    const offMechanisms = this.stage.onFrame(dt => {
+      tickMechanisms(dt)
+      // (a prop's pulls where the clip playing puts them: held, at the hand; else at rest)
+      const playing = animator.current
+      // (an edit of a clip holds them as that clip does)
+      const clip = playing === null ? null : playing.entry !== null ? playing.name : playing.slot ?? null
+      tickPulls(clip, animator.duration > 0 ? animator.time / animator.duration : 0)
+    })
     return () => {
       off()
+      offMechanisms()
       this.clear()
       this.stage?.dispose()
       this.stage = null
@@ -88,8 +99,9 @@ class Viewer {
     this.syncEditor(character, step)
     await this.syncMount(character)
     void outfit.sync(step === 'outfit')
-    // (the rig test plays on in the Rig step, till the joints are back up to change)
-    if (step !== 'animate' && step !== 'export' && step !== 'outfit' && animator.current !== null && !(step === 'rig' && animator.current.test === true && !this.adjusting)) animator.stop()
+    // (the rig test plays on in the Rig step, till the joints are back up to change; so does a hand pose being shaped)
+    if (step !== 'animate' && step !== 'export' && step !== 'outfit' && animator.current !== null &&
+      !(step === 'rig' && ((animator.current.test === true && !this.adjusting) || animator.current.clipId === 'handpose'))) animator.stop()
   }
 
   private editorToken = 0

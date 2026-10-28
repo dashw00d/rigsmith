@@ -8,8 +8,10 @@ import path from 'node:path'
 import { enqueue, events, type Job, listJobs, runBlender, runCodex } from './jobs.ts'
 import { mapPainting, optimizeSkin, torchPython, validateSkin } from './skinopt.ts'
 import { categoryOf, queryLibrary } from './library.ts'
-import { newId, saveCreatureClip, saveEdit, type SavedEdit } from './clipedits.ts'
+import { editId, saveCreatureClip, saveEdit, type SavedEdit } from './clipedits.ts'
 import { journal, note as note_, record } from './journal.ts'
+import { swapImages } from './glbimages.ts'
+import { extentY, transformGlb } from './glbtransform.ts'
 import { exportUnits, gameSlots, gameStatus, saveUnits, units, type UnitSpec } from './game.ts'
 import { dropWeightEdits, keepWeightEdits, publishRig, weightEdits, writeWeights, type WeightEdit } from './weights.ts'
 import {
@@ -72,7 +74,8 @@ const texturesDir = (id: string): string => path.join(characterDir(id), 'texture
 async function runInspect (id: string, update: Update, keepEdits = false): Promise<void> {
   const character = (await getCharacter(id))!
   const dir = characterDir(id)
-  const { result } = await runBlender('jobs/inspect.py', ['--input', path.join(dir, character.source.file), '--out', dir, '--overrides', texturesDir(id)],
+  // (the joints found at the character's finger level: all of them unless it was set lower)
+  const { result } = await runBlender('jobs/inspect.py', ['--input', path.join(dir, character.source.file), '--out', dir, '--overrides', texturesDir(id), '--ground', '--fingers', character.fingers ?? 'full', '--scale', String(character.scale ?? 1)],
     (progress, message) => { update({ progress, message }) })
   const r = result as { kind: Character['kind'], rigPreset: string | null, stats: Character['stats'], joints: Record<string, Vec3> | null, model: string | null, warnings: string[] }
   await updateCharacter(id, c => {
@@ -120,12 +123,18 @@ async function runRig (id: string, update: Update): Promise<void> {
   const beforeOptimize = output.replace(/\.glb$/, '-before-optimize.glb')
   try {
     const args = ['--input', path.join(dir, character.source.file), '--output', output,
-      '--fingers', character.fingers ?? 'full', '--overrides', texturesDir(id)]
+      '--fingers', character.fingers ?? 'full', '--overrides', texturesDir(id), '--scale', String(character.scale ?? 1)]
     const creature = character.template !== undefined && character.template !== 'human'
     if (!creature || character.template === 'horse') args.push('--native-output', alternative)
     if (character.joints !== undefined) {
       const jointsFile = path.join(dir, 'joints.json')
-      await writeJson(jointsFile, character.joints)
+      // (joints placed at a lower finger level (one chain for the four fingers, kept as the index) rigged with all the
+      // fingers: the index traced again with the others, never the middle of a mitten taken for it)
+      const placed = { ...character.joints }
+      if ((character.fingers ?? 'full') === 'full' && placed.LeftHandMiddle1 === undefined) {
+        for (const name of Object.keys(placed)) if (/^(Left|Right)HandIndex[1-4]$/.test(name)) delete placed[name]
+      }
+      await writeJson(jointsFile, placed)
       args.push('--joints', jointsFile)
     }
     if (creature) args.push('--template', path.join(ROOT, 'static', 'templates', `${character.template!}.json`))
@@ -221,13 +230,32 @@ function rig (character: Character): Job {
 }
 
 /** Rebuild the preview (and the rig, if any) so a texture change reaches every output. */
-async function refreshOutputs (id: string, update: Update): Promise<void> {
+/**
+ * A texture changed (textures/ overrides): put it into the character's files. A rig only needs its images swapped,
+ * never rigging again (its bones, weights and painting stay as they are): a painted texture straight into the files
+ * (`direct`); a fill or a restore through the model made again (Blender's import does the overrides), then its images
+ * into the rig. A character not rigged yet just gets its model made again.
+ */
+async function refreshOutputs (id: string, update: Update, direct = false): Promise<void> {
   const before = (await getCharacter(id))!
+  const dir = characterDir(id)
+  const rigged = before.kind === 'mesh' && before.status === 'rigged' && before.files.rigged !== undefined ? path.join(dir, before.files.rigged) : null
+  const model = before.files.model !== undefined && before.files.model.endsWith('.glb') ? path.join(dir, before.files.model) : null
+  if (direct && rigged !== null && existsSync(rigged)) {
+    update({ progress: 0.6, message: 'Putting the texture into the rig' })
+    await swapImages(rigged, texturesDir(id))
+    if (model !== null && existsSync(model)) await swapImages(model, texturesDir(id))
+    await updateCharacter(id, c => { c.revision = (c.revision ?? 0) + 1; c.files.thumbnail = undefined })
+    return
+  }
   update({ progress: 0.6, message: 'Updating preview' })
   await runInspect(id, () => {}, true)
-  if (before.kind === 'mesh' && before.status === 'rigged') {
-    update({ progress: 0.8, message: 'Re-applying the rig' })
-    await runRig(id, () => {})
+  if (rigged !== null && existsSync(rigged)) {
+    update({ progress: 0.85, message: 'Putting the texture into the rig' })
+    const fresh = (await getCharacter(id))!
+    const made = fresh.files.model !== undefined ? path.join(dir, fresh.files.model) : undefined
+    await swapImages(rigged, texturesDir(id), made)
+    await updateCharacter(id, c => { c.revision = (c.revision ?? 0) + 1 })
   }
 }
 
@@ -249,7 +277,7 @@ function saveTexture (character: Character, name: string, bytes: Buffer, label: 
     await updateCharacter(character.id, c => {
       c.texture = { filled: c.texture?.filled ?? false, images: c.texture?.images ?? [], at: Date.now(), painted: true }
     })
-    await refreshOutputs(character.id, update)
+    await refreshOutputs(character.id, update, true)
   })
 }
 
@@ -286,7 +314,7 @@ route('GET', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
 
 route('PATCH', /^\/api\/characters\/([a-z0-9-]+)$/, async (req, res, [id]) => {
   const patch = await readJsonBody<Partial<Character>>(req)
-  const allowed: Array<keyof Character> = ['name', 'joints', 'jointsEdited', 'markers', 'fingers', 'animations', 'scripts', 'props', 'garments', 'mount', 'skins', 'boneMap']
+  const allowed: Array<keyof Character> = ['name', 'joints', 'jointsEdited', 'markers', 'fingers', 'animations', 'scripts', 'props', 'garments', 'mount', 'skins', 'boneMap', 'handPoses']
   let before: Character | null = null
   const character = await updateCharacter(id, c => {
     before = structuredClone(c)
@@ -439,7 +467,7 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/rig$/, async (req, res, [id]) =
 
 // Fit a new finger level before displaying its markers, at the user's current wrists.
 route('POST', /^\/api\/characters\/([a-z0-9-]+)\/fingers$/, async (req, res, [id]) => {
-  const { fingers } = await readJsonBody<{ fingers: Character['fingers'] }>(req)
+  const { fingers, redetect } = await readJsonBody<{ fingers: Character['fingers'], redetect?: boolean }>(req)
   if (!['none', 'one', 'two', 'full'].includes(fingers ?? '')) throw new HttpError(400, 'Bad finger level')
   const before = await getCharacter(id)
   if (before === null) throw new HttpError(404, 'No such character')
@@ -452,9 +480,11 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/fingers$/, async (req, res, [id
     // finger at full level. Its old chain cannot be reused across that switch.
     const changesIndex = (before.fingers === 'full') !== (fingers === 'full')
     if (changesIndex) for (const name of Object.keys(placed)) if (/^(Left|Right)HandIndex[1-4]$/.test(name)) delete placed[name]
+    // (detected again: every finger traced afresh from the mesh, the body's joints kept)
+    if (redetect === true) for (const name of Object.keys(placed)) if (/^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)[1-4]$/.test(name)) delete placed[name]
     await writeJson(file, placed)
     const { result } = await runBlender('autorig/rig.py', ['--input', path.join(dir, before.source.file),
-      '--joints', file, '--fingers', fingers!, '--placements-only'], () => {})
+      '--joints', file, '--fingers', fingers!, '--placements-only', '--scale', String(before.scale ?? 1)], () => {})
     const c = await updateCharacter(id, c => {
       if (JSON.stringify(c.joints) !== JSON.stringify(before.joints) || c.fingers !== before.fingers) {
         throw new HttpError(409, 'Placements changed while fitting fingers; try again with the latest joints')
@@ -511,6 +541,51 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/reimport$/, async (req, res, [i
   send(res, 202, inspect(character))
 })
 
+// Size and floor (Import → Size): the character resized to `height` (else as it is) and stood on the floor, in place.
+// Its files are moved as they are (a rig keeps its weights and painting: server/glbtransform.ts), and everything kept
+// in its units with them: joints, markers, prop places and sizes, a pull's hold on its hand, clips' ground. Every
+// later import and rig of it does the same (its `scale`, then the floor).
+route('POST', /^\/api\/characters\/([a-z0-9-]+)\/fit$/, async (req, res, [id]) => {
+  const { height } = await readJsonBody<{ height?: number }>(req)
+  const before = await getCharacter(id)
+  if (before === null) throw new HttpError(404, 'No such character')
+  if (listJobs().some(j => j.characterId === id && (j.status === 'queued' || j.status === 'running'))) throw new HttpError(409, `${before.name} is busy; try again when its job is done`)
+  const dir = characterDir(id)
+  const files = [before.files.rigged, before.files.model].filter((f, i, all): f is string => f !== undefined && f.endsWith('.glb') && all.indexOf(f) === i).map(f => path.join(dir, f))
+  if (files.length === 0) throw new HttpError(400, 'No model to resize yet')
+  // (measured on the rig if it has one: what's shown and exported)
+  const extents = await Promise.all(files.map(async f => extentY(await readFile(f))))
+  const now = extents[0].max - extents[0].min
+  if (!(now > 0)) throw new HttpError(400, 'The model has no height')
+  const s = height === undefined ? 1 : height / now
+  if (!(s > 0.01 && s < 100) || (height !== undefined && !(height > 0))) throw new HttpError(400, 'Give a height between 1% and 100× its size')
+  const moves = extents.map(e => [0, -e.min * s, 0] as [number, number, number])
+  if (Math.abs(s - 1) < 1e-6 && moves.every(m => Math.abs(m[1]) < 1e-5)) { send(res, 200, before); return }
+  for (const [i, f] of files.entries()) await transformGlb(f, s, moves[i])
+  const d = moves[0]
+  const at = (p: [number, number, number]): [number, number, number] => [p[0] * s + d[0], p[1] * s + d[1], p[2] * s + d[2]]
+  const all = <T extends [number, number, number]>(o: Record<string, T> | undefined): Record<string, [number, number, number]> | undefined =>
+    o === undefined ? undefined : Object.fromEntries(Object.entries(o).map(([k, v]) => [k, at(v)]))
+  const c = await updateCharacter(id, c => {
+    c.scale = (c.scale ?? 1) * s
+    if (c.joints !== undefined) c.joints = all(c.joints)
+    if (c.autoJoints !== undefined) c.autoJoints = all(c.autoJoints)
+    if (c.markers !== undefined) c.markers = { ...c.markers, base: all(c.markers.base)!, positions: all(c.markers.positions)! }
+    c.garments = c.garments?.map(g => ({
+      ...g, position: at(g.position), scale: g.scale * s,
+      ...(g.anchor !== undefined ? { anchor: at(g.anchor) } : {}),
+      ...(g.pulls !== undefined ? { pulls: g.pulls.map(p => ({ ...p, grip: p.grip.map(v => v * s) as [number, number, number] })) } : {}),
+    }))
+    c.animations = c.animations.map(a => (a.lift !== undefined ? { ...a, lift: a.lift * s } : a))
+    if (c.stats !== undefined) c.stats = { ...c.stats, height: c.stats.height * s }
+    c.revision = (c.revision ?? 0) + 1
+    c.files.thumbnail = undefined
+  })
+  await record(id, by(req), before, c)
+  events.emit('character', c)
+  send(res, 200, c)
+})
+
 route('POST', /^\/api\/characters\/([a-z0-9-]+)\/texture\/fill$/, async (req, res, [id]) => {
   const character = await getCharacter(id)
   if (character === null) throw new HttpError(404, 'No such character')
@@ -530,6 +605,17 @@ const projectionDir = (id: string, pid: string): string => {
   return path.join(characterDir(id), 'projections', pid)
 }
 
+/** How many views a capture has (its views.json). */
+async function viewCount (dir: string): Promise<number> {
+  try {
+    const list = JSON.parse(await readFile(path.join(dir, 'views.json'), 'utf8')) as { views?: unknown[] }
+    return Array.isArray(list.views) ? list.views.length : 0
+  } catch { return 0 }
+}
+/** Each view's result-N file, or null where it has none yet. */
+const resultsOf = (files: string[], views: number): Array<string | null> =>
+  Array.from({ length: views }, (_, i) => files.find(f => new RegExp(`^result-${i + 1}\\.(png|jpe?g|webp)$`, 'i').test(f)) ?? null)
+
 route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/projections\/([a-z0-9-]+)\/([\w.-]+\.(?:png|jpg|webp|json|md))$/, async (req, res, [id, pid, file]) => {
   const dir = projectionDir(id, pid)
   await mkdir(dir, { recursive: true })
@@ -543,7 +629,9 @@ route('GET', /^\/api\/characters\/([a-z0-9-]+)\/projections$/, async (req, res, 
   const out = await Promise.all(ids.map(async pid => {
     const files = await readdir(path.join(root, pid))
     const info = await stat(path.join(root, pid))
-    return { id: pid, createdAt: info.birthtimeMs || info.mtimeMs, hasResult: files.some(f => /^result\.(png|jpe?g|webp)$/i.test(f)), complete: files.includes('camera.json') && files.includes('mask.png') }
+    const views = files.includes('views.json') ? await viewCount(path.join(root, pid)) : 0
+    const hasResult = views > 0 ? resultsOf(files, views).every(r => r !== null) : files.some(f => /^result\.(png|jpe?g|webp)$/i.test(f))
+    return { id: pid, createdAt: info.birthtimeMs || info.mtimeMs, hasResult, views: Math.max(views, 1), complete: views > 0 || (files.includes('camera.json') && files.includes('mask.png')) }
   }))
   send(res, 200, out.filter(p => p.complete).sort((a, b) => b.createdAt - a.createdAt).slice(0, 12))
 })
@@ -551,10 +639,13 @@ route('GET', /^\/api\/characters\/([a-z0-9-]+)\/projections$/, async (req, res, 
 route('GET', /^\/api\/characters\/([a-z0-9-]+)\/projections\/([a-z0-9-]+)$/, async (req, res, [id, pid]) => {
   const dir = projectionDir(id, pid)
   const files = existsSync(dir) ? await readdir(dir) : []
-  const result = files.find(f => /^result\.(png|jpe?g|webp)$/i.test(f))
+  // (a capture of several views is ready when every view has its result-N)
+  const views = files.includes('views.json') ? await viewCount(dir) : 0
+  const results = views > 0 ? resultsOf(files, views) : [files.find(f => /^result\.(png|jpe?g|webp)$/i.test(f)) ?? null]
+  const ready = results.every(r => r !== null)
   let resultVersion: number | null = null
-  if (result !== undefined) resultVersion = (await stat(path.join(dir, result))).mtimeMs
-  send(res, 200, { path: dir, files, result: result ?? null, resultVersion })
+  if (ready) resultVersion = Math.max(...await Promise.all((results as string[]).map(async r => (await stat(path.join(dir, r))).mtimeMs)))
+  send(res, 200, { path: dir, files, result: ready ? results[0] : null, results: ready ? results : null, views: Math.max(views, 1), resultVersion })
 })
 
 // Ask Codex (CLI, image generation) to paint result.png for a capture.
@@ -566,8 +657,14 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/projections\/([a-z0-9-]+)\/code
   const job = enqueue('codex', `Codex painting · ${character.name}`, id, async (job, update) => {
     update({ progress: 0.1, message: 'Codex is painting' })
     const prompt = await readFile(path.join(dir, 'prompt.md'), 'utf8')
-    await runCodex(dir, prompt, ['flat.png', 'mask.png', 'color.png'], message => { update({ message }) })
-    if (!(await readdir(dir)).some(f => /^result\.(png|jpe?g|webp)$/i.test(f))) throw new Error('Codex finished without writing result.png')
+    const views = existsSync(path.join(dir, 'views.json')) ? await viewCount(dir) : 0
+    const images = views > 0 ? Array.from({ length: views }, (_, i) => [`view-${i + 1}-flat.png`, `view-${i + 1}-mask.png`]).flat() : ['flat.png', 'mask.png', 'color.png']
+    await runCodex(dir, prompt, images, message => { update({ message }) })
+    const files = await readdir(dir)
+    if (views > 0) {
+      const missing = resultsOf(files, views).flatMap((r, i) => (r === null ? [`result-${i + 1}.png`] : []))
+      if (missing.length > 0) throw new Error(`Codex finished without writing ${missing.join(', ')}`)
+    } else if (!files.some(f => /^result\.(png|jpe?g|webp)$/i.test(f))) throw new Error('Codex finished without writing result.png')
   })
   send(res, 202, job)
 })
@@ -617,15 +714,19 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/garments$/, async (req, res, [i
   await mkdir(dir, { recursive: true })
   const source = path.join(dir, `source${path.extname(name).toLowerCase()}`)
   await writeFile(source, bytes)
+  // (the kind it is added as: a prop on a bone, clothing, or a part pinned to the body; clothing unless said)
+  const kind = url.searchParams.get('kind')
+  const mode: Garment['mode'] = kind === 'prop' || kind === 'rigid' ? 'rigid' : kind === 'part' ? 'part' : 'clothing'
   const garment: Garment = {
     id: gid, name: path.basename(name).replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '), status: 'importing',
-    mode: 'clothing', policy: 'body', bone: 'Head', position: [0, 0, 0], rotation: [0, 0, 0], scale: 1, hideBody: false,
+    mode, policy: 'body', bone: mode === 'rigid' ? 'RightHand' : 'Head', position: [0, 0, 0], rotation: [0, 0, 0], scale: 1, hideBody: false,
   }
   await updateCharacter(id, c => { c.garments = [...(c.garments ?? []), garment] })
   await note_(id, by(req), `gear ${garment.name}: imported from ${path.basename(name)}`)
   enqueue('garment', `Import ${garment.name}`, id, async (job, update) => {
     try {
-      await runBlender('jobs/inspect.py', ['--input', source, '--out', dir], (progress, message) => { update({ progress, message }) })
+      // (its own animations kept: a mechanism's moving parts play while it is worn)
+      await runBlender('jobs/inspect.py', ['--input', source, '--out', dir, '--animations'], (progress, message) => { update({ progress, message }) })
       await updateCharacter(id, c => {
         const g = c.garments?.find(x => x.id === gid)
         if (g !== undefined) { g.status = 'ready'; g.file = `garments/${gid}/model.glb` }
@@ -639,6 +740,44 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/garments$/, async (req, res, [i
     }
   })
   send(res, 201, await getCharacter(id))
+})
+
+// A clothing piece's painted weights (the Outfit step's brushes), kept beside its model and laid over the weights it
+// takes from the body on every load: merged by mesh and vertex, its count on the garment (which reloads it).
+route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/garments\/([a-z0-9]+)\/weights$/, async (req, res, [id, gid]) => {
+  const character = await getCharacter(id)
+  const garment = character?.garments?.find(g => g.id === gid)
+  if (character === null || garment === undefined) throw new HttpError(404, 'No such garment')
+  const { edits } = await readJsonBody<{ edits?: Array<{ mesh: number, vertex: number, weights: Array<[string, number]> }> }>(req)
+  if (!Array.isArray(edits) || edits.length === 0) throw new HttpError(400, 'No weights to write')
+  const file = path.join(characterDir(id), 'garments', gid, 'weights.json')
+  const kept = new Map<string, { mesh: number, vertex: number, weights: Array<[string, number]> }>()
+  if (existsSync(file)) for (const e of JSON.parse(await readFile(file, 'utf8')) as Array<{ mesh: number, vertex: number, weights: Array<[string, number]> }>) kept.set(`${e.mesh}:${e.vertex}`, e)
+  for (const e of edits) {
+    if (!Number.isInteger(e.mesh) || !Number.isInteger(e.vertex) || !Array.isArray(e.weights)) throw new HttpError(400, 'Bad weight edit')
+    kept.set(`${e.mesh}:${e.vertex}`, e)
+  }
+  await writeJson(file, [...kept.values()])
+  const after = await updateCharacter(id, c => {
+    const g = c.garments?.find(x => x.id === gid)
+    if (g !== undefined) g.painted = kept.size
+  })
+  await note_(id, by(req), `gear ${garment.name}: weights painted on ${edits.length} vertices (${kept.size} kept)`)
+  events.emit('character', after)
+  send(res, 200, { written: edits.length, kept: kept.size })
+})
+route('DELETE', /^\/api\/characters\/([a-z0-9-]+)\/garments\/([a-z0-9]+)\/weights$/, async (req, res, [id, gid]) => {
+  const character = await getCharacter(id)
+  const garment = character?.garments?.find(g => g.id === gid)
+  if (character === null || garment === undefined) throw new HttpError(404, 'No such garment')
+  await rm(path.join(characterDir(id), 'garments', gid, 'weights.json'), { force: true })
+  const after = await updateCharacter(id, c => {
+    const g = c.garments?.find(x => x.id === gid)
+    if (g !== undefined) delete g.painted
+  })
+  await note_(id, by(req), `gear ${garment.name}: painted weights forgotten`)
+  events.emit('character', after)
+  send(res, 200, { ok: true })
 })
 
 route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/thumbnail$/, async (req, res, [id]) => {
@@ -689,7 +828,7 @@ route('GET', /^\/api\/library$/, async (req, res, _, url) => {
 route('POST', /^\/api\/library\/edits$/, async (req, res) => {
   const body = await readJsonBody<SavedEdit & { characterId?: string }>(req)
   if (typeof body.name !== 'string' || body.name.trim() === '') throw new HttpError(400, 'Name the clip')
-  const id = await newId(body.name)
+  const id = await editId(body)
   const character = typeof body.characterId === 'string' && /^[a-z0-9-]+$/.test(body.characterId) ? body.characterId : undefined
   const job = enqueue('clip', `Save ${body.name.trim()} to the library`, character, async (job, update) => {
     await saveEdit(id, body, (progress, message) => { update({ progress, message }) })

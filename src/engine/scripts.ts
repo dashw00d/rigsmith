@@ -9,10 +9,59 @@
 //
 // Order, everywhere: each clip at its entry's speed, then every grip, then every blow, then every pace.
 import * as THREE from 'three'
+import type { Garment, HandPose } from '../../server/workspace.ts'
+import { handPose } from './handposes.ts'
+import { frameTimes } from './keys.ts'
+import { holdFactor } from './pulls.ts'
 
 export type ClipScript = GripScript | BlowScript | PaceScript
 interface ScriptBase { id: string, enabled: boolean, /** why it is there */ note?: string }
-export interface GripScript extends ScriptBase { kind: 'grip', side: 'Left' | 'Right', /** library clip id */ clip: string }
+export interface GripScript extends ScriptBase {
+  kind: 'grip', side: 'Left' | 'Right', /** library clip id */ clip: string
+  /** Per clip (entry name): where the hand opens instead (parts of the clip, [from, to]: a bow let go of). */
+  open?: Record<string, Array<[number, number]>>
+  /** Made from a prop's socket (handScripts): the prop the hand carries, not a script of the character's own. */
+  carries?: string
+  /** Per clip: only there is the hand posed (a drawstring pinch while the string is drawn); elsewhere the clip's own. */
+  during?: Record<string, Array<[number, number]>>
+  /** The pose itself, when `clip` names one of the character's hand poses ('pose:<id>'): resolved by handScripts. */
+  hand?: HandPose
+}
+
+/** The fist a hand closes into round what it holds, unless its socket says otherwise. */
+export const DEFAULT_FIST = 'mixamo-Great_Sword_Crouching_6'
+
+/**
+ * The character's scripts with its hands' poses from what they hold: a hand carrying a prop (a shown rigid garment on
+ * it) closes on it in every clip (its socket's pose: a fist clip, or 'open' to leave the clip's own hand), opening where
+ * a clip lets go (its socket's `open` windows). A Hold fist script of the character's own for that hand wins.
+ */
+export function handScripts (character: { scripts?: ClipScript[], garments?: Garment[], handPoses?: HandPose[] }): ClipScript[] {
+  // ('pose:<id>' names one of the character's hand poses: the script carries the pose itself)
+  const resolve = (s: GripScript): GripScript => {
+    if (!s.clip.startsWith('pose:')) return s
+    const pose = (character.handPoses ?? []).find(p => p.id === s.clip.slice(5))
+    return pose === undefined ? { ...s, clip: DEFAULT_FIST } : { ...s, hand: pose }
+  }
+  const own = (character.scripts ?? []).map(s => (s.kind === 'grip' ? resolve(s) : s))
+  const out: ClipScript[] = [...own]
+  const worn = (character.garments ?? []).filter(x => x.mode === 'rigid' && x.status === 'ready' && x.hidden !== true)
+  for (const side of ['Left', 'Right'] as const) {
+    if (own.some(s => s.kind === 'grip' && s.enabled && s.side === side)) continue
+    const g = worn.find(x => x.bone === `${side}Hand`)
+    if (g === undefined || g.carryPose === 'open') continue
+    out.push(resolve({ id: `carry:${g.id}`, kind: 'grip', enabled: true, side, clip: g.carryPose ?? DEFAULT_FIST, open: g.carryOpen, carries: g.name }))
+  }
+  // a hand pulling a prop's point (a drawstring), posed while it holds it: after the fists, over them
+  for (const g of worn) {
+    for (const p of g.pulls ?? []) {
+      const side = /^(Left|Right)Hand$/.exec(p.bone)?.[1] as 'Left' | 'Right' | undefined
+      if (side === undefined || p.pose === undefined || p.pose === 'open') continue
+      out.push(resolve({ id: `pull:${g.id}:${p.id}`, kind: 'grip', enabled: true, side, clip: p.pose, during: p.holds ?? {}, carries: `${g.name} (${p.name})` }))
+    }
+  }
+  return out
+}
 export interface BlowScript extends ScriptBase {
   kind: 'blow', /** entry name */ clip: string, /** where in the cut clip the blow lands (the game's 0.45) */ at: number
   /** The blow you picked, as a phase of the clip before it is cut (0 its start, 1 its end); unset: found (`hand`'s
@@ -28,7 +77,7 @@ export interface PaceScript extends ScriptBase { kind: 'pace', /** entry name */
 export const FINGERS = ['Index', 'Middle', 'Ring', 'Pinky']
 
 export function describe (s: ClipScript): string {
-  if (s.kind === 'grip') return `${s.side} fist closed in every clip`
+  if (s.kind === 'grip') return s.carries !== undefined ? `${s.side} fist closed on ${s.carries}` : `${s.side} fist closed in every clip`
   if (s.kind === 'blow') return `${s.clip}: the blow lands at ${Math.round(s.at * 100)}%${s.window !== undefined ? ` of ${s.window} s around it` : ''}`
   return `${s.clip}: paced like ${s.like}`
 }
@@ -155,9 +204,32 @@ export function fistPose (root: THREE.Object3D, gripClip: THREE.AnimationClip, s
 }
 
 /** `clip` with those fingers held still in `pose`. */
-export function holdFist (clip: THREE.AnimationClip, pose: Map<string, THREE.Quaternion>): THREE.AnimationClip {
+export function holdFist (clip: THREE.AnimationClip, pose: Map<string, THREE.Quaternion>, open?: Array<[number, number]>, during?: Array<[number, number]>): THREE.AnimationClip {
+  const own = new Map(clip.tracks.map(t => [t.name, t]))
   const tracks = clip.tracks.filter(t => !pose.has(t.name.replace(/\.quaternion$/, '')))
-  for (const [n, q] of pose) tracks.push(new THREE.QuaternionKeyframeTrack(`${n}.quaternion`, [0, clip.duration], [...q.toArray(), ...q.toArray()]))
+  // (only during some windows: never held in this clip, it keeps its own hand)
+  if (during !== undefined && during.length === 0) return clip
+  if ((open === undefined || open.length === 0) && during === undefined) {
+    for (const [n, q] of pose) tracks.push(new THREE.QuaternionKeyframeTrack(`${n}.quaternion`, [0, clip.duration], [...q.toArray(), ...q.toArray()]))
+    return new THREE.AnimationClip(clip.name, clip.duration, tracks)
+  }
+  // (opening where the clip lets go: the clip's own fingers there, eased in and out of the fist)
+  const times = frameTimes(clip.duration)
+  for (const [n, q] of pose) {
+    const track = own.get(`${n}.quaternion`)
+    const at = track === undefined ? null : (track as unknown as { createInterpolant: () => THREE.Interpolant }).createInterpolant()
+    const values: number[] = []
+    const mine = new THREE.Quaternion()
+    for (const t of times) {
+      const u = clip.duration > 0 ? t / clip.duration : 0
+      // (how far toward the clip's own hand: inside an open window; outside a during window)
+      const f = during !== undefined ? 1 - holdFactor(during, u, 0.06) : holdFactor(open, u, 0.06)
+      if (f <= 0 || at === null) { values.push(...q.toArray()); continue }
+      mine.fromArray(at.evaluate(t) as unknown as number[])
+      values.push(...q.clone().slerp(mine, f).toArray())
+    }
+    tracks.push(new THREE.QuaternionKeyframeTrack(`${n}.quaternion`, times, values))
+  }
   return new THREE.AnimationClip(clip.name, clip.duration, tracks)
 }
 
@@ -204,8 +276,9 @@ export async function applyScripts (root: THREE.Object3D, clips: Map<string, THR
   const report: Record<string, unknown> = {}
   const on = scripts.filter(s => s.enabled)
   for (const s of on.filter((x): x is GripScript => x.kind === 'grip')) {
-    const { pose, at, curl } = fistPose(root, await gripClip(s.clip), s.side)
-    for (const [name, clip] of out) out.set(name, holdFist(clip, pose))
+    // (one of the character's hand poses, or the fist a clip closes)
+    const { pose, at, curl } = s.hand !== undefined ? { pose: handPose(root, s.side, s.hand), at: 0, curl: 0 } : fistPose(root, await gripClip(s.clip), s.side)
+    for (const [name, clip] of out) out.set(name, holdFist(clip, pose, s.open?.[name], s.during === undefined ? undefined : s.during[name] ?? []))
     report[s.id] = { kind: 'grip', side: s.side, clip: s.clip, at: +at.toFixed(3), curl: +curl.toFixed(2) }
   }
   for (const s of on.filter((x): x is BlowScript => x.kind === 'blow')) {

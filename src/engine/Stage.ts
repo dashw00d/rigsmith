@@ -56,6 +56,17 @@ export class Stage {
     this.controls.screenSpacePanning = true
     // Once the user moves the camera, stop re-framing on resize.
     this.controls.addEventListener('start', () => { this.framedBox = null; this.framing = null })
+    // A drag on the view only ever turns the camera: no text selection starts from it (one would run on into the
+    // panels and scroll them under the pointer instead), and whatever had focus (a slider) lets it go.
+    const canvas = this.renderer.domElement
+    canvas.style.userSelect = 'none'
+    canvas.style.webkitUserSelect = 'none'
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'mouse') return
+      e.preventDefault()
+      window.getSelection()?.removeAllRanges()
+      if (document.activeElement instanceof HTMLElement && document.activeElement !== canvas) document.activeElement.blur()
+    })
 
     this.resizeObserver = new ResizeObserver(() => { this.resize() })
     this.resizeObserver.observe(container)

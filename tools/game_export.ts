@@ -4,8 +4,11 @@
 //   clips     the character's animation set, by the game's names (its clip, loop, in place, speed)
 //   scripts   the character's enabled clip scripts (src/engine/scripts.ts: a fist held, an attack's blow timed, a
 //             walk paced), applied exactly as the viewer applies them
-//   gear      its rigid garments (weapons, shields, quivers, the villager's tools, heads and wear) placed exactly as
-//             there, riding their bones
+//   gear      its accessories placed exactly as there: props (weapons, shields, quivers, the villager's tools, heads
+//             and wear) riding their bones, clothing skinned to the body and parts pinned to a spot on it, weighted as
+//             the viewer weights them (tools/lib/gearskin.ts); a prop's pulls (a bowstring drawn by the other hand:
+//             src/engine/pulls.ts) as a bone each, Prop_<prop>_<pull> under the bone the prop rides, its clip tracks
+//             the pull as the viewer steps it
 //
 // node tools/game_export.ts <spec.json> <models dir> <work dir> [unit ...]
 //
@@ -29,9 +32,13 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { compact, simplify } from '../src/engine/export/lods.ts'
 import { garmentMatrix } from '../src/engine/placement.ts'
 import { captureRest, pelvisName, restUpOf, retarget } from '../src/engine/retarget.ts'
-import { applyScripts, retime, sample, stride, type ClipScript } from '../src/engine/scripts.ts'
-import { applyBoneKeys, applyLift, propTracks } from '../src/engine/keys.ts'
+import { applyScripts, handScripts, retime, sample, stride, type ClipScript } from '../src/engine/scripts.ts'
+import { applyBoneKeys, applyLift, frameTimes, propTracks } from '../src/engine/keys.ts'
 import { fitRide, freezeClip, repeat, seatMatrix } from '../src/engine/mount.ts'
+import { CharacterView } from '../src/engine/CharacterView.ts'
+import type { GarmentEdit } from '../src/engine/garments.ts'
+import { holdFactor, pullBoneName, pullPosition, type PullSocket } from '../src/engine/pulls.ts'
+import { gearSkin, pullSkin } from './lib/gearskin.ts'
 import { entrySource, isBone, load, ROOT, WORKSPACE } from './lib/node3d.ts'
 import type { AnimationEntry, Garment, Mount } from '../server/workspace.ts'
 
@@ -162,7 +169,7 @@ async function loadCompanion (unit: string, c: CompanionSpec, names: string[]): 
     baked.set(name, clip)
     entries.set(name, entry)
   }
-  const { clips: scripted } = await applyScripts(scene, baked, info.scripts ?? [], async id => {
+  const { clips: scripted } = await applyScripts(scene, baked, handScripts(info), async id => {
     const src = await entrySource({ clipId: id })
     return retarget(src.scene, captureRest(src.scene, isBone), src.clip, rest, { fps: 30, inPlace: true })
   })
@@ -185,6 +192,32 @@ async function loadCompanion (unit: string, c: CompanionSpec, names: string[]): 
 
 function triangles (geometry: THREE.BufferGeometry): number {
   return (geometry.index?.count ?? geometry.attributes.position.count) / 3
+}
+
+/** simplify (src/engine/export/lods.ts) keeping the vertices `lock` marks where they are: a pulled strand's ring (left
+ * free, the simplifier collapses it back into the straight strand, which then can't bend). The same attributes and
+ * weights as simplify. */
+function simplifyKeeping (geometry: THREE.BufferGeometry, ratio: number, lock: Uint8Array): THREE.BufferGeometry {
+  const flat = (a: THREE.BufferAttribute | THREE.InterleavedBufferAttribute): Float32Array => {
+    const out = new Float32Array(a.count * a.itemSize)
+    for (let i = 0; i < a.count; i++) for (let k = 0; k < a.itemSize; k++) out[i * a.itemSize + k] = a.getComponent(i, k)
+    return out
+  }
+  const count = geometry.attributes.position.count
+  const source = geometry.index !== null ? Uint32Array.from(geometry.index.array) : Uint32Array.from({ length: count }, (_, i) => i)
+  const target = Math.max(3, Math.floor(source.length * ratio / 3) * 3)
+  const parts: Array<{ data: Float32Array, size: number, weight: number }> = []
+  if (geometry.attributes.normal !== undefined) parts.push({ data: flat(geometry.attributes.normal), size: 3, weight: 0.5 })
+  if (geometry.attributes.uv !== undefined) parts.push({ data: flat(geometry.attributes.uv), size: 2, weight: 4 })
+  const stride = Math.max(1, parts.reduce((t, p) => t + p.size, 0))
+  const attributes = new Float32Array(count * stride)
+  for (let v = 0; v < count; v++) {
+    let o = v * stride
+    for (const p of parts) for (let k = 0; k < p.size; k++) attributes[o++] = p.data[v * p.size + k]
+  }
+  const weights = parts.length > 0 ? parts.flatMap(p => new Array<number>(p.size).fill(p.weight)) : [0]
+  const [indices] = MeshoptSimplifier.simplifyWithAttributes(source, flat(geometry.attributes.position), 3, attributes, stride, weights, lock, target, 1, ['Permissive'])
+  return compact(geometry, indices)
 }
 
 async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, workDir: string): Promise<Record<string, unknown>> {
@@ -237,7 +270,8 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
       Object.assign(clipReport[name] as object, { audit: flagged.problems.map(p => `${p.rule} ${p.motion}`) })
     }
   }
-  const scripts = character.scripts ?? []
+  // (its own scripts and its hands' poses round what they carry, as the viewer plays them)
+  const scripts = handScripts(character)
   if (spec.clips.includes('Attack') && !scripts.some(x => x.enabled && x.kind === 'blow' && x.clip === 'Attack')) {
     console.warn(`warning: ${unit}: no blow timing on its Attack: the game lands each hit at 45 % of the clip`)
   }
@@ -313,28 +347,81 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   // a prop keyed in any clip rides its own bone ("Prop_<name>", at its pivot under the bone it rides), which the clips move
   const keyedProps = new Set(spec.clips.flatMap(n => Object.keys(character.animations.find(a => a.name === n)?.keys?.props ?? {})))
   const propBones: Array<{ bone: THREE.Bone, garment: Garment, rest: { position: THREE.Vector3, quaternion: THREE.Quaternion } }> = []
+  // a prop's pulls: a bone each under the bone the prop rides, at the pull's rest point, which every clip moves
+  const pullBones: Array<{ bone: THREE.Bone, parent: THREE.Bone, hand: THREE.Bone, pull: PullSocket, rest: THREE.Vector3 }> = []
   const material = new THREE.MeshStandardMaterial({ name: 'Main' })
   geometry.applyMatrix4(new THREE.Matrix4().makeScale(s, s, s).multiply(new THREE.Matrix4().makeTranslation(0, -floor, 0)))
   for (const name of Object.keys(geometry.attributes)) if (!['position', 'normal', 'uv', 'skinIndex', 'skinWeight'].includes(name)) geometry.deleteAttribute(name)
 
   await MeshoptSimplifier.ready
-  // Its gear: the character's rigid garments in Rigsmith (weapons, shields, quivers, the villager's tools, heads and
-  // wear), each placed exactly as there (garmentMatrix: the character's rest space), then into game space with the body,
-  // riding its bone rigidly. A hidden one stays out, except the pieces the game itself shows by job (Gear*, Head*,
-  // Wear*); only parts the game built go in (from "emberhold:...": AGENTS.md, every model starts in Blender). A part
-  // with one surface gets levels like the body; one with several (a wear piece on two trim sheets) is one mesh, one level.
+  // Its gear: the character's accessories in Rigsmith, each placed exactly as there (garmentMatrix: the character's rest
+  // space), then into game space with the body: props (weapons, shields, quivers, the villager's tools, heads and wear)
+  // riding their bone rigidly, clothing and parts skinned to the body's bones as the viewer skins them. A hidden one
+  // stays out, except the pieces the game itself shows by job (Gear*, Head*, Wear*); only parts the game built go in
+  // (from "emberhold:...": AGENTS.md, every model starts in Blender). A part with one surface gets levels like the body;
+  // one with several (a wear piece on two trim sheets) is one mesh, one level.
   const srcDir = path.join(workDir, unit)
   const toGame = new THREE.Matrix4().makeScale(s, s, s).multiply(new THREE.Matrix4().makeTranslation(0, -floor, 0))
-  const parts: Array<{ bone: string, geometry: THREE.BufferGeometry, material: THREE.Material | THREE.Material[], name: string, budget: boolean }> = []
+  // (`pulled`: a prop's pull joints, whose vertices every level keeps)
+  const parts: Array<{ bone: string, geometry: THREE.BufferGeometry, material: THREE.Material | THREE.Material[], name: string, budget: boolean, pulled?: Set<number> }> = []
   const gearReport: Record<string, unknown> = {}
+  // (a garment model's meshes, each placed by `placement` over its own nodes, with the surfaces the game binds by name)
+  const gearModel = async (file: string, placement: THREE.Matrix4): Promise<{ geos: THREE.BufferGeometry[], mats: THREE.Material[], animations: string[] }> => {
+    const { scene: gs, animations } = await load(file)
+    gs.updateMatrixWorld(true)
+    const geos: THREE.BufferGeometry[] = []; const mats: THREE.Material[] = []
+    gs.traverse(o => {
+      const m = o as THREE.Mesh
+      if (m.isMesh !== true) return
+      const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(placement, m.matrixWorld))
+      for (const name of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv'].includes(name)) geo.deleteAttribute(name)
+      geos.push(geo)
+      const loaded = Array.isArray(m.material) ? m.material[0] : m.material
+      // (the game binds a surface's maps by its material's name: Main, Atlas_<set>, Trim_<sheet>)
+      mats.push(/^Main(\.\d+)?$/.test(loaded.name) ? material : new THREE.MeshStandardMaterial({ name: loaded.name }))
+    })
+    return { geos, mats, animations: animations.map(a => a.name) }
+  }
+  // (the body at rest as the viewer holds it, for clothing and parts: loaded apart, the skeleton above is the game's now)
+  let restView: CharacterView | null = null
   for (const g of character.garments ?? []) {
+    const kind = g.mode === 'rigid' ? 'prop' : g.mode
     const left = g.status !== 'ready' || g.file === undefined ? 'not ready'
-      : g.mode !== 'rigid' ? 'a clothing garment (only rigid ones are exported)'
-        : g.hidden === true && !SWAPPED.test(g.name) ? 'hidden'
-          : !(g.from ?? '').startsWith('emberhold:') ? 'not a part the game built (AGENTS.md: every model starts in Blender)' : null
+      : g.hidden === true && !SWAPPED.test(g.name) ? 'hidden'
+        : !(g.from ?? '').startsWith('emberhold:') ? 'not a part the game built (AGENTS.md: every model starts in Blender)' : null
     if (left !== null) {
       if (left !== 'hidden') console.warn(`warning: ${unit}: ${g.name} left out: ${left}`)
-      gearReport[g.name] = { left }
+      gearReport[g.name] = { left, kind, group: g.group }
+      continue
+    }
+    if (g.mode !== 'rigid') {
+      // Clothing and parts: weighted in the character's rest space as the viewer weights them (the body's weights under
+      // each vertex and the painted ones, or the part's spot's), bones by name onto this skeleton, then into game space.
+      const file = path.join(characterDir, g.file!)
+      const { geos, mats, animations } = await gearModel(file, garmentMatrix(g))
+      if (geos.length === 0) throw new Error(`${unit}: ${g.name}: no mesh in ${g.file}`)
+      // (painted weights beside its model, as the viewer reads them: garmentWeightsUrl)
+      const weightsFile = path.join(path.dirname(file), 'weights.json')
+      const painted = g.mode === 'clothing' && (g.painted ?? 0) > 0
+      if (painted && !existsSync(weightsFile)) console.warn(`warning: ${unit}: ${g.name}: ${g.painted} painted weights, but no ${path.relative(characterDir, weightsFile)}`)
+      const edits = painted && existsSync(weightsFile) ? JSON.parse(readFileSync(weightsFile, 'utf8')) as GarmentEdit[] : []
+      restView ??= new CharacterView((await load(riggedFile)).scene)
+      const skin = gearSkin(restView, g, geos, edits, animations, bones.map(b => b.name))
+      geos.forEach((geo, i) => {
+        geo.applyMatrix4(toGame)
+        geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skin.skins[i].indices, 4))
+        geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skin.skins[i].weights, 4))
+      })
+      if (skin.mechanism !== undefined) console.warn(`warning: ${unit}: ${g.name}: its own animation ${skin.mechanism} isn't exported: it rides ${skin.lead} still`)
+      const geo = geos.length === 1 ? geos[0] : mergeGeometries(geos, true)
+      parts.push({ bone: skin.lead, geometry: geo, material: mats.length === 1 ? mats[0] : mats, name: g.name, budget: !SWAPPED.test(g.name) })
+      gearReport[g.name] = {
+        bone: skin.lead, position: g.position, rotation: g.rotation, scale: g.scale, hidden: g.hidden === true, from: g.from,
+        mesh: createHash('sha256').update(readFileSync(file)).digest('hex'),
+        kind, group: g.group, policy: g.mode === 'clothing' ? g.policy : undefined, spot: skin.spot, painted: g.mode === 'clothing' ? skin.painted : undefined,
+        hideBody: g.mode === 'clothing' && g.hideBody ? 'not applied (the body is whole in the game)' : undefined,
+        animation: skin.mechanism !== undefined ? `${skin.mechanism} (not exported: still)` : undefined,
+      }
       continue
     }
     const index = bones.findIndex(b => b.name === g.bone)
@@ -355,32 +442,65 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
       propBones.push({ bone: pb, garment: g, rest: { position: pb.position.clone(), quaternion: pb.quaternion.clone() } })
     }
     const file = path.join(characterDir, g.file!)
-    const { scene: gs } = await load(file)
-    gs.updateMatrixWorld(true)
-    const place = new THREE.Matrix4().multiplyMatrices(toGame, garmentMatrix(g))
-    const geos: THREE.BufferGeometry[] = []; const mats: THREE.Material[] = []
-    gs.traverse(o => {
-      const m = o as THREE.Mesh
-      if (m.isMesh !== true) return
-      const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(place, m.matrixWorld))
-      for (const name of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv'].includes(name)) geo.deleteAttribute(name)
-      geos.push(geo)
-      const loaded = Array.isArray(m.material) ? m.material[0] : m.material
-      // (the game binds a surface's maps by its material's name: Main, Atlas_<set>, Trim_<sheet>)
-      mats.push(/^Main(\.\d+)?$/.test(loaded.name) ? material : new THREE.MeshStandardMaterial({ name: loaded.name }))
-    })
-    if (geos.length === 0) throw new Error(`${unit}: ${g.name}: no mesh in ${g.file}`)
-    const geo = geos.length === 1 ? geos[0] : mergeGeometries(geos, true)
-    const n = geo.attributes.position.count
-    const si = new Uint16Array(n * 4); const sw = new Float32Array(n * 4)
-    for (let i = 0; i < n; i++) { si[i * 4] = ride; sw[i * 4] = 1 }
-    geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4))
-    geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4))
-    parts.push({ bone: bones[ride].name, geometry: geo, material: mats.length === 1 ? mats[0] : mats, name: g.name, budget: !SWAPPED.test(g.name) })
+    const pulls = g.pulls ?? []
+    let geo: THREE.BufferGeometry
+    let mats: THREE.Material[]
+    let painted: number | undefined
+    if (pulls.length === 0) {
+      const model = await gearModel(file, new THREE.Matrix4().multiplyMatrices(toGame, garmentMatrix(g)))
+      if (model.geos.length === 0) throw new Error(`${unit}: ${g.name}: no mesh in ${g.file}`)
+      mats = model.mats
+      geo = model.geos.length === 1 ? model.geos[0] : mergeGeometries(model.geos, true)
+      const n = geo.attributes.position.count
+      const si = new Uint16Array(n * 4); const sw = new Float32Array(n * 4)
+      for (let i = 0; i < n; i++) { si[i * 4] = ride; sw[i * 4] = 1 }
+      geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4))
+      geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4))
+    } else {
+      // A prop with pulls, rigged as the viewer rigs it (garments.ts rigPulls): its root is the bone it rides; each pull
+      // a bone under that one at the pull's rest point (prop model space, placed as its vertices are: garmentMatrix,
+      // then into game space), no turn of its own; its meshes split and weighted in model space, then placed.
+      const placed = new THREE.Matrix4().multiplyMatrices(toGame, garmentMatrix(g))
+      const parent = bones[ride]
+      const joints = [ride]
+      for (const pull of pulls) {
+        const hand = bones.find(b => b.name === pull.bone)
+        if (hand === undefined) throw new Error(`${unit}: ${g.name}'s pull ${pull.name} is held by ${pull.bone}, not in the skeleton`)
+        const pb = new THREE.Bone()
+        pb.name = pullBoneName(g.name, pull)
+        if (bones.some(b => b.name === pb.name)) throw new Error(`${unit}: ${g.name}: a second bone named ${pb.name}`)
+        pb.position.copy(parent.worldToLocal(new THREE.Vector3(...pull.rest).applyMatrix4(placed)))
+        parent.add(pb)
+        pb.updateMatrixWorld(true)
+        bones.push(pb)
+        joints.push(bones.length - 1)
+        pullBones.push({ bone: pb, parent, hand, pull, rest: pb.position.clone() })
+      }
+      const model = await gearModel(file, new THREE.Matrix4())
+      if (model.geos.length === 0) throw new Error(`${unit}: ${g.name}: no mesh in ${g.file}`)
+      mats = model.mats
+      // (painted weights beside its model, as the viewer reads them: garmentWeightsUrl)
+      const weightsFile = path.join(path.dirname(file), 'weights.json')
+      if ((g.painted ?? 0) > 0 && !existsSync(weightsFile)) console.warn(`warning: ${unit}: ${g.name}: ${g.painted} painted weights, but no ${path.relative(characterDir, weightsFile)}`)
+      const edits = (g.painted ?? 0) > 0 && existsSync(weightsFile) ? JSON.parse(readFileSync(weightsFile, 'utf8')) as GarmentEdit[] : []
+      const skin = pullSkin(g, model.geos, edits, joints)
+      painted = skin.painted
+      skin.geometries.forEach((x, i) => {
+        x.applyMatrix4(placed)
+        x.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skin.skins[i].indices, 4))
+        x.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skin.skins[i].weights, 4))
+      })
+      geo = skin.geometries.length === 1 ? skin.geometries[0] : mergeGeometries(skin.geometries, true)
+    }
+    parts.push({ bone: bones[ride].name, geometry: geo, material: mats.length === 1 ? mats[0] : mats, name: g.name, budget: !SWAPPED.test(g.name),
+      pulled: pulls.length > 0 ? new Set(pullBones.filter(pb => pulls.includes(pb.pull)).map(pb => bones.indexOf(pb.bone))) : undefined })
     gearReport[g.name] = {
       bone: g.bone, position: g.position, rotation: g.rotation, scale: g.scale, hidden: g.hidden === true, from: g.from,
       propBone: ride !== index ? bones[ride].name : undefined,
       mesh: createHash('sha256').update(readFileSync(file)).digest('hex'),
+      kind, group: g.group,
+      pulls: pulls.length > 0 ? pulls.map(p => ({ name: p.name, bone: p.bone, holds: p.holds ?? {} })) : undefined,
+      painted,
     }
   }
   for (const p of character.props ?? []) console.warn(`warning: ${unit}: catalog prop ${p.name} left out (not built by the game: AGENTS.md, every model starts in Blender)`)
@@ -410,8 +530,16 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
   const lod0 = tris0 > bodyBudget ? simplify(geometry, bodyBudget / tris0 * 0.99) : geometry
   const meshes: THREE.SkinnedMesh[] = []
   const lodReport: number[] = []
-  const addLevels = (base: string, geo0: THREE.BufferGeometry, mat: THREE.Material, report: number[]): void => {
-    const geos = triangles(geo0) <= 60 ? [geo0] : [geo0, ...(spec.lods ?? [0.45, 0.15]).map(r => simplify(geo0, r))]
+  // (`pulled`: joints whose vertices every level keeps where they are: a pull's, so each level's strand bends as LOD0's)
+  const addLevels = (base: string, geo0: THREE.BufferGeometry, mat: THREE.Material, report: number[], pulled?: Set<number>): void => {
+    let lock: Uint8Array | null = null
+    if (pulled !== undefined) {
+      const si = geo0.attributes.skinIndex; const sw = geo0.attributes.skinWeight
+      lock = new Uint8Array(si.count)
+      for (let i = 0; i < si.count; i++) for (let k = 0; k < 4; k++) if (sw.getComponent(i, k) > 0 && pulled.has(si.getComponent(i, k))) lock[i] = 1
+    }
+    const level = (r: number): THREE.BufferGeometry => lock === null ? simplify(geo0, r) : simplifyKeeping(geo0, r, lock)
+    const geos = triangles(geo0) <= 60 ? [geo0] : [geo0, ...(spec.lods ?? [0.45, 0.15]).map(level)]
     geos.forEach((geo, i) => {
       if (geo.attributes.uv !== undefined && geo.index !== null) geo.computeTangents()
       const mesh = new THREE.SkinnedMesh(geo, mat)
@@ -450,7 +578,7 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
       partReport[part.name] = [triangles(part.geometry)]
       continue
     }
-    addLevels(part.name, part.geometry, part.material, (partReport[part.name] = []))
+    addLevels(part.name, part.geometry, part.material, (partReport[part.name] = []), part.pulled)
   }
   // The companion's mesh: placed as its skeleton, skinned to its bones (after the unit's), its own surface.
   const compReport: Record<string, unknown> = {}
@@ -590,6 +718,44 @@ async function exportUnit (unit: string, spec: UnitSpec, modelsDir: string, work
         return t
       })
       clips[i] = new THREE.AnimationClip(frozen.name, frozen.duration, tracks)
+    }
+  }
+  // Pulls: every clip moves each pull bone (at rest where the clip doesn't hold it, as a prop bone is where it has no
+  // keys: the game keeps a bone where the last clip left it), held as the viewer steps it (pulls.ts tickPulls): at each
+  // frame of the clip's own pose, toward the holding bone's grip (its rest-frame offset, in game units) as far as the
+  // clip holds it at that part of it, in the space of the bone the prop rides.
+  if (pullBones.length > 0) {
+    for (let i = 0; i < clips.length; i++) {
+      const clip = clips[i]
+      const held = pullBones.filter(pb => (pb.pull.holds?.[clip.name] ?? []).length > 0)
+      const times = held.length > 0 ? frameTimes(clip.duration) : [0, clip.duration]
+      const values = new Map(pullBones.map(pb => [pb, held.includes(pb) ? [] as number[] : [...pb.rest.toArray(), ...pb.rest.toArray()]]))
+      if (held.length > 0) {
+        exportSkeleton.pose()
+        const mixer = new THREE.AnimationMixer(out)
+        const action = mixer.clipAction(clip)
+        // (once, held at its end: its last frame is its end's pose, not its start's)
+        action.setLoop(THREE.LoopOnce, 1)
+        action.clampWhenFinished = true
+        action.play()
+        const grip = new THREE.Vector3()
+        for (const t of times) {
+          action.paused = false
+          action.enabled = true
+          mixer.setTime(t)
+          out.updateMatrixWorld(true)
+          for (const pb of held) {
+            grip.set(...pb.pull.grip).multiplyScalar(s).applyMatrix4(pb.hand.matrixWorld)
+            const at = pullPosition({ ...pb.pull, rest: pb.rest.toArray() }, holdFactor(pb.pull.holds?.[clip.name], clip.duration > 0 ? t / clip.duration : 0), pb.parent.worldToLocal(grip.clone()))
+            values.get(pb)!.push(...at.toArray())
+          }
+        }
+        action.stop()
+        mixer.uncacheRoot(out)
+        exportSkeleton.pose()
+      }
+      const tracks = pullBones.map(pb => new THREE.VectorKeyframeTrack(`${pb.bone.name}.position`, held.includes(pb) ? times : [0, clip.duration], values.get(pb)!))
+      clips[i] = new THREE.AnimationClip(clip.name, clip.duration, [...clip.tracks, ...tracks])
     }
   }
   // (the build record keeps the keys themselves too: game_import restores a character from it)

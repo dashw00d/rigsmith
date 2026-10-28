@@ -139,6 +139,7 @@
     background: radial-gradient(120% 90% at 50% 18%, #1b2030 0%, #12151c 45%, #0b0c10 100%);
     overflow: hidden;
     container-type: size;
+    user-select: none;
   }
   .vignette { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 160px rgb(0 0 0 / 55%); }
   .working :global(canvas) { pointer-events: none; }

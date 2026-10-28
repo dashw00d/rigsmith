@@ -46,7 +46,24 @@ function garments (before: Garment[], after: Garment[]): string[] {
     }
     if ((b.hidden === true) !== (g.hidden === true)) out.push(`gear ${g.name}: ${g.hidden === true ? 'hidden' : 'shown'}`)
     if (b.file !== g.file) out.push(`gear ${g.name}: new mesh`)
-    if (b.mode !== g.mode) out.push(`gear ${g.name}: ${g.mode}`)
+    if (b.mode !== g.mode) out.push(`gear ${g.name}: ${g.mode === 'rigid' ? 'a prop' : g.mode === 'part' ? 'a part' : 'clothing'}`)
+    if (b.policy !== g.policy && g.mode === 'clothing') out.push(`gear ${g.name}: follows ${g.policy}`)
+    if (b.hideBody !== g.hideBody) out.push(`gear ${g.name}: ${g.hideBody ? 'hides' : 'shows'} the body under it`)
+    if ((b.group ?? '') !== (g.group ?? '')) out.push(`gear ${g.name}: ${g.group ? `in switch set ${g.group}` : 'out of its switch set'}`)
+    if (!same(b.anchor, g.anchor)) out.push(`gear ${g.name}: ${g.anchor ? `pinned at [${round(g.anchor)}]` : 'pinned to the skin nearest it'}`)
+    if ((b.animation ?? '') !== (g.animation ?? '')) out.push(`gear ${g.name}: ${g.animation ? `plays ${g.animation}` : 'still'}`)
+    if ((b.carryPose ?? '') !== (g.carryPose ?? '')) out.push(`gear ${g.name}: its hand ${g.carryPose === 'open' ? 'as the clips have it' : g.carryPose === undefined ? 'in the default fist' : `in ${g.carryPose}`}`)
+    if (!same(b.carryOpen, g.carryOpen)) out.push(`gear ${g.name}: its hand opens in ${Object.entries(g.carryOpen ?? {}).map(([c, w]) => `${c} ${w.map(([x, y]) => `${x}-${y}`).join(', ')}`).join('; ') || 'no clip'}`)
+    const pb = new Map((b.pulls ?? []).map(p => [p.id, p]))
+    for (const p of g.pulls ?? []) {
+      const was = pb.get(p.id)
+      if (was === undefined) { out.push(`gear ${g.name}: pull ${p.name} added (drawn by ${p.bone})`); continue }
+      if (was.bone !== p.bone) out.push(`gear ${g.name}: pull ${p.name} drawn by ${p.bone}`)
+      if (!same(was.rest, p.rest)) out.push(`gear ${g.name}: pull ${p.name} rests at [${round(p.rest)}]`)
+      if (!same(was.holds, p.holds)) out.push(`gear ${g.name}: pull ${p.name} held in ${Object.entries(p.holds ?? {}).map(([c, w]) => `${c} ${w.map(([x, y]) => `${x}-${y}`).join(', ')}`).join('; ') || 'nothing'}`)
+      if (was.name !== p.name) out.push(`gear ${g.name}: pull ${was.name} renamed ${p.name}`)
+    }
+    for (const p of b.pulls ?? []) if (!(g.pulls ?? []).some(x => x.id === p.id)) out.push(`gear ${g.name}: pull ${p.name} removed`)
   }
   const now = new Set(after.map(g => g.id))
   for (const g of before) if (!now.has(g.id)) out.push(`gear ${g.name}: removed`)
@@ -58,6 +75,14 @@ export function describe (before: Character | null, after: Character): string[] 
   if (before === null) return ['created']
   const out: string[] = []
   if (before.name !== after.name) out.push(`name: ${before.name} -> ${after.name}`)
+  const pb = new Map((before.handPoses ?? []).map(p => [p.id, p])); const pa = new Map((after.handPoses ?? []).map(p => [p.id, p]))
+  for (const [id, p] of pa) {
+    const was = pb.get(id)
+    if (was === undefined) out.push(`hand pose ${p.name}: added${p.from !== undefined ? ` (from ${p.from.clip} at ${p.from.at.toFixed(2)} s)` : ''}`)
+    else if (was.name !== p.name) out.push(`hand pose ${was.name}: renamed ${p.name}`)
+    else if (!same(was.joints, p.joints)) out.push(`hand pose ${p.name}: changed`)
+  }
+  for (const [id, p] of pb) if (!pa.has(id)) out.push(`hand pose ${p.name}: removed`)
   out.push(...entries(before.animations ?? [], after.animations ?? []))
   const sb = new Map((before.scripts ?? []).map(s => [s.id, s])); const sa = new Map((after.scripts ?? []).map(s => [s.id, s]))
   for (const [id, s] of sa) {

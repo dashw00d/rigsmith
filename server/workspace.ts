@@ -1,7 +1,7 @@
 // The on-disk workspace: characters, library, exports and settings. Plain files, no database.
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import type { ClipScript } from '../src/engine/scripts.ts'
@@ -31,6 +31,9 @@ export interface Character {
   /** Joints as detected on import, for "reset". */
   autoJoints?: Record<string, Vec3>
   jointsEdited?: boolean
+  /** Its size against the file it came from (Import → Size): every import and rig scales the model by it (then stands
+   * it on the floor). Unset: 1. */
+  scale?: number
   /** The Rig step's markers (src/engine/markers.ts): the skeleton they were seeded from and where they are now. */
   markers?: { set: string, base: Record<string, Vec3>, positions: Record<string, Vec3> }
   fingers?: 'none' | 'one' | 'two' | 'full'
@@ -48,6 +51,9 @@ export interface Character {
   animations: AnimationEntry[]
   /** Switchable changes to the clips, played here and exported to the game alike (src/engine/scripts.ts). */
   scripts?: ClipScript[]
+  /** Named finger poses (the Rig step's Hand poses: a fist, a bow grip, a drawstring pinch), which sockets close their
+   * hands into (src/engine/handposes.ts). */
+  handPoses?: HandPose[]
   /** Props/accessories pinned to bones (see src/engine/props.ts). */
   props?: PropAttachment[]
   /** The user's own meshes worn by the character (see src/engine/garments.ts). */
@@ -88,8 +94,10 @@ export interface Garment {
   file?: string
   status: 'importing' | 'ready' | 'error'
   error?: string
-  /** 'clothing' skins to the body; 'rigid' follows one bone. */
-  mode: 'clothing' | 'rigid'
+  /** The kind of accessory (the Outfit step's Props, Clothes and Parts): 'rigid' (a prop) rides one bone, socket
+   * based; 'clothing' skins to the body, each vertex weighted like the skin under it; 'part' is pinned to one spot on
+   * the body's surface and moves as that skin does (a buckle, a pouch, a mechanism). */
+  mode: 'clothing' | 'rigid' | 'part'
   /** Clothing: which bones may influence it. */
   policy: 'body' | 'cape' | 'skirt' | 'upper' | 'lower' | 'head'
   bone: string
@@ -104,6 +112,54 @@ export interface Garment {
   from?: string
   /** A rigid one's grips (the animation editor's: a hand put on one holds it there; src/engine/clipedit.ts Socket). */
   sockets?: GarmentSocket[]
+  /** A switch set: of the accessories sharing it, showing one hides the others (one tool in hand of several). */
+  group?: string
+  /** A part's spot on the body at rest (character rest space); unset: the skin nearest the part's middle. */
+  anchor?: [number, number, number]
+  /** Clothing weights painted by hand (the Outfit step's brushes): how many vertices, kept in
+   * garments/<id>/weights.json and laid over the weights taken from the body on every load. */
+  painted?: number
+  /** The model's own animation, played while worn (a mechanism: a turning wheel, a ticking gear). */
+  animation?: string
+  /** A prop's pull sockets: points of it another bone takes hold of and pulls (a bowstring drawn by the other hand),
+   * its soft vertices following (src/engine/pulls.ts). */
+  pulls?: PullSocket[]
+  /** Its carry socket's hand pose (a prop on a hand), held in every clip: 'pose:<id>' (one of the character's hand
+   * poses), a fist clip id (the fist it closes as), unset (the default fist), or 'open' (the clip's own hand).
+   * src/engine/scripts.ts handScripts. */
+  carryPose?: string
+  /** Per clip (entry name): where the carrying hand opens instead (parts of the clip, [from, to]: a bow let go of). */
+  carryOpen?: Record<string, Array<[number, number]>>
+}
+
+/** A finger pose: each finger joint's turn from rest in its own frame (along its bone, toward the palm, across), keyed
+ * by joint without the side (`Index1`), as made on `side`'s hand (the other takes it mirrored). */
+export interface HandPose {
+  id: string
+  name: string
+  side: 'Left' | 'Right'
+  joints: Record<string, [number, number, number, number]>
+  /** Where it was taken from: a clip's frame (library clip id or entry name, time in seconds), or rest. */
+  from?: { clip: string, at: number }
+}
+
+/** A point of a prop a bone pulls while it holds it: at `rest` on the prop when let go; held (per clip, `holds`), at
+ * the bone's `grip`. Which vertices follow it, and how far, is painted (the prop's weights: its own bone and the
+ * pull's, `Prop_<prop>_<pull>`); unpainted, those right by `rest` follow it fully, the rest not at all. */
+export interface PullSocket {
+  id: string
+  name: string
+  /** The bone that pulls (a hand) and where on it it holds, in that bone's rest frame (character rest space units). */
+  bone: string
+  grip: [number, number, number]
+  /** Where it rests on the prop, in the prop's model space (before its placement): a strand is split there so it can
+   * bend. */
+  rest: [number, number, number]
+  /** Per clip (entry name): when it is held, as parts of the clip [from, to]. */
+  holds?: Record<string, Array<[number, number]>>
+  /** The pulling hand's pose while it holds it ('pose:<id>' of the character's hand poses, or a fist clip id); unset:
+   * the clip's own hand. */
+  pose?: string
 }
 
 /** A grip on a rigid garment: where a hand's wrist goes and how the hand turns, in the garment's own placed frame. */
@@ -172,6 +228,8 @@ export interface Settings {
   /** The game's repo (Emberhold): Export writes its units (tools/rigsmith/units.json, the models and maps). Rigsmith's own
    * list of units is server/game.ts's (workspace/game/units.json). */
   gameRepo: string
+  /** Hand poses shared by every character (Rig → Hand poses: shared): a pose is finger bends, so it fits any hand. */
+  handPoses?: HandPose[]
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -259,8 +317,14 @@ export async function createCharacter (originalName: string, bytes: Buffer): Pro
   return character
 }
 
+/** Delete a character: its folder moved to workspace/trash/<id>-<when> (put it back in characters/ to undo; empty the
+ * trash to free the space). */
 export async function deleteCharacter (id: string): Promise<void> {
-  await rm(characterDir(id), { recursive: true, force: true })
+  const dir = characterDir(id)
+  if (!existsSync(dir)) return
+  const trash = path.join(WORKSPACE, 'trash')
+  await mkdir(trash, { recursive: true })
+  await rename(dir, path.join(trash, `${id}-${new Date().toISOString().replace(/[:.]/g, '-')}`))
 }
 
 export async function getSettings (): Promise<Settings> {

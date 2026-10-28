@@ -61,6 +61,35 @@
     scene.add(key, key.target)
   }
 
+  /** The direction the surface near `center` is thinnest in, square to `up` (a hand's palm normal), or null. */
+  function flattest (center: THREE.Vector3, radius: number, up: THREE.Vector3): THREE.Vector3 | null {
+    // two directions square to up, and the surface's spread in that plane
+    const a = new THREE.Vector3(1, 0, 0); if (Math.abs(a.dot(up)) > 0.9) a.set(0, 0, 1)
+    a.addScaledVector(up, -a.dot(up)).normalize()
+    const b = new THREE.Vector3().crossVectors(up, a)
+    let n = 0; let sx = 0; let sy = 0; let sxx = 0; let syy = 0; let sxy = 0
+    const p = new THREE.Vector3()
+    for (const mesh of meshes) {
+      const pos = mesh.geometry.attributes.position
+      for (let i = 0; i < pos.count; i++) {
+        p.fromBufferAttribute(pos, i)
+        if (p.distanceToSquared(center) > radius * radius) continue
+        p.sub(center)
+        const x = p.dot(a); const y = p.dot(b)
+        n++; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y
+      }
+    }
+    if (n < 12) return null
+    const cxx = sxx / n - (sx / n) ** 2; const cyy = syy / n - (sy / n) ** 2; const cxy = sxy / n - (sx / n) * (sy / n)
+    // the smaller principal direction of [[cxx, cxy], [cxy, cyy]]
+    const half = (cxx - cyy) / 2; const r = Math.hypot(half, cxy)
+    const small = (cxx + cyy) / 2 - r; const big = (cxx + cyy) / 2 + r
+    if (big < 1e-12 || small / big > 0.8) return null   // (round in section: no flat side to go by)
+    const angle = Math.atan2(small - cxx, cxy)
+    const dir = Math.abs(cxy) < 1e-15 ? (cxx < cyy ? a.clone() : b.clone()) : a.clone().multiplyScalar(Math.cos(angle)).addScaledVector(b, Math.sin(angle))
+    return dir.normalize()
+  }
+
   /** A hand's view: from the back of the hand (away from the body), the fingers up, cut to a slab around the hand. */
   function handView (prefix: string): { center: THREE.Vector3, normal: THREE.Vector3, up: THREE.Vector3, size: number } | null {
     const J = Object.keys(joints).length > 0 ? joints : character.joints as Record<string, V3> | undefined
@@ -78,6 +107,10 @@
       across.addScaledVector(up, -across.dot(up))
     }
     across.normalize()
+    // (which way the palm faces from the hand's own surface where it can be measured: the joints only say so when
+    // they're right, and a hand seen edge on can't have its fingertips placed)
+    const flat = flattest(wrist.clone().lerp(tip, 0.5), length * 0.55, up)
+    if (flat !== null) across.copy(flat).cross(up).normalize()
     const normal = new THREE.Vector3().crossVectors(across, up).normalize()
     // (looking at its back: from out beside the body)
     const out = wrist.clone().sub(box.getCenter(new THREE.Vector3())); out.y = 0

@@ -1,14 +1,22 @@
-// The user's own meshes worn by a character: clothing skinned to the body (bleed-free), or rigid pieces on a bone.
-//
-// Clothing takes its weights from the body surface underneath each vertex, then a policy removes bones
-// that must not move it (a cape never follows the arms, a skirt never follows the shins) and a smoothing
-// pass along the garment removes jagged borders. Optionally the body under the garment is hidden so it
-// can't poke through during animation.
+// The user's own meshes worn by a character, the Outfit step's accessories, of three kinds:
+//   props (mode 'rigid')    ride one bone, socket based: a weapon in a hand, a quiver on the back
+//   clothes ('clothing')    skinned to the body: each vertex takes the weights of the body surface under it, then a
+//                           policy removes bones that must not move it (a cape never follows the arms, a skirt never
+//                           follows the shins) and a smoothing pass removes jagged borders; weights painted by hand
+//                           (garments/<id>/weights.json) are laid over those. Optionally the body under it is hidden
+//                           so it can't poke through.
+//   parts ('part')          pinned to one spot on the body's surface (its anchor, else the skin nearest its middle):
+//                           every vertex takes that spot's weights, so the whole part moves as that skin does (a
+//                           buckle, a pouch). One with its own animation (a mechanism) rides the spot's leading bone
+//                           instead and plays it.
+// Any of them can be switched off (hidden), and in a switch set (group) only one shows at a time.
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { Garment } from '../../server/workspace.ts'
 import type { CharacterView } from './CharacterView.ts'
 import { garmentMatrix } from './placement.ts'
+import { clearPulls, defaultPullWeights, PROP_ROOT, pullBoneName, registerPulls, splitStrand } from './pulls.ts'
 
 export type { Garment }
 
@@ -35,16 +43,41 @@ const SMOOTHING: Record<Garment['policy'], number> = { body: 3, upper: 3, lower:
 export const GARMENT_FLAG = 'rigsmithGarment'
 
 const loader = new GLTFLoader()
-const models = new Map<string, Promise<THREE.Group>>()
+const models = new Map<string, Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }>>()
 
-async function load (url: string): Promise<THREE.Group> {
+async function loadModel (url: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
   let pending = models.get(url)
   if (pending === undefined) {
-    pending = loader.loadAsync(url).then(g => g.scene)
+    pending = loader.loadAsync(url).then(g => ({ scene: g.scene, animations: g.animations }))
     models.set(url, pending)
     pending.catch(() => models.delete(url))
   }
   return await pending
+}
+
+async function load (url: string): Promise<THREE.Group> {
+  return (await loadModel(url)).scene
+}
+
+/** The animations a garment's model carries (a mechanism's), by name. */
+export async function garmentAnimations (url: string): Promise<string[]> {
+  return (await loadModel(url)).animations.map(a => a.name)
+}
+
+/** A clothing piece's hand-painted weights: per vertex of one of its meshes (in the model's mesh order), by bone name. */
+export interface GarmentEdit { mesh: number, vertex: number, weights: Array<[string, number]> }
+
+/** Where a garment's painted weights are kept, beside its model. */
+export function garmentWeightsUrl (modelUrl: string, g: Garment): string {
+  return `${modelUrl.replace(/[?#].*$/, '').replace(/[^/]*$/, '')}weights.json?v=${g.painted ?? 0}`
+}
+
+/** Model animation mixers of the parts worn (mechanisms), stepped each frame (tickMechanisms). */
+const mechanisms = new Map<CharacterView, THREE.AnimationMixer[]>()
+
+/** Step every worn mechanism's own animation. */
+export function tickMechanisms (dt: number): void {
+  for (const mixers of mechanisms.values()) for (const m of mixers) m.update(dt)
 }
 
 export { garmentMatrix }
@@ -84,7 +117,15 @@ class TriangleGrid {
   private readonly c = new THREE.Vector3()
   private readonly tri = new THREE.Triangle()
 
-  constructor (readonly positions: Float32Array, readonly index: ArrayLike<number>, readonly cell: number) {
+  // (plain fields, no parameter properties: node runs this file by stripping its types, for tools/game_export.ts)
+  readonly positions: Float32Array
+  readonly index: ArrayLike<number>
+  readonly cell: number
+
+  constructor (positions: Float32Array, index: ArrayLike<number>, cell: number) {
+    this.positions = positions
+    this.index = index
+    this.cell = cell
     for (let t = 0; t < index.length / 3; t++) {
       const lo = [Infinity, Infinity, Infinity]
       const hi = [-Infinity, -Infinity, -Infinity]
@@ -142,7 +183,7 @@ class TriangleGrid {
   }
 }
 
-interface BodySurface {
+export interface BodySurface {
   mesh: THREE.SkinnedMesh
   grid: TriangleGrid
   positions: Float32Array
@@ -151,7 +192,8 @@ interface BodySurface {
   skinWeight: THREE.BufferAttribute
 }
 
-function bodySurface (view: CharacterView): BodySurface | null {
+/** The body as garments see it: its rest surface (closest-point queries) and its weights. */
+export function bodySurface (view: CharacterView): BodySurface | null {
   const mesh = view.skinned.find(m => m.userData[GARMENT_FLAG] === undefined)
   if (mesh === undefined) return null
   const geometry = mesh.geometry
@@ -174,7 +216,9 @@ function bodySurface (view: CharacterView): BodySurface | null {
 
 // ---- weights ----------------------------------------------------------------------------------------
 
-function computeWeights (body: BodySurface, geometry: THREE.BufferGeometry, policy: Garment['policy'], view: CharacterView): { indices: Uint16Array, weights: Float32Array } {
+/** Clothing weights: each vertex (rest space) the weights of the body surface under it, the policy's bones only,
+ * smoothed along the garment; the four strongest. */
+export function computeWeights (body: BodySurface, geometry: THREE.BufferGeometry, policy: Garment['policy'], view: CharacterView): { indices: Uint16Array, weights: Float32Array } {
   const bones = body.mesh.skeleton.bones
   const allowedRe = ALLOWED[policy]
   const allowed = bones.map(b => allowedRe === null || allowedRe.test(b.name))
@@ -225,6 +269,55 @@ function computeWeights (body: BodySurface, geometry: THREE.BufferGeometry, poli
     order.forEach((b, k) => { indices[i * 4 + k] = b; weights[i * 4 + k] = sum > 0 ? w[i * nb + b] / sum : (k === 0 ? 1 : 0) })
   }
   return { indices, weights }
+}
+
+/** A part's spot on the body at rest: its anchor, else the skin nearest the middle of its meshes (rest space). */
+export function partSpot (g: Pick<Garment, 'anchor'>, meshes: THREE.Mesh[]): THREE.Vector3 {
+  if (g.anchor !== undefined) return new THREE.Vector3(...g.anchor)
+  const box = new THREE.Box3()
+  for (const m of meshes) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox!) }
+  return box.getCenter(new THREE.Vector3())
+}
+
+/** The body's weights at the skin nearest `spot` (rest space), the four strongest: what a part moves by, all of it. */
+export function spotWeights (body: BodySurface, spot: THREE.Vector3): Array<[number, number]> {
+  const hit = body.grid.closest(spot, 40)
+  if (hit === null) return [[0, 1]]
+  const bary = body.grid.barycentric(hit.triangle, hit.point)
+  const lambdas = [bary.x, bary.y, bary.z]
+  const sum = new Map<number, number>()
+  for (let c = 0; c < 3; c++) {
+    const v = body.index[hit.triangle * 3 + c]
+    for (let k = 0; k < 4; k++) {
+      const w = body.skinWeight.getComponent(v, k) * lambdas[c]
+      if (w > 0) sum.set(body.skinIndex.getComponent(v, k), (sum.get(body.skinIndex.getComponent(v, k)) ?? 0) + w)
+    }
+  }
+  const top = [...sum].sort((a, b) => b[1] - a[1]).slice(0, 4)
+  const total = top.reduce((t, [, w]) => t + w, 0)
+  return total > 0 ? top.map(([b, w]) => [b, w / total]) : [[0, 1]]
+}
+
+/** Every vertex of a part weighted alike: `spot`'s weights. */
+export function partWeights (count: number, spot: Array<[number, number]>): { indices: Uint16Array, weights: Float32Array } {
+  const indices = new Uint16Array(count * 4)
+  const weights = new Float32Array(count * 4)
+  for (let i = 0; i < count; i++) for (let k = 0; k < 4; k++) { indices[i * 4 + k] = spot[k]?.[0] ?? 0; weights[i * 4 + k] = spot[k]?.[1] ?? 0 }
+  return { indices, weights }
+}
+
+/** Painted weights laid over computed ones (`mesh`: this mesh's index in the model; bones by name). */
+export function applyEdits (indices: Uint16Array, weights: Float32Array, edits: GarmentEdit[], mesh: number, boneNames: string[]): number {
+  let n = 0
+  for (const e of edits) {
+    if (e.mesh !== mesh || e.vertex * 4 >= indices.length) continue
+    const top = e.weights.map(([name, w]) => [boneNames.indexOf(name), w] as [number, number]).filter(([b, w]) => b >= 0 && w > 0).sort((a, b) => b[1] - a[1]).slice(0, 4)
+    const total = top.reduce((t, [, w]) => t + w, 0)
+    if (total <= 0) continue
+    for (let k = 0; k < 4; k++) { indices[e.vertex * 4 + k] = top[k]?.[0] ?? 0; weights[e.vertex * 4 + k] = (top[k]?.[1] ?? 0) / total }
+    n++
+  }
+  return n
 }
 
 /** Skirts: legs pull only at the sides and near the hem; the middle front/back follows the hips. */
@@ -348,6 +441,9 @@ function restoreBody (view: CharacterView): void {
 // ---- attach -----------------------------------------------------------------------------------------
 
 export function detachGarments (view: CharacterView): void {
+  for (const m of mechanisms.get(view) ?? []) m.stopAllAction()
+  mechanisms.delete(view)
+  clearPulls(view)
   const found: THREE.Object3D[] = []
   view.root.traverse(o => { if (o.userData[GARMENT_FLAG] !== undefined) found.push(o) })
   for (const o of found) {
@@ -370,7 +466,8 @@ export function restFrame (view: CharacterView, bone: string): THREE.Matrix4 | n
  * one is skinned to the body; while `fitting` (its id) it shows as a static mesh with its placement instead, to move
  * before binding. A hidden garment is left off unless it is the one being fitted.
  */
-export async function attachGarments (view: CharacterView, garments: Garment[], urlFor: (g: Garment) => string, fitting: string | null = null): Promise<Map<string, THREE.Object3D>> {
+export async function attachGarments (view: CharacterView, garments: Garment[], urlFor: (g: Garment) => string, fitting: string | null = null,
+  editsFor: (g: Garment) => Promise<GarmentEdit[]> = async g => await fetchEdits(garmentWeightsUrl(urlFor(g), g))): Promise<Map<string, THREE.Object3D>> {
   detachGarments(view)
   const out = new Map<string, THREE.Object3D>()
   const body = bodySurface(view)
@@ -389,13 +486,38 @@ export async function attachGarments (view: CharacterView, garments: Garment[], 
       const place = new THREE.Group()
       place.name = `${group.name}_place`
       garmentMatrix(g).decompose(place.position, place.quaternion, place.scale)
-      for (const m of await meshesOf(urlFor(g), g, new THREE.Matrix4())) place.add(m)
       group.add(place)
       bone.add(group)
+      const meshes = await meshesOf(urlFor(g), g, new THREE.Matrix4())
+      if ((g.pulls ?? []).length > 0) await rigPulls(view, g, place, meshes, editsFor)
+      else for (const m of meshes) place.add(m)
       out.set(g.id, place)
       continue
     }
     const meshes = await garmentMeshes(urlFor(g), g)
+    // A mechanism (a part with its own animation playing): it rides its spot's leading bone, as a prop does.
+    const model = g.mode === 'part' && g.animation !== undefined ? await loadModel(urlFor(g)) : null
+    const clip = model?.animations.find(a => a.name === g.animation)
+    if (model !== null && clip !== undefined) {
+      const lead = skeleton.bones[spotWeights(body, partSpot(g, meshes))[0][0]] ?? skeleton.bones[0]
+      const group = new THREE.Group()
+      group.name = g.name.replace(/[^\w]+/g, '_')
+      group.userData[GARMENT_FLAG] = g.id
+      group.applyMatrix4((restFrame(view, lead.name) ?? lead.matrixWorld.clone()).invert())
+      const place = new THREE.Group()
+      place.name = `${group.name}_place`
+      garmentMatrix(g).decompose(place.position, place.quaternion, place.scale)
+      const copy = cloneSkinned(model.scene)
+      copy.traverse(o => { if ((o as THREE.Mesh).isMesh) { (o as THREE.Mesh).castShadow = true; o.frustumCulled = false } })
+      place.add(copy)
+      group.add(place)
+      lead.add(group)
+      const mixer = new THREE.AnimationMixer(copy)
+      mixer.clipAction(clip).play()
+      mechanisms.set(view, [...(mechanisms.get(view) ?? []), mixer])
+      out.set(g.id, place)
+      continue
+    }
     if (g.id === fitting) {
       // Static, unbound copy for placement; the gizmo moves this group.
       const group = new THREE.Group()
@@ -410,8 +532,13 @@ export async function attachGarments (view: CharacterView, garments: Garment[], 
     }
     const group = new THREE.Group()
     group.name = g.name.replace(/[^\w]+/g, '_')
-    for (const m of meshes) {
-      const { indices, weights } = computeWeights(body, m.geometry, g.policy, view)
+    // a part: every vertex its spot's weights; clothing: the body's under each vertex, then what was painted
+    const spot = g.mode === 'part' ? spotWeights(body, partSpot(g, meshes)) : null
+    const edits = g.mode === 'clothing' && (g.painted ?? 0) > 0 ? await editsFor(g).catch(() => []) : []
+    const boneNames = skeleton.bones.map(b => b.name)
+    for (const [i, m] of meshes.entries()) {
+      const { indices, weights } = spot !== null ? partWeights(m.geometry.attributes.position.count, spot) : computeWeights(body, m.geometry, g.policy, view)
+      if (edits.length > 0) applyEdits(indices, weights, edits, i, boneNames)
       m.geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(indices, 4))
       m.geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights, 4))
       const skinned = new THREE.SkinnedMesh(m.geometry, m.material)
@@ -419,13 +546,55 @@ export async function attachGarments (view: CharacterView, garments: Garment[], 
       skinned.castShadow = true
       skinned.frustumCulled = false
       skinned.userData[GARMENT_FLAG] = g.id
+      // (which of the model's meshes it is: painted weights are kept by it)
+      skinned.userData.garmentMesh = i
       body.mesh.parent?.add(skinned)
       skinned.bind(skeleton, body.mesh.bindMatrix)
       view.skinned.push(skinned)
-      if (g.hideBody) hideFrom.push(m.geometry)
+      if (g.hideBody && g.mode === 'clothing') hideFrom.push(m.geometry)
       out.set(g.id, skinned)
     }
   }
   if (hideFrom.length > 0) hideCovered(body, hideFrom, view)
   return out
+}
+
+/** A prop with pull sockets (pulls.ts): its meshes split where a strand must bend, skinned to its own root and one bone
+ * per pull (resting at the pull's point), each vertex rigid or soft as painted (else soft right by a pull's point);
+ * the pulls stepped each frame (tickPulls) toward the bones that hold them. */
+async function rigPulls (view: CharacterView, g: Garment, place: THREE.Object3D, meshes: THREE.Mesh[], editsFor: (g: Garment) => Promise<GarmentEdit[]>): Promise<void> {
+  const pulls = g.pulls ?? []
+  const root = new THREE.Bone()
+  root.name = PROP_ROOT
+  place.add(root)
+  const bones = pulls.map(p => { const b = new THREE.Bone(); b.name = pullBoneName(g.name, p); b.position.set(...p.rest); root.add(b); return b })
+  const skeleton = new THREE.Skeleton([root, ...bones])
+  const edits = (g.painted ?? 0) > 0 ? await editsFor(g).catch(() => []) : []
+  const names = skeleton.bones.map(b => b.name)
+  place.updateMatrixWorld(true)
+  for (const [i, m] of meshes.entries()) {
+    let geometry = m.geometry
+    for (const p of pulls) geometry = splitStrand(geometry, new THREE.Vector3(...p.rest))
+    const { indices, weights } = defaultPullWeights(geometry, pulls)
+    if (edits.length > 0) applyEdits(indices, weights, edits, i, names)
+    geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(indices, 4))
+    geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights, 4))
+    const skinned = new THREE.SkinnedMesh(geometry, m.material)
+    skinned.name = m.name
+    skinned.castShadow = true
+    skinned.frustumCulled = false
+    skinned.userData[GARMENT_FLAG] = g.id
+    skinned.userData.garmentMesh = i
+    place.add(skinned)
+    skinned.updateMatrixWorld(true)
+    skinned.bind(skeleton)
+    view.skinned.push(skinned)
+  }
+  registerPulls(view, pulls.map((pull, k) => ({ pull, root, bone: bones[k], hand: view.bones.get(pull.bone) ?? root })))
+}
+
+async function fetchEdits (url: string): Promise<GarmentEdit[]> {
+  const res = await fetch(url)
+  if (!res.ok) return []
+  return await res.json() as GarmentEdit[]
 }

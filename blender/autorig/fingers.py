@@ -227,11 +227,25 @@ def point_at(line, s):
     return line[i] + (s - cum[i]) / max(lengths[i], 1e-12) * seg[i]
 
 
-def finger_chains(labeled):
+# Where a finger's joints sit along the hand, from Mixamo's proportions (autorig/skeleton.py FINGER_LAYOUT, as
+# fractions of the wrist -> fingertip distance along the hand): the knuckle, then the two joints between knuckle and tip
+# as fractions of that span.
+ANATOMY = {
+    'Index': (0.567, 0.357, 0.690),
+    'Middle': (0.560, 0.364, 0.705),
+    'Ring': (0.568, 0.366, 0.707),
+    'Pinky': (0.593, 0.371, 0.686),
+}
+
+
+def finger_chains(labeled, wrist=None, axis=None):
     """{'Thumb': [None, p2, p3, p4], 'Index': [p1..p4], ...} from labeled fingers.
 
-    Relaxed fingers are close to straight, so joints go on a line fitted through the finger's
-    centerline (robust to ragged level bands at the web), spanning base -> tip."""
+    Relaxed fingers are close to straight, so joints go on a line fitted through the finger's centerline (robust to
+    ragged level bands at the web). The tip is where the finger ends. A finger's knuckle is where a hand's knuckles
+    are, along the hand from the wrist (`wrist`, `axis`: the hand's direction): not where the finger comes apart from
+    its neighbour, which on a mesh with the fingers fused most of their length is near the tip, and would squeeze the
+    whole finger into its last joint. Never past that parting, though."""
     out = {}
     for name, f in labeled.items():
         line = f['line']
@@ -240,9 +254,79 @@ def finger_chains(labeled):
         direction = vt[0] * np.sign(vt[0] @ (line[-1] - line[0]) or 1.0)
         s0 = (line[0] - center) @ direction
         s1 = (line[-1] - center) @ direction
-        fractions = CHAIN['Thumb'] if name == 'Thumb' else CHAIN['finger']
-        out[name] = [None if x is None else center + (s0 + x * (s1 - s0)) * direction for x in fractions]
+        at = lambda x: center + (s0 + x * (s1 - s0)) * direction
+        if name == 'Thumb' or name not in ANATOMY:
+            out[name] = [None if x is None else at(x) for x in CHAIN['Thumb' if name == 'Thumb' else 'finger']]
+            continue
+        tip_s = s0 + CHAIN['finger'][3] * (s1 - s0)
+        knuckle_s = s0 + CHAIN['finger'][0] * (s1 - s0)
+        if wrist is not None and axis is not None and direction @ axis > 0.3:
+            # (the knuckle where the hand's proportions put it: its reach along the hand a fraction of the tip's)
+            reach = (center + tip_s * direction - wrist) @ axis
+            want = ANATOMY[name][0] * reach
+            knuckle_s = min((want - (center - wrist) @ axis) / (direction @ axis), s0)
+        k, a, b = knuckle_s, ANATOMY[name][1], ANATOMY[name][2]
+        span = tip_s - k
+        out[name] = [center + s * direction for s in (k, k + a * span, k + b * span, tip_s)]
     return out
+
+
+def space_evenly(chains, verts, hand, wrist):
+    """The four fingers' chains kept to a hand's even spacing (in place).
+
+    Knuckles sit evenly across the palm: the middle and ring knuckles put between the index's and the pinky's. A
+    finger whose tip came out on top of a neighbour's (two chains on one finger, its own missed: fingers fused on
+    the mesh) gets its tip again in its own lane across the hand, as the farthest the hand's surface reaches there,
+    and its joints laid between knuckle and tip again."""
+    names = ['Index', 'Middle', 'Ring', 'Pinky']
+    if any(n not in chains or any(p is None for p in chains[n]) for n in names):
+        return chains
+    axis = hand['axis']
+    across = chains['Index'][0] - chains['Pinky'][0]
+    across = across - (across @ axis) * axis
+    if np.linalg.norm(across) < 1e-9:
+        return chains
+    across = across / np.linalg.norm(across)
+    at = {n: [np.asarray(p, dtype=float) for p in chains[n]] for n in names}
+    # knuckles: evenly across, each where it is along the hand and off the palm
+    a0, a3 = at['Index'][0] @ across, at['Pinky'][0] @ across
+    for i, n in enumerate(names[1:3], start=1):
+        k = at[n][0]
+        at[n][0] = k + ((a0 + i * (a3 - a0) / 3) - k @ across) * across
+    # tips: a tip on top of its neighbour's found again in its own lane
+    t0, t3 = at['Index'][3] @ across, at['Pinky'][3] @ across
+    lane = abs(t3 - t0) / 3
+    if lane > 1e-9:
+        tips = [at[n][3] @ across for n in names]
+        crowded = set()
+        for i in range(3):
+            if abs(tips[i + 1] - tips[i]) < 0.5 * lane:
+                crowded.update({i, i + 1} - {0, 3} or {i + 1})
+        region = hand.get('region')
+        pts = verts[region] if region is not None else verts
+        reach = (pts - wrist) @ axis
+        side = pts @ across
+        for i in sorted(crowded):
+            want = t0 + i * (t3 - t0) / 3
+            near = np.abs(side - want) < 0.5 * lane
+            if near.sum() < 3:
+                continue
+            far = reach[near].max()
+            tip_pts = pts[near][reach[near] > far - 0.15 * lane]
+            n = names[i]
+            tip = tip_pts.mean(axis=0)
+            # (a joint's length short of the very end, as the detected tips are)
+            k = at[n][0]
+            d = tip - k
+            tip = k + d * (1 - 0.03)
+            a, b = ANATOMY[n][1], ANATOMY[n][2]
+            at[n] = [k, k + a * (tip - k), k + b * (tip - k), tip]
+    # (every finger's two middle joints laid again between its knuckle and tip: a knuckle moved leaves no kink)
+    for n in names:
+        k, tip = at[n][0], at[n][3]
+        a, b = ANATOMY[n][1], ANATOMY[n][2]
+        chains[n] = [k, k + a * (tip - k), k + b * (tip - k), tip]
+    return chains
 
 
 def hand_fingers(verts, tris, hand, wrist, height):

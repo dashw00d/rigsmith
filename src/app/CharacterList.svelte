@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bone, Plus, Sparkles, UserRound } from '@lucide/svelte'
+  import { Bone, Pencil, Plus, Sparkles, Trash2, UserRound } from '@lucide/svelte'
   import { fileUrl, type Character } from '../state/api.ts'
   import { app } from '../state/app.svelte.ts'
   import Button from '../ui/Button.svelte'
@@ -18,6 +18,32 @@
       case 'error': return { text: c.error ?? 'Error', tone: 'error' }
       case 'rigged': return { text: c.kind === 'rigged' ? `Rigged · ${c.rigPreset ?? 'custom'}` : `Rigged · ${c.stats?.vertices ?? 0} verts`, tone: 'ok' }
       default: return c.kind === 'animation' ? { text: 'Animation file', tone: 'idle' } : { text: 'Needs rig', tone: 'warn' }
+    }
+  }
+
+  /** The character being renamed (its name field open in the list). */
+  let renaming = $state<string | null>(null)
+  let draft = $state('')
+  function startRename (c: Character): void { renaming = c.id; draft = c.name }
+  async function finishRename (c: Character, save: boolean): Promise<void> {
+    if (renaming !== c.id) return
+    renaming = null
+    const name = draft.trim()
+    if (!save || name === '' || name === c.name) return
+    try { await app.update(c.id, { name }) } catch (error) { app.toast('error', `Not renamed: ${(error as Error).message}`) }
+  }
+  /** (the field takes the keys and is ready to type over) */
+  function focusSelect (node: HTMLInputElement): void { node.focus(); node.select() }
+
+  /** Delete a character, once confirmed: it goes to workspace/trash (put it back in characters/ to undo). */
+  async function remove (c: Character): Promise<void> {
+    if (app.jobFor(c.id)?.status === 'running') { app.toast('error', `${c.name} is busy (${app.jobFor(c.id)!.message}); delete it when that's done`); return }
+    if (!confirm(`Delete ${c.name}?\n\nIt's moved to workspace/trash, out of Rigsmith (put its folder back in workspace/characters to undo).`)) return
+    try {
+      await app.remove(c.id)
+      app.toast('ok', `${c.name} deleted (in workspace/trash)`)
+    } catch (error) {
+      app.toast('error', `${c.name} wasn't deleted: ${(error as Error).message}`)
     }
   }
 
@@ -54,7 +80,7 @@
               {#if c.files.thumbnail}<img src={fileUrl(c, c.files.thumbnail)} alt="" />{:else}<UserRound size={18} />{/if}
             </div>
             <div class="meta">
-              <div class="name">{c.name}</div>
+              <div class="name" ondblclick={(e) => { e.stopPropagation(); startRename(c) }} role="presentation">{c.name}</div>
               <div class="status {s.tone}" use:tooltip={s.tone === 'error' ? s.text : null}>
                 {#if s.tone === 'ok'}<Bone size={11} />{/if}
                 <span>{s.text}</span>
@@ -62,6 +88,14 @@
               {#if job?.status === 'running'}<div class="progress"><div style="width: {Math.round(job.progress * 100)}%"></div></div>{/if}
             </div>
           </button>
+          {#if renaming === c.id}
+            <input class="rename" bind:value={draft} use:focusSelect aria-label="Name of {c.name}"
+              onkeydown={(e) => { if (e.key === 'Enter') void finishRename(c, true); else if (e.key === 'Escape') void finishRename(c, false) }}
+              onblur={() => finishRename(c, true)} />
+          {:else}
+            <button class="rename-btn" onclick={() => startRename(c)} aria-label="Rename {c.name}" use:tooltip={'Rename'}><Pencil size={12} /></button>
+          {/if}
+          <button class="delete" onclick={() => remove(c)} aria-label="Delete {c.name}" use:tooltip={`Delete ${c.name}`}><Trash2 size={13} /></button>
         </li>
       {/each}
     </ul>
@@ -75,6 +109,17 @@
 </div>
 
 <style>
+  .rename-btn { position: absolute; top: 50%; right: 38px; transform: translateY(-50%); width: 26px; height: 26px; display: grid; place-items: center;
+    border: 0; border-radius: 6px; background: var(--bg-2); color: var(--text-3); opacity: 0; transition: opacity var(--fast); }
+  li:hover .rename-btn, .rename-btn:focus-visible { opacity: 1; }
+  .rename-btn:hover { color: var(--text-1); background: var(--bg-3); }
+  .rename { position: absolute; top: 6px; left: 58px; right: 40px; height: 26px; padding: 0 8px; font: inherit; font-weight: 550;
+    border: 1px solid var(--accent); border-radius: 6px; background: var(--bg-1); color: var(--text-1); z-index: 1; }
+  li { position: relative; }
+  .delete { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); width: 26px; height: 26px; display: grid; place-items: center;
+    border: 0; border-radius: 6px; background: var(--bg-2); color: var(--text-3); opacity: 0; transition: opacity var(--fast); }
+  li:hover .delete, .delete:focus-visible { opacity: 1; }
+  .delete:hover { color: var(--danger); background: var(--danger-soft); }
   .list { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   header { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 8px 16px; }
   h2 { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }

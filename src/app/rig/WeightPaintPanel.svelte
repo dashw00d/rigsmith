@@ -2,53 +2,74 @@
   // Fix weights: paint on the body as it stands (pause a test clip on the frame that shows the problem).
   // src/state/paint.svelte.ts, src/engine/weightpaint.ts.
   import { onDestroy } from 'svelte'
-  import { Brush, Eraser, FlipHorizontal2, Paintbrush, RotateCcw, Save, Sparkles, Waves } from '@lucide/svelte'
-  import type { Character } from '../../state/api.ts'
+  import { Anchor, Brush, Eraser, FlipHorizontal2, Layers, Paintbrush, RotateCcw, Save, Sparkles, Waves } from '@lucide/svelte'
+  import type { Character, Garment } from '../../state/api.ts'
   import { api } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { paint, type PaintTool } from '../../state/paint.svelte.ts'
+  import { PROP_ROOT, pullBoneName } from '../../engine/pulls.ts'
   import { viewer } from '../../state/viewer.svelte.ts'
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
   import Toggle from '../../ui/Toggle.svelte'
   import { tooltip } from '../../ui/tooltip.ts'
 
-  let { character }: { character: Character } = $props()
+  // (garment: paint one clothing piece of the character, in the Outfit step; else its body)
+  let { character, garment = null }: { character: Character, garment?: Garment | null } = $props()
 
-  const bones = $derived(viewer.character?.skeleton?.bones.map(b => b.name).filter(n => !/end|leaf|tip$/i.test(n)) ?? [])
+  // (a prop with pulls is painted between its own bone and its pulls': rigid or pulled; else the body's bones)
+  const pulled = $derived(garment !== null && garment.mode === 'rigid' && (garment.pulls ?? []).length > 0)
+  const bones = $derived(pulled ? [PROP_ROOT, ...(garment!.pulls ?? []).map(p => pullBoneName(garment!.name, p))]
+    : viewer.character?.skeleton?.bones.map(b => b.name).filter(n => !/end|leaf|tip$/i.test(n)) ?? [])
+  const boneLabel = (b: string): string => b === PROP_ROOT ? 'Rigid (the prop itself)'
+    : pulled ? `Pulled by ${(garment!.pulls ?? []).find(p => pullBoneName(garment!.name, p) === b)?.name ?? b}` : b
+  // (a bone of another rig left from before: the first of these)
+  $effect(() => { if (paint.active && paint.bone !== null && !bones.includes(paint.bone) && bones.length > 0) paint.bone = bones[pulled ? 1 : 0] })
   $effect(() => { void viewer.character; paint.sync() })
   $effect(() => { if (paint.active && paint.bone === null && bones.length > 0) paint.bone = bones[0] })
   onDestroy(() => paint.setActive(false))
+  // (another garment picked while painting: paint that one)
+  $effect(() => { const id = garment?.id ?? null; if (paint.active && paint.garment !== id) paint.setActive(true, id) })
 
   const tools: Array<{ id: PaintTool, label: string, hint: string }> = [
     { id: 'area', label: 'Heal', hint: 'Mark the problem skin (Alt to unmark), then Heal: its weights refilled smoothly from the good skin round it (skin pulled by a wrong bone goes with what surrounds it)' },
     { id: 'add', label: 'Add', hint: 'Give the brushed skin more of the bone' },
     { id: 'remove', label: 'Remove', hint: 'Take the bone off the brushed skin (its share goes to its other bones)' },
     { id: 'smooth', label: 'Smooth', hint: "Blend the brushed skin's weights with its neighbours'" },
+    { id: 'follow', label: 'Follow', hint: 'Make the brushed skin move with what is under it: the skin it covers (the legs under a coat), or the nearest bones where nothing is close under it. For hems and cloth the body should push' },
+    { id: 'rigid', label: 'Bone', hint: 'Paint the brushed skin onto the one bone under the brush, dropping pulls from cloth and bones around it. The bone is the one that already moves most of the skin where you start the stroke (shown below as you hover): start on the face for the head. For a face a hood drags, buckles, plates' },
   ]
   async function forget (): Promise<void> {
+    if (garment !== null) {
+      await api.forgetGarmentWeights(character.id, garment.id)
+      app.toast('ok', `${garment.name}'s painted weights forgotten: it takes the body's again`)
+      return
+    }
     await api.forgetWeights(character.id)
     app.toast('ok', 'Painted weights forgotten: the next rig makes them afresh')
   }
 </script>
 
 <Section title="Fix weights">
-  <Button block variant={paint.active ? 'ghost' : undefined} onclick={() => paint.setActive(!paint.active)}>
-    <Paintbrush size={14} /> {paint.active ? 'Done painting' : 'Paint weights'}
+  <Button block variant={paint.active ? 'ghost' : undefined} onclick={() => paint.setActive(!paint.active, garment?.id ?? null)}>
+    <Paintbrush size={14} /> {paint.active ? 'Done painting' : garment !== null ? `Paint ${garment.name}'s weights` : 'Paint weights'}
   </Button>
   {#if paint.active}
     <p class="faint small">Pause a test clip on the frame that shows the problem, then paint on the body. The brush follows the surface. Leave good skin unmarked around an area to heal it. Left-drag on the body paints; off it the camera turns.</p>
     <div class="tools">
       {#each tools as t}
         <button class:on={paint.tool === t.id} onclick={() => { paint.tool = t.id; paint.refreshView() }} use:tooltip={t.hint}>
-          {#if t.id === 'area'}<Sparkles size={12} />{:else if t.id === 'add'}<Brush size={12} />{:else if t.id === 'remove'}<Eraser size={12} />{:else}<Waves size={12} />{/if} {t.label}
+          {#if t.id === 'area'}<Sparkles size={12} />{:else if t.id === 'add'}<Brush size={12} />{:else if t.id === 'remove'}<Eraser size={12} />{:else if t.id === 'follow'}<Layers size={12} />{:else if t.id === 'rigid'}<Anchor size={12} />{:else}<Waves size={12} />{/if} {t.label}
         </button>
       {/each}
     </div>
+    {#if paint.tool === 'rigid'}
+      <p class="faint small">Bone under the brush: <strong>{paint.boneUnder ?? '–'}</strong></p>
+    {/if}
     {#if paint.tool === 'add' || paint.tool === 'remove'}
       <label class="field">Bone
         <select value={paint.bone ?? ''} onchange={(e) => { paint.bone = (e.target as HTMLSelectElement).value; paint.refreshView() }}>
-          {#each bones as b}<option value={b}>{b}</option>{/each}
+          {#each bones as b}<option value={b}>{boneLabel(b)}</option>{/each}
         </select>
       </label>
     {/if}
@@ -69,7 +90,11 @@
       <Button size="sm" variant="ghost" onclick={() => paint.undo()}><RotateCcw size={13} /> Undo</Button>
       <Button size="sm" variant="primary" disabled={paint.edited === 0 || paint.busy} onclick={() => paint.save()}><Save size={13} /> Save {paint.edited > 0 ? `${paint.edited} points` : ''}</Button>
     </div>
-    <p class="faint small">Saved weights go into the rig and are put back after a re-rig. <button class="link" onclick={forget}>Forget the painting</button></p>
+    {#if garment !== null}
+      <p class="faint small">Only {garment.name} is painted; the body under it is there for Follow to take from. Saved weights are kept with it{garment.painted ? ` (${garment.painted} vertices)` : ''} and laid over what it takes from the body. <button class="link" onclick={forget}>Forget the painting</button></p>
+    {:else}
+      <p class="faint small">Saved weights go into the rig and are put back after a re-rig. <button class="link" onclick={forget}>Forget the painting</button></p>
+    {/if}
   {/if}
 </Section>
 

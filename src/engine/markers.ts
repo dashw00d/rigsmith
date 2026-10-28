@@ -211,14 +211,18 @@ function choleskySolve (l: Float64Array, n: number, b: Float64Array): Float64Arr
  * pins) and each node's turn, to start from. */
 export interface SolveCache { key?: string, L?: Float64Array, turn?: THREE.Quaternion[] }
 
-export function solve (base: Record<string, V3>, edges: Array<[string, string]>, pins: Map<string, V3>, iterations = 16, cache?: SolveCache): Record<string, V3> {
+export function solve (base: Record<string, V3>, edges: Array<[string, string]>, pins: Map<string, V3>, iterations = 16, cache?: SolveCache, depthAxis?: 0 | 1 | 2): Record<string, V3> {
   const names = Object.keys(base)
   const index = new Map(names.map((n, i) => [n, i]))
   const n = names.length
   const pinned = [...pins.keys()].filter(k => index.has(k))
   if (pinned.length === 0) return { ...base }
   const key = `${names.join(',')}|${pinned.join(',')}|${edges.length}`
-  const T = names.map(k => new THREE.Vector3(...base[k]))
+  // With a depth axis the shape is fitted in the view's plane only. Otherwise a few pins pulled
+  // in that plane can be met by tipping a whole free chain through depth (shoulders pulled in
+  // and up tilt the torso, carrying the spine out of the body). Depth is fitted separately below.
+  const flat = (p: V3): V3 => { const q: V3 = [...p]; if (depthAxis !== undefined) q[depthAxis] = 0; return q }
+  const T = names.map(k => new THREE.Vector3(...flat(base[k])))
   const nbr: number[][] = names.map(() => [])
   for (const [a, b] of edges) {
     const i = index.get(a); const j = index.get(b)
@@ -257,7 +261,7 @@ export function solve (base: Record<string, V3>, edges: Array<[string, string]>,
       bx[i] += 1e-6 * T[i].x; by[i] += 1e-6 * T[i].y; bz[i] += 1e-6 * T[i].z
     }
     for (const k of pinned) {
-      const i = index.get(k)!; const p = pins.get(k)!
+      const i = index.get(k)!; const p = flat(pins.get(k)!)
       bx[i] += pinW * p[0]; by[i] += pinW * p[1]; bz[i] += pinW * p[2]
     }
     const x = choleskySolve(L, n, bx); const y = choleskySolve(L, n, by); const z = choleskySolve(L, n, bz)
@@ -273,6 +277,14 @@ export function solve (base: Record<string, V3>, edges: Array<[string, string]>,
   if (cache !== undefined) cache.turn = turn
   const out: Record<string, V3> = {}
   names.forEach((k, i) => { out[k] = [X[i].x, X[i].y, X[i].z] })
+  if (depthAxis !== undefined) {
+    // Each joint keeps its own depth, shifted by a smooth blend of how far the pins moved in
+    // depth (the same system, solved for those shifts alone).
+    const shift = new Float64Array(n)
+    for (const k of pinned) { const i = index.get(k)!; shift[i] = pinW * (pins.get(k)![depthAxis] - base[k][depthAxis]) }
+    const d = choleskySolve(L, n, shift)
+    names.forEach((k, i) => { out[k][depthAxis] = base[k][depthAxis] + d[i] })
+  }
   // the pins exactly (the solve holds them within its stiffness)
   for (const k of pinned) out[k] = [...pins.get(k)!]
   return out
@@ -280,13 +292,19 @@ export function solve (base: Record<string, V3>, edges: Array<[string, string]>,
 
 /** The skeleton the markers give: `base` moved by them, its joints only. */
 export function jointsFrom (set: MarkerSet, m: Markers, parents: Record<string, string | null>, xCenter: number, iterations = 16, cache?: SolveCache): Record<string, V3> {
-  const solved = solve(m.base, edgesOf(set, parents, m.base), pinsOf(set, m, xCenter), iterations, cache)
+  // (a front view shows no depth (z), a side view none across the body (x))
+  const solved = solve(m.base, edgesOf(set, parents, m.base), pinsOf(set, m, xCenter), iterations, cache, set.view === 'front' ? 2 : 0)
+  // A full hand's four fingers laid as the finger detection lays them (blender/autorig/fingers.py): the tips where
+  // they're placed, the knuckles carried with the hand but never further out than a hand's proportions put them,
+  // kept evenly spaced across the palm, and each finger's middle joints split between knuckle and tip by anatomy.
+  const laid = layHands(set, m, solved)
   // A finger is a short rigid chain fitted between wrist and tip. The global
   // skeleton solver otherwise puts most of a tip correction into its last joint,
   // leaving the knuckles in the neighbouring finger (especially a former mitten).
   for (const { key, def, side } of keysOf(set)) {
     if (def.view !== 'hand' || side === null) continue
     const tipName = jointOf(def, side)!
+    if (laid.has(tipName)) continue
     const wristName = `${side === 'left' ? 'Left' : 'Right'}Hand`
     const baseWrist = m.base[wristName]; const baseTip = m.base[tipName]
     const wrist = solved[wristName]; const tip = m.positions[key]
@@ -319,6 +337,65 @@ export function jointsFrom (set: MarkerSet, m: Markers, parents: Record<string, 
     solved[tipName] = [...tip]
   }
   return Object.fromEntries(Object.entries(solved).filter(([k]) => !k.startsWith('marker:')))
+}
+
+// Where a finger's joints sit along the hand (blender/autorig/fingers.py ANATOMY, from Mixamo's proportions): the
+// knuckle's reach along the hand as a fraction of the tip's, then the two middle joints as fractions of knuckle -> tip.
+const ANATOMY: Record<string, [number, number, number]> = {
+  Index: [0.567, 0.357, 0.690], Middle: [0.560, 0.364, 0.705], Ring: [0.568, 0.366, 0.707], Pinky: [0.593, 0.371, 0.686],
+}
+const LONG = ['Index', 'Middle', 'Ring', 'Pinky']
+
+/** Each full hand whose wrist or long finger tips moved, laid again (into `solved`); returns the tip joints it laid. */
+function layHands (set: MarkerSet, m: Markers, solved: Record<string, V3>): Set<string> {
+  const laid = new Set<string>()
+  const v = (p: V3): THREE.Vector3 => new THREE.Vector3(...p)
+  const moved = (a: V3, b: V3): boolean => a.some((x, i) => Math.abs(x - b[i]) > 1e-7)
+  for (const [Side, side] of [['Left', 'l'], ['Right', 'r']] as const) {
+    const tipOf = (f: string): V3 | undefined => {
+      const def = set.markers.find(d => d.view === 'hand' && d.joint === `{Side}Hand${f}4`)
+      return def === undefined ? undefined : m.positions[`${def.id}_${side}`]
+    }
+    const tips = LONG.map(tipOf)
+    const base = LONG.map(f => [1, 2, 3, 4].map(i => m.base[`${Side}Hand${f}${i}`]))
+    const W0 = m.base[`${Side}Hand`]; const Wv = solved[`${Side}Hand`]
+    if (W0 === undefined || Wv === undefined || tips.some(t => t === undefined) || base.some(b => b.some(p => p === undefined))) continue
+    if (!(moved(Wv, W0) || tips.some((t, i) => moved(t!, base[i][3])))) continue
+    const W = v(Wv); const w0 = v(W0)
+    const T = tips.map(t => v(t!))
+    // (the hand carried as a whole: from its fingers' middle then to now, its size with it)
+    const meanOf = (ps: THREE.Vector3[]): THREE.Vector3 => ps.reduce((a, b) => a.add(b), new THREE.Vector3()).divideScalar(ps.length)
+    const before = meanOf(base.map(b => v(b[3]))).sub(w0); const after = meanOf(T).sub(W)
+    if (before.lengthSq() < 1e-12 || after.lengthSq() < 1e-12) continue
+    const turn = new THREE.Quaternion().setFromUnitVectors(before.clone().normalize(), after.clone().normalize())
+    const size = after.length() / before.length()
+    const axis = after.clone().normalize()
+    const K = base.map((b, i) => {
+      const k = v(b[0]).sub(w0).applyQuaternion(turn).multiplyScalar(size).add(W)
+      // (no further out along the hand than a hand's knuckles sit: a knuckle out by the tip squeezes the finger)
+      const want = ANATOMY[LONG[i]][0] * T[i].clone().sub(W).dot(axis)
+      const reach = k.clone().sub(W).dot(axis)
+      if (reach > want) k.addScaledVector(axis, want - reach)
+      return k
+    })
+    // (evenly spaced across the palm: middle and ring between index and pinky)
+    const across = K[0].clone().sub(K[3]); across.addScaledVector(axis, -across.dot(axis))
+    if (across.lengthSq() > 1e-12) {
+      across.normalize()
+      const a0 = K[0].dot(across); const a3 = K[3].dot(across)
+      for (const i of [1, 2]) K[i].addScaledVector(across, a0 + (i / 3) * (a3 - a0) - K[i].dot(across))
+    }
+    LONG.forEach((f, i) => {
+      const [, a, b] = ANATOMY[f]
+      const span = T[i].clone().sub(K[i])
+      solved[`${Side}Hand${f}1`] = K[i].toArray() as V3
+      solved[`${Side}Hand${f}2`] = K[i].clone().addScaledVector(span, a).toArray() as V3
+      solved[`${Side}Hand${f}3`] = K[i].clone().addScaledVector(span, b).toArray() as V3
+      solved[`${Side}Hand${f}4`] = T[i].toArray() as V3
+      laid.add(`${Side}Hand${f}4`)
+    })
+  }
+  return laid
 }
 
 /** Move a body marker without leaving its hand pinned in the old place. Finger

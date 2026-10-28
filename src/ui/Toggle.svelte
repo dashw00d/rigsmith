@@ -13,11 +13,11 @@
 </label>
 
 <style>
-  .toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; padding: 4px 0; }
+  .toggle { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; padding: 4px 0; }
   .toggle.disabled { opacity: 0.5; cursor: default; }
   .text { display: flex; flex-direction: column; gap: 1px; }
   .hint { color: var(--text-3); font-size: 11.5px; }
-  input { position: absolute; opacity: 0; pointer-events: none; }
+  input { position: absolute; right: 0; top: 50%; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
   .track {
     flex: none;
     width: 30px;

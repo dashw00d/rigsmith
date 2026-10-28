@@ -28,20 +28,20 @@
     { value: 'wand', label: 'Select region: click a surface (Shift adds, Alt removes)', icon: WandSparkles },
     { value: 'brush', label: 'Brush (Alt to erase)', icon: Brush },
     { value: 'erase', label: 'Eraser', icon: Eraser },
-    { value: 'navigate', label: 'Move camera (clears the mask)', icon: Hand },
+    { value: 'navigate', label: 'Only move the camera (any tool turns it when you drag off the model)', icon: Hand },
   ]
   const toolHelp: Record<PaintTool, string> = {
-    smart: 'Scrub over what you want. It follows that color and stops at seams, creases and silhouettes. Alt-drag removes.',
-    wand: 'Click a surface to select all of it up to its edges. Shift-click adds, Alt-click removes.',
-    brush: 'Paints exactly where you drag. Alt-drag erases.',
+    smart: 'Scrub over what you want: only that color takes it, over the surface (not across to a sleeve or cloak close by). Alt-drag removes.',
+    wand: 'Click a surface to take all of it of that color, across seams. Shift-click adds, Alt-click removes.',
+    brush: 'Paints exactly where you drag, over the surface. Alt-drag erases.',
     erase: 'Removes from the mask.',
-    navigate: 'Orbit and zoom to frame the area. Moving the camera clears the mask, so frame first.',
+    navigate: 'Drag anywhere to turn the camera. The mask stays on the model.',
   }
   const codexJob = $derived(job?.kind === 'codex' ? job : undefined)
   let resultInput = $state<HTMLInputElement>()
   onDestroy(() => { if (painter.active) painter.stop() })
 
-  let captures = $state<Array<{ id: string, createdAt: number, hasResult: boolean }>>([])
+  let captures = $state<Array<{ id: string, createdAt: number, hasResult: boolean, views: number }>>([])
   $effect(() => {
     void character.id
     void painter.capture
@@ -86,14 +86,14 @@
 
 <Section title="Projection painting">
   {#if !painter.active}
-    <p class="faint small">Frame an area, paint a mask over it, and let Codex repaint it. The new paint is projected back onto the texture: only what this view sees, blended at the edges.</p>
+    <p class="faint small">Paint a mask on the model (turn the camera as you go: it stays on), and let Codex repaint it. The views that see the masked area are found for you; the new paint is projected back from all of them, blended at the edges.</p>
     <Button variant="primary" block disabled={character.status !== 'rigged' && character.kind !== 'mesh'} onclick={() => painter.start()}><Paintbrush size={15} /> Start painting</Button>
     {#if captures.length > 0}
       <div class="captures">
         <span class="faint small">Earlier captures</span>
         {#each captures.slice(0, 5) as c (c.id)}
           <button class="capture" onclick={() => painter.resume(character, c.id)}>
-            <span>{ago(c.createdAt)}</span>
+            <span>{ago(c.createdAt)}{c.views > 1 ? ` · ${c.views} views` : ''}</span>
             <span class:ready={c.hasResult}>{c.hasResult ? 'Result ready · preview' : 'Waiting for result'}</span>
           </button>
         {/each}
@@ -114,9 +114,10 @@
         {#if tool === 'wand'}
           <Toggle label="Contiguous" hint="Off: select every matching color in view" bind:checked={painter.contiguous} />
         {/if}
+        <p class="faint small">Drag off the model to turn the camera; right-drag pans, the wheel zooms.</p>
         <div class="mask-tools">
-          <button onclick={() => painter.growMask(-2)} title="Shrink mask"><Minus size={13} /></button>
-          <button onclick={() => painter.growMask(2)} title="Grow mask"><Plus size={13} /></button>
+          <button onclick={() => painter.growMask(-3)} title="Shrink mask"><Minus size={13} /></button>
+          <button onclick={() => painter.growMask(3)} title="Grow mask"><Plus size={13} /></button>
           <button onclick={() => painter.invertMask()} title="Invert mask"><ArrowLeftRight size={13} /></button>
           <button onclick={() => painter.clearMask()} title="Clear mask"><X size={13} /> Clear</button>
         </div>
@@ -124,34 +125,60 @@
       <li class:done={painter.capture !== null}>
         <strong>2 · Describe and capture</strong>
         <textarea rows="3" placeholder="e.g. a deep purple priest's stole with gold embroidery" bind:value={painter.notes}></textarea>
-        <Button block loading={painter.busy === 'Capturing the view'} disabled={!painter.hasMask} onclick={() => painter.captureView(character)}><Camera size={14} /> Capture view</Button>
+        <Button block loading={painter.busy !== null && /^(Finding|Capturing)/.test(painter.busy)} disabled={!painter.hasMask} onclick={() => painter.captureViews(character)}><Camera size={14} /> {painter.busy !== null && /^(Finding|Capturing)/.test(painter.busy) ? painter.busy : 'Find views and capture'}</Button>
+        {#if painter.capture && painter.capture.uvMask !== null}
+          <div class="views">
+            {#each painter.capture.views as v, i (i)}
+              <figure>
+                <img src={fileUrl(character, `projections/${painter.capture.id}/view-${i + 1}-color.png`)} alt="View {i + 1}: {v.name}" />
+                <figcaption class="faint">{i + 1} · {v.name}</figcaption>
+              </figure>
+            {/each}
+          </div>
+        {/if}
       </li>
       {#if painter.capture}
         <li class:done={painter.resultReady}>
-          <strong>3 · Paint result.png</strong>
+          <strong>3 · Paint the views</strong>
           <Button variant="primary" block loading={codexJob !== undefined} onclick={() => painter.askCodex(character)}>
             {#if codexJob === undefined}<Sparkles size={14} />{/if} {codexJob?.message ?? 'Generate with Codex'}
           </Button>
           <div class="row">
             <Button size="sm" variant="ghost" onclick={() => api.openFolder(painter.capture!.folder)}><FolderOpen size={13} /> Open folder</Button>
-            <Button size="sm" variant="ghost" onclick={() => resultInput?.click()}>Use an image…</Button>
+            {#if painter.capture.views.length === 1}<Button size="sm" variant="ghost" onclick={() => resultInput?.click()}>Use an image…</Button>{/if}
           </div>
           <input bind:this={resultInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onchange={() => { const f = resultInput?.files?.[0]; if (f) void painter.useFile(character, f); if (resultInput) resultInput.value = '' }} />
           <p class="faint small mono path">{painter.capture.folder}</p>
-          {#if !painter.resultReady}<p class="faint small">Waiting for result.png in that folder…</p>{/if}
+          {#if !painter.resultReady}<p class="faint small">Waiting for {painter.capture.uvMask === null ? 'result.png' : painter.capture.views.length === 1 ? 'result-1.png' : `result-1.png … result-${painter.capture.views.length}.png`} in that folder…</p>{/if}
         </li>
       {/if}
-      {#if painter.previewing}
+      {#if painter.previewing || painter.layers > 0}
         <li>
           <strong>4 · Keep it?</strong>
+          {#if painter.layers > 0}
+            <p class="faint small">{painter.layers} earlier result{painter.layers === 1 ? '' : 's'} kept under {painter.previewing ? 'this one' : 'what you paint next'}, not saved yet.
+              Keep saves the texture as shown, all of them in it.</p>
+          {/if}
           <div class="row">
             <Button variant="primary" loading={painter.busy === 'Saving the texture'} onclick={() => painter.keep(character)}><Check size={14} /> Keep</Button>
-            <Button variant="ghost" onclick={() => painter.discard()}><X size={14} /> Discard</Button>
+            {#if painter.previewing}<Button variant="ghost" onclick={() => painter.discard()}><X size={14} /> Discard{painter.layers > 0 ? ' this one' : ''}</Button>{/if}
+            {#if painter.layers > 0}<Button variant="ghost" onclick={() => painter.discardAll()}><X size={14} /> Discard all</Button>{/if}
           </div>
         </li>
       {/if}
     </ol>
-    <Button size="sm" variant="ghost" onclick={() => painter.stop()}>Done painting</Button>
+    {#if captures.length > 0}
+      <div class="captures">
+        <span class="faint small">Earlier captures{painter.previewing ? ': opening one keeps the result shown, and adds its result on top' : ''}</span>
+        {#each captures.filter(c => c.id !== painter.capture?.id).slice(0, 5) as c (c.id)}
+          <button class="capture" onclick={() => painter.resume(character, c.id)}>
+            <span>{ago(c.createdAt)}{c.views > 1 ? ` · ${c.views} views` : ''}</span>
+            <span class:ready={c.hasResult}>{c.hasResult ? 'Result ready · preview' : 'Waiting for result'}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+    <Button size="sm" variant="ghost" onclick={() => { if ((!painter.previewing && painter.layers === 0) || confirm('Stop painting? The results not kept (Keep) are dropped.')) painter.stop() }}>Done painting</Button>
   {/if}
 </Section>
 
@@ -176,6 +203,8 @@
   textarea:focus { outline: none; border-color: var(--accent); }
   .row { display: flex; gap: 6px; justify-content: space-between; }
   .path { word-break: break-all; font-size: 11px; }
+  .views { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .views img { width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: var(--r-1); background: var(--bg-2); border: 1px solid var(--line); }
   .captures { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
   .capture { display: flex; justify-content: space-between; padding: 6px 8px; border-radius: var(--r-1); border: 1px solid var(--line); background: var(--bg-2); font-size: 12px; color: var(--text-2); }
   .capture:hover { border-color: var(--line-strong); color: var(--text-1); }

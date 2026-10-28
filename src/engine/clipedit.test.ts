@@ -104,3 +104,35 @@ describe('a creature\'s hips under a turning root bone', () => {
     expect(worst).toBeLessThan(1e-4)
   })
 })
+
+describe('a prop moved in its socket', () => {
+  it('shifts it in its own placed frame on the keyed frames, tweened, whatever holds it staying put', async () => {
+    const { buildEdit } = await import('./clipedit.ts')
+    const { HUMAN_RIG } = await import('./PoseEditor.ts')
+    const root = new THREE.Group()
+    const hips = new THREE.Bone(); hips.name = 'Hips'
+    const hand = new THREE.Bone(); hand.name = 'RightHand'; hand.position.set(0.3, 0, 0)
+    const prop = new THREE.Group(); prop.name = 'Bow_place'; prop.position.set(0, 0.1, 0); prop.scale.setScalar(2)
+    hips.add(hand); hand.add(prop); root.add(hips); root.updateMatrixWorld(true)
+    const base = new THREE.AnimationClip('Die', 1, [
+      new THREE.VectorKeyframeTrack('Bow_place.position', [0, 1], [0, 0.1, 0, 0, 0.1, 0]),
+      new THREE.QuaternionKeyframeTrack('Bow_place.quaternion', [0, 1], [0, 0, 0, 1, 0, 0, 0, 1]),
+    ])
+    const props: PropRig = {
+      node: p => `${p}_place`, attachments: [], carriers: { Bow: 'RightHand' }, fingers: {}, sockets: {},
+      // (let go of on the last frame: half a meter down in its own frame, a quarter turn)
+      paths: { Bow: { locked: false, keys: [{ u: 0, q: [0, 0, 0, 1], p: [0, 0, 0] }, { u: 1, q: [0, 0, Math.SQRT1_2, Math.SQRT1_2], p: [0, -0.5, 0] }] } },
+    }
+    const clip = buildEdit(base, {}, false, () => null, root, HUMAN_RIG, -10, null, props, 1, { solve: () => { throw new Error('nothing to solve') }, bones: () => [] } as never)
+    const pos = clip.tracks.find(t => t.name === 'Bow_place.position')!
+    const at = (i: number): number[] => Array.from(pos.values.slice(i * 3, i * 3 + 3))
+    // first frame: where its socket holds it; last: moved by the key in its placed frame (its scale 2: one meter)
+    expect(at(0)[1]).toBeCloseTo(0.1, 6)
+    expect(at(pos.times.length - 1)[1]).toBeCloseTo(0.1 - 1, 6)
+    // halfway: tweened
+    expect(at(Math.floor(pos.times.length / 2))[1]).toBeGreaterThan(0.1 - 1)
+    expect(at(Math.floor(pos.times.length / 2))[1]).toBeLessThan(0.1)
+    // the hand holding it never moved
+    expect(clip.tracks.some(t => t.name.startsWith('RightHand.'))).toBe(false)
+  })
+})

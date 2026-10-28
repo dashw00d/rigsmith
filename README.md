@@ -18,8 +18,8 @@ AI repainting and Godot 4.x for the export check. All data lives in `workspace/`
 | --- | --- |
 | Import | Drop FBX, GLB, OBJ, DAE or ZIP (Tripo zips work as-is), any number at once. Blender normalizes each one and detects whether it's a mesh, a rigged character (Mixamo, Unreal, Rigify, Tripo…) or an animation. |
 | Rig | Humanoids: place body regions and hand tips, choose 25/33/41/65 bones, then rig in Blender. Switching finger levels fits the new chains at the current wrists. Humans and horses compare regional and volume-heat skinning on deformation tests; rerigging also checks against the previous weights on the new joints. Creatures use fitted body templates. Already-rigged imports keep their weights; non-Mixamo skeletons can be mapped onto Mixamo. **Auto-rig all** does a whole batch. |
-| Outfit | Props from the catalog (swords, shields, bows, tools, guns) pinned to sockets with a gizmo. Your own meshes: rigid pieces on a bone, or clothing skinned to the body with a policy (body, upper, lower, cape, skirt, head) so weights never bleed from the wrong bones, plus optional hide-body-underneath. |
-| Texture | Fill the magenta holes AI texture generators leave (filled from nearby paint in 3D, seam-aware). Projection painting: mask an area with the smart brush or region wand (edge-aware), capture the view, let Codex paint `result.png`, preview it projected onto the UVs, keep it. |
+| Outfit | Props from the catalog (swords, shields, bows, tools, guns) pinned to sockets with a gizmo. Your own meshes as accessories of three kinds: **props** (rigid on a bone, with grips for hands and *pulls*: points another bone draws, like a bowstring), **clothes** (skinned to the body with a policy, weights painted with the Rig step's brushes, optional hide-body-underneath) and **parts** (pinned to a spot on the body and moving with that skin; a mechanism plays its own animation). Any of them can be switched off or put in a switch set (one shown at a time). |
+| Texture | Fill the magenta holes AI texture generators leave (filled from nearby paint in 3D, seam-aware). Projection painting: mask on the model itself (smart brush, wand, brush; it stays put while the camera turns, dragging off the model orbits), the views that see it squarely are found and captured, Codex paints each `result-N.png`, they are blended back onto the UVs (each texel from the view that saw it most squarely), keep it. |
 | Animate | The complete named Mixamo collection (2,317 motions + 129 poses), bundled work/combat clips and creature clips. Search names, filenames and descriptions; numbered variants stay distinct. Every card previews the clip on *your* character. Build a per-character set (names, loop, in-place, speed) and copy it to other characters. |
 | Animate: editing | Pose and key any clip in the viewport, props leading the body with both hands on them, Naturalize, save as a new library clip: see [docs/animating.md](docs/animating.md). |
 | Export | GLB for Godot: bone names (`Hips` or `mixamorig:Hips`), texture size and format, `-loop` suffix for looping clips, props as bone attachments. Writes into your export folder (e.g. inside the Godot project). |
@@ -172,6 +172,16 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
   fitted on the bone in any pose (Rest, fists closed, or a clip paused on a frame). A hidden garment stays out of the
   game, except the pieces the game shows by job (`Gear*`, `Head*`, `Wear*`). Only parts built in the game's Blender
   pipeline go in (brought in by `game_import`, `from: "emberhold:..."`); others are left out with a warning.
+- **Accessories** (Outfit; `src/engine/garments.ts`, `src/engine/pulls.ts`): a garment's `mode` is its kind. *Props*
+  (`rigid`) ride one bone. *Clothes* (`clothing`) take the body's weights under each vertex (its policy's bones,
+  smoothed), then what was painted on them (the Rig step's brushes, the body under them there to Follow; kept in
+  `garments/<id>/weights.json`). *Parts* (`part`) are pinned to one spot of the body (picked, else the skin nearest
+  their middle): every vertex takes that spot's weights, so they move with the skin without bending; one with its own
+  animation (kept on import) plays it, riding the spot's leading bone. A *switch set* (`group`) shows one of its
+  pieces at a time. *Pulls* on a prop: a point another bone takes hold of while a clip holds it (per clip windows,
+  found by playing the clip: from the grip reaching the strand to the release or a full draw); the prop is skinned to
+  its own root and a `Prop_<prop>_<pull>` bone, a strand split at the point so it bends, each vertex rigid or soft as
+  painted. Clothes and parts reach the game as skinned meshes weighted as shown (`tools/lib/gearskin.ts`).
 - `game_import` fills in what a character lacks from the unit's last build (its record in the game's
   `assets/textures/models/<unit>/<unit>.json`: clips, scripts, ground, keys, gear) and touches nothing already there;
   `--replace` puts it back as built.
@@ -194,7 +204,11 @@ node tools/dev/ground.ts <unit.glb> ...                                       # 
 - **Fix weights** (Rig; `src/engine/weightpaint.ts`, `src/state/paint.svelte.ts`, `server/weights.ts`): pause a test
   clip on the frame that shows the problem and paint on the body as it stands. *Heal*: mark the problem skin, Heal
   refills its weights smoothly from the good skin round it (skin pulled by a wrong bone goes with what surrounds it);
-  *Add*, *Remove*, *Smooth* a chosen bone by hand. Seams never part (their vertices are one point), four bones a vertex.
+  *Add*, *Remove*, *Smooth* a chosen bone by hand; *Follow*: the brushed skin takes the weights of the skin it covers
+  (looking in toward its nearest bone at rest: the trousers under a coat), or of the nearest bones where nothing is
+  close under it, so the body pushes it (a hem the legs walk through); *Bone*: the brushed skin moves with only the bone
+  under the brush, every other pull dropped (a face a hood drags, a buckle): the bone already moving most of the skin
+  where the stroke begins, named in the panel as you hover. Seams never part (their vertices are one point), four bones a vertex.
   *Mirror left and right* (on): every stroke lands on the other side too, each point's twin taking the other side's
   bone (LeftArm for RightArm), the middle line evened; *Left → right* / *Right → left* set the whole other side from
   one (skin with no twin, a sash across one shoulder, stays as it is).

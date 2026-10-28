@@ -7,8 +7,9 @@ import { app } from './app.svelte.ts'
 import { viewer } from './viewer.svelte.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
 import { WeightPainter } from '../engine/weightpaint.ts'
+import { GARMENT_FLAG } from '../engine/garments.ts'
 
-export type PaintTool = 'area' | 'add' | 'remove' | 'smooth'
+export type PaintTool = 'area' | 'add' | 'remove' | 'smooth' | 'follow' | 'rigid'
 
 class Paint {
   active = $state(false)
@@ -19,6 +20,8 @@ class Paint {
   strength = $state(0.5)
   /** Strokes land on both sides of the body (each point's mirror twin, its bones swapped for the other side's). */
   mirror = $state(true)
+  /** The Bone brush's bone: the one under the brush (hovering), or the stroke's while painting. */
+  boneUnder = $state<string | null>(null)
   edited = $state(0)
   marked = $state(0)
   busy = $state(false)
@@ -31,25 +34,44 @@ class Paint {
   private ray = new THREE.Raycaster()
   private stroking = false
 
-  /** Paint on the character on stage (or stop). */
-  setActive (on: boolean): void {
+  /** What is painted: the body (the Rig step), or one clothing piece (the Outfit step: its id), the body under it there
+   * to follow but not painted. */
+  garment = $state<string | null>(null)
+
+  /** Paint on the character on stage (or stop); `garment`: one clothing piece of it instead of its body. */
+  setActive (on: boolean, garment: string | null = null): void {
+    if (on && garment !== this.garment) { this.detach(); this.view = null }
+    this.garment = on ? garment : this.garment
     this.active = on
     if (!on) { this.detach(); return }
     this.attach()
   }
 
+  /** The meshes painted on: the body's, or the garment's then the body's (to follow); and which may be changed. */
+  private meshesOf (view: CharacterView): { meshes: THREE.SkinnedMesh[], editable: Set<THREE.SkinnedMesh> } {
+    const body = view.skinned.filter(m => m.userData[GARMENT_FLAG] === undefined)
+    if (this.garment === null) return { meshes: body, editable: new Set(body) }
+    const worn = view.skinned.filter(m => m.userData[GARMENT_FLAG] === this.garment)
+    return { meshes: [...worn, ...body], editable: new Set(worn) }
+  }
+  private editable = new Set<THREE.SkinnedMesh>()
+
   private attach (): void {
     const stage = viewer.stage
     const view = viewer.character
     if (stage === null || view === null || view.skinned.length === 0) { this.active = false; return }
-    if (this.view !== view) {
-      this.painter = new WeightPainter(view.skinned)
-      this.painter.mirror = this.mirror
+    const { meshes, editable } = this.meshesOf(view)
+    if (meshes.length === 0 || editable.size === 0) { this.active = false; return }
+    if (this.view !== view || [...editable].some(m => !this.editable.has(m))) {
+      this.editable = editable
+      this.painter = new WeightPainter(meshes)
+      // (a prop isn't mirrored across the body: a bow's two ends aren't each other's)
+      this.painter.mirror = this.mirror && app.selected?.garments?.find(g => g.id === this.garment)?.mode !== 'rigid'
       this.view = view
       this.edited = 0; this.marked = 0
     }
     viewer.setMode('weights')
-    view.setHighlightBone(this.tool === 'area' || this.tool === 'smooth' ? null : this.bone)
+    view.setHighlightBone(this.tool === 'add' || this.tool === 'remove' ? this.bone : this.tool === 'rigid' ? this.boneUnder : null)
     const canvas = stage.renderer.domElement
     this.ring ??= new THREE.Mesh(new THREE.RingGeometry(0.92, 1, 40), new THREE.MeshBasicMaterial({ color: 0xff3df0, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide }))
     this.ring.visible = false
@@ -60,7 +82,7 @@ class Paint {
       this.ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, 1 - (e.clientY - r.top) / r.height * 2), stage.camera)
       // (the body as it stands: its bounds follow the pose)
       for (const m of view.skinned) m.computeBoundingSphere()
-      const hit = this.ray.intersectObjects(view.skinned, false)[0]
+      const hit = this.ray.intersectObjects(this.painter?.parts.map(p => p.mesh) ?? view.skinned, false)[0]
       if (hit === undefined) return null
       const mesh = hit.object as THREE.SkinnedMesh
       const normal = new THREE.Vector3(0, 0, 1)
@@ -74,12 +96,24 @@ class Paint {
     const brush = (e: PointerEvent): void => {
       const at = pick(e)
       this.showRing(at)
-      if (!this.stroking || at === null || this.painter === null) return
+      if (at === null || this.painter === null) return
+      if (!this.stroking && this.tool !== 'rigid') return
+      // (the body under a garment is there to follow, not to paint)
+      if (!this.editable.has(this.painter.parts[at.part].mesh)) return
       const points = this.painter.under(at.part, at.point, this.radius * view.height, at.face)
+      if (this.tool === 'rigid') {
+        // (the bone it paints, shown before and while painting)
+        const index = this.painter.strokeBoneIndex ?? this.painter.leadingBone(at.part, points)
+        const name = index === null ? null : this.painter.parts[at.part].mesh.skeleton.bones[index].name
+        if (name !== this.boneUnder) { this.boneUnder = name; view.setHighlightBone(name) }
+        if (!this.stroking) return
+      }
       if (this.tool === 'area') this.painter.mark(at.part, points, !e.altKey)
       else if (this.tool === 'add' && this.boneIndex(at.part) >= 0) this.painter.add(at.part, points, this.boneIndex(at.part), this.strength * 0.25)
       else if (this.tool === 'remove' && this.boneIndex(at.part) >= 0) this.painter.remove(at.part, points, this.boneIndex(at.part), this.strength * 0.25)
       else if (this.tool === 'smooth') this.painter.smooth(at.part, points, this.strength * 0.5)
+      else if (this.tool === 'follow') this.painter.followUnder(at.part, points, this.strength * 0.5)
+      else if (this.tool === 'rigid') this.painter.rigid(at.part, points, this.strength * 0.5)
       this.redraw()
     }
     const down = (e: PointerEvent): void => {
@@ -104,6 +138,14 @@ class Paint {
       window.removeEventListener('pointermove', brush)
       window.removeEventListener('pointerup', up)
     }
+  }
+
+  /** The garments were put on again (new meshes): paint on those. */
+  rebuild (): void {
+    if (!this.active || this.garment === null) return
+    this.detach()
+    this.view = null
+    this.attach()
   }
 
   /** The character on stage changed (another picked, the rig reloaded): paint on the new one. */
@@ -138,7 +180,7 @@ class Paint {
 
   /** The tool or bone changed: what the Weights view shows. */
   refreshView (): void {
-    this.view?.setHighlightBone(this.tool === 'area' || this.tool === 'smooth' ? null : this.bone)
+    this.view?.setHighlightBone(this.tool === 'add' || this.tool === 'remove' ? this.bone : this.tool === 'rigid' ? this.boneUnder : null)
     this.redraw()
   }
 
@@ -195,12 +237,15 @@ class Paint {
   async save (): Promise<void> {
     const c = app.selected
     if (c === null || this.painter === null) return
+    // (a garment's: by which of its model's meshes each is; the body's: by mesh as the rig has them)
     const edits = this.painter.edits()
+      .filter(e => this.editable.has(this.painter!.parts[e.mesh].mesh))
+      .map(e => this.garment === null ? e : { ...e, mesh: (this.painter!.parts[e.mesh].mesh.userData.garmentMesh as number | undefined) ?? 0 })
     if (edits.length === 0) return
     this.busy = true
-    this.busyText = 'Saving the weights into the rig'
+    this.busyText = this.garment === null ? 'Saving the weights into the rig' : 'Saving the garment\'s weights'
     try {
-      const r = await api.saveWeights(c.id, edits)
+      const r = this.garment === null ? await api.saveWeights(c.id, edits) : await api.saveGarmentWeights(c.id, this.garment, edits)
       this.painter.saved()
       this.edited = 0
       app.toast('ok', `Weights saved: ${r.written} vertices (kept for re-rigs)`)

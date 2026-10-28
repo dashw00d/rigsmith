@@ -51,10 +51,21 @@ export async function loadSource (url: string): Promise<SourceClip> {
   return await pending
 }
 
+/** A clip file written again (an edit saved over it): loaded afresh next time. */
+export function forgetClip (file: string): void {
+  files.delete(file)
+  for (const url of [...sources.keys()]) if (url.split('#')[0] === file) sources.delete(url)
+}
+
 /** Retargeted clips, cached per target skeleton and options. */
 export class RetargetCache {
   private readonly cache = new Map<string, Promise<THREE.AnimationClip>>()
   constructor (readonly target: RestSkeleton) {}
+
+  /** Drop a clip's retargets (its file written again). */
+  forget (url: string): void {
+    for (const key of [...this.cache.keys()]) if (key.split('|')[0].split('#')[0] === url) this.cache.delete(key)
+  }
 
   async get (url: string, options: RetargetOptions = {}): Promise<THREE.AnimationClip> {
     const key = `${url}|${options.inPlace === true ? 1 : 0}|${options.mirror === true ? 1 : 0}|${options.samples ?? options.fps ?? 30}`
