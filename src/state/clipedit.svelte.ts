@@ -2004,16 +2004,13 @@ class ClipEdit {
     let replace: string | undefined
     // (the clip made here before: the one it was opened on, or the one its record was opened from)
     const mine = b.made?.ref ?? b.clip
-    if (mine.id.startsWith('custom-')) {
-      try {
-        const { uses } = await api.clipUsage(mine.id)
-        if (uses.every(u => u.character === c.id && u.slot === slot.id)) replace = mine.id
-      } catch { /* not known: a new clip, to be safe */ }
-    }
+    // (a clip made here is saved over, whoever else plays it: the slot gets exactly what was edited)
+    if (mine.id.startsWith('custom-')) replace = mine.id
     const saved = await this.save(name, { replace })
     const now = this.character; const s = this.slot
     if (saved === null || now === null || s === null || !this.active) return
-    const entry = await app.do(now.id, saveToSlotCommands(s, mode, saved.ref, { loop: this.loop, gearKeys: saved.gearKeys, newId }))
+    // (the slot keeps its own loop: saving an Attack must not make it loop, which on a rider repeats it to the horse's gait)
+    const entry = await app.do(now.id, saveToSlotCommands(s, mode, saved.ref, { loop: s.loop, gearKeys: saved.gearKeys, newId }))
     // (refused: the reason is toasted; the clip is in the library, the edit still open)
     if (entry === null) return
     if (saved.replaced) animator.forgetClip(refUrl(saved.ref))
@@ -2055,7 +2052,12 @@ class ClipEdit {
       }
       const write = async (replace: string | undefined): Promise<ClipRef> => {
         if (c.skeleton.template === 'human') {
-          const r = await api.saveEdit({ name, base: b.clip.id, loop: this.loop, propPaths, frames, making, characterId: c.id, slot: this.slotId ?? undefined, replace })
+          // (saved over the clip it was edited on: the clip is now what was edited, its record no edit of anything, so
+          // opening it again shows exactly it, not the keys laid over it a second time)
+          const over = replace !== undefined && replace === b.clip.id
+          const record = over ? { ...making, keys: {}, gear: {} } : making
+          const loop = this.slot?.loop ?? this.loop
+          const r = await api.saveEdit({ name, base: b.clip.id, loop, propPaths, frames, making: record, characterId: c.id, slot: this.slotId ?? undefined, replace })
           this.busy = `Writing ${name} into the library`
           const job = await app.jobDone(r.job)
           if (job.status !== 'done') throw new Error(job.error ?? (job.status === 'cancelled' ? 'the save was cancelled' : 'the save failed'))

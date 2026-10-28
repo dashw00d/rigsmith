@@ -7,7 +7,7 @@
 // made clip (`replace`) is refused (409) while another slot plays it: the editor forks it then.
 import { HttpError, readBody, readJsonBody, route, send } from '../http.ts'
 import { categoryOf } from '../library.ts'
-import { checkMaking, clipUsage, creatureClip, editId, editRecord, othersUsing, release, saveCreatureClip, saveEdit, usesText, type SavedEdit } from '../clipedits.ts'
+import { checkMaking, clipUsage, creatureClip, editId, editRecord, release, saveCreatureClip, saveEdit, type SavedEdit } from '../clipedits.ts'
 import { enqueue } from '../jobs.ts'
 import { getCharacter } from '../store.ts'
 import type { Character } from '../../src/model/types.ts'
@@ -24,10 +24,6 @@ async function saver (id: unknown): Promise<Character | null> {
 }
 
 /** Refuse a save over `clip` while a slot other than `slot` of `c` plays it. */
-async function mayReplace (clip: string, c: Character | null, slot: string | undefined): Promise<void> {
-  const others = othersUsing(await clipUsage(clip), c?.id, slot)
-  if (others.length > 0) throw new HttpError(409, `${clip} is played by ${usesText(others)} too; save it as a new clip`, { uses: others })
-}
 
 route('GET', /^\/api\/library\/usage\/([^/]+)$/, async (_req, res, [raw]) => {
   const clip = decodeURIComponent(raw)
@@ -49,7 +45,8 @@ route('POST', /^\/api\/library\/edits$/, async (req, res) => {
   try { checkMaking(body.making) } catch (error) { throw new HttpError(400, (error as Error).message) }
   const c = await saver(body.characterId)
   if (c !== null && c.skeleton.template !== 'human') throw new HttpError(400, `A ${c.skeleton.template}'s clip is saved beside its own clips, not in the library`)
-  if (typeof body.replace === 'string') await mayReplace(body.replace, c, body.slot)
+  // (a save over a clip made here overwrites it, whoever else plays it: the designer, 2026-10-28, "I need shit to GET
+  // OVERWRITTEN")
   const id = await editId(body)
   let job
   try {
@@ -72,7 +69,6 @@ route('POST', /^\/api\/library\/creature-clips$/, async (req, res, _, url) => {
   const replace = q('replace') || undefined
   if (replace !== undefined) {
     if (await creatureClip(replace) === null) throw new HttpError(404, `No clip ${replace} made here`)
-    await mayReplace(replace, c, q('slot') || undefined)
   }
   let glb = await readBody(req, 64 * 1024 * 1024)
   try {
