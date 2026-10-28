@@ -2,22 +2,10 @@
 // node tools/dev/hand_eval.ts <reference.glb> <ours.glb> <clip.glb> [frames]
 // Reports per-region vertex error (% of height) after removing each region's mean offset,
 // so it measures orientation/shape differences rather than where the region sits.
-import { readFileSync } from 'node:fs'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { loadGlbFile as load } from '../../src/engine/headless.ts'
 import { canonical, captureRest, retarget } from '../../src/engine/retarget.ts'
 
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images') }
-const origError = console.error
-console.error = (...a: unknown[]) => { if (!String(a[0]).includes('texture')) origError(...a) }
-
-async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
-  const data = readFileSync(file)
-  const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
-  return await new Promise((resolve, reject) => { new GLTFLoader().parse(buffer, '', r => { resolve(r as never) }, reject) })
-}
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 
 function meshes (root: THREE.Object3D): THREE.SkinnedMesh[] {

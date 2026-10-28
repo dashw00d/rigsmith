@@ -1,25 +1,14 @@
 // @vitest-environment node
 // Retargeting checks against real library clips (skipped when the local library isn't built).
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { describe, expect, it } from 'vitest'
+import { loadGlbFile as load } from './headless.ts'
 import { canonical, captureRest, mainChild, retarget, type RestSkeleton } from './retarget.ts'
-
-// GLTFLoader expects a browser for textures; these tests only need skeletons and clips.
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images in tests') }
 
 const LIBRARY = path.resolve(__dirname, '../../workspace/library')
 const have = existsSync(path.join(LIBRARY, 'manifest.json'))
-
-async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
-  const data = readFileSync(file)
-  const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
-  return await new Promise((resolve, reject) => { new GLTFLoader().parse(buffer, '', g => { resolve(g) }, reject) })
-}
 
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 

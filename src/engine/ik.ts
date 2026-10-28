@@ -1,9 +1,11 @@
 // Posing by reaching, for the animation editor: a limb's end put where it is dragged (two bones, the middle joint
 // bending towards where it already bends), the hips raised or lowered with the feet kept where they stand (a crouch, a
 // jump: the legs bend), and the floor (no foot below the ground). Every joint stays within its limits when a
-// JointLimits is given (src/engine/limits.ts). All on the character's own bones, in place.
+// JointLimits is given (src/engine/limits.ts, the one range-of-motion model: held hard here, a soft cost in the pose
+// solver, src/engine/posespace.ts). All on the character's own bones, in place.
 import * as THREE from 'three'
 import type { JointLimits } from './limits.ts'
+import { wp, wq } from './geom.ts'
 
 export interface Limb {
   upper: THREE.Bone
@@ -14,12 +16,9 @@ export interface Limb {
 /** A bone's name as the limits know it (a rig's prefix dropped). */
 export type NameOf = (bone: THREE.Bone) => string
 
-const worldQ = (o: THREE.Object3D): THREE.Quaternion => o.getWorldQuaternion(new THREE.Quaternion())
-const worldP = (o: THREE.Object3D): THREE.Vector3 => o.getWorldPosition(new THREE.Vector3())
-
 /** Give `bone` this world turn (its local one set from its parent's). */
 export function setWorldQuaternion (bone: THREE.Object3D, q: THREE.Quaternion): void {
-  const parent = bone.parent === null ? new THREE.Quaternion() : worldQ(bone.parent)
+  const parent = bone.parent === null ? new THREE.Quaternion() : wq(bone.parent)
   bone.quaternion.copy(parent.invert().multiply(q)).normalize()
   bone.updateMatrixWorld(true)
 }
@@ -41,13 +40,13 @@ function clampBone (bone: THREE.Bone, limits: JointLimits | undefined, nameOf: N
 export function reach (limb: Limb, target: THREE.Vector3, opts: { limits?: JointLimits, nameOf: NameOf, pole?: THREE.Vector3, keepEnd?: boolean, endFree?: boolean, rounds?: number }): number {
   const { upper, lower, end } = limb
   upper.updateMatrixWorld(true)
-  const endTurn = worldQ(end)
+  const endTurn = wq(end)
   const start = [upper.quaternion.clone(), lower.quaternion.clone(), end.quaternion.clone()]
   let miss = reachOnce(limb, target, opts, endTurn)
   // (held short by its limits: the middle joint may bend another way round the line to the target; the best of a
   // few kept)
   if (opts.limits !== undefined && miss > 0.005) {
-    const S = worldP(upper)
+    const S = wp(upper)
     const axis = target.clone().sub(S).normalize()
     let best = { miss, q: [upper.quaternion.clone(), lower.quaternion.clone(), end.quaternion.clone()] }
     const side = new THREE.Vector3(0, 1, 0).cross(axis)
@@ -69,7 +68,7 @@ function reachOnce (limb: Limb, target: THREE.Vector3, opts: { limits?: JointLim
   const { upper, lower, end } = limb
   const rounds = opts.limits === undefined ? 1 : (opts.rounds ?? 4)
   for (let r = 0; r < rounds; r++) {
-    const S = worldP(upper); const E = worldP(lower); const H = worldP(end)
+    const S = wp(upper); const E = wp(lower); const H = wp(end)
     const l1 = E.distanceTo(S); const l2 = H.distanceTo(E)
     const toT = target.clone().sub(S)
     const dist = Math.min(Math.max(toT.length(), Math.abs(l1 - l2) * 1.001 + 1e-6), (l1 + l2) * 0.9995)
@@ -85,9 +84,9 @@ function reachOnce (limb: Limb, target: THREE.Vector3, opts: { limits?: JointLim
     const elbow = S.clone().addScaledVector(dn, l1 * cos).addScaledVector(side, l1 * Math.sqrt(1 - cos * cos))
     const hand = S.clone().addScaledVector(dn, dist)
     // the top: aimed at the new middle (the smallest turn keeps its roll)
-    setWorldQuaternion(upper, new THREE.Quaternion().setFromUnitVectors(E.clone().sub(S).normalize(), elbow.clone().sub(S).normalize()).multiply(worldQ(upper)))
-    const E2 = worldP(lower); const H2 = worldP(end)
-    setWorldQuaternion(lower, new THREE.Quaternion().setFromUnitVectors(H2.clone().sub(E2).normalize(), hand.clone().sub(E2).normalize()).multiply(worldQ(lower)))
+    setWorldQuaternion(upper, new THREE.Quaternion().setFromUnitVectors(E.clone().sub(S).normalize(), elbow.clone().sub(S).normalize()).multiply(wq(upper)))
+    const E2 = wp(lower); const H2 = wp(end)
+    setWorldQuaternion(lower, new THREE.Quaternion().setFromUnitVectors(H2.clone().sub(E2).normalize(), hand.clone().sub(E2).normalize()).multiply(wq(lower)))
     clampBone(upper, opts.limits, opts.nameOf)
     clampBone(lower, opts.limits, opts.nameOf)
   }
@@ -96,7 +95,7 @@ function reachOnce (limb: Limb, target: THREE.Vector3, opts: { limits?: JointLim
     // (endFree: the end keeps its turn exactly, its limit or not: a hand carrying a spear keeps the spear on its line)
     if (opts.endFree !== true) clampBone(end, opts.limits, opts.nameOf)
   }
-  return worldP(end).distanceTo(target)
+  return wp(end).distanceTo(target)
 }
 
 export interface Leg extends Limb {
@@ -107,7 +106,7 @@ export interface Leg extends Limb {
 
 /** The legs' sole points at rest above the floor: the ankle's, the ball's, the tip's height (world) with the feet flat. */
 export function soleHeights (leg: Leg): number[] {
-  return [leg.end, leg.ball, leg.tip].map(b => (b === null ? -Infinity : worldP(b).y))
+  return [leg.end, leg.ball, leg.tip].map(b => (b === null ? -Infinity : wp(b).y))
 }
 
 /**
@@ -119,7 +118,7 @@ export function moveHips (hips: THREE.Bone, delta: THREE.Vector3, legs: Leg[], o
   hips.updateMatrixWorld(true)
   // (where the feet stand: as they are now, or where a drag found them)
   const planted = opts.planted ?? plantedFeet(legs)
-  const start = worldP(hips)
+  const start = wp(hips)
   const put = (d: THREE.Vector3): number => {
     const world = start.clone().add(d)
     const local = hips.parent === null ? world : hips.parent.worldToLocal(world)
@@ -152,7 +151,7 @@ export function moveHips (hips: THREE.Bone, delta: THREE.Vector3, legs: Leg[], o
 
 /** Where each leg's foot is and how it is turned (to keep it there through a crouch). */
 export function plantedFeet (legs: Leg[]): Array<{ at: THREE.Vector3, turn: THREE.Quaternion }> {
-  return legs.map(l => ({ at: worldP(l.end), turn: worldQ(l.end) }))
+  return legs.map(l => ({ at: wp(l.end), turn: wq(l.end) }))
 }
 
 /** No foot below the floor: a leg whose ankle, ball or toes dip under their heights above the floor at rest
@@ -164,11 +163,11 @@ export function keepOffFloor (legs: Leg[], floor: number, soles: number[][], opt
     let under = 0
     points.forEach((b, k) => {
       if (b === null || !Number.isFinite(soles[i][k])) return
-      under = Math.max(under, floor + soles[i][k] - worldP(b).y)
+      under = Math.max(under, floor + soles[i][k] - wp(b).y)
     })
     if (under <= 1e-5) return
-    const turn = worldQ(leg.end)
-    reach(leg, worldP(leg.end).add(new THREE.Vector3(0, under, 0)), { limits: opts.limits, nameOf: opts.nameOf, keepEnd: false })
+    const turn = wq(leg.end)
+    reach(leg, wp(leg.end).add(new THREE.Vector3(0, under, 0)), { limits: opts.limits, nameOf: opts.nameOf, keepEnd: false })
     setWorldQuaternion(leg.end, turn)
   })
 }

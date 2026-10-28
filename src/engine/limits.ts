@@ -4,6 +4,8 @@
 // itself (from its rest); a pose outside is put back on the nearest direction reached and the nearest twist in range.
 // The ranges are kept in the measured skeleton's frames (a person's: the Y Bot's); a character's bones map onto them by
 // the retarget's turns (src/engine/retarget.ts retargetOffsets: Qcharacter = Qsource * K).
+// This is the editor's one range-of-motion model: a hard clamp in IK (src/engine/ik.ts), a soft cost in the pose
+// solver (src/engine/posespace.ts), and the range a finger correction keeps to (src/engine/handcontacts.ts).
 import * as THREE from 'three'
 
 export interface RomBone {

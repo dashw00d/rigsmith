@@ -7,6 +7,8 @@ import type { Clip } from './library.ts'
 
 const dir = mkdtempSync(path.join(tmpdir(), 'rigsmith-library-'))
 let queryLibrary: typeof import('./library.ts').queryLibrary
+let categorize: typeof import('./library.ts').categorize
+let CATEGORIES: typeof import('./library.ts').CATEGORIES
 
 function clip (id: string, name: string, extra: Partial<Clip> = {}): Clip {
   return {
@@ -31,7 +33,7 @@ beforeAll(async () => {
   ]
   writeFileSync(path.join(dir, 'library', 'manifest.json'), JSON.stringify({ version: 1, skeleton: 'mixamo', categories: [], clips }))
   process.env.RIGSMITH_WORKSPACE = dir // read when workspace.ts is first imported
-  ;({ queryLibrary } = await import('./library.ts'))
+  ;({ queryLibrary, categorize, CATEGORIES } = await import('./library.ts'))
 })
 afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
 
@@ -58,5 +60,34 @@ describe('queryLibrary', () => {
     expect((await query('jab cross')).map(c => c.name)).toEqual(['Jab Cross', 'Jab Cross 2'])
     expect((await query('Jab_Cross_2.fbx')).map(c => c.id)).toEqual(['mixamo-Jab_Cross_2'])
     expect((await query('boxing long')).map(c => c.id)).toEqual(['mixamo-Jab_Cross_2'])
+  })
+})
+
+describe('counts and categories', () => {
+  it('counts the matches, the rig and each category under the search', async () => {
+    const page = await queryLibrary({ query: 'walking', source: 'mixamo-pack', page: 0, pageSize: 24 })
+    expect(page.total).toBe(2)
+    expect(page.all).toBeGreaterThanOrEqual(9)
+    expect(page.categories.find(c => c.id === 'locomotion')?.count).toBe(2)
+    expect(page.categories.find(c => c.id === 'dance')?.count).toBe(0)
+    // (the category filter narrows the clips, not the counts)
+    const dance = await queryLibrary({ category: 'dance', source: 'mixamo-pack', page: 0, pageSize: 24 })
+    expect(dance.total).toBe(1)
+    expect(dance.categories.find(c => c.id === 'locomotion')?.count).toBe(3)
+  })
+
+  it('offers one category vocabulary, and files bundled clips in it', async () => {
+    const page = await queryLibrary({ page: 0, pageSize: 1 })
+    expect(page.categories.map(c => c.id)).toEqual(CATEGORIES.map(c => c.id))
+    expect(categorize('Trot')).toBe('locomotion')
+    expect(categorize('Climbing_Ladder')).toBe('climb')
+    expect(categorize('Something')).toBe('gesture')
+    expect(CATEGORIES.map(c => c.id)).toContain(categorize('Idle_Breathe'))
+  })
+
+  it('clamps the page and its size', async () => {
+    const page = await queryLibrary({ source: 'mixamo-pack', page: 99, pageSize: 0 })
+    expect(page.pageSize).toBe(1)
+    expect(page.page).toBe(page.pages - 1)
   })
 })

@@ -1,43 +1,52 @@
-"""Bring a game unit back into Rigsmith from its last build: its clips, scripts and gear, as the game has them.
+"""Bring a game unit back into Rigsmith from its last build: its clips, hands and gear, as the game has them.
 
-    python3 tools/game_import.py <game repo> [unit ...] [--replace] [--dry-run]
+    python3 tools/game_import.py <game repo> [unit ...] [--replace] [--repivot] [--dry-run] [--ignore-server]
 
 Rigsmith is where a unit's clips and gear are chosen (tools/game_export.ts builds the game's units from it); this is the
 way back, for a character that lacks them (a new workspace, a part rebuilt in the game's Blender pipeline). From the
 game's spec (<game>/tools/rigsmith/units.json), its built units (<game>/assets/models/units/<unit>.glb) and their
 build records (<game>/assets/textures/models/<unit>/<unit>.json, sources.rigsmith):
 
-  animations  the clips the unit was built with, under the game's names (clip, loop, in place, speed, its ground
-              and its keys)
-  scripts     the clip scripts it was built with (src/engine/scripts.ts)
-  garments    every part the built unit carries besides its body (Weapons_<bone>, the villager's Gear* and spare Head*,
-              his job wear from <game>/assets/models/kits/<unit>_wear.glb), LOD0, moved from game space back into the
-              character's (the export's scale and floor undone, then the placement it was built with: exact), a rigid
-              garment on its bone, its surfaces keeping the game's material names with the colour maps the game draws
-              them with. Pieces the game swaps by job (Gear*, Head*, Wear*) come in hidden, except the forager's look.
+  clips   the slots the unit was built with, under the game's names (clip, loop, in place, speed and every
+          adjustment: ground, blow timing, pace, hand poses, holds, keys); from a build before schema 2, its clips and
+          clip scripts read as Rigsmith reads an old character (src/model/migrate.ts)
+  hands   the hands it held in every clip (hands.hold; an old build's grip scripts)
+  gear    every part the built unit carries besides its body (Weapons_<bone>, the villager's Gear* and spare Head*,
+          his job wear from <game>/assets/models/kits/<unit>_wear.glb), LOD0, moved from game space back into the
+          character's (the export's scale and floor undone, then the placement it was built with: exact), on its bone,
+          its surfaces keeping the game's material names with the colour maps the game draws them with. Pieces the
+          game swaps by job (Gear*, Head*, Wear*) come in hidden, except the forager's look.
 
 Each part's own origin is where it is held (UnitView.GearHold's rule: a hand item on its handle's line nearest the
 hand's joint, anything else the point of its box nearest the joint it rides), so the viewer's gizmo sits there and
 turning or sizing it keeps it in the fist. --repivot moves the origin of the parts a character already has there,
 leaving each exactly where it is (its position takes up the shift).
 
-By default nothing you made is touched: a garment it brought before (from "emberhold:...") stays as it is, only the
-parts the character lacks come in, and clips and scripts are only filled in where the character has none. --replace puts the character back as the game's last build has it (its clips, scripts, gear and placements;
-garments and props it didn't bring go). A build from before Rigsmith held the clips reads them from the spec's old
-clip table. Each character.json is backed up first (workspace/backups/game-import/<time>/). Writes through the running
-app's API when it is up (RIGSMITH_URL, default http://127.0.0.1:5180); reload an open page afterwards.
+By default nothing you made is touched: a part it brought before (from "emberhold:...") stays as it is, only the parts
+the character lacks come in, clips only under names it has no slot for, and the hands only when it holds none.
+--replace puts the character back as the game's last build has it (its clips, hands, gear and placements; gear it
+didn't bring goes, files kept). A build from before Rigsmith held the clips reads them from the spec's old clip table.
+
+Everything goes through Rigsmith's server (RIGSMITH_URL, default http://127.0.0.1:5180; the rebuild sandbox's is 5190):
+new parts through its gear upload, the rest as one undoable journal entry per character (POST .../restore, signed
+"game_import"). Undo it in the app's Activity drawer. Without a server it can only look (--dry-run) or, when no part
+needs bringing in, apply through node tools/restore.ts (the offline twin of the route, which refuses while any Rigsmith
+server answers; --ignore-server when that one serves another workspace). --dry-run prints the batch of commands it
+would apply.
 """
 import argparse
+import base64
 import io
 import json
 import os
 import re
 import secrets
-import shutil
 import struct
+import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import numpy as np
@@ -49,9 +58,11 @@ CHARACTERS = os.path.join(WORKSPACE, 'characters')
 LIBRARY = os.path.join(WORKSPACE, 'library')
 OLD_MANIFEST = os.path.join(LIBRARY, 'backups', 'before-named-catalog', 'manifest.json')
 API = os.environ.get('RIGSMITH_URL', 'http://127.0.0.1:5180')
+BY = os.environ.get('RIGSMITH_BY', 'game_import')
 TRIM_SIZE = 1024        # the shared trim sheets (2048) embedded at this size, as JPEG: a hat needs no more
 ROUGHNESS = 0.82        # the game's matte (emb_rigsmith.ROUGHNESS)
-SWAPPED = ('Gear', 'Head', 'Wear')   # parts the game shows by job or look
+SWAPPED = ('Gear', 'Head', 'Wear')   # parts the game shows by job or look (src/engine/contract.ts SWAPPED)
+IMPORT_WAIT = 600       # seconds a part's import may take
 
 # --- glTF in ---------------------------------------------------------------------------------------------------------
 
@@ -59,13 +70,17 @@ CT = {5120: np.int8, 5121: np.uint8, 5122: np.int16, 5123: np.uint16, 5125: np.u
 NC = {'SCALAR': 1, 'VEC2': 2, 'VEC3': 3, 'VEC4': 4, 'MAT4': 16}
 
 
+def read_glb(data):
+    """A GLB's JSON and its binary chunk (b'' when it has none)."""
+    n = struct.unpack('<I', data[12:16])[0]
+    off = 20 + n
+    binary = data[off + 8: off + 8 + struct.unpack('<I', data[off:off + 4])[0]] if off < len(data) else b''
+    return json.loads(data[20:20 + n]), binary
+
+
 class Glb:
     def __init__(self, path):
-        b = open(path, 'rb').read()
-        n = struct.unpack('<I', b[12:16])[0]
-        self.j = json.loads(b[20:20 + n])
-        off = 20 + n
-        self.bin = b[off + 8: off + 8 + struct.unpack('<I', b[off:off + 4])[0]] if off < len(b) else b''
+        self.j, self.bin = read_glb(open(path, 'rb').read())
 
     def acc(self, i):
         a = self.j['accessors'][i]
@@ -139,8 +154,9 @@ class Glb:
 # --- glTF out --------------------------------------------------------------------------------------------------------
 
 
-def write_glb(path, name, prims):
-    """One mesh node `name` at the origin; prims [(positions, normals, uvs, indices, (image bytes, mime), material)]."""
+def glb_bytes(name, prims):
+    """A GLB of one mesh node `name` at the origin; prims [(positions, normals, uvs, indices, (image bytes, mime),
+    material)]."""
     j = {'asset': {'version': '2.0', 'generator': 'rigsmith tools/game_import.py'}, 'scene': 0, 'scenes': [{'nodes': [0]}],
          'nodes': [{'name': name, 'mesh': 0}], 'meshes': [{'name': name, 'primitives': []}], 'materials': [], 'textures': [],
          'images': [], 'samplers': [{'magFilter': 9729, 'minFilter': 9987, 'wrapS': 10497, 'wrapT': 10497}],
@@ -187,19 +203,13 @@ def write_glb(path, name, prims):
     j['buffers'].append({'byteLength': len(blob)})
     js = json.dumps(j, separators=(',', ':')).encode()
     js += b' ' * (-len(js) % 4)
-    out = struct.pack('<III', 0x46546C67, 2, 12 + 8 + len(js) + 8 + len(blob)) + struct.pack('<II', len(js), 0x4E4F534A) + js \
+    return struct.pack('<III', 0x46546C67, 2, 12 + 8 + len(js) + 8 + len(blob)) + struct.pack('<II', len(js), 0x4E4F534A) + js \
         + struct.pack('<II', len(blob), 0x004E4942) + bytes(blob)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'wb') as f:
-        f.write(out)
 
 def shifted_glb(data, offset):
     """A GLB's bytes with every POSITION moved by -offset (its bounds too), all else as it was."""
-    n = struct.unpack('<I', data[12:16])[0]
-    j = json.loads(data[20:20 + n])
-    off = 20 + n
-    blen = struct.unpack('<I', data[off:off + 4])[0]
-    binary = bytearray(data[off + 8: off + 8 + blen])
+    j, chunk = read_glb(data)
+    binary = bytearray(chunk)
     done = set()
     for mesh in j['meshes']:
         for prim in mesh['primitives']:
@@ -222,19 +232,14 @@ def shifted_glb(data, offset):
         + struct.pack('<II', len(binary), 0x004E4942) + bytes(binary)
 
 
-def garment_file(gid, data):
-    """Where a garment's mesh goes: named by its content, so an open page loads the new one, not its cached old one."""
-    import hashlib
-    return f'garments/{gid}/model.{hashlib.sha256(data).hexdigest()[:8]}.glb'
-
-
-def repivot(g, mesh_points, joints):
-    """The origin shift that puts garment `g`'s pivot where it is held: (offset in its mesh's frame, its new position)."""
-    R = euler_matrix(g['rotation'])
-    k = float(g['scale'])
-    p = np.asarray(g['position'], dtype=np.float64)
+def repivot(place, bone, mesh_points, joints):
+    """The origin shift that puts a part's pivot where it is held, for its placement {position, rotation, scale} on
+    `bone`: (offset in its mesh's frame, its new position)."""
+    R = euler_matrix(place['rotation'])
+    k = float(place['scale'])
+    p = np.asarray(place['position'], dtype=np.float64)
     world = p + k * mesh_points @ R.T
-    hold = gear_hold(world, joints[g['bone']], g['bone'])
+    hold = gear_hold(world, joints[bone], bone)
     local = ((hold - p) @ R) / k
     return local, [round(float(x), 6) for x in hold]
 
@@ -324,30 +329,52 @@ class Library:
 # --- Rigsmith's side -------------------------------------------------------------------------------------------------
 
 
-def api(method, path, body=None):
-    req = urllib.request.Request(API + path, method=method, data=None if body is None else json.dumps(body).encode(),
-                                 headers={'content-type': 'application/json'})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.loads(r.read())
+def api(method, path, body=None, raw=None, ctype='application/json', timeout=60):
+    """A call to Rigsmith's server as schema 2, signed as this tool (the journal names it)."""
+    data = raw if raw is not None else None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(API + path, method=method, data=data, headers={
+        'content-type': ctype, 'x-rigsmith': '1', 'x-rigsmith-schema': '2', 'x-rigsmith-by': BY})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            text = r.read()
+    except urllib.error.HTTPError as e:
+        try:
+            why = json.loads(e.read()).get('error') or e.reason
+        except ValueError:
+            why = e.reason
+        raise SystemExit(f'{method} {path}: {e.code} {why}')
+    return json.loads(text) if text else None
 
 
 def api_up():
     try:
-        api('GET', '/api/settings')
-        return True
-    except (urllib.error.URLError, OSError, ValueError):
+        return isinstance(api('GET', '/api/jobs', timeout=3), list)
+    except (urllib.error.URLError, OSError, ValueError, SystemExit):
         return False
 
 
-def character(cid):
-    return json.load(open(os.path.join(CHARACTERS, cid, 'character.json')))
+def character(cid, live):
+    """A character as schema 2: from the server when it runs, else its file (which must be schema 2 already)."""
+    if live:
+        return api('GET', f'/api/characters/{cid}')
+    path = os.path.join(CHARACTERS, cid, 'character.json')
+    if not os.path.exists(path):
+        raise SystemExit(f'{cid}: no such character in {CHARACTERS}')
+    c = json.load(open(path))
+    if c.get('schema') != 2:
+        raise SystemExit(f'{cid}: its character.json is from before schema 2: start the app once (it migrates each '
+                         f'character as it reads it) or run node tools/migrate.ts')
+    return c
 
 
-def rest_frame(cid):
-    """The export's placing of this character in game space: x_game = s * (x - (0, floor, 0)). Returns (s, floor) as
-    tools/game_export.ts computes them (the skinned mesh's world box), from the character's rigged file."""
-    c = character(cid)
-    g = Glb(os.path.join(CHARACTERS, cid, c['files'].get('rigged', 'rigged.glb')))
+def rest_frame(c):
+    """The export's placing of this character in game space: x_game = s * (x - (0, floor, 0)). Returns (floor, height,
+    joints) as tools/lib/unit_export.ts computes them (the skinned mesh's world box), from the character's rigged file."""
+    cid = c['id']
+    rigged = (c.get('files') or {}).get('rigged')
+    if not rigged:
+        raise SystemExit(f'{cid}: not rigged')
+    g = Glb(os.path.join(CHARACTERS, cid, rigged))
     W = g.worlds()
     skinned = [(i, nd) for i, nd in enumerate(g.j['nodes']) if 'skin' in nd and 'mesh' in nd]
     if len(skinned) != 1:
@@ -357,6 +384,85 @@ def rest_frame(cid):
     y = pos @ W[i][1, :3] + W[i][1, 3]
     joints = {g.j['nodes'][k]['name']: W[k][:3, 3] for k in g.j['skins'][nd['skin']]['joints']}
     return float(y.min()), float(y.max() - y.min()), joints
+
+
+def b64(data):
+    return base64.b64encode(data).decode('ascii')
+
+
+def place_of(g):
+    a = g['attach']
+    return {'position': a['place']['position'], 'rotation': a['place']['rotation'], 'scale': a['place']['scale']}
+
+
+def v1_record(entries, scripts):
+    """Clips in the shape of a schema 1 build record (what the restore route reads of one): by name, the library clip
+    and how it plays, its lift and keys; and the clip scripts."""
+    clips = {}
+    for e in entries:
+        x = {'clip': e['clipId'], 'loop': e['loop'], 'inPlace': e['inPlace'], 'speed': e['speed']}
+        for k, to in (('url', 'url'), ('lift', 'lift'), ('keys', 'keyData')):
+            if e.get(k):
+                x[to] = e[k]
+        clips[e['name']] = x
+    return {'clips': clips, 'scripts': scripts}
+
+
+IGNORE_SERVER = False   # --ignore-server: passed on to tools/restore.ts
+
+
+def restore(cid, request, live, dry):
+    """Send a restore: to the server, else (no part to bring in) through node tools/restore.ts. Prints what it did, or
+    the batch on a dry run."""
+    if live:
+        out = api('POST', f'/api/characters/{cid}/restore', dict(request, dryRun=dry), timeout=300)
+    else:
+        cmd = ['node', os.path.join(ROOT, 'tools', 'restore.ts'), cid, '-', '--by', BY] + (['--dry-run'] if dry else []) \
+            + (['--ignore-server'] if IGNORE_SERVER else [])
+        r = subprocess.run(cmd, input=json.dumps(request), text=True, capture_output=True)
+        if r.returncode != 0:
+            raise SystemExit(f'{cid}: {(r.stderr or r.stdout).strip()}')
+        if not dry:
+            print('  ' + r.stdout.strip().replace('\n', '\n  '))
+            return
+        out = json.loads(r.stdout)
+    if dry:
+        print(f'  the batch ({len(out["commands"])} commands):')
+        for cmd in out['commands']:
+            print('    ' + json.dumps(cmd, separators=(',', ':')))
+    else:
+        entry = out.get('entry')
+        print(f'  journal entry {entry["seq"]} ({len(entry["changes"])} changes; undo it in the Activity drawer)' if entry else '  nothing changed')
+    for line in out.get('notes', []):
+        print(f'  note: {line}')
+
+
+def upload(cid, name, bone, tag, data):
+    """A part brought in through the gear upload route (its import is a job); the new piece's id."""
+    before = {g['id'] for g in character(cid, True)['gear']}
+    q = urllib.parse.urlencode({'name': name + '.glb', 'kind': 'prop', 'bone': bone, 'from': tag})
+    api('POST', f'/api/characters/{cid}/garments?{q}', raw=data, ctype='application/octet-stream', timeout=300)
+    gear = character(cid, True)['gear']
+    new = [g for g in gear if g['id'] not in before]
+    mine = [g for g in new if g.get('from') == tag] or new
+    if len(mine) != 1:
+        raise SystemExit(f'{cid}: {name}: uploaded, but {len(new)} new pieces appeared; finish by hand')
+    return mine[0]['id']
+
+
+def wait_imported(cid, ids):
+    """Wait for the parts' imports to finish; the ones that failed."""
+    end = time.time() + IMPORT_WAIT
+    while True:
+        gear = {g['id']: g for g in character(cid, True)['gear']}
+        busy = [i for i in ids if gear.get(i, {}).get('status') == 'importing']
+        if not busy:
+            return [f'{gear[i]["name"]}: {gear[i].get("error", "failed")}' for i in ids if gear.get(i, {}).get('status') == 'error']
+        if time.time() > end:
+            raise SystemExit(f'{cid}: {len(busy)} parts still importing after {IMPORT_WAIT} s; run this again when they are done')
+        time.sleep(2)
+
+# --- the unit's parts and clips --------------------------------------------------------------------------------------
 
 
 def gear_hold(pos, bone_at, bone):
@@ -432,10 +538,11 @@ def old_scripts(spec):
     return out
 
 
-def unit_parts(game, unit, spec, cid, built):
+def unit_parts(game, unit, spec, c, built):
     """The parts the built unit carries, in the character's rest space before their placement: [(part, bone, prims,
     placement)], placement {position, rotation, scale} as built (the build record), else as the old game drew it."""
-    floor, tall, joints = rest_frame(cid)
+    cid = c['id']
+    floor, tall, joints = rest_frame(c)
     s = float(spec['height']) / tall
     to_char = np.array([1 / s, 1 / s, 1 / s])
     lift = np.array([0.0, floor, 0.0])
@@ -489,63 +596,60 @@ def unit_parts(game, unit, spec, cid, built):
     return out
 
 
+def part_glb(name, bone, prims, place, joints):
+    """A part's GLB with its origin where it is held, and its placement with the position that takes up the shift."""
+    data = glb_bytes(name, prims)
+    local, position = repivot(place, bone, np.concatenate([q[0] for q in prims]), joints)
+    return shifted_glb(data, local), {'position': position, 'rotation': list(place['rotation']), 'scale': float(place['scale'])}
+
+
+def repivot_unit(game, unit, live, dry):
+    """--repivot: each part from the game a character already has, its origin moved to where it is held."""
+    cid = game.spec[unit]['character']
+    c = character(cid, live)
+    _, _, joints = rest_frame(c)
+    entries, moved = [], []
+    for g in c.get('gear', []):
+        a = g['attach']
+        if not (g.get('from') or '').startswith('emberhold:') or a['kind'] != 'bone' or not g.get('model'):
+            continue
+        path = os.path.join(CHARACTERS, cid, g['model'])
+        data = open(path, 'rb').read()
+        pts = np.concatenate([q[0] for _, _, prims, _, _ in Glb(path).parts() for q in prims])
+        local, position = repivot(a['place'], a['bone'], pts, joints)
+        if np.abs(local).max() < 1e-6:
+            continue
+        entries.append({'id': g['id'], 'place': dict(place_of(g), position=position), 'model': b64(shifted_glb(data, local))})
+        moved.append(g['name'])
+    print(f'{unit} -> {cid}: pivots moved to the hold: {", ".join(moved) or "none"}')
+    if entries:
+        restore(cid, {'gear': entries, 'unit': unit}, live, dry)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('game')
     ap.add_argument('units', nargs='*')
     ap.add_argument('--replace', action='store_true', help="as the game's last build has it: drop what it didn't have")
     ap.add_argument('--repivot', action='store_true', help='move the origin of the parts already there to where each is held (nothing moves)')
-    ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--dry-run', action='store_true', help='print the batch of commands it would apply; change nothing')
+    ap.add_argument('--ignore-server', action='store_true',
+                    help='offline, write even though a Rigsmith server answers (one serving another workspace)')
     a = ap.parse_args()
+    global IGNORE_SERVER
+    IGNORE_SERVER = a.ignore_server
     game = Game(os.path.abspath(os.path.expanduser(a.game)))
     lib = Library()
     units = a.units or list(game.spec)
     unknown = [u for u in units if u not in game.spec]
     if unknown:
         raise SystemExit(f'not in the spec: {unknown}')
-    live = not a.dry_run and api_up()
-    stamp = time.strftime('%Y%m%dT%H%M%S')
-    backup = os.path.join(WORKSPACE, 'backups', 'game-import', stamp)
+    live = api_up()
     forager = {piece for piece, _ in game.look_wear.get('forager', [])}
-    print(f'game {game.repo}; {"through the app at " + API if live else "dry run" if a.dry_run else "the files (the app is not running)"}')
+    print(f'game {game.repo}; {"through the app at " + API if live else "no app running (" + API + "): offline"}{"; dry run" if a.dry_run else ""}')
     if a.repivot:
         for unit in units:
-            cid = game.spec[unit]['character']
-            c = character(cid)
-            _, _, joints = rest_frame(cid)
-            garments, moved = [], []
-            for g in c.get('garments', []):
-                if not (g.get('from') or '').startswith('emberhold:') or g.get('mode') != 'rigid' or not g.get('file'):
-                    garments.append(g)
-                    continue
-                path = os.path.join(CHARACTERS, cid, g['file'])
-                data = open(path, 'rb').read()
-                pts = np.concatenate([q[0] for _, _, prims, _, _ in Glb(path).parts() for q in prims])
-                local, position = repivot(g, pts, joints)
-                if np.abs(local).max() < 1e-6:
-                    garments.append(g)
-                    continue
-                data = shifted_glb(data, local)
-                g = dict(g, position=position, file=garment_file(g['id'], data))
-                moved.append(g['name'])
-                if not a.dry_run:
-                    with open(os.path.join(CHARACTERS, cid, g['file']), 'wb') as f:
-                        f.write(data)
-                garments.append(g)
-            print(f'{unit} -> {cid}: pivots moved to the hold: {", ".join(moved) or "none"}')
-            if a.dry_run or not moved:
-                continue
-            os.makedirs(backup, exist_ok=True)
-            shutil.copy2(os.path.join(CHARACTERS, cid, 'character.json'), os.path.join(backup, cid + '.json'))
-            if live:
-                api('PATCH', f'/api/characters/{cid}', {'garments': garments})
-            else:
-                c['garments'] = garments
-                c['updatedAt'] = int(time.time() * 1000)
-                tmp = os.path.join(CHARACTERS, cid, f'character.json.{secrets.token_hex(4)}.tmp')
-                with open(tmp, 'w') as f:
-                    json.dump(c, f, indent=1)
-                os.replace(tmp, os.path.join(CHARACTERS, cid, 'character.json'))
+            repivot_unit(game, unit, live, a.dry_run)
         return
     for unit in units:
         spec = game.spec[unit]
@@ -557,83 +661,73 @@ def main():
         if spec.get('companion'):
             todo.append((spec['companion']['character'], 'companion'))
         for cid, role in todo:
-            c = character(cid)
-            if role == 'unit':
+            c = character(cid, live)
+            names = None
+            if role == 'unit' and report.get('schema') == 2 and isinstance(report.get('slots'), list):
+                # (a schema 2 build keeps the slots as baked: sent as they are, the game's names picked from them)
+                record = report
+                names = list(spec['clips']) if isinstance(spec['clips'], list) else None
+                clips = [(s['name'], s['clip']['id']) for s in report['slots'] if names is None or s['name'] in names]
+                parts = unit_parts(game, unit, spec, c, report.get('gear', {})) if os.path.exists(game.model(unit)) else []
+            elif role == 'unit':
                 built = game_clips(lib, spec['clips'], report.get('clips', {}))
-                built_scripts = [{k: v for k, v in x.items() if k != 'did'} for x in report['scripts']] if 'scripts' in report else old_scripts(spec)
-                parts = unit_parts(game, unit, spec, cid, report.get('gear', {})) if os.path.exists(game.model(unit)) else []
+                scripts = [{k: v for k, v in x.items() if k != 'did'} for x in report['scripts']] if 'scripts' in report else old_scripts(spec)
+                record = v1_record(built, scripts)
+                clips = [(e['name'], e['clipId']) for e in built]
+                parts = unit_parts(game, unit, spec, c, report.get('gear', {})) if os.path.exists(game.model(unit)) else []
             else:
                 cspec = spec['companion'].get('clips', spec['clips'])
                 built = game_clips(lib, cspec, (report.get('companion') or {}).get('clips', {}), comp=True)
-                built_scripts, parts = [], []
-            have = c.get('animations', [])
-            if a.replace:
-                anims = built
-            else:
-                anims = have + [e for e in built if e['name'] not in {x['name'] for x in have}]
-            scripts = built_scripts if a.replace or not c.get('scripts') else c['scripts']
-            old = {g.get('from'): g for g in c.get('garments', []) if g.get('from')}
-            garments = [] if a.replace else [g for g in c.get('garments', []) if not (g.get('from') or '').startswith('emberhold:')]
-            made = []
+                record = v1_record(built, [])
+                clips = [(e['name'], e['clipId']) for e in built]
+                parts = []
+            print(f'{unit} -> {cid} ({c["name"]}): {len(clips)} clips [{", ".join(n + "=" + i for n, i in clips)}]')
+
+            # The parts: ones it lacks brought in (uploaded), ones it has rebuilt only with --replace.
+            by_from = {g.get('from'): g for g in c.get('gear', []) if g.get('from')}
+            joints = rest_frame(c)[2] if parts else None
+            entries, uploads, brought = [], [], set()
             for name, bone, prims, place in parts:
                 tag = f'emberhold:{unit}/{name}'
-                was = None if a.replace else old.get(tag)
-                if was is not None:    # (yours as it is: where it sits, its mesh, whether it shows)
-                    garments.append(was)
-                    continue
-                gid = old[tag]['id'] if tag in old else secrets.token_hex(4)
-                g = {'id': gid, 'name': name, 'file': f'garments/{gid}/model.glb', 'status': 'ready', 'mode': 'rigid',
-                     'policy': 'body', 'bone': bone, 'position': place['position'], 'rotation': place['rotation'],
-                     'scale': place['scale'], 'hideBody': False,
-                     'hidden': (name.startswith(SWAPPED) and name not in forager) if was is None else was.get('hidden', False), 'from': tag}
-                garments.append(g)
-                made.append((g, prims))
-            brought = {g['from'] for g, _ in made} | {g.get('from') for g in garments}
-            gone = [g for t, g in old.items() if t.startswith('emberhold:') and t not in brought]
-            if not a.replace:
-                garments += gone    # (not in the game's build any more: kept, yours to remove)
-                for g in gone:
-                    print(f'  {g["name"]}: not in the game\'s build; kept')
-            props = [] if a.replace else c.get('props', [])
-            shown = [g['name'] for g, _ in made if not g['hidden']]
-            print(f'{unit} -> {cid} ({c["name"]}): {len(anims)} clips [{", ".join(x["name"] + "=" + x["clipId"] for x in anims)}]; '
-                  f'{len(scripts)} scripts{" (kept)" if scripts is c.get("scripts") else ""}')
-            if made:
-                print(f'  {len(made)} parts: {", ".join(g["name"] + "@" + g["bone"] + ("" if g["scale"] == 1 else " x%g" % g["scale"]) for g, _ in made)}')
-                print(f'  shown: {", ".join(shown) or "none"}; {len(made) - len(shown)} hidden')
-            if c.get('props') and not props:
-                print(f'  catalog props dropped: {", ".join(p["name"] for p in c["props"])}')
-            if a.dry_run:
-                continue
-            os.makedirs(backup, exist_ok=True)
-            shutil.copy2(os.path.join(CHARACTERS, cid, 'character.json'), os.path.join(backup, cid + '.json'))
-            _, _, joints = rest_frame(cid)
-            for g, prims in made:
-                os.makedirs(os.path.join(CHARACTERS, cid, 'garments', g['id']), exist_ok=True)
-                tmp = os.path.join(CHARACTERS, cid, 'garments', g['id'], 'model.tmp.glb')
-                write_glb(tmp, g['name'], prims)
-                data = open(tmp, 'rb').read()
-                local, g['position'] = repivot(g, np.concatenate([q[0] for q in prims]), joints)    # (its pivot where it is held)
-                data = shifted_glb(data, local)
-                g['file'] = garment_file(g['id'], data)
-                with open(os.path.join(CHARACTERS, cid, g['file']), 'wb') as f:
-                    f.write(data)
-                os.remove(tmp)
-            patch = {'animations': anims, 'scripts': scripts, 'garments': garments, 'props': props}
-            if live:
-                api('PATCH', f'/api/characters/{cid}', patch)
-            else:
-                c.update(patch)
-                c['updatedAt'] = int(time.time() * 1000)
-                tmp = os.path.join(CHARACTERS, cid, f'character.json.{secrets.token_hex(4)}.tmp')
-                with open(tmp, 'w') as f:
-                    json.dump(c, f, indent=1)
-                os.replace(tmp, os.path.join(CHARACTERS, cid, 'character.json'))
+                brought.add(tag)
+                was = by_from.get(tag)
+                if was is not None and not a.replace:
+                    continue    # (yours as it is: where it sits, its mesh, whether it shows)
+                data, place = part_glb(name, bone, prims, place, joints)
+                entry = {'from': tag, 'name': name, 'bone': bone, 'place': place, 'hidden': name.startswith(SWAPPED) and name not in forager}
+                if was is not None:
+                    entry.update(id=was['id'], model=b64(data))
+                else:
+                    uploads.append((entry, data))
+                entries.append(entry)
+            if entries:
+                shown = [e['name'] for e in entries if not e['hidden']]
+                print(f'  {len(entries)} parts: {", ".join(e["name"] + "@" + e["bone"] + ("" if e["place"]["scale"] == 1 else " x%g" % e["place"]["scale"]) for e in entries)}')
+                print(f'  shown: {", ".join(shown) or "none"}; {len(entries) - len(shown)} hidden; {len(uploads)} new')
+            gone = [g for t, g in by_from.items() if t.startswith('emberhold:') and t not in brought and role == 'unit']
+            for g in gone:
+                print(f'  {g["name"]}: not in the game\'s build; {"removed" if a.replace else "kept"}')
             if a.replace:
-                for g in gone:
-                    shutil.rmtree(os.path.join(CHARACTERS, cid, 'garments', g['id']), ignore_errors=True)
-    if not a.dry_run:
-        print(f'backups: {backup}')
+                others = [g['name'] for g in c.get('gear', []) if not (g.get('from') or '').startswith('emberhold:')]
+                if others:
+                    print(f'  gear the build didn\'t bring removed: {", ".join(others)}')
+
+            if uploads and not a.dry_run:
+                if not live:
+                    raise SystemExit(f'{cid}: {len(uploads)} parts to bring in, which needs the app: start it (npm run dev; '
+                                     f'RIGSMITH_URL for another port) and run this again')
+                for entry, data in uploads:
+                    entry['id'] = upload(cid, entry['name'], entry['bone'], entry['from'], data)
+                for line in wait_imported(cid, [e['id'] for e, _ in uploads]):
+                    print(f'  import failed: {line}')
+            request = {'record': record, 'replace': a.replace, 'unit': unit}
+            if names is not None:
+                request['clips'] = names
+            if role == 'unit' and (entries or a.replace):
+                request['gear'] = entries
+            elif role == 'companion' and a.replace:
+                request['gear'] = []    # (the build brings no gear of its companion's)
+            restore(cid, request, live, a.dry_run)
 
 
 if __name__ == '__main__':

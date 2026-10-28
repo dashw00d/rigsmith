@@ -1,8 +1,22 @@
-// Library clip loading and per-character retarget caching.
+// Where clips come from, retargeted onto one character. The bake (src/engine/bake.ts) asks a ClipSource; in the browser
+// that is RetargetCache below (clips fetched), in the tools nodeClipSource (tools/lib/node3d.ts, files read). Both run
+// the same retarget().
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
+import type { ClipRef } from '../model/types.ts'
 import { captureRest, canonical, retarget, type RestSkeleton, type RetargetOptions } from './retarget.ts'
+
+/** Clips retargeted onto one character. A string ref is a url. */
+export interface ClipSource {
+  get (ref: ClipRef | string, o: { inPlace: boolean, mirror?: boolean, fps?: number }): Promise<THREE.AnimationClip>
+}
+
+/** A converted library clip's file. */
+export const clipUrl = (id: string): string => `/files/library/clips/${id}.glb`
+
+/** Where a clip loads from: its own url (a bundled clip, a creature's), else its converted library file. */
+export const refUrl = (ref: ClipRef | string): string => typeof ref === 'string' ? ref : ref.url ?? clipUrl(ref.id)
 
 export interface SourceClip {
   root: THREE.Object3D
@@ -58,16 +72,19 @@ export function forgetClip (file: string): void {
 }
 
 /** Retargeted clips, cached per target skeleton and options. */
-export class RetargetCache {
+export class RetargetCache implements ClipSource {
   private readonly cache = new Map<string, Promise<THREE.AnimationClip>>()
-  constructor (readonly target: RestSkeleton) {}
+  readonly target: RestSkeleton
+
+  constructor (target: RestSkeleton) { this.target = target }
 
   /** Drop a clip's retargets (its file written again). */
   forget (url: string): void {
     for (const key of [...this.cache.keys()]) if (key.split('|')[0].split('#')[0] === url) this.cache.delete(key)
   }
 
-  async get (url: string, options: RetargetOptions = {}): Promise<THREE.AnimationClip> {
+  async get (ref: ClipRef | string, options: RetargetOptions = {}): Promise<THREE.AnimationClip> {
+    const url = refUrl(ref)
     const key = `${url}|${options.inPlace === true ? 1 : 0}|${options.mirror === true ? 1 : 0}|${options.samples ?? options.fps ?? 30}`
     let pending = this.cache.get(key)
     if (pending === undefined) {

@@ -1,17 +1,9 @@
 // Which of rig B's bones drive the vertices that rig A gives (mostly) to one bone.
 // node tools/dev/weights_at.ts <A.glb> <B.glb> <Bone> [<Bone>...]
-import { readFileSync } from 'node:fs'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { loadGlbFile } from '../../src/engine/headless.ts'
 import { canonical } from '../../src/engine/retarget.ts'
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images') }
-console.error = () => {}
-async function load (file: string): Promise<THREE.Group> {
-  const data = readFileSync(file)
-  return await new Promise((resolve, reject) => { new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '', r => { resolve((r as { scene: THREE.Group }).scene) }, reject) })
-}
+const load = async (file: string): Promise<THREE.Group> => (await loadGlbFile(file)).scene
 function verts (root: THREE.Group): Array<{ key: string, w: Map<string, number> }> {
   root.updateMatrixWorld(true)
   const out: Array<{ key: string, w: Map<string, number> }> = []

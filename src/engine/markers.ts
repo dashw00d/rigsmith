@@ -1,12 +1,16 @@
-// The Rig step's markers: a few points placed on one flat view of the model (static/templates/markers.json), from
+// The Skeleton step's markers: a few points placed on one flat view of the model (static/templates/markers.json), from
 // which every joint follows. A marker pins its joint (or a point of its own tied to joints, the groin); every other
 // joint moves with the pinned ones as rigidly as it can, keeping the skeleton's own shape between them
 // (as-rigid-as-possible: each joint's neighbourhood turns as one). Markers left where they were seeded
 // give back the skeleton they were seeded from, exactly. All positions in the model's own space (glTF: Y up, +Z
-// forward, its left +X).
+// forward, its left +X). What the board solves goes into the skeleton's overrides (skeleton.place), never its
+// detected joints.
 import * as THREE from 'three'
+import MARKERS from '../../static/templates/markers.json' with { type: 'json' }
+import type { MarkerBoardState, Vec3 } from '../model/types.ts'
+import { ANATOMY, LONG_FINGERS } from './mixamo.ts'
 
-export type V3 = [number, number, number]
+export type V3 = Vec3
 export type Side = 'left' | 'right'
 
 export interface MarkerDef {
@@ -34,18 +38,20 @@ export interface MarkerSet { view: 'front' | 'side', markers: MarkerDef[] }
 
 /** A character's markers: the skeleton they were seeded from (`base`: its joints, and each own point's seed under
  * `marker:<id>`) and where they are now, by key (a pair on a front view `<id>_l` / `<id>_r`, else `<id>`). */
-export interface Markers { set: string, base: Record<string, V3>, positions: Record<string, V3> }
+export type Markers = MarkerBoardState
 
-let sets: Record<string, MarkerSet> | null = null
-export async function markerSets (): Promise<Record<string, MarkerSet>> {
-  if (sets === null) {
-    const json = await fetch('/templates/markers.json').then(async r => await r.json()) as Record<string, MarkerSet | string>
-    sets = Object.fromEntries(Object.entries(json).filter(([k]) => !k.startsWith('_'))) as Record<string, MarkerSet>
-  }
-  return sets
+const SETS: Record<string, MarkerSet> = Object.fromEntries(
+  Object.entries(MARKERS as unknown as Record<string, MarkerSet | string>).filter((e): e is [string, MarkerSet] => !e[0].startsWith('_')),
+)
+
+/** Every body's marker set, by template id. */
+export function markerSets (): Readonly<Record<string, MarkerSet>> {
+  return SETS
 }
-export function useMarkerSets (json: Record<string, unknown>): void {
-  sets = Object.fromEntries(Object.entries(json).filter(([k]) => !k.startsWith('_'))) as Record<string, MarkerSet>
+
+/** A template's marker set, or null when it has none (its joints are dragged in 3D instead). */
+export function markerSet (template: string): MarkerSet | null {
+  return SETS[template] ?? null
 }
 
 export function jointOf (def: MarkerDef, side: Side | null): string | null {
@@ -88,24 +94,18 @@ export function seed (setName: string, set: MarkerSet, joints: Record<string, V3
  * A character's saved markers fitted to its skeleton as it is now (more finger bones than when they were placed, or
  * fewer): a joint it has gained joins their rest where its nearest kept ancestor's rest puts it (moved with that
  * ancestor), and its marker starts where the joint is; a joint it has lost leaves, with its marker. Markers of another
- * set, or none, are seeded afresh.
+ * set, or none, are seeded afresh; so are markers on the same joints that no longer give the skeleton (a 3D edit, a
+ * reset or an undo since, or a board solved by an older version of the solve).
  */
 export function fitMarkers (setName: string, set: MarkerSet, saved: Markers | undefined, joints: Record<string, V3>, parents: Record<string, string | null>, seedOwn?: (def: MarkerDef) => V3 | null): Markers {
   if (saved === undefined || saved.set !== setName) return seed(setName, set, joints, seedOwn)
-  // A later 3D edit or reset is authoritative. Reopening the board must not solve
-  // the old markers over it. Keep the old base only while it still describes this rig.
+  // A later 3D edit or reset is authoritative: reopening the board must not solve the old markers over it. The old
+  // base is kept only while its markers still give this skeleton.
   const oldNames = Object.keys(saved.base).filter(k => !k.startsWith('marker:'))
   if (oldNames.length === Object.keys(joints).length && oldNames.every(k => joints[k] !== undefined)) {
     const center = joints.Hips?.[0] ?? joints.hips?.[0] ?? 0
     const previous = jointsFrom(set, saved, parents, center)
-    if (oldNames.some(k => previous[k].some((v, i) => Math.abs(v - joints[k][i]) > 1e-4))) {
-      // Saved boards from before whole-finger fitting still describe their old
-      // skeleton. Upgrade that solve; only an unrelated fine edit needs rebasing.
-      const legacy = solve(saved.base, edgesOf(set, parents, saved.base), pinsOf(set, saved, center))
-      if (oldNames.some(k => legacy[k].some((v, i) => Math.abs(v - joints[k][i]) > 1e-4))) {
-        return seed(setName, set, joints, seedOwn)
-      }
-    }
+    if (oldNames.some(k => previous[k].some((v, i) => Math.abs(v - joints[k][i]) > 1e-4))) return seed(setName, set, joints, seedOwn)
   }
   const base: Record<string, V3> = {}
   for (const [k, p] of Object.entries(saved.base)) if (k.startsWith('marker:') || joints[k] !== undefined) base[k] = [...p]
@@ -339,12 +339,9 @@ export function jointsFrom (set: MarkerSet, m: Markers, parents: Record<string, 
   return Object.fromEntries(Object.entries(solved).filter(([k]) => !k.startsWith('marker:')))
 }
 
-// Where a finger's joints sit along the hand (blender/autorig/fingers.py ANATOMY, from Mixamo's proportions): the
-// knuckle's reach along the hand as a fraction of the tip's, then the two middle joints as fractions of knuckle -> tip.
-const ANATOMY: Record<string, [number, number, number]> = {
-  Index: [0.567, 0.357, 0.690], Middle: [0.560, 0.364, 0.705], Ring: [0.568, 0.366, 0.707], Pinky: [0.593, 0.371, 0.686],
-}
-const LONG = ['Index', 'Middle', 'Ring', 'Pinky']
+// Where a finger's joints sit along the hand: ANATOMY (static/templates/human-skeleton.json), the table the finger
+// detection (blender/autorig/fingers.py) lays them by too.
+const LONG = LONG_FINGERS
 
 /** Each full hand whose wrist or long finger tips moved, laid again (into `solved`); returns the tip joints it laid. */
 function layHands (set: MarkerSet, m: Markers, solved: Record<string, V3>): Set<string> {

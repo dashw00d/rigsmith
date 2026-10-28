@@ -1,6 +1,8 @@
 <script lang="ts">
+  // Model files dropped anywhere on the page are imported as characters (one after another); the first is shown as soon
+  // as it is in. A step's own drop target that takes the files (calls preventDefault) keeps them.
   import { Upload } from '@lucide/svelte'
-  import { app } from '../state/app.svelte.ts'
+  import { importFiles } from './characters.ts'
 
   let depth = $state(0)
   const active = $derived(depth > 0)
@@ -16,9 +18,11 @@
   ondragover={(e) => { if (hasFiles(e)) e.preventDefault() }}
   ondrop={(e) => {
     if (!hasFiles(e)) return
-    e.preventDefault()
     depth = 0
-    void app.importFiles([...(e.dataTransfer?.files ?? [])])
+    // (a drop target of a step's own took them: gear uploads)
+    if (e.defaultPrevented) return
+    e.preventDefault()
+    void importFiles([...(e.dataTransfer?.files ?? [])])
   }}
 />
 
@@ -27,7 +31,7 @@
     <div class="card">
       <div class="icon"><Upload size={26} /></div>
       <strong>Drop to import</strong>
-      <span class="muted">Meshes, rigged characters, or a stack of Tripo ZIPs</span>
+      <span class="muted">FBX, GLB, OBJ, DAE, or Tripo ZIPs: meshes, rigged characters, animations</span>
     </div>
   </div>
 {/if}
@@ -53,6 +57,7 @@
     border: 2px dashed var(--accent);
     border-radius: 20px;
     background: var(--accent-soft);
+    text-align: center;
   }
   .icon { color: var(--accent-strong); margin-bottom: 6px; }
   strong { font-size: 17px; }

@@ -1,14 +1,20 @@
 // The animation editor's clip (src/state/clipedit.svelte.ts): a base clip as it plays on the character, the keys made
 // on it (turns on bones, and the hips' moves, at moments of the clip: src/engine/keys.ts, tweened smoothly), and the
-// floor: a foot the edit put under the ground lifted back (only what the edit sank: the base plays as it was). Saving
+// floor: a foot the edit put under the ground lifted back (only what the edit sank: the base plays as it was). Gear
+// (bone-attached pieces, by gear id) can lead: the hands on its handles follow its path and the body the hands. Saving
 // takes the edited clip back onto the base's own skeleton (the retarget undone: Qsource = Qcharacter * K^-1), for the
-// library.
+// library, and puts it in the slot it was made on with the slot's adjustments sorted by kind (saveToSlotCommands).
+// The body follows the hands with the natural-pose solver (src/engine/posespace.ts createBodySolver) where there is a
+// pose model (a person); without one (a creature, or the model not loaded) the hands reach their handles by IK alone.
 import * as THREE from 'three'
-import type { ClipKey } from '../../server/workspace.ts'
+import type { Command } from '../model/command-types.ts'
+import type { Adjustment, Character, ClipKey, ClipRef, Handle, HandPoseRef, Quat, Side, Slot, Vec3, Window } from '../model/types.ts'
 import { applyBoneKeys, frameTimes, KEY_FPS, sampleKeys } from './keys.ts'
-import { keepOffFloor, reach, setWorldQuaternion, type Leg } from './ik.ts'
-import { bodyBones, solveBody, type BodyState, type HandGoal } from './bodysolve.ts'
-import { FOLLOW, type NaturalGoal, type Obstacle } from './posespace.ts'
+import { keepOffFloor, reach, setWorldQuaternion, type Leg, type NameOf } from './ik.ts'
+import { bodyBones, FOLLOW, knuckleGrip, type BodySolveOptions, type BodySolver, type BodyState, type HandGoal, type NaturalGoal, type SeedPose } from './posespace.ts'
+import { shaftObstacles, type Obstacle } from './bodycollide.ts'
+import { principalAxis } from './geom.ts'
+import { handleRef } from './hands.ts'
 import type { JointLimits } from './limits.ts'
 import { pelvisName, retargetOffsets, type RestSkeleton } from './retarget.ts'
 import type { PoseRig } from './PoseEditor.ts'
@@ -36,9 +42,24 @@ export function keyFor (base: THREE.AnimationClip, bone: THREE.Bone, u: number, 
 
 export { frameTimes }
 
-function bonesOf (root: THREE.Object3D): Map<string, THREE.Bone> {
+/** The bones under `root`, by name. */
+export function bonesOf (root: THREE.Object3D): Map<string, THREE.Bone> {
   const out = new Map<string, THREE.Bone>()
   root.traverse(o => { if ((o as THREE.Bone).isBone === true) out.set(o.name, o as THREE.Bone) })
+  return out
+}
+
+/** Every bone's local turn and place in `clip` at time `t` on `posable` (by name). Leaves the bones as they were. */
+export function bonePoseAt (clip: THREE.AnimationClip, posable: THREE.Object3D, t: number): Map<string, { q: THREE.Quaternion, p: THREE.Vector3 }> {
+  const bones = bonesOf(posable)
+  const saved = [...bones.values()].map(b => [b, b.position.clone(), b.quaternion.clone()] as const)
+  const mixer = new THREE.AnimationMixer(posable)
+  const a = mixer.clipAction(clip); a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; a.play()
+  mixer.setTime(Math.min(Math.max(t, 0), clip.duration))
+  const out = new Map([...bones].map(([n, b]) => [n, { q: b.quaternion.clone(), p: b.position.clone() }]))
+  mixer.stopAllAction(); mixer.uncacheRoot(posable)
+  for (const [b, p, q] of saved) { b.position.copy(p); b.quaternion.copy(q) }
+  posable.updateMatrixWorld(true)
   return out
 }
 
@@ -54,66 +75,63 @@ function sunk (legs: Leg[], soles: number[][], floor: number): number[] {
   return legs.map((l, i) => Math.max(0, ...[l.end, l.ball, l.tip].map((b, k) => (b === null || !Number.isFinite(soles[i][k]) ? 0 : floor + soles[i][k] - b.getWorldPosition(v).y))))
 }
 
-/** A grip on a prop (a rigid garment): where a hand's wrist goes and how the hand is turned, in the prop's own frame
- * (its placed node's). Kept on the garment (server/workspace.ts GarmentSocket): every clip can use it. */
-export interface Socket {
-  id: string
-  name: string
-  position: [number, number, number]
-  rotation: [number, number, number, number]
-  /** Put where it is by hand (the hand's gizmo, or dragged on it): the hand holds it exactly, no give. */
-  placed?: boolean
-}
+/** A handle a hand holds a piece of gear by, placed: where the wrist goes and how the hand is turned, in the gear's
+ * placed frame (its `_place` node's). A grip handle, or the carry handle: where the editor placed it, else where the
+ * gear's placement puts the hand (carrierGrip). `exact`: the hand is held there exactly, no give or slide. */
+export type PlacedHandle = Pick<Handle, 'id' | 'name' | 'exact'> & { place: NonNullable<Handle['place']> }
 
-/** A hand on a socket through the clip (the edit's). */
-export interface Attachment { hand: 'Left' | 'Right', prop: string, socket: string }
+/** A hand on a handle through the clip (the edit's). */
+export interface Attachment { hand: Side, gear: string, handle: string }
 
-/** The carrying hand's grip from the prop's fixed Outfit placement and the hand's rest frame. */
-export function carrierGrip (prop: string, hand: 'Left' | 'Right', placement: THREE.Matrix4, handRest: THREE.Matrix4): Socket {
+/** Where the carrying hand holds a piece whose carry handle isn't placed: from the gear's placement on its bone and the
+ * hand's rest frame (the hand holds it where the placement puts it), in the gear's placed frame. */
+export function carrierGrip (placement: THREE.Matrix4, handRest: THREE.Matrix4): NonNullable<Handle['place']> {
   const local = placement.clone().invert().multiply(handRest)
   const at = new THREE.Vector3(); const turn = new THREE.Quaternion()
   local.decompose(at, turn, new THREE.Vector3())
-  return { id: `carrier:${prop}`, name: `${hand} hand (carries it)`, position: at.toArray(), rotation: turn.toArray() }
+  return { position: at.toArray(), rotation: turn.toArray() }
 }
 
-/** A prop's path through the clip: locked, it leads (the hands on it follow it, the body follows the hands), its keys
- * moves and turns from where it rode in the clip (in the world, about its own origin). Not locked, its keys adjust its
- * socket: moves and turns in its own placed frame from where its bone holds it (whatever holds it stays). */
-export interface PropPath { locked: boolean, keys: ClipKey[] }
+/** A gear piece's path through the clip: locked, it leads (the hands on it follow it, the body follows the hands), its
+ * keys moves and turns from where it rode in the clip (in the world, about its own origin). Not locked, its keys move it
+ * in the hand: moves and turns in its own placed frame from where its bone holds it (whatever holds it stays). */
+export interface GearPath { locked: boolean, keys: ClipKey[] }
 
-/** What the props do in an edit: their paths, the hands on them, their sockets and fingers. */
-export interface PropRig {
-  /** By prop: its node in the posed copy is found by this name (src/state/tune.svelte.ts propNode). */
-  node: (prop: string) => string
-  paths: Record<string, PropPath>
+/** What the gear does in an edit (everything by gear id): its paths, the hands on its handles, the handles, fingers. */
+export interface GearRig {
+  /** By gear id: its node in the posed copy is found by this name (geom.ts gearNode). */
+  node: (gear: string) => string
+  paths: Record<string, GearPath>
   attachments: Attachment[]
-  sockets: Record<string, Socket[]>
-  /** The bone each prop rides. */
+  /** By gear id: its placed handles (an attachment names one of these). */
+  handles: Record<string, PlacedHandle[]>
+  /** The bone each piece rides. */
   carriers: Record<string, string>
-  fingers: Partial<Record<'Left' | 'Right', Record<string, [number, number, number, number]>>>
-  /** By leading prop: its shaft (the end by the hand carrying it and the far end, in its node's frame) and its radius: the
-   * body is kept clear of it, but where the hands hold it (propObstacles). */
-  shafts?: Record<string, { from: [number, number, number], to: [number, number, number], radius: number, /** how near two hands' holds may come along it (metres) */ gap?: number, /** the most a hand slides on it either way (metres) */ most?: number }>
-  /** By prop: its node's place on its bone as the outfit has it (local position, turn). A leading prop's node is keyed
+  fingers: Partial<Record<Side, Record<string, Quat>>>
+  /** By leading piece: its shaft (the end by the hand carrying it and the far end, in its node's frame) and its radius:
+   * the body is kept clear of it, but where the hands hold it (gearObstacles). */
+  shafts?: Record<string, { from: Vec3, to: Vec3, radius: number, /** how near two hands' holds may come along it (metres) */ gap?: number, /** the most a hand slides on it either way (metres) */ most?: number }>
+  /** By gear id: its node's place on its bone as Gear places it (local position, turn). A leading piece's node is keyed
    * in the edit to where its path puts it, whatever hand holds it how; a copy posed from an edit is put back to this first. */
-  rest?: Record<string, { position: [number, number, number], quaternion: [number, number, number, number] }>
-  /** By hand: where it holds the shaft it is on (Grip; the carrying hand has none: its turn is held exactly). The solver keeps this point on the shaft while the hand's turn gives. */
-  grips?: Partial<Record<'Left' | 'Right', Grip>>
-  /** The prop drags let go (RootHold): the body's root held near where it was seen, on the frames each one moved the prop. */
+  rest?: Record<string, { position: Vec3, quaternion: Quat }>
+  /** By hand: where it holds the shaft it is on (Grip; the carrying hand has none: its turn is held exactly). The solver
+   * keeps this point on the shaft while the hand's turn gives. */
+  grips?: Partial<Record<Side, Grip>>
+  /** The gear drags let go (RootHold): the body's root held near where it was seen, on the frames each one moved it. */
   holds?: RootHold[]
 }
 
 /**
- * A prop drag let go at `u` (a key on `prop`'s path): on each frame the drag moved the prop (by frame index, frameTimes),
- * how much of the drag that frame carries (`w`, 0 to 1: the prop's move there over its move at the key), and the solve's
+ * A gear drag let go at `u` (a key on `gear`'s path): on each frame the drag moved it (by frame index, frameTimes), how
+ * much of the drag that frame carries (`w`, 0 to 1: the piece's move there over its move at the key), and the solve's
  * correction to the body's root there before the drag (world: the hips' move, the chest's turn, from the keyed pose). The
- * build holds the root to that correction softly, in proportion, so moving the prop away extends the arms instead of
+ * build holds the root to that correction softly, in proportion, so moving the piece away extends the arms instead of
  * bringing the body in; local in time, as the drag is, and never keyed.
  */
 export interface RootHold {
-  prop: string
+  gear: string
   u: number
-  frames: Record<number, { w: number, hips: [number, number, number], chest: [number, number, number, number] }>
+  frames: Record<number, { w: number, hips: Vec3, chest: Quat }>
 }
 
 /** A root hold: its weight at full (a soft goal's: as a keyed bone's in Naturalize), the chest bone it holds the turn of,
@@ -121,8 +139,8 @@ export interface RootHold {
 export const ROOT_HOLD = { weight: 4, chest: 'Spine2', min: 0.05 }
 
 /** The soft goals that hold the body's root on frame `i` (posed in its keyed pose): the strongest hold there, if any, its
- * prop's path still keyed at its drag. */
-export function rootGoals (holds: RootHold[] | undefined, paths: Record<string, PropPath>, i: number, bones: Map<string, THREE.Bone>, hips: string): NaturalGoal[] {
+ * piece's path still keyed at its drag. */
+export function rootGoals (holds: RootHold[] | undefined, paths: Record<string, GearPath>, i: number, bones: Map<string, THREE.Bone>, hips: string): NaturalGoal[] {
   const best = holdAt(holds, paths, i)
   const hb = bones.get(hips); const chest = bones.get(ROOT_HOLD.chest)
   if (best === null || hb === undefined || chest === undefined) return []
@@ -133,12 +151,12 @@ export function rootGoals (holds: RootHold[] | undefined, paths: Record<string, 
   ]
 }
 
-/** The strongest root hold on frame `i` whose prop's path is still keyed at its drag, or null. */
-export function holdAt (holds: RootHold[] | undefined, paths: Record<string, PropPath>, i: number): RootHold['frames'][number] | null {
+/** The strongest root hold on frame `i` whose piece's path is still keyed at its drag, or null. */
+export function holdAt (holds: RootHold[] | undefined, paths: Record<string, GearPath>, i: number): RootHold['frames'][number] | null {
   let best: RootHold['frames'][number] | null = null
   for (const h of holds ?? []) {
     const f = h.frames[i]
-    if (f === undefined || f.w < ROOT_HOLD.min || !(paths[h.prop]?.locked === true && paths[h.prop].keys.some(k => Math.abs(k.u - h.u) < 1e-4))) continue
+    if (f === undefined || f.w < ROOT_HOLD.min || !(paths[h.gear]?.locked === true && paths[h.gear].keys.some(k => Math.abs(k.u - h.u) < 1e-4))) continue
     if (best === null || f.w > best.w) best = f
   }
   return best
@@ -195,50 +213,43 @@ const SHAFT_HEAD = 0.15
 export const GRIP_CLEAR = 0.07
 
 /**
- * What the body must stay clear of on a frame: each leading prop's shaft (where `placeOf` puts the prop), cut where each
+ * What the body must stay clear of on a frame: each leading piece's shaft (where `placeOf` puts it), cut where each
  * hand holds it (`margin` metres either side of its fist), the hands holding it let through.
  */
-export function propObstacles (props: PropRig, placeOf: (prop: string) => THREE.Matrix4 | null, margin: number): Obstacle[] {
+export function gearObstacles (rig: GearRig, placeOf: (gear: string) => THREE.Matrix4 | null, margin: number): Obstacle[] {
   const out: Obstacle[] = []
-  for (const [prop, path] of Object.entries(props.paths)) {
-    const shaft = props.shafts?.[prop]
+  for (const [gear, path] of Object.entries(rig.paths)) {
+    const shaft = rig.shafts?.[gear]
     if (!path.locked || shaft === undefined) continue
-    const place = placeOf(prop)
+    const place = placeOf(gear)
     if (place === null) continue
     const from = new THREE.Vector3(...shaft.from).applyMatrix4(place); const to = new THREE.Vector3(...shaft.to).applyMatrix4(place)
-    const dir = to.clone().sub(from); const length = dir.length()
-    if (length < 1e-6) continue
-    dir.divideScalar(length)
-    const holding = props.attachments.filter(a => a.prop === prop)
-    const hands = [...new Set([...holding.map(a => `${a.hand}Hand`), props.carriers[prop]].filter((h): h is string => h !== undefined && /^(Left|Right)Hand$/.test(h)))]
-    // (where each hand holds it, along it: the wrist's place on the shaft's line)
-    const cuts = holding.map(a => props.sockets[prop]?.find(x => x.id === a.socket)).filter((x): x is Socket => x !== undefined)
-      .map(sock => handOn(place, sock).at.sub(from).dot(dir)).map(t => [t - margin, t + margin] as [number, number]).sort((a, b) => a[0] - b[0])
-    let at = 0
-    for (const [a, b] of [...cuts, [length, length] as [number, number]]) {
-      if (a - at > margin * 0.25) out.push({ from: from.clone().addScaledVector(dir, at), to: from.clone().addScaledVector(dir, Math.min(a, length)), radius: shaft.radius, ignore: hands })
-      at = Math.max(at, b)
-      if (at >= length) break
-    }
+    const dir = to.clone().sub(from).normalize()
+    const holding = rig.attachments.filter(a => a.gear === gear)
+    const hands = [...new Set([...holding.map(a => `${a.hand}Hand`), rig.carriers[gear]].filter((h): h is string => h !== undefined && /^(Left|Right)Hand$/.test(h)))]
+    // (where each hand holds it, along it: the wrist's place on the shaft's line; the collider cuts the shaft there)
+    const holds = holding.map(a => rig.handles[gear]?.find(x => x.id === a.handle)).filter((x): x is PlacedHandle => x !== undefined)
+      .map(h => handOn(place, h).at.sub(from).dot(dir))
+    out.push(...shaftObstacles(from, to, shaft.radius, holds, margin, hands))
   }
   return out
 }
 
-/** A matrix from a socket (its wrist place and turn). */
-export function socketMatrix (s: Socket): THREE.Matrix4 {
-  return new THREE.Matrix4().compose(new THREE.Vector3(...s.position), new THREE.Quaternion(...s.rotation), new THREE.Vector3(1, 1, 1))
+/** A matrix from a handle's place (its wrist place and turn). */
+export function handleMatrix (h: Pick<PlacedHandle, 'place'>): THREE.Matrix4 {
+  return new THREE.Matrix4().compose(new THREE.Vector3(...h.place.position), new THREE.Quaternion(...h.place.rotation), new THREE.Vector3(1, 1, 1))
 }
 
-/** Where a hand on `socket` of a prop placed at `prop` (world) goes: its wrist and turn. */
-export function handOn (prop: THREE.Matrix4, socket: Socket): { at: THREE.Vector3, turn: THREE.Quaternion } {
-  const m = prop.clone().multiply(socketMatrix(socket))
+/** Where a hand on `handle` of a piece placed at `gear` (world) goes: its wrist and turn. */
+export function handOn (gear: THREE.Matrix4, handle: Pick<PlacedHandle, 'place'>): { at: THREE.Vector3, turn: THREE.Quaternion } {
+  const m = gear.clone().multiply(handleMatrix(handle))
   const at = new THREE.Vector3(); const turn = new THREE.Quaternion(); const scale = new THREE.Vector3()
   m.decompose(at, turn, scale)
   return { at, turn }
 }
 
-/** Measure the actual wrists against their sockets after baking, including movement of the carrying hand/prop. */
-export function socketMisses (clip: THREE.AnimationClip, root: THREE.Object3D, props: PropRig): number[] {
+/** Measure the actual wrists against their handles after baking, including movement of the carrying hand and gear. */
+export function handleMisses (clip: THREE.AnimationClip, root: THREE.Object3D, rig: GearRig): number[] {
   const bones = bonesOf(root)
   const mixer = new THREE.AnimationMixer(root)
   const action = mixer.clipAction(clip)
@@ -247,11 +258,11 @@ export function socketMisses (clip: THREE.AnimationClip, root: THREE.Object3D, p
   for (const t of frameTimes(clip.duration)) {
     mixer.setTime(t); root.updateMatrixWorld(true)
     let miss = 0
-    for (const a of props.attachments) {
-      const hand = bones.get(`${a.hand}Hand`); const node = root.getObjectByName(props.node(a.prop))
-      const socket = props.sockets[a.prop]?.find(s => s.id === a.socket)
-      if (hand === undefined || node === undefined || socket === undefined) continue
-      miss = Math.max(miss, hand.getWorldPosition(new THREE.Vector3()).distanceTo(handOn(node.matrixWorld, socket).at))
+    for (const a of rig.attachments) {
+      const hand = bones.get(`${a.hand}Hand`); const node = root.getObjectByName(rig.node(a.gear))
+      const handle = rig.handles[a.gear]?.find(s => s.id === a.handle)
+      if (hand === undefined || node === undefined || handle === undefined) continue
+      miss = Math.max(miss, hand.getWorldPosition(new THREE.Vector3()).distanceTo(handOn(node.matrixWorld, handle).at))
     }
     out.push(miss)
   }
@@ -260,8 +271,8 @@ export function socketMisses (clip: THREE.AnimationClip, root: THREE.Object3D, p
   return out
 }
 
-/** A prop's world place on its path at phase `u`: where it rode (`base`), then its keys' move and turn. */
-export function onPath (base: THREE.Matrix4, path: PropPath, u: number, loop: boolean): THREE.Matrix4 {
+/** A piece's world place on its path at phase `u`: where it rode (`base`), then its keys' move and turn. */
+export function onPath (base: THREE.Matrix4, path: GearPath, u: number, loop: boolean): THREE.Matrix4 {
   if (path.keys.length === 0) return base.clone()
   const { q, p } = sampleKeys(path.keys, u, loop)
   const at = new THREE.Vector3(); const turn = new THREE.Quaternion(); const scale = new THREE.Vector3()
@@ -274,27 +285,10 @@ export function onPath (base: THREE.Matrix4, path: PropPath, u: number, loop: bo
  * the knuckles from the little finger's to the index's, leaning 25 degrees towards the heel of the hand: out of the
  * thumb's side), and the fist's middle (by the knuckles, a little into the palm). Null for a hand without fingers.
  */
-export function handGrip (rest: RestSkeleton, hand: 'Left' | 'Right'): { axis: THREE.Vector3, fist: THREE.Vector3 } | null {
-  const at = (n: string): THREE.Vector3 | null => rest.bones.get(`${hand}${n}`)?.worldPosition.clone() ?? null
+export function handGrip (rest: RestSkeleton, hand: Side): { axis: THREE.Vector3, fist: THREE.Vector3 } | null {
   const wrist = rest.bones.get(`${hand}Hand`)
-  const index = at('HandIndex1'); const little = at('HandPinky1') ?? at('HandRing1') ?? at('HandMiddle1'); const middle = at('HandMiddle1') ?? index
-  if (wrist === undefined || index === null || little === null || middle === null || index.distanceTo(little) < 1e-6) return null
-  const h = wrist.worldPosition
-  const along = middle.clone().sub(h)
-  const length = along.length()
-  const f = along.normalize()
-  const k = index.clone().sub(little)
-  const width = k.length()
-  k.addScaledVector(f, -k.dot(f)).normalize()
-  // (the palm's side: where the thumb is, off the plane of the knuckles)
-  let n = new THREE.Vector3().crossVectors(f, k).normalize()
-  const thumb = at('HandThumb1')
-  if (thumb !== null && thumb.clone().sub(h).dot(n) < 0) n.negate()
-  const lean = THREE.MathUtils.degToRad(25)
-  const axis = k.clone().multiplyScalar(Math.cos(lean)).addScaledVector(f, -Math.sin(lean)).normalize()
-  const fist = index.clone().add(little).multiplyScalar(0.5).addScaledVector(f, 0.12 * length).addScaledVector(n, 0.35 * width)
-  const inv = wrist.worldQuaternion.clone().invert()
-  return { axis: axis.applyQuaternion(inv), fist: fist.sub(h).applyQuaternion(inv) }
+  if (wrist === undefined) return null
+  return knuckleGrip(n => rest.bones.get(n)?.worldPosition ?? null, hand, { position: wrist.worldPosition, turn: wrist.worldQuaternion })
 }
 
 /** A hand's grip: the line a shaft runs along (`axis`) and the point on it that the hand holds (`fist`), in the hand's own turn, from the wrist, in world units. */
@@ -318,7 +312,7 @@ function palmDepth (root: THREE.Object3D, at: THREE.Vector3, normal: THREE.Vecto
   const originals = meshes.map(m => m.material)
   const doubled = (m: THREE.Material): THREE.Material => { const c = m.clone(); c.side = THREE.DoubleSide; return c }
   const ray = new THREE.Raycaster(at, normal, 0, far)
-  let best: number | null = null
+  let best: number | null
   try {
     // (from inside the hand: the faces seen are the inside of its skin, whichever side the material draws)
     meshes.forEach((m, i) => { const o = originals[i]; m.material = Array.isArray(o) ? o.map(doubled) : doubled(o); m.computeBoundingSphere() })
@@ -339,9 +333,8 @@ function palmDepth (root: THREE.Object3D, at: THREE.Vector3, normal: THREE.Vecto
  * along `axis` through `fist` lies on the palm, the thumb's side toward where `axis` points. Null when the hand hasn't
  * the fingers.
  */
-export function fistGrip (root: THREE.Object3D, hand: 'Left' | 'Right', fingers: Record<string, [number, number, number, number]>, radius = 0): Grip | null {
-  const bones = new Map<string, THREE.Bone>()
-  root.traverse(o => { if ((o as THREE.Bone).isBone === true) bones.set(o.name, o as THREE.Bone) })
+export function fistGrip (root: THREE.Object3D, hand: Side, fingers: Record<string, Quat>, radius = 0): Grip | null {
+  const bones = bonesOf(root)
   const wrist = bones.get(`${hand}Hand`)
   if (wrist === undefined) return null
   // (the fingers closed, to read; put back after)
@@ -366,13 +359,7 @@ export function fistGrip (root: THREE.Object3D, hand: 'Left' | 'Right', fingers:
   const curl = centres.reduce((m, c) => m.add(c), new THREE.Vector3()).divideScalar(centres.length)
   // (the line through the curl centres: their main direction, little finger to index)
   let axis = centres[0].clone().sub(centres[centres.length - 1])
-  if (centres.length > 2) {
-    const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
-    for (const c of centres) { const d = c.clone().sub(curl).toArray(); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i][j] += d[i] * d[j] }
-    let v = axis.clone().normalize()
-    for (let it = 0; it < 30; it++) { const x = v.toArray(); v = new THREE.Vector3(C[0][0] * x[0] + C[0][1] * x[1] + C[0][2] * x[2], C[1][0] * x[0] + C[1][1] * x[1] + C[1][2] * x[2], C[2][0] * x[0] + C[2][1] * x[1] + C[2][2] * x[2]).normalize() }
-    axis = v
-  }
+  if (centres.length > 2) axis = principalAxis(centres, axis).axis
   if (axis.dot(index.clone().sub(little)) < 0) axis.negate()
   // (square to the palm: at right angles to the wrist's line to the middle finger's knuckle)
   const palm = middle.clone().normalize()
@@ -389,32 +376,32 @@ export function fistGrip (root: THREE.Object3D, hand: 'Left' | 'Right', fingers:
 }
 
 /** The arm a hand belongs to. */
-export function armOf (hand: 'Left' | 'Right'): { upper: string, lower: string, end: string } {
+export function armOf (hand: Side): { upper: string, lower: string, end: string } {
   return { upper: `${hand}Arm`, lower: `${hand}ForeArm`, end: `${hand}Hand` }
 }
 
-/** The hands' goals on a frame (the body as it stands): each attached hand on its socket of its prop, the prop where its
- * path has it (locked: `base` gives where it rode before the edit, by prop) or as it rides now; a prop's carrying hand
- * with no socket keeps it where it is. */
-export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>, props: PropRig, u: number, loop: boolean, base: Map<string, THREE.Matrix4> | null): HandGoal[] {
+/** The hands' goals on a frame (the body as it stands): each attached hand on its handle of its piece, the piece where
+ * its path has it (locked: `base` gives where it rode before the edit, by gear id) or as it rides now; a piece's
+ * carrying hand with no handle of its own keeps it where it is. */
+export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>, rig: GearRig, u: number, loop: boolean, base: Map<string, THREE.Matrix4> | null): HandGoal[] {
   const goals: HandGoal[] = []
   const used = new Set<string>()
-  for (const [prop, path] of Object.entries(props.paths)) {
+  for (const [gear, path] of Object.entries(rig.paths)) {
     if (!path.locked) continue
-    const node = root.getObjectByName(props.node(prop))
-    const was = base?.get(prop) ?? node?.matrixWorld
+    const node = root.getObjectByName(rig.node(gear))
+    const was = base?.get(gear) ?? node?.matrixWorld
     if (node === undefined || was === undefined) continue
     const place = onPath(was, path, u, loop)
     const first = goals.length
-    for (const a of props.attachments.filter(x => x.prop === prop)) {
-      const sock = props.sockets[prop]?.find(x => x.id === a.socket)
-      if (sock === undefined || used.has(a.hand)) continue
+    for (const a of rig.attachments.filter(x => x.gear === gear)) {
+      const h = rig.handles[gear]?.find(x => x.id === a.handle)
+      if (h === undefined || used.has(a.hand)) continue
       used.add(a.hand)
-      goals.push({ hand: a.hand, ...handOn(place, sock), fingers: props.fingers[a.hand], grip: props.grips?.[a.hand], exact: sock.placed === true })
+      goals.push({ hand: a.hand, ...handOn(place, h), fingers: rig.fingers[a.hand], grip: rig.grips?.[a.hand], exact: h.exact === true })
     }
     // (the hands on its shaft may slide along it at an extreme (and turn in their grips): from where each holds it, no
     // nearer another hand than the shaft's gap, off its ends)
-    const shaft = props.shafts?.[prop]
+    const shaft = rig.shafts?.[gear]
     const mine = goals.slice(first)
     if (shaft !== undefined && mine.length > 0) {
       const from = new THREE.Vector3(...shaft.from).applyMatrix4(place); const to = new THREE.Vector3(...shaft.to).applyMatrix4(place)
@@ -432,45 +419,130 @@ export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>,
       }
     }
   }
-  for (const a of props.attachments) {
-    if (used.has(a.hand) || props.paths[a.prop]?.locked === true) continue
-    const node = root.getObjectByName(props.node(a.prop))
-    const sock = props.sockets[a.prop]?.find(x => x.id === a.socket)
-    if (node === undefined || sock === undefined) continue
+  for (const a of rig.attachments) {
+    if (used.has(a.hand) || rig.paths[a.gear]?.locked === true) continue
+    const node = root.getObjectByName(rig.node(a.gear))
+    const h = rig.handles[a.gear]?.find(x => x.id === a.handle)
+    if (node === undefined || h === undefined) continue
     node.updateMatrixWorld(true)
     used.add(a.hand)
-    goals.push({ hand: a.hand, ...handOn(node.matrixWorld, sock), fingers: props.fingers[a.hand], grip: props.grips?.[a.hand], exact: sock.placed === true })
-    // (the hand carrying an unlocked prop keeps it where the clip has it)
-    const side = /^(Left|Right)Hand$/.exec(props.carriers[a.prop] ?? '')?.[1] as 'Left' | 'Right' | undefined
+    goals.push({ hand: a.hand, ...handOn(node.matrixWorld, h), fingers: rig.fingers[a.hand], grip: rig.grips?.[a.hand], exact: h.exact === true })
+    // (the hand carrying a piece that doesn't lead keeps it where the clip has it, its turn exactly: the piece rides it,
+    // so a turn there would carry the other hand's handle off the goal it was given)
+    const side = /^(Left|Right)Hand$/.exec(rig.carriers[a.gear] ?? '')?.[1] as Side | undefined
     const carrier = side === undefined ? undefined : bones.get(`${side}Hand`)
     if (side !== undefined && carrier !== undefined && !used.has(side)) {
       used.add(side)
-      goals.push({ hand: side, at: carrier.getWorldPosition(new THREE.Vector3()), turn: carrier.getWorldQuaternion(new THREE.Quaternion()) })
+      goals.push({ hand: side, at: carrier.getWorldPosition(new THREE.Vector3()), turn: carrier.getWorldQuaternion(new THREE.Quaternion()), carrier: true })
     }
   }
   return goals
 }
 
+/** The hands reach their goals by IK alone (no pose model: a creature, or the model not loaded; and a live drag whose
+ * solve is too slow): each arm reaches its goal's wrist, the hand takes its turn and closes its fingers. Returns the
+ * worst miss left. */
+export function reachGoals (bones: Map<string, THREE.Bone>, goals: readonly HandGoal[], o: { limits: JointLimits | null, nameOf: NameOf }): number {
+  let miss = 0
+  for (const g of goals) {
+    const arm = armOf(g.hand)
+    const upper = bones.get(arm.upper); const lower = bones.get(arm.lower); const end = bones.get(arm.end)
+    if (upper === undefined || lower === undefined || end === undefined) continue
+    miss = Math.max(miss, reach({ upper, lower, end }, g.at, { limits: o.limits ?? undefined, nameOf: o.nameOf, keepEnd: false }))
+    setWorldQuaternion(end, g.turn)
+    for (const [n, q] of Object.entries(g.fingers ?? {})) { const b = bones.get(n); if (b !== undefined) { b.quaternion.set(...q); b.updateMatrixWorld(true) } }
+  }
+  return miss
+}
+
+/** The frame at phase `u` of a clip of `frames` frames (frameTimes): its index. */
+export const frameAt = (u: number, frames: number): number => Math.round(u * (frames - 1))
+
+/** The frames a drag was let go on (by index, of `frames`): a gear drag's root hold, a key on a bone that moves it (the
+ * pins at a clip's ends don't). Their solve is not pulled toward the frame before, so what was seen when it was let go
+ * stays (frameSolve). */
+export function letGoFrames (keys: Record<string, ClipKey[]>, holds: readonly RootHold[] | undefined, frames: number): Set<number> {
+  const moves = (k: ClipKey): boolean => !(k.p === undefined && Math.abs(k.q[3]) > 1 - 1e-9)
+  return new Set([...(holds ?? []).map(h => frameAt(h.u, frames)), ...Object.values(keys).flat().filter(moves).map(k => frameAt(k.u, frames))])
+}
+
+/** One frame of an edit, to solve the body on. */
+export interface EditFrame {
+  /** Its phase and index (frameTimes). */
+  u: number
+  i: number
+  loop: boolean
+  /** Where each leading piece rode on it before the edit (by gear id; its path is laid on that). Unset: as its node is. */
+  rode?: Map<string, THREE.Matrix4> | null
+  /** A live drag's: where each leading piece is now (by gear id), its path's move already in it. */
+  places?: Map<string, THREE.Matrix4>
+  /** It was let go on (letGoFrames): not pulled toward the frame before. */
+  letGo: boolean
+  /** Where the search starts (a live drag's last solve of it). */
+  seed?: SeedPose
+  /** The soft goals holding the body's root, instead of the root holds' (a live gear drag holds it where it was seen). */
+  soft?: NaturalGoal[]
+  /** A live drag: a few steps, a few ms. */
+  quick?: boolean
+}
+
+/** What every frame's solve of an edit shares: the body, its legs on the floor (each leg's sole heights above it at rest),
+ * the joints' ranges. */
+export interface EditBody { hips: string, legs: Leg[], soles: number[][], floor: number, height: number, limits: JointLimits | null }
+
+/**
+ * One frame's body solve, as the build makes it (buildEdit) and as a live drag of that frame makes it, quickly, so that
+ * letting go doesn't jump (DESIGN.md §8): the hands' goals on their handles (handGoals), the leading pieces' shafts as
+ * obstacles but where the hands hold them, the body's root held where gear drags let go of it (rootGoals), the frame
+ * before followed (FOLLOW) unless this one was let go on, and the seed as where the search starts. Read off `posable` as
+ * it stands (the frame as keyed). The solver is then handed the state the frame before left.
+ */
+export function frameSolve (posable: THREE.Object3D, bones: Map<string, THREE.Bone>, gear: GearRig, f: EditFrame, body: EditBody): { goals: HandGoal[], opts: BodySolveOptions } {
+  // (a live drag's places have the paths' moves in them already; the root holds still read the paths' keys)
+  const rig: GearRig = f.places === undefined ? gear : { ...gear, paths: Object.fromEntries(Object.entries(gear.paths).map(([g, x]) => [g, { ...x, keys: [] }])) }
+  const base = f.places ?? f.rode ?? null
+  const goals = handGoals(posable, bones, rig, f.u, f.loop, base)
+  const placeOf = (id: string): THREE.Matrix4 | null => {
+    const was = base?.get(id) ?? posable.getObjectByName(rig.node(id))?.matrixWorld
+    return was === undefined ? null : onPath(was, rig.paths[id], f.u, f.loop)
+  }
+  const opts: BodySolveOptions = {
+    limits: body.limits, nameOf: b => b.name, legs: body.legs, height: body.height, floor: body.floor, soles: body.soles,
+    obstacles: gearObstacles(rig, placeOf, GRIP_CLEAR * body.height),
+    soft: f.soft ?? rootGoals(gear.holds, gear.paths, f.i, bones, body.hips),
+    follow: f.letGo ? undefined : FOLLOW.weight,
+  }
+  if (f.seed !== undefined) opts.seed = f.seed
+  if (f.quick === true) opts.quick = true
+  return { goals, opts }
+}
+
+/** Where a live drag's solve left the body on the frame it was let go at (phase `u`): that frame's solve starts there. */
+export interface EditSeed { u: number, pose: SeedPose }
+
 /**
  * The edited clip: `base` with the keys; then, on each frame (on `posable`, a copy of the character to pose off
- * stage), the hands held on their props (`holds`), and the floor: a leg the edit sank further under it than the base
- * had it reaches its foot back up.
+ * stage), the hands held on the gear they hold (`gear`), the body following them (`solver`; none: the arms reach by IK
+ * alone), and the floor: a leg the edit sank further under it than the base had it reaches its foot back up. Each
+ * frame's solve is frameSolve's. `seed`: a live drag's solve of the frame it was let go at, where that frame's solve
+ * starts. `states`, when given, is filled with the state each frame's solve was handed (the frame before's: a live drag
+ * of a frame follows it as the build does).
  */
 export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipKey[]>, loop: boolean, rest: (bone: string) => { q: THREE.Quaternion, p: THREE.Vector3 } | null,
-  posable: THREE.Object3D, rig: PoseRig, floor: number, limits: JointLimits | null, props: PropRig | null = null, height = 1,
-  solver: { solve: typeof solveBody, bones: typeof bodyBones } = { solve: solveBody, bones: bodyBones }): THREE.AnimationClip {
+  posable: THREE.Object3D, rig: PoseRig, floor: number, limits: JointLimits | null, gear: GearRig | null = null, height = 1,
+  solver: BodySolver | null = null, o: { seed?: EditSeed | null, states?: Array<BodyState | null> } = {}): THREE.AnimationClip {
   const keyed = applyBoneKeys(base, keys, loop, rest)
-  const active = props !== null && (props.attachments.length > 0 || Object.values(props.paths).some(p => p.locked))
-  // (a socket adjusted is an edit too, with nothing to solve)
-  const socketing = props !== null && Object.values(props.paths).some(p => !p.locked && p.keys.length > 0)
-  if (Object.keys(keys).length === 0 && !active && !socketing) return keyed
+  const active = gear !== null && (gear.attachments.length > 0 || Object.values(gear.paths).some(p => p.locked))
+  // (gear moved in the hand is an edit too, with nothing to solve)
+  const inHand = gear !== null && Object.values(gear.paths).some(p => !p.locked && p.keys.length > 0)
+  if (Object.keys(keys).length === 0 && !active && !inHand) return keyed
   const bones = bonesOf(posable)
   const legs = legsOf(bones, rig)
   // (the soles' heights at rest above the floor)
   const saved = [...bones.values()].map(b => [b, b.position.clone(), b.quaternion.clone()] as const)
   for (const b of bones.values()) { const r = rest(b.name); if (r !== null) { b.quaternion.copy(r.q); b.position.copy(r.p) } }
-  // (the props' nodes as the outfit places them: an edit keys a leading prop's node, and a copy may carry that)
-  for (const [prop, r] of Object.entries(props?.rest ?? {})) { const n = posable.getObjectByName(props!.node(prop)); if (n !== undefined) { n.position.fromArray(r.position); n.quaternion.fromArray(r.quaternion) } }
+  // (the gear nodes as Gear places them: an edit keys a leading piece's node, and a copy may carry that)
+  for (const [g, r] of Object.entries(gear?.rest ?? {})) { const n = posable.getObjectByName(gear!.node(g)); if (n !== undefined) { n.position.fromArray(r.position); n.quaternion.fromArray(r.quaternion) } }
   posable.updateMatrixWorld(true)
   const v = new THREE.Vector3()
   const soles = legs.map(l => [l.end, l.ball, l.tip].map(b => (b === null ? -Infinity : b.getWorldPosition(v).y - floor)))
@@ -485,9 +557,11 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
     mixer.setTime(t)
     posable.updateMatrixWorld(true)
   }
-  const hands = active ? (['Left', 'Right'] as const).filter(h => props!.attachments.some(a => a.hand === h) || Object.entries(props!.paths).some(([p, x]) => x.locked && props!.carriers[p] === `${h}Hand`)) : []
-  const held = solver.bones(hands.map(hand => ({ hand, fingers: props?.fingers[hand] })), legs).map(n => bones.get(n)).filter((b): b is THREE.Bone => b !== undefined)
-  // (also the carrying arms of unlocked props a hand holds: they may be turned to keep the prop)
+  const hands = active ? (['Left', 'Right'] as const).filter(h => gear!.attachments.some(a => a.hand === h) || Object.entries(gear!.paths).some(([p, x]) => x.locked && gear!.carriers[p] === `${h}Hand`)) : []
+  const goalsOf = hands.map(hand => ({ hand, fingers: gear?.fingers[hand] }))
+  const held = (solver !== null ? bodyBones(goalsOf, legs) : goalsOf.flatMap(g => [...Object.values(armOf(g.hand)), ...Object.keys(g.fingers ?? {})]))
+    .map(n => bones.get(n)).filter((b): b is THREE.Bone => b !== undefined)
+  // (also the carrying arms of gear that doesn't lead but a hand holds: they may be turned to keep it)
   const touched = [...new Set([...legs.flatMap(l => [l.upper, l.lower, l.end]), ...held, ...(active ? ['LeftArm', 'LeftForeArm', 'LeftHand', 'RightArm', 'RightForeArm', 'RightHand'].map(n => bones.get(n)).filter((b): b is THREE.Bone => b !== undefined) : [])])]
   const values = new Map(touched.map(b => [b.name, [] as number[]]))
   // (the body's solve may move the hips: a lunge, a drop)
@@ -496,27 +570,27 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
   let changed = active
   let state: BodyState | null = null
   const nameOf = (b: THREE.Bone): string => b.name
-  // (the frames a drag was let go on: a prop drag's key, a key on a bone; the solve there is not pulled toward the frame
-  // before, so what was seen when it was let go stays)
-  const frameOf = (u: number): number => Math.round(u * (times.length - 1))
-  const letGo = new Set([...(props?.holds ?? []).map(h => frameOf(h.u)), ...Object.values(keys).flat().filter(k => !(k.p === undefined && Math.abs(k.q[3]) > 1 - 1e-9)).map(k => frameOf(k.u))])
-  // (each leading prop's node keyed where its path puts it, on its bone as the solve left that: the prop is where it leads
+  const seedFrame = o.seed === undefined || o.seed === null ? -1 : frameAt(o.seed.u, times.length)
+  const letGo = letGoFrames(keys, gear?.holds, times.length)
+  const body: EditBody = { hips: rig.hips, legs, soles, floor, height, limits }
+  // (each leading piece's node keyed where its path puts it, on its bone as the solve left that: the piece is where it leads
   // to, however the hand carrying it holds it)
-  const leading = active ? Object.keys(props!.paths).filter(p => props!.paths[p].locked && posable.getObjectByName(props!.node(p)) !== undefined) : []
-  // (a prop that doesn't lead, with keys: its socket adjusted, frame by frame, the keys being moves and turns in its own
+  const leading = active ? Object.keys(gear!.paths).filter(p => gear!.paths[p].locked && posable.getObjectByName(gear!.node(p)) !== undefined) : []
+  // (a piece that doesn't lead, with keys: moved in the hand, frame by frame, the keys being moves and turns in its own
   // placed frame from where its bone holds it; whatever holds it stays, other hands on it follow)
-  const socketed = props === null ? [] : Object.keys(props.paths).filter(p => !props.paths[p].locked && props.paths[p].keys.length > 0 && posable.getObjectByName(props.node(p)) !== undefined)
-  if (socketed.length > 0) changed = true
-  const propAt = new Map([...leading, ...socketed].map(p => [p, { position: [] as number[], quaternion: [] as number[] }]))
+  const moved = gear === null ? [] : Object.keys(gear.paths).filter(p => !gear.paths[p].locked && gear.paths[p].keys.length > 0 && posable.getObjectByName(gear.node(p)) !== undefined)
+  if (moved.length > 0) changed = true
+  const gearAt = new Map([...leading, ...moved].map(p => [p, { position: [] as number[], quaternion: [] as number[] }]))
   for (const [i, t] of times.entries()) {
+    if (o.states !== undefined) o.states[i] = state
     pose(base, t)
     const was = sunk(legs, soles, floor)
-    // (where each locked prop rode before the edit)
-    const rode = active ? new Map(Object.keys(props!.paths).filter(p => props!.paths[p].locked).map(p => [p, posable.getObjectByName(props!.node(p))?.matrixWorld.clone()]).filter((x): x is [string, THREE.Matrix4] => x[1] !== undefined)) : null
+    // (where each leading piece rode before the edit)
+    const rode = active ? new Map(Object.keys(gear!.paths).filter(p => gear!.paths[p].locked).map(p => [p, posable.getObjectByName(gear!.node(p))?.matrixWorld.clone()]).filter((x): x is [string, THREE.Matrix4] => x[1] !== undefined)) : null
     pose(keyed, t)
-    for (const prop of socketed) {
-      const node = posable.getObjectByName(props!.node(prop))!
-      const { q, p } = sampleKeys(props!.paths[prop].keys, keyed.duration > 0 ? t / keyed.duration : 0, loop)
+    for (const g of moved) {
+      const node = posable.getObjectByName(gear!.node(g))!
+      const { q, p } = sampleKeys(gear!.paths[g].keys, keyed.duration > 0 ? t / keyed.duration : 0, loop)
       node.updateMatrix()
       node.matrix.multiply(new THREE.Matrix4().compose(p, q, new THREE.Vector3(1, 1, 1)))
       node.matrix.decompose(node.position, node.quaternion, node.scale)
@@ -524,12 +598,9 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
     }
     if (active) {
       const u = keyed.duration > 0 ? t / keyed.duration : 0
-      const goals = handGoals(posable, bones, props!, u, loop, rode)
-      // (the leading props' shafts, where their paths put them: the body kept clear of them but where the hands hold them)
-      const obstacles = propObstacles(props!, prop => { const node = posable.getObjectByName(props!.node(prop)); const was = rode?.get(prop) ?? node?.matrixWorld; return was === undefined ? null : onPath(was, props!.paths[prop], u, loop) }, GRIP_CLEAR * height)
-      // (the body's root held where the solve had it before each prop drag, on the frames the drag moved the prop)
-      const soft = rootGoals(props!.holds, props!.paths, i, bones, rig.hips)
-      if (goals.length > 0) state = solver.solve(bones, goals, { limits, nameOf, legs, height, floor, soles, obstacles, follow: letGo.has(i) ? undefined : FOLLOW.weight, soft } as Parameters<typeof solveBody>[2], state).state
+      const { goals, opts } = frameSolve(posable, bones, gear!, { u, i, loop, rode, letGo: letGo.has(i), seed: i === seedFrame ? o.seed!.pose : undefined }, body)
+      if (goals.length > 0 && solver === null) reachGoals(bones, goals, { limits, nameOf })
+      else if (goals.length > 0 && solver !== null) state = solver(bones, goals, opts, state).state
     }
     const now = sunk(legs, soles, floor)
     // (only what the edit sank: lift the leg by that, from where it stands)
@@ -543,20 +614,20 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
     }
     for (const b of touched) values.get(b.name)!.push(...b.quaternion.toArray())
     if (hipsBone !== undefined) hipsAt.push(...hipsBone.position.toArray())
-    for (const prop of socketed) {
-      const node = posable.getObjectByName(props!.node(prop))!
-      const at = propAt.get(prop)!
+    for (const g of moved) {
+      const node = posable.getObjectByName(gear!.node(g))!
+      const at = gearAt.get(g)!
       at.position.push(...node.position.toArray()); at.quaternion.push(...node.quaternion.toArray())
     }
     if (leading.length > 0) {
       posable.updateMatrixWorld(true)
       const u = keyed.duration > 0 ? t / keyed.duration : 0
-      for (const prop of leading) {
-        const node = posable.getObjectByName(props!.node(prop))!; const was = rode?.get(prop)
-        const place = was === undefined ? node.matrixWorld.clone() : onPath(was, props!.paths[prop], u, loop)
+      for (const g of leading) {
+        const node = posable.getObjectByName(gear!.node(g))!; const was = rode?.get(g)
+        const place = was === undefined ? node.matrixWorld.clone() : onPath(was, gear!.paths[g], u, loop)
         const local = (node.parent?.matrixWorld.clone().invert() ?? new THREE.Matrix4()).multiply(place)
         const pos = new THREE.Vector3(); const q = new THREE.Quaternion(); local.decompose(pos, q, new THREE.Vector3())
-        const at = propAt.get(prop)!
+        const at = gearAt.get(g)!
         at.position.push(...pos.toArray()); at.quaternion.push(...q.toArray())
       }
     }
@@ -566,15 +637,15 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
   for (const [b, p, q] of saved) { b.position.copy(p); b.quaternion.copy(q) }
   posable.updateMatrixWorld(true)
   if (!changed) return keyed
-  // (the tracks the edit replaces: the bones it solved, the hips' place, and a leading prop's node (a clip may key it: a
-  // prop script's placement), which the edit keys where the prop's path puts it)
-  const propNodes = new Set([...propAt.keys()].map(p => props!.node(p)))
+  // (the tracks the edit replaces: the bones it solved, the hips' place, and the node of gear it moved (the clip keys
+  // every placed piece: bake.ts gear tracks), which the edit keys where its path puts it)
+  const gearNodes = new Set([...gearAt.keys()].map(p => gear!.node(p)))
   const tracks = keyed.tracks.filter(t => !touched.some(b => t.name === `${b.name}.quaternion`) && !(active && hipsBone !== undefined && t.name === `${hipsBone.name}.position`) &&
-    !propNodes.has(t.name.slice(0, t.name.lastIndexOf('.'))))
+    !gearNodes.has(t.name.slice(0, t.name.lastIndexOf('.'))))
   for (const b of touched) tracks.push(new THREE.QuaternionKeyframeTrack(`${b.name}.quaternion`, times, values.get(b.name)!))
   if (active && hipsBone !== undefined) tracks.push(new THREE.VectorKeyframeTrack(`${hipsBone.name}.position`, times, hipsAt))
-  for (const [prop, at] of propAt) {
-    const name = props!.node(prop)
+  for (const [g, at] of gearAt) {
+    const name = gear!.node(g)
     tracks.push(new THREE.VectorKeyframeTrack(`${name}.position`, times, at.position), new THREE.QuaternionKeyframeTrack(`${name}.quaternion`, times, at.quaternion))
   }
   return new THREE.AnimationClip(keyed.name, keyed.duration, tracks)
@@ -659,4 +730,147 @@ function posedWorldOf (source: RestSkeleton, name: string, order: string[], fram
   const local = new THREE.Matrix4().compose(b.localPosition, turn, b.localScale)
   const above = b.parent === null ? (source.parentWorld.get(name) ?? new THREE.Matrix4()) : posedWorldOf(source, b.parent, order, frame)
   return above.clone().multiply(local)
+}
+
+// ---- windows: parts of a clip as phases, typed as text ("20–50%, 80–100%" or "0.2-0.5, 0.8-1") -------------------
+
+/** Windows sorted, those that overlap or touch made one, empty ones dropped, each within 0..1. */
+export function mergeWindows (windows: readonly Window[]): Window[] {
+  const sorted = windows.map(([a, b]): Window => [Math.max(0, Math.min(a, b)), Math.min(1, Math.max(a, b))])
+    .filter(([a, b]) => b - a > 1e-6).sort((x, y) => x[0] - y[0])
+  const out: Window[] = []
+  for (const w of sorted) {
+    const last = out.at(-1)
+    if (last !== undefined && w[0] <= last[1] + 1e-6) last[1] = Math.max(last[1], w[1])
+    else out.push([w[0], w[1]])
+  }
+  return out
+}
+
+/** Windows typed as they are shown, "20–50%, 80–100%" (a hyphen does for the dash, "50%–80%" too), or as phases,
+ * "0.2-0.5, 0.8-1" ("to" does too). '' (or "never") is none; null when a part can't be read, so a typo is said rather
+ * than dropped. */
+export function parseWindows (text: string): Window[] | null {
+  const parts = text.split(/[,;]/).map(x => x.trim()).filter(x => x !== '')
+  if (parts.length === 0 || (parts.length === 1 && /^never$/i.test(parts[0]))) return []
+  const out: Window[] = []
+  for (const part of parts) {
+    const m = /^(\d*\.?\d+)\s*(%?)\s*(?:-|–|—|to)\s*(\d*\.?\d+)\s*(%?)$/i.exec(part)
+    if (m === null) return null
+    // (a part with a % is in percent, both ends; one without, in phases)
+    const percent = m[2] === '%' || m[4] === '%'
+    const most = percent ? 100 : 1
+    const a = Number(m[1]); const b = Number(m[3])
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a > most || b > most) return null
+    out.push(percent ? [Math.round(a * 1e4) / 1e6, Math.round(b * 1e4) / 1e6] : [a, b])
+  }
+  return mergeWindows(out)
+}
+
+/** A phase in percent: whole, or to a tenth when it isn't (a window set from a frame keeps its place when typed back). */
+const percentText = (x: number): string => String(Math.round(x * 1000) / 10)
+
+/** Windows as they are shown everywhere, "20–50%, 80–100%" ('' for none). */
+export function windowsText (windows: readonly Window[] | undefined): string {
+  return (windows ?? []).map(([a, b]) => `${percentText(a)}–${percentText(b)}%`).join(', ')
+}
+
+/** From phase `u` to the clip's end added (held, or open, from the frame shown on). */
+export function fromHere (windows: readonly Window[], u: number): Window[] {
+  return mergeWindows([...windows, [u, 1]])
+}
+
+/** Let go at phase `u`: the windows cut there, nothing after it. */
+export function toHere (windows: readonly Window[], u: number): Window[] {
+  return mergeWindows(windows.filter(([a]) => a < u).map(([a, b]): Window => [a, Math.min(b, u)]))
+}
+
+// ---- hand poses -------------------------------------------------------------------------------------------------
+
+/** A setting a hand's pose on a handle is read from: one of the slot's own hand poses (by adjustment id), the handle's
+ * own pose, or the hand's hold in every clip (hands.hold). */
+export type HandPoseSource = { kind: 'slot', adjustment: string } | { kind: 'handle', handle: Handle } | { kind: 'hold' }
+
+/**
+ * Which setting decides the pose `side`'s hand closes to on handle `handleId` of gear `gearId` (the one hand resolver,
+ * hands.ts handleRef), so the editor's pose picker changes the one that counts. Found by asking the resolver itself,
+ * so its order lives there only: each setting that is set is given, in turn, a pose no other has, and the one whose
+ * pose comes back decides. Null: none is set (the default fist). Nothing is changed.
+ */
+export function handPoseSource (c: Character, slot: Slot | null, side: Side, gearId: string, handleId: string): HandPoseSource | null {
+  const probe = { pose: '\u0000probe' }
+  const decides = (cc: Character, s: Slot | null): boolean => {
+    const r: HandPoseRef = handleRef(cc, s, side, gearId, handleId)
+    return typeof r === 'object' && 'pose' in r && r.pose === probe.pose
+  }
+  for (const a of slot?.adjustments ?? []) {
+    if (a.kind !== 'handPose' || a.hand !== side) continue
+    if (decides(c, { ...slot!, adjustments: slot!.adjustments.map(x => (x === a ? { ...a, pose: probe } : x)) })) return { kind: 'slot', adjustment: a.id }
+  }
+  const handle = c.gear.find(g => g.id === gearId)?.handles.find(h => h.id === handleId)
+  if (handle?.pose !== undefined) {
+    const gear = c.gear.map(g => (g.id !== gearId ? g : { ...g, handles: g.handles.map(h => (h === handle ? { ...h, pose: probe } : h)) }))
+    if (decides({ ...c, gear }, slot)) return { kind: 'handle', handle }
+  }
+  const hold = c.hands.hold
+  if (hold?.[side] !== undefined && decides({ ...c, hands: { ...c.hands, hold: { ...hold, [side]: probe } } }, slot)) return { kind: 'hold' }
+  return null
+}
+
+// ---- saving ------------------------------------------------------------------------------------------------------
+
+/** The name an edit of `name` is offered under: "Attack edit", never "Attack edit edit" (an edit of an edit keeps its
+ * name; the server gives a second clip of a name its own id). The editor's "(editing)" marks are taken off. */
+export function editNameOf (name: string): string {
+  const base = name.replace(/( \((editing|naturalized)\))+$/, '').trim() || 'Clip'
+  return /\sedit(\s+\d+)?$/i.test(base) ? base : `${base} edit`
+}
+
+/** How the edit was opened: the slot's clip as it plays (its speed, timing, hands, ground and keys in it), the slot's
+ * clip alone (none of them), or a new clip made from one frame. */
+export type EditMode = 'plays' | 'alone' | 'held'
+
+/**
+ * The one batch that puts an edit, saved as library clip `clip`, into the slot it was made on (DESIGN.md §6 row 2).
+ * Made 'as it plays' the edit has the slot's enabled adjustments in it, so by kind: the speed is baked (the slot plays
+ * at 1); blow timing, pace and keys on bones are baked and go; ground stays (the saved frames had its lift taken out);
+ * keys on gear are what the edit's gear does now (`gearKeys`, from the edited clip); hand poses and handle holds stay
+ * (their windows are phases of the clip as it played, which is the saved clip). A disabled adjustment played no part,
+ * so it stays as it is, but a disabled keys adjustment gives way to the edit's gear keys (a slot has one keys). Made on
+ * 'the clip alone', the slot keeps its speed and adjustments, and gear the edit moved is keyed on top (merged per gear).
+ */
+export function saveToSlotCommands (slot: Slot, mode: Exclude<EditMode, 'held'>, clip: ClipRef, o: { loop: boolean, gearKeys: Record<string, ClipKey[]>, newId: () => string }): Command[] {
+  const moved = Object.keys(o.gearKeys).length > 0
+  if (mode === 'alone') {
+    const keys: Adjustment[] = moved ? [{ id: o.newId(), kind: 'keys', enabled: true, gear: o.gearKeys }] : []
+    return [{ type: 'slot.fill', id: slot.id, clip, speed: slot.speed, loop: o.loop, inPlace: slot.inPlace, keepAdjustments: true, adjustments: keys }]
+  }
+  const baked = (a: Adjustment): boolean => a.enabled && (a.kind === 'blowTiming' || a.kind === 'pace' || a.kind === 'keys')
+  const kept = slot.adjustments.filter(a => !baked(a) && !(a.kind === 'keys' && moved))
+  const was = slot.adjustments.find(a => a.kind === 'keys')
+  const keys: Adjustment[] = moved ? [{ id: was?.id ?? o.newId(), kind: 'keys', enabled: true, gear: o.gearKeys }] : []
+  // (a copy: the slot may be live app state)
+  const copy = JSON.parse(JSON.stringify(kept)) as Adjustment[]
+  return [{ type: 'slot.fill', id: slot.id, clip, speed: 1, loop: o.loop, inPlace: slot.inPlace, keepAdjustments: false, adjustments: [...copy, ...keys] }]
+}
+
+/** A slot's adjustments with its keys adjustment's keys on the pieces `gear` (by gear id) taken off, the adjustment
+ * gone when nothing is left on it: an edit opened again from its record, whose paths for those pieces make that motion
+ * again. Copies; the slot is left as it is. */
+export function withoutGearKeys (adjustments: readonly Adjustment[], gear: readonly string[]): Adjustment[] {
+  if (gear.length === 0) return [...adjustments]
+  return adjustments.flatMap((a): Adjustment[] => {
+    if (a.kind !== 'keys' || a.gear === undefined || !gear.some(g => a.gear![g] !== undefined)) return [a]
+    const left = Object.fromEntries(Object.entries(a.gear).filter(([g]) => !gear.includes(g)))
+    const next: Extract<Adjustment, { kind: 'keys' }> = { ...a, gear: left }
+    if (Object.keys(left).length === 0) delete next.gear
+    return next.bones === undefined && next.gear === undefined ? [] : [next]
+  })
+}
+
+/** A handle name for `hand` on a piece not yet taken by its other handles: "Left grip", "Left grip 2"... */
+export function gripName (hand: Side, taken: readonly string[]): string {
+  const base = `${hand} grip`
+  if (!taken.includes(base)) return base
+  for (let i = 2; ; i++) if (!taken.includes(`${base} ${i}`)) return `${base} ${i}`
 }

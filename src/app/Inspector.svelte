@@ -1,35 +1,31 @@
 <script lang="ts">
+  // The right side: the step's panel for the selected character (each area's src/app/steps/<Name>Panel.svelte).
+  import { UserRound } from '@lucide/svelte'
   import { app } from '../state/app.svelte.ts'
+  import EmptyState from '../ui/EmptyState.svelte'
+  import GearPanel from './steps/GearPanel.svelte'
   import ImportPanel from './steps/ImportPanel.svelte'
-  import RigPanel from './steps/RigPanel.svelte'
-  import OutfitPanel from './steps/OutfitPanel.svelte'
-  import TexturePanel from './steps/TexturePanel.svelte'
-  import AnimatePanel from './steps/AnimatePanel.svelte'
-  import ExportPanel from './steps/ExportPanel.svelte'
-  import HistoryPanel from './HistoryPanel.svelte'
+  import LookPanel from './steps/LookPanel.svelte'
+  import MotionPanel from './steps/MotionPanel.svelte'
+  import ShipPanel from './steps/ShipPanel.svelte'
+  import SkeletonPanel from './steps/SkeletonPanel.svelte'
+  import SkinPanel from './steps/SkinPanel.svelte'
 </script>
 
 {#if app.selected === null}
-  <div class="none">
-    <p class="faint">Import a character to see its details here.</p>
-  </div>
+  <EmptyState icon={UserRound} title="No character" body="Import one (drop a model anywhere) or pick one on the left to see its details here." />
 {:else if app.step === 'import'}
   <ImportPanel character={app.selected} />
-{:else if app.step === 'rig'}
-  <RigPanel character={app.selected} />
-{:else if app.step === 'outfit'}
-  <OutfitPanel character={app.selected} />
-{:else if app.step === 'texture'}
-  <TexturePanel character={app.selected} />
-{:else if app.step === 'animate'}
-  <AnimatePanel character={app.selected} />
+{:else if app.step === 'skeleton'}
+  <SkeletonPanel character={app.selected} />
+{:else if app.step === 'skin'}
+  <SkinPanel character={app.selected} />
+{:else if app.step === 'gear'}
+  <GearPanel character={app.selected} />
+{:else if app.step === 'look'}
+  <LookPanel character={app.selected} />
+{:else if app.step === 'motion'}
+  <MotionPanel character={app.selected} />
 {:else}
-  <ExportPanel character={app.selected} />
+  <ShipPanel character={app.selected} />
 {/if}
-{#if app.selected !== null}
-  <HistoryPanel character={app.selected} />
-{/if}
-
-<style>
-  .none { padding: 24px 16px; }
-</style>

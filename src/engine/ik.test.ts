@@ -3,15 +3,11 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { describe, expect, it } from 'vitest'
+import { loadGlbFile as load } from './headless.ts'
 import { canonical } from './retarget.ts'
 import { JointLimits, type Rom } from './limits.ts'
 import { keepOffFloor, moveHips, reach, soleHeights, type Leg } from './ik.ts'
-
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images in tests') }
 
 const ROOT = path.resolve(__dirname, '../..')
 const YBOT = path.join(ROOT, 'workspace/library/mannequin/ybot.glb')
@@ -19,8 +15,7 @@ const have = existsSync(YBOT)
 const rom = JSON.parse(readFileSync(path.join(ROOT, 'static/templates/rom/human.json'), 'utf8')) as Rom
 
 async function ybot (): Promise<{ scene: THREE.Group, b: (n: string) => THREE.Bone, limits: JointLimits }> {
-  const data = readFileSync(YBOT)
-  const { scene } = await new Promise<{ scene: THREE.Group }>((resolve, reject) => { new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '', r => { resolve(r) }, reject) })
+  const { scene } = await load(YBOT)
   const bones = new Map<string, THREE.Bone>()
   scene.traverse(o => { if ((o as THREE.Bone).isBone) bones.set(canonical(o.name), o as THREE.Bone) })
   scene.updateMatrixWorld(true)

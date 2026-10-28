@@ -5,15 +5,12 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { describe, expect, it } from 'vitest'
+import { loadGlbFile as load } from './headless.ts'
 import { canonical, captureRest, retargetOffsets } from './retarget.ts'
-import { BoundShape, buildBodyCollider, type BodyShape } from './bodycollide.ts'
+import { BoundShape, buildBodyCollider, CharacterCollider, colliderFor, shaftObstacles, type BodyShape } from './bodycollide.ts'
 import { BODY, DIM, NaturalRig, PoseModel, createBodySolver, encodeSource, restSoles, type PoseModelData } from './posespace.ts'
 
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images in tests') }
 const ROOT = path.resolve(__dirname, '../..')
 const LIBRARY = path.join(ROOT, 'workspace/library')
 const YBOT = path.join(LIBRARY, 'mannequin', 'ybot.glb')
@@ -23,10 +20,6 @@ const SKIRMISHER = path.join(ROOT, 'workspace/characters/skirmisher-19c713/rigge
 const have = existsSync(YBOT) && existsSync(MODEL) && existsSync(path.join(LIBRARY, 'manifest.json'))
 
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
-async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
-  const data = readFileSync(file)
-  return await new Promise((resolve, reject) => { new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '', r => { resolve(r) }, reject) })
-}
 const wp = (o: THREE.Object3D): THREE.Vector3 => o.getWorldPosition(new THREE.Vector3())
 const wq = (o: THREE.Object3D): THREE.Quaternion => o.getWorldQuaternion(new THREE.Quaternion())
 const median = (xs: number[]): number => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
@@ -73,6 +66,37 @@ describe('elliptical capsule end caps', () => {
     expect(point(1e-6,1.12,0)).toBe(0)
     expect(point(.15,.5,0)).toBeCloseTo(.05, 8)
     expect(point(0,.5,.04)).toBeCloseTo(.01, 8)
+  })
+})
+
+describe('a held shaft as obstacles', () => {
+  it('is cut either side of each hold, the hands let through, and nothing is left of a stretch too short', () => {
+    const from = new THREE.Vector3(0, 1, 0); const to = new THREE.Vector3(2, 1, 0)
+    const parts = shaftObstacles(from, to, 0.02, [1.5, 0.5], 0.1, ['LeftHand', 'RightHand'])
+    expect(parts.map(o => [o.from.x, o.to.x])).toEqual([[0, 0.4], [0.6, 1.4], [1.6, 2]].map(([a, b]) => [expect.closeTo(a, 9), expect.closeTo(b, 9)]))
+    for (const o of parts) { expect(o.radius).toBe(0.02); expect(o.ignore).toEqual(['LeftHand', 'RightHand']); expect(o.from.y).toBe(1) }
+    // (two holds closer than the cuts: no sliver between them; a hold at the end: nothing past it)
+    expect(shaftObstacles(from, to, 0.02, [1, 1.21], 0.1, []).map(o => [o.from.x, o.to.x])).toEqual([[0, expect.closeTo(0.9, 9)], [expect.closeTo(1.31, 9), 2]])
+    expect(shaftObstacles(from, to, 0.02, [1.95], 0.1, []).map(o => [o.from.x, o.to.x])).toEqual([[0, expect.closeTo(1.85, 9)]])
+    expect(shaftObstacles(from, from.clone(), 0.02, [], 0.1, [])).toEqual([])
+  })
+})
+
+describe('a character\'s collider without a body to fit', () => {
+  it('collides with nothing, says why, and is made once per root', () => {
+    const root = new THREE.Group()
+    const c = colliderFor(root, new Map(), 1.7)
+    expect(c).toBeInstanceOf(CharacterCollider)
+    expect(c.body).toBeNull()
+    expect(c.problem).toMatch(/no skinned mesh/)
+    expect(c.shape).toBeNull()
+    expect(c.penetration(new THREE.Vector3(), new THREE.Vector3(0, 1, 0), 0.1)).toBe(0)
+    expect(c.selfPenetration()).toEqual({ worst: 0, pairs: [] })
+    expect(c.obstacleDepth(shaftObstacles(new THREE.Vector3(), new THREE.Vector3(1, 0, 0), 0.05, [], 0.1, []))).toBe(0)
+    expect(c.handWidth('Left')).toBeNull()
+    expect(colliderFor(root, new Map(), 1.7)).toBe(c)
+    // (another height is another collider: the hands' surfaces measure by it)
+    expect(colliderFor(root, new Map(), 1.8)).not.toBe(c)
   })
 })
 
@@ -229,7 +253,28 @@ describe.skipIf(!have)('the solver keeps body parts out of one another', () => {
     expect(median(on)).toBeLessThan(25)
   })
 
-  it('goes through the drop-in (createBodySolver { collide })', async () => {
+  it('is the same body through the character\'s collider, which also reads the hands\' surfaces and held shafts', async () => {
+    const b = await ybot()
+    const solid = buildBodyCollider(b.scene, b.bones)
+    const c = new CharacterCollider(b.scene, b.bones, 1.8)
+    expect(c.shape?.segments.map(x => [x.name, x.r1, x.r2])).toEqual(solid.shape.segments.map(x => [x.name, x.r1, x.r2]))
+    await poseFromClip(b, IDLES[0], 0.3)
+    const chest = wp(b.bones.get('Spine1')!)
+    // (a shaft through the chest, held by the left hand: as deep as the plain collider says, the hand let through)
+    const shaft = shaftObstacles(chest.clone().add(new THREE.Vector3(-0.4, 0, 0)), chest.clone().add(new THREE.Vector3(0.4, 0, 0)), 0.02, [], 0.05, ['LeftHand'])
+    const depth = c.obstacleDepth(shaft)
+    expect(depth).toBeGreaterThan(0.01)
+    expect(depth).toBeCloseTo(Math.max(...shaft.map(o => solid.penetration(o.from, o.to, o.radius, o.ignore))), 9)
+    expect(c.obstacleDepth(shaft, solid.shape.segments.map(x => x.name))).toBe(0)
+    expect(c.handWidth('Left')).toBeGreaterThan(0.03)
+    // (a hand's skinned surface, built once)
+    const hand = c.hand('Left')
+    expect(hand).not.toBeNull()
+    expect(c.hand('Left')).toBe(hand)
+    expect(hand!.positions.length).toBeGreaterThan(0)
+  })
+
+  it('goes through the editor\'s body solve (createBodySolver { collide })', async () => {
     const b = await ybot()
     const c = buildBodyCollider(b.scene, b.bones)
     const solver = createBodySolver(b.model, null, { collide: c })
@@ -242,7 +287,7 @@ describe.skipIf(!have)('the solver keeps body parts out of one another', () => {
     const r = solver(b.bones, [{ hand: 'Left', at, turn: wq(b.bones.get('LeftHand')!) }], { limits: null, nameOf: (x: THREE.Bone) => canonical(x.name), legs, height: 1.7, quick: false }, null)
     b.scene.updateMatrixWorld(true)
     expect(r.state).toBeDefined()
-    console.log(`the drop-in with the wrist 8 cm inside the chest's front: overlap ${(c.selfPenetration().worst * 100).toFixed(1)} cm, hand off its goal ${(wp(b.bones.get('LeftHand')!).distanceTo(at) * 100).toFixed(1)} cm`)
+    console.log(`the body solve with the wrist 8 cm inside the chest's front: overlap ${(c.selfPenetration().worst * 100).toFixed(1)} cm, hand off its goal ${(wp(b.bones.get('LeftHand')!).distanceTo(at) * 100).toFixed(1)} cm`)
   })
 })
 

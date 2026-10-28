@@ -17,6 +17,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "strict": true,
+    "erasableSyntaxOnly": true,
     "skipLibCheck": true
   },
   "include": [

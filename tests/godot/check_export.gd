@@ -1,5 +1,14 @@
-# Headless check that an exported GLB works in Godot.
-# godot --headless --script tests/godot/check_export.gd -- <file.glb>
+# Headless check that a game unit's GLB works in Godot: the <models dir>/<unit>.glb the Ship step's export writes
+# (tools/game_export.ts, tools/lib/unit_export.ts; the generic browser export is gone, DESIGN.md §0.1). It reads the file
+# as Godot's glTF import does, then needs a skeleton and an animation player, every clip track to find its node or bone,
+# and reports how far each clip moves the bones (a clip that silently does nothing shows 0). Prints
+# GODOT_RESULT <json> (bones, meshes, skinned meshes, node types, bone attachments, each clip's length, loop, tracks,
+# unresolved tracks and largest bone move) and exits 1 when a track doesn't resolve; GODOT_FAIL <why> when it can't load.
+#   godot --headless --script tests/godot/check_export.gd -- <models dir>/<unit>.glb
+#   npm run test:godot -- <models dir>/<unit>.glb
+# The game's rules themselves (mesh names, levels, Main, root above Hips, Prop_ bones, budget, soles at 0, clip names,
+# the build record) are checked in node by tests/contract/unit.test.ts. A unit to try this on without the game: run that
+# test with RIGSMITH_CONTRACT_KEEP=1, which keeps its temp workspace and prints where its testunit.glb is.
 extends SceneTree
 
 var _started := false

@@ -1,20 +1,11 @@
 // How a built unit's feet meet the ground in each clip: per frame, the lowest point of its body (skinned), over the clip
 // its lowest (the planted sole should touch 0) and its median (a stance: near 0 standing, a walk's planted foot near 0).
 // node tools/dev/ground.ts <unit.glb> [...]   (heights in the file's units and as a share of the unit's height)
-import { readFileSync } from 'node:fs'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { loadGlbFile } from '../../src/engine/headless.ts'
 
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images') }
-const warn = console.warn
-console.warn = (...a: unknown[]) => { if (!String(a[0]).includes('GLTFLoader')) warn(...a) }
 for (const file of process.argv.slice(2)) {
-  const d = readFileSync(file)
-  const gltf = await new Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }>((resolve, reject) => {
-    new GLTFLoader().parse(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength), '', r => { resolve(r as never) }, reject)
-  })
+  const gltf = await loadGlbFile(file)
   const unit = file.split('/').pop()!.replace('.glb', '')
   let body: THREE.SkinnedMesh | undefined
   gltf.scene.traverse(o => { if ((o as THREE.SkinnedMesh).isSkinnedMesh && o.name === unit) body = o as THREE.SkinnedMesh })

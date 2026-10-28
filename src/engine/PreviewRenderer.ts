@@ -1,15 +1,18 @@
-// Renders small animated sprite sheets of library clips playing on the current character.
+// Renders small animated sprite sheets of library clips playing on the current character, with the viewport's lighting
+// (src/engine/lighting.ts), on the shared offscreen renderer (src/engine/offscreen.ts).
 import * as THREE from 'three'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { RetargetCache } from './clips.ts'
+import { light } from './lighting.ts'
+import { encode, offscreen } from './offscreen.ts'
 import { captureRest } from './retarget.ts'
 
 export const SPRITE_FRAMES = 16
 const SIZE = 144
 
 export class PreviewRenderer {
-  private readonly renderer: THREE.WebGLRenderer
   private readonly scene = new THREE.Scene()
+  private lit = false
   private readonly camera = new THREE.PerspectiveCamera(30, 1, 0.01, 100)
   private model: THREE.Object3D | null = null
   private retargets: RetargetCache | null = null
@@ -17,22 +20,6 @@ export class PreviewRenderer {
   private queue: Array<{ url: string, resolve: (u: string | null) => void }> = []
   private working = false
   private key = ''
-
-  constructor () {
-    const canvas = document.createElement('canvas')
-    canvas.width = SIZE
-    canvas.height = SIZE
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true })
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace
-    this.renderer.toneMapping = THREE.AgXToneMapping
-    this.renderer.toneMappingExposure = 1.15
-    this.scene.add(new THREE.HemisphereLight(0xd4dcff, 0x20232b, 1.6))
-    const key = new THREE.DirectionalLight(0xfff4e8, 2.4)
-    key.position.set(2, 4, 3)
-    const rim = new THREE.DirectionalLight(0x8ea2ff, 1.2)
-    rim.position.set(-3, 2, -3)
-    this.scene.add(key, rim)
-  }
 
   /** Use a character (any loaded skinned scene) for previews. Clears cached sheets when it changes. */
   setCharacter (key: string, root: THREE.Object3D, rename?: (name: string) => string | null): void {
@@ -90,8 +77,8 @@ export class PreviewRenderer {
     this.working = false
   }
 
-  private async render (url: string): Promise<string | null> {
-    if (this.model === null || this.retargets === null) return null
+  private async render (url: string, tries = 3): Promise<string | null> {
+    if (this.model === null || this.retargets === null || tries <= 0) return null
     let key = this.key
     let clip = await this.retargets.get(url, { inPlace: true, samples: SPRITE_FRAMES + 1 })
     while (key !== this.key && this.retargets !== null) {
@@ -100,21 +87,33 @@ export class PreviewRenderer {
       clip = await this.retargets.get(url, { inPlace: true, samples: SPRITE_FRAMES + 1 })
     }
     if (this.model === null) return null
-    const mixer = new THREE.AnimationMixer(this.model)
-    const action = mixer.clipAction(clip)
-    action.play()
+    const model = this.model
     const sheet = document.createElement('canvas')
     sheet.width = SIZE * SPRITE_FRAMES
     sheet.height = SIZE
     const ctx = sheet.getContext('2d')!
-    for (let i = 0; i < SPRITE_FRAMES; i++) {
-      mixer.setTime((clip.duration * i) / SPRITE_FRAMES)
-      this.renderer.render(this.scene, this.camera)
-      ctx.drawImage(this.renderer.domElement, i * SIZE, 0)
-    }
-    action.stop()
-    mixer.uncacheRoot(this.model)
-    const blob = await new Promise<Blob | null>(resolve => { sheet.toBlob(resolve, 'image/webp', 0.85) })
+    const drawn = await offscreen(SIZE, SIZE, renderer => {
+      // (another character took the stage while this waited its turn: its sheet is baked again for that one)
+      if (model !== this.model) return false
+      if (!this.lit) { light(this.scene, renderer); this.lit = true }
+      const mixer = new THREE.AnimationMixer(model)
+      const action = mixer.clipAction(clip)
+      action.play()
+      try {
+        for (let i = 0; i < SPRITE_FRAMES; i++) {
+          mixer.setTime((clip.duration * i) / SPRITE_FRAMES)
+          renderer.render(this.scene, this.camera)
+          ctx.drawImage(renderer.domElement, i * SIZE, 0)
+        }
+      } finally {
+        action.stop()
+        mixer.uncacheRoot(model)
+      }
+      return true
+    })
+    if (!drawn) return await this.render(url, tries - 1)
+    let blob: Blob | null
+    try { blob = await encode(sheet, 'image/webp', 0.85) } catch { blob = null }
     if (blob === null || key !== this.key) return null
     const objectUrl = URL.createObjectURL(blob)
     this.sheets.set(url, objectUrl)

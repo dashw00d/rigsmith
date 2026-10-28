@@ -10,8 +10,10 @@
 // nothing close under it takes the thigh on its side, more of it lower down, so the legs push it. Cloak skin
 // far from every arm bone, from the chest down, gives its arm weight to the chest it hangs from.
 //
-// Measures lower-body surface crossings and cloth stretch over the character's own clips before and after.
-// --apply writes the changed vertices as painted weights (kept for re-rigs; "Forget the painting" drops them).
+// Measures lower-body surface crossings and cloth stretch over the character's own clips (its slots) before and after.
+// --apply writes the changed vertices as painted weights through the running server (PUT /weights, a job; kept for
+// re-rigs; "Forget the painting" drops them). It refuses while the character's weights are locked (skin.locked: the
+// Skin step unlocks them), and so does the server.
 //
 // node tools/dev/coat_weights.ts <character-id> [--apply] [--gap 0.06] [--full-at 0.6] [--no-hem] [--no-coat] [--no-cloak] [--report out.json]
 import { writeFileSync } from 'node:fs'
@@ -19,6 +21,8 @@ import * as THREE from 'three'
 import { body, character, entrySource, isBone } from '../lib/node3d.ts'
 import { SkinnedSurface } from '../lib/surface.ts'
 import { captureRest, retarget } from '../../src/engine/retarget.ts'
+import { jointsOf } from '../../src/model/select.ts'
+import type { Job, Slot } from '../../src/model/types.ts'
 
 const args = process.argv.slice(2)
 const id = args[0]
@@ -39,8 +43,14 @@ const CLOAK_TO = args.includes('--cloak-to') ? args[args.indexOf('--cloak-to') +
 const NO_CLOAK = args.includes('--no-cloak'), NO_COAT = args.includes('--no-coat')
 
 const record = character(id)
-const J = record.joints as Record<string, [number, number, number]> | undefined
-if (J === undefined || J.LeftUpLeg === undefined || J.Spine === undefined) throw new Error('Needs a humanoid skeleton')
+// (said before minutes of measuring: the server would refuse the painting anyway)
+if (apply && record.skin.locked) throw new Error(`${record.name}'s weights are locked${record.skin.lockReason !== undefined ? ` (${record.skin.lockReason})` : ''}: unlock them in the Skin step before --apply`)
+// (the joints the rig was built on: what its bones are; else the skeleton as it is now)
+const J = record.skin.rigJoints ?? jointsOf(record)
+if (record.skeleton.template !== 'human' || J.LeftUpLeg === undefined || J.Spine === undefined) throw new Error('Needs a humanoid skeleton')
+/** The character's slots with a clip, by name: what it plays. */
+const slots: Slot[] = record.clips
+const sourceOf = async (s: Slot): Promise<Awaited<ReturnType<typeof entrySource>>> => await entrySource({ clipId: s.clip.id, url: s.clip.url })
 const view = await body(id)
 const root = view.root
 const surface = new SkinnedSurface(root)
@@ -225,8 +235,8 @@ const where: Array<[string, number, number, number, number]> | undefined = proce
 interface Totals { crossingMm: number, framesWithCrossings: number, frames: number, stretchedEdges: number, worstStretch: number, pairs: Record<string, number> }
 async function measure (): Promise<Record<string, Totals>> {
   const out: Record<string, Totals> = {}
-  for (const a of record.animations ?? []) {
-    const source = await entrySource({ clipId: a.clipId }).catch(() => null)
+  for (const a of slots) {
+    const source = await sourceOf(a).catch(() => null)
     if (source === null) continue
     const clip = retarget(source.scene, captureRest(source.scene, isBone), source.clip, view.rest!, { fps: 30, inPlace: true })
     const mixer = new THREE.AnimationMixer(root); const act = mixer.clipAction(clip); act.setLoop(THREE.LoopOnce, 1); act.clampWhenFinished = true; act.play()
@@ -258,8 +268,9 @@ async function measure (): Promise<Record<string, Totals>> {
 // DUMP=file.json DUMP_CLIP=Walk DUMP_FRAMES=8,24: deformed positions with the new weights, for looking at
 if (process.env.DUMP !== undefined) {
   useWeights(process.env.DUMP_WEIGHTS === 'before' ? 'before' : 'after')
-  const a = (record.animations ?? []).find(x => x.name === (process.env.DUMP_CLIP ?? 'Walk'))!
-  const source = await entrySource({ clipId: a.clipId })
+  const a = slots.find(x => x.name === (process.env.DUMP_CLIP ?? 'Walk'))
+  if (a === undefined) throw new Error(`No slot ${process.env.DUMP_CLIP ?? 'Walk'}`)
+  const source = await sourceOf(a)
   const clip = retarget(source.scene, captureRest(source.scene, isBone), source.clip, view.rest!, { fps: 30, inPlace: true })
   const mixer = new THREE.AnimationMixer(root); const act = mixer.clipAction(clip); act.setLoop(THREE.LoopOnce, 1); act.clampWhenFinished = true; act.play()
   const frames: Record<string, number[]> = { bind: Array.from(bind) }
@@ -293,7 +304,17 @@ console.log(`SUMMARY legs|tunic ${legsTunic(before).toFixed(0)} -> ${legsTunic(a
 if (reportPath !== undefined) writeFileSync(reportPath, JSON.stringify({ id, gap: GAP, reach, changed: edits.length, before, after }, null, 2))
 
 if (apply) {
+  const server = `http://localhost:${process.env.RIGSMITH_PORT ?? 5180}`
+  const headers = { 'content-type': 'application/json', 'x-rigsmith': '1', 'x-rigsmith-by': 'coat weights tool', 'x-rigsmith-schema': '2' }
   const payload = { edits: edits.map(({ v, top }) => ({ mesh: 0, vertex: v, weights: top.map(([b, x]) => [bones[b], Math.round(x * 1e5) / 1e5]) })) }
-  const res = await fetch(`http://localhost:${process.env.RIGSMITH_PORT ?? 5180}/api/characters/${id}/weights`, { method: 'PUT', headers: { 'content-type': 'application/json', 'x-rigsmith-by': 'coat weights tool' }, body: JSON.stringify(payload) })
-  console.log('applied:', res.status, await res.text())
+  const res = await fetch(`${server}/api/characters/${id}/weights`, { method: 'PUT', headers, body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(`not applied (${res.status}): ${await res.text()}`)
+  // (a job: written into the rig once the character's other file jobs are done)
+  let job = await res.json() as Job
+  while (job.status === 'queued' || job.status === 'running') {
+    await new Promise(resolve => setTimeout(resolve, 500))
+    job = (await (await fetch(`${server}/api/jobs`, { headers })).json() as Job[]).find(j => j.id === job.id) ?? { ...job, status: 'failed', error: 'the job is gone (the server restarted?)' }
+  }
+  console.log(job.status === 'done' ? `applied: ${edits.length} vertices painted` : `not applied: ${job.status}${job.error !== undefined ? `: ${job.error}` : ''}`)
+  if (job.status !== 'done') process.exitCode = 1
 }

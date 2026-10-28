@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
-import { load, entrySource, isBone, WORKSPACE } from '../lib/node3d.ts'
+import { character, entrySource, isBone, load } from '../lib/node3d.ts'
 import { deformationTests } from '../lib/deformation.ts'
 import { captureRest, retarget } from '../../src/engine/retarget.ts'
 
@@ -14,7 +14,7 @@ const sources = new Map<string, Awaited<ReturnType<typeof entrySource>>>()
 const rows = []
 for (const c of manifest) {
   if (!c.ok) { rows.push({ id: c.id, name: c.name, ok: false }); continue }
-  const record = JSON.parse(readFileSync(path.join(WORKSPACE, 'characters', c.id, 'character.json'), 'utf8'))
+  const record = character(c.id)
   const generated = JSON.parse(readFileSync(path.join(dir, c.id, 'report.json'), 'utf8'))
   const root = (await load(path.join(dir, c.id, 'rigged.glb'))).scene
   root.updateMatrixWorld(true)
@@ -63,7 +63,7 @@ for (const c of manifest) {
   if (badWeights) errors.push(`${badWeights} invalid weights`)
   if (seamMismatch) errors.push(`${seamMismatch} split seam weights differ`)
   const clips = []
-  for (const test of tests[record.template ?? 'human'] ?? []) {
+  for (const test of tests[record.skeleton.template] ?? []) {
     const key = test.url ?? test.id
     let source = sources.get(key)
     if (!source) { source = await entrySource({clipId:test.id,url:test.url}); sources.set(key,source) }

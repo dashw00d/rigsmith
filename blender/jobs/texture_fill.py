@@ -1,24 +1,30 @@
-"""Fill unpainted areas of AI-generated textures (Tripo marks them magenta).
+"""Fill the unpainted areas of an AI-generated texture (Tripo marks them magenta), as a layer.
 
-Holes are filled from nearby painted *surface* (in 3D, not UV space), so UV seams and fragmented
-atlases don't bleed unrelated colors in.
+Holes are filled from nearby painted *surface* (in 3D, not UV space), so UV seams and fragmented atlases don't bleed
+unrelated colours in. Reads the source model as uploaded (no texture overrides): the fill is the bottom layer, the
+rest are laid over it (server/routes/look.ts, texture_compose.py).
 
-blender -b --factory-startup --python texture_fill.py -- --input <model> --out <dir> [--overrides <dir>]
-Writes <out>/<image>.png (filled) and <out>/<image>.mask.png (what was filled), reports coverage.
+blender -b --factory-startup --python texture_fill.py -- --input <source model> --out <dir>
+
+For each image with holes, writes <out>/<clean name>.png: a decal in the image's own layout and size, colour where it
+fills and alpha how strongly (1 in the holes, fading out a few texels round them), clear everywhere else.
+Reports {"images": [{"names": [clean names it goes by], "coverage": share of it unpainted, "file": name | null}]}.
 """
 import argparse
 import os
 import sys
 
-import bpy
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..'))
+sys.path.insert(0, HERE)
 
 from common import report, scene_io  # noqa: E402
+from texture_images import images_of, names_of, pixels_of, save_png  # noqa: E402
 
-WORK = 1024  # resolution the fill is computed at; composited back at full resolution
+WORK = 1024  # longest side the fill is computed at; laid back at full resolution
+NONE_BELOW = 0.0005  # a share of magenta under this is anti-aliasing, not a hole
 
 
 def magenta_mask(rgb):
@@ -39,25 +45,24 @@ def dilate(mask, steps):
     return mask
 
 
-def resize(img, size):
-    """Area-average downscale (or nearest upscale) of an HxWxC array to size x size."""
-    h, w = img.shape[:2]
-    if h % size == 0 and w % size == 0 and h >= size:
-        f = h // size
-        return img.reshape(size, f, size, f, -1).mean(axis=(1, 3))
-    ys = (np.arange(size) * h / size).astype(int)
-    xs = (np.arange(size) * w / size).astype(int)
+def resize(img, h, w):
+    """Area-average downscale (or nearest, when the sizes don't divide) of an HxWxC array to h x w."""
+    sh, sw = img.shape[:2]
+    if sh % h == 0 and sw % w == 0 and sh >= h and sw >= w:
+        return img.reshape(h, sh // h, w, sw // w, -1).mean(axis=(1, 3))
+    ys = (np.arange(h) * sh / h).astype(int)
+    xs = (np.arange(w) * sw / w).astype(int)
     return img[ys][:, xs]
 
 
-def upsample_bilinear(img, size):
-    h, w = img.shape[:2]
-    y = (np.arange(size) + 0.5) * h / size - 0.5
-    x = (np.arange(size) + 0.5) * w / size - 0.5
-    y0 = np.clip(np.floor(y).astype(int), 0, h - 1)
-    x0 = np.clip(np.floor(x).astype(int), 0, w - 1)
-    y1 = np.clip(y0 + 1, 0, h - 1)
-    x1 = np.clip(x0 + 1, 0, w - 1)
+def upsample_bilinear(img, h, w):
+    sh, sw = img.shape[:2]
+    y = (np.arange(h) + 0.5) * sh / h - 0.5
+    x = (np.arange(w) + 0.5) * sw / w - 0.5
+    y0 = np.clip(np.floor(y).astype(int), 0, sh - 1)
+    x0 = np.clip(np.floor(x).astype(int), 0, sw - 1)
+    y1 = np.clip(y0 + 1, 0, sh - 1)
+    x1 = np.clip(x0 + 1, 0, sw - 1)
     fy = np.clip(y - y0, 0, 1)[:, None, None]
     fx = np.clip(x - x0, 0, 1)[None, :, None]
     top = img[y0][:, x0] * (1 - fx) + img[y0][:, x1] * fx
@@ -65,10 +70,10 @@ def upsample_bilinear(img, size):
     return top * (1 - fy) + bottom * fy
 
 
-def texel_positions(meshes, image, size):
-    """World position of the surface under each texel (size x size), plus coverage."""
-    pos = np.zeros((size, size, 3), dtype=np.float32)
-    covered = np.zeros((size, size), dtype=bool)
+def texel_positions(meshes, image, h, w):
+    """World position of the surface under each texel (h x w, rows top-down), plus coverage."""
+    pos = np.zeros((h, w, 3), dtype=np.float32)
+    covered = np.zeros((h, w), dtype=bool)
     for ob in meshes:
         uses = any(slot.material and slot.material.use_nodes and any(n.type == 'TEX_IMAGE' and n.image == image for n in slot.material.node_tree.nodes) for slot in ob.material_slots)
         if not uses or not ob.data.uv_layers:
@@ -79,13 +84,13 @@ def texel_positions(meshes, image, size):
         mw = np.array(ob.matrix_world)
         verts = np.array([list(v.co) for v in me.vertices]) @ mw[:3, :3].T + mw[:3, 3]
         for tri in me.loop_triangles:
-            uv = np.array([list(uv_layer[li].uv) for li in tri.loops]) * size
-            uv[:, 1] = size - uv[:, 1]  # image rows go down
+            uv = np.array([list(uv_layer[li].uv) for li in tri.loops]) * (w, h)
+            uv[:, 1] = h - uv[:, 1]  # image rows go down
             p = verts[list(tri.vertices)]
             x0, y0 = np.floor(uv.min(0)).astype(int)
             x1, y1 = np.ceil(uv.max(0)).astype(int)
             x0, y0 = max(x0, 0), max(y0, 0)
-            x1, y1 = min(x1, size - 1), min(y1, size - 1)
+            x1, y1 = min(x1, w - 1), min(y1, h - 1)
             if x1 < x0 or y1 < y0:
                 continue
             gx, gy = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
@@ -179,54 +184,40 @@ def main():
     meshes = scene_io.import_any(a.input)
     verts, _ = scene_io.mesh_arrays(meshes)
     height = float(np.ptp(verts[:, 2])) or 1.0
-    images = {n.image for ob in meshes for s in ob.material_slots if s.material and s.material.use_nodes
-              for n in s.material.node_tree.nodes if n.type == 'TEX_IMAGE' and n.image is not None}
+    images = images_of(meshes)
     results = []
-    for i, image in enumerate(sorted(images, key=lambda im: im.name)):
-        report.progress(0.1 + 0.8 * i / max(len(images), 1), f'Analyzing {image.name}')
+    for i, image in enumerate(images):
+        report.progress(0.1 + 0.8 * i / max(len(images), 1), f'Looking for holes in {image.name}')
         w, h = image.size
         if w == 0 or h == 0:
             continue
-        pixels = np.empty(w * h * 4, dtype=np.float32)
-        image.pixels.foreach_get(pixels)
-        full = pixels.reshape(h, w, 4)[::-1]  # Blender stores rows bottom-up
+        names = names_of(image)
+        full = pixels_of(image)[::-1]  # rows top-down, as texel_positions lays them
         holes_full = magenta_mask(full[..., :3])
         coverage = float(holes_full.mean())
-        name = bpy.path.clean_name(image.name)
-        if coverage < 0.0005:
-            results.append({'image': image.name, 'coverage': coverage, 'file': None})
+        if coverage < NONE_BELOW:
+            results.append({'names': names, 'coverage': coverage, 'file': None})
             continue
-        size = min(WORK, w)
-        colors = resize(full[..., :3], size)
-        holes = resize(dilate(holes_full, 2)[..., None].astype(np.float32), size)[..., 0] > 0.05
+        scale = min(1.0, WORK / max(w, h))
+        hh, ww = max(1, round(h * scale)), max(1, round(w * scale))
+        colors = resize(full[..., :3], hh, ww)
+        holes = resize(dilate(holes_full, 2)[..., None].astype(np.float32), hh, ww)[..., 0] > 0.05
         report.progress(0.1 + 0.8 * (i + 0.4) / max(len(images), 1), 'Mapping texels to the surface')
-        pos, covered = texel_positions(meshes, image, size)
+        pos, covered = texel_positions(meshes, image, hh, ww)
         report.progress(0.1 + 0.8 * (i + 0.7) / max(len(images), 1), 'Filling from nearby paint')
         filled = fill_from_surface(colors, holes, pos, covered, height)
         filled = fill_gutters(filled, holes, covered)
-        # Composite back at full resolution with a soft edge around each hole.
-        fill_full = upsample_bilinear(filled, w) if size != w else filled
+        # The decal at full resolution: the fill's colour, alpha how much it covers (each hole, softly round it).
+        fill_full = upsample_bilinear(filled, h, w) if (hh, ww) != (h, w) else filled
         mask_full = dilate(holes_full, 3).astype(np.float32)
-        soft = upsample_bilinear(resize(mask_full[..., None], size), w)[..., 0] if size != w else mask_full
-        alpha = np.clip(np.maximum(mask_full, soft * 1.5), 0, 1)[..., None]
-        out = full.copy()
-        out[..., :3] = full[..., :3] * (1 - alpha) + fill_full * alpha
-        out[..., 3] = 1.0
-        result = bpy.data.images.new(name + '_filled', w, h, alpha=False)
-        result.pixels.foreach_set(out[::-1].ravel())
-        result.filepath_raw = os.path.join(a.out, name + '.png')
-        result.file_format = 'PNG'
-        result.save()
-        mask_image = bpy.data.images.new(name + '_mask', size, size, alpha=False)
-        m = np.zeros((size, size, 4), dtype=np.float32)
-        m[..., 0] = holes
-        m[..., 1] = holes * 0.4
-        m[..., 3] = 1
-        mask_image.pixels.foreach_set(m[::-1].ravel())
-        mask_image.filepath_raw = os.path.join(a.out, name + '.mask.png')
-        mask_image.file_format = 'PNG'
-        mask_image.save()
-        results.append({'image': image.name, 'coverage': coverage, 'file': name + '.png', 'mask': name + '.mask.png'})
+        soft = upsample_bilinear(resize(mask_full[..., None], hh, ww), h, w)[..., 0] if (hh, ww) != (h, w) else mask_full
+        alpha = np.clip(np.maximum(mask_full, soft * 1.5), 0, 1)
+        decal = np.zeros((h, w, 4), dtype=np.float32)
+        decal[..., :3] = np.where(alpha[..., None] > 0, fill_full, 0)
+        decal[..., 3] = alpha
+        file = names[0] + '.png'
+        save_png(decal[::-1], os.path.join(a.out, file))
+        results.append({'names': names, 'coverage': coverage, 'file': file})
     report.result({'images': results})
 
 

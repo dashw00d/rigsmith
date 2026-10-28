@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
-import { bendOf, capturePose, handPose, setBend } from './handposes.ts'
+import type { HandPose } from '../model/types.ts'
+import { bindRest, capturePose, handFrame, handPose, handRest, poseAt, poseClip, poseLocals, withinReach, withJoint } from './handposes.ts'
 
 // A hand on a skinned mesh: a wrist and four fingers (three bones and a tip each), palm down (-y), the index forward
 // (+z): the right hand out along -x (a character faces +z, its right is -x), the left along +x. `twist` turns every bone's own axes about its length: a re-rig that names
@@ -77,27 +78,107 @@ describe('hand poses', () => {
     l.root.updateMatrixWorld(true)
     tips(l.bones, 'Left').forEach((p, i) => expect(p.distanceTo(want[i])).toBeLessThan(1e-6))
   })
-
-  it("reads and sets a joint's curl and spread", () => {
-    const q = setBend(undefined, 'curl', 40)
-    expect(bendOf(q).curl).toBeCloseTo(40, 4)
-    expect(bendOf(q).spread).toBeCloseTo(0, 4)
-    const both = setBend(q, 'spread', 10)
-    expect(bendOf(both).spread).toBeCloseTo(10, 1)
-  })
 })
 
 describe('a fist on the sliders', () => {
-  it('reads a closed hand past 90 and opens it back to straight', async () => {
+  it('opens a closed hand back to straight and closes it again', async () => {
     const { closeFinger, closedness } = await import('./handposes.ts')
     const { root, bones } = hand('Right')
     curl(bones, 'Right', 1.2)
     const fist = capturePose(root, 'Right', 'Fist')!
-    expect(bendOf(fist.joints.Index1).curl).toBeGreaterThan(60)
+    // (a joint's whole turn in degrees, read off the quaternion's axis part so it stays exact near zero)
+    const turn = (q: [number, number, number, number] | undefined): number => (q === undefined ? 0 : THREE.MathUtils.radToDeg(2 * Math.asin(Math.min(1, Math.hypot(q[0], q[1], q[2])))))
+    expect(turn(fist.joints.Index1)).toBeGreaterThan(60)
     const straight = closeFinger(fist, fist, 'Index', 0)
     expect(closedness(straight, fist, 'Index')).toBeCloseTo(0, 6)
-    expect(bendOf(straight.joints.Index2).curl).toBeCloseTo(0, 4)
+    expect(turn(straight.joints.Index2)).toBeCloseTo(0, 4)
     expect(closedness(closeFinger(straight, fist, 'Index', 1), fist, 'Index')).toBeCloseTo(1, 6)
-    expect(bendOf(setBend(fist.joints.Index2, 'curl', 0)).curl).toBeCloseTo(0, 4)
+  })
+})
+
+describe('the hand frame', () => {
+  it('faces the back of either hand the same way, so the two hands mirror', () => {
+    for (const side of ['Left', 'Right'] as const) {
+      const { bones } = hand(side)
+      const f = handFrame(n => bones.get(n)?.getWorldPosition(new THREE.Vector3()) ?? null, side)!
+      // (palm down, so its back is up; the fingers out along the arm; across toward the index, +z here)
+      expect(f.back.y).toBeCloseTo(1, 6)
+      expect(f.across.z).toBeCloseTo(1, 6)
+      expect(f.forward.x * (side === 'Right' ? -1 : 1)).toBeGreaterThan(0.99)
+      expect(f.wrist.length()).toBeLessThan(1e-9)
+    }
+  })
+
+  it('needs a wrist and knuckles to measure across by', () => {
+    const { bones } = hand('Right')
+    expect(handFrame(() => null, 'Right')).toBeNull()
+    expect(handFrame(n => (n === 'RightHand' || n === 'RightHandIndex1' ? bones.get(n)!.getWorldPosition(new THREE.Vector3()) : null), 'Right')).toBeNull()
+  })
+})
+
+describe('a pose off a clip, and a pose as a clip', () => {
+  it('reads the hand at a time of a clip, the joints it leaves alone as at rest', () => {
+    const { root, bones } = hand('Right')
+    const rest = new Map([...bones].map(([n, b]) => [n, b.quaternion.clone()]))
+    curl(bones, 'Right', 0.8)
+    const want = capturePose(root, 'Right', 'Curl')!
+    // (every finger joint but the little finger's, from rest at 0 to the curl at 1)
+    const tracks = [...bones].filter(([n]) => /[123]$/.test(n) && !n.includes('Pinky'))
+      .map(([n, b]) => new THREE.QuaternionKeyframeTrack(`${n}.quaternion`, [0, 1], [...rest.get(n)!.toArray(), ...b.quaternion.toArray()]))
+    const clip = new THREE.AnimationClip('Curl', 1, tracks)
+    // (the clip is read, not played: the bones stay at rest)
+    for (const [n, b] of bones) b.quaternion.copy(rest.get(n)!)
+    root.updateMatrixWorld(true)
+    const got = poseAt(root, 'Right', clip, 1, 'Taken', { clip: 'Curl', at: 1 })!
+    for (const k of ['Index1', 'Middle2', 'Ring3']) got.joints[k].forEach((v, i) => expect(v).toBeCloseTo(want.joints[k][i], 5))
+    expect(new THREE.Quaternion(...got.joints.Pinky1).angleTo(new THREE.Quaternion())).toBeLessThan(1e-5)
+    expect(got).toMatchObject({ name: 'Taken', side: 'Right', from: { clip: 'Curl', at: 1 } })
+    const start = poseAt(root, 'Right', clip, 0, 'Start')!
+    expect(new THREE.Quaternion(...start.joints.Index2).angleTo(new THREE.Quaternion())).toBeLessThan(1e-5)
+    expect(bones.get('RightHandIndex1')!.quaternion.angleTo(new THREE.Quaternion())).toBeLessThan(1e-9)
+  })
+
+  it('shows a pose as a clip that puts the fingers back as they were', () => {
+    const { root, bones } = hand('Left')
+    curl(bones, 'Left', 0.6)
+    const want = tips(bones, 'Left')
+    const pose = capturePose(root, 'Left', 'Grip')!
+    for (const b of bones.values()) if (/\d$/.test(b.name)) b.quaternion.identity()
+    root.updateMatrixWorld(true)
+    const clip = poseClip(root, 'Left', pose)
+    expect(clip.name).toBe('Hand pose: Grip')
+    const mixer = new THREE.AnimationMixer(root)
+    mixer.clipAction(clip).play()
+    mixer.setTime(0.5)
+    root.updateMatrixWorld(true)
+    tips(bones, 'Left').forEach((p, i) => expect(p.distanceTo(want[i])).toBeLessThan(1e-6))
+  })
+})
+
+describe('shaping a pose', () => {
+  it('turns one joint on the hand shown, the pose made over on that hand', () => {
+    const { root } = hand('Right')
+    const rest = handRest(bindRest(root), 'Right')!
+    const blank: HandPose = { id: 'p1', name: 'Blank', side: 'Left', joints: {} }
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), 0.5)
+    const next = withJoint(rest, 'Right', blank, 'RightHandIndex2', q)
+    expect(next).toMatchObject({ id: 'p1', name: 'Blank', side: 'Right' })
+    expect(Object.keys(next.joints)).toEqual(['Index2'])
+    expect(poseLocals(rest, 'Right', next).get('RightHandIndex2')!.angleTo(q)).toBeLessThan(1e-5)
+  })
+
+  it('holds each joint it turns within reach, and adds none', () => {
+    const { root, bones } = hand('Right')
+    curl(bones, 'Right', 1)
+    const fist = capturePose(root, 'Right', 'Fist')!
+    const some: HandPose = { ...fist, joints: { Index1: fist.joints.Index1, Middle1: fist.joints.Middle1 } }
+    const rest = handRest(bindRest(root), 'Right')!
+    // (a reach that keeps the index's knuckle at rest and lets everything else be)
+    const reach = { has: (b: string) => b === 'RightHandIndex1', clamp: (b: string) => rest.get(b)!.local.clone() }
+    const held = withinReach(rest, some, reach)
+    expect(Object.keys(held.joints).sort()).toEqual(['Index1', 'Middle1'])
+    expect(new THREE.Quaternion(...held.joints.Index1).angleTo(new THREE.Quaternion())).toBeLessThan(1e-5)
+    held.joints.Middle1.forEach((v, i) => expect(v).toBeCloseTo(some.joints.Middle1[i], 5))
+    expect(held.side).toBe('Right')
   })
 })

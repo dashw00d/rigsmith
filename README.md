@@ -1,333 +1,240 @@
 # Rigsmith
 
-A personal character pipeline for the RTS: drop in a model, get a rigged, outfitted, painted and animated
-GLB for Godot. One flow: **Import → Rig → Outfit → Texture → Animate → Export.**
+A personal character pipeline for Emberhold's units: drop in a model, and Rigsmith skeletons, skins, equips, paints
+and animates it, then builds it into the game as a unit. Seven steps, in order:
+**Import → Skeleton → Skin → Gear → Look → Motion → Ship.**
 
 ```bash
 npm install
-npm run dev        # app + local server on http://127.0.0.1:5180
-npm start          # production build, served the same way
+npm run dev        # the app and its local server on http://127.0.0.1:5180
+npm start          # a production build, served the same way on 5181
 ```
 
-Needs Node 24+, Blender 5.x on `PATH` (or `BLENDER=/path/to/blender`), and optionally the Codex CLI for
-AI repainting and Godot 4.x for the export check. All data lives in `workspace/` (gitignored).
+Needs Node 24+ (it runs `node tools/*.ts` directly), Blender 5.x on `PATH` (or `BLENDER=/path/to/blender`), and
+optionally the Codex CLI (AI repainting in Look), PyTorch in `.venv` (pose-optimized weights; `npm run setup:python`)
+and Godot 4.x (the import check). Everything you make lives in `workspace/` (gitignored; see
+[Workspace](#workspace)).
 
-## The flow
+## The seven steps
 
-| Step | What happens |
+| Step | What it does |
 | --- | --- |
-| Import | Drop FBX, GLB, OBJ, DAE or ZIP (Tripo zips work as-is), any number at once. Blender normalizes each one and detects whether it's a mesh, a rigged character (Mixamo, Unreal, Rigify, Tripo…) or an animation. |
-| Rig | Humanoids: place body regions and hand tips, choose 25/33/41/65 bones, then rig in Blender. Switching finger levels fits the new chains at the current wrists. Humans and horses compare regional and volume-heat skinning on deformation tests; rerigging also checks against the previous weights on the new joints. Creatures use fitted body templates. Already-rigged imports keep their weights; non-Mixamo skeletons can be mapped onto Mixamo. **Auto-rig all** does a whole batch. |
-| Outfit | Props from the catalog (swords, shields, bows, tools, guns) pinned to sockets with a gizmo. Your own meshes as accessories of three kinds: **props** (rigid on a bone, with grips for hands and *pulls*: points another bone draws, like a bowstring), **clothes** (skinned to the body with a policy, weights painted with the Rig step's brushes, optional hide-body-underneath) and **parts** (pinned to a spot on the body and moving with that skin; a mechanism plays its own animation). Any of them can be switched off or put in a switch set (one shown at a time). |
-| Texture | Fill the magenta holes AI texture generators leave (filled from nearby paint in 3D, seam-aware). Projection painting: mask on the model itself (smart brush, wand, brush; it stays put while the camera turns, dragging off the model orbits), the views that see it squarely are found and captured, Codex paints each `result-N.png`, they are blended back onto the UVs (each texel from the view that saw it most squarely), keep it. |
-| Animate | The complete named Mixamo collection (2,317 motions + 129 poses), bundled work/combat clips and creature clips. Search names, filenames and descriptions; numbered variants stay distinct. Every card previews the clip on *your* character. Build a per-character set (names, loop, in-place, speed) and copy it to other characters. |
-| Animate: editing | Pose and key any clip in the viewport, props leading the body with both hands on them, Naturalize, save as a new library clip: see [docs/animating.md](docs/animating.md). |
-| Export | GLB for Godot: bone names (`Hips` or `mixamorig:Hips`), texture size and format, `-loop` suffix for looping clips, props as bone attachments. Writes into your export folder (e.g. inside the Godot project). |
+| **Import** | Drop FBX, GLB, OBJ, DAE or ZIP (Tripo zips work as they are), any number at once. Blender normalizes each and says what it holds: a mesh, a rigged character (Mixamo, Unreal, Rigify, Tripo…) or an animation. Shows the source, its stats, its size (height, stood on the floor; resize keeps everything placed in proportion) and what the import noticed. Re-import asks first, refuses while a job runs, and keeps your placed joints. |
+| **Skeleton** | Pick the template (a person, a horse; "Other creatures" for the experimental ones). One joint view: the marker board (a dozen points on a flat view; drag one and the skeleton follows) and the 3D joints are two cameras on the same placements, with a Mirror toggle. Finger level (25/33/41/65 bones) and "Detect again" re-trace the hands; placements they make meaningless are set aside for you to restore or discard. A rigged import with a foreign skeleton can be mapped onto Mixamo's and converted. **Rig** runs the rig job in Blender; **Auto-rig all** does a batch. |
+| **Skin** | The rig report as decisions (which weights won and why), the weight lock (hand-fixed weights are locked: nothing may change them until you unlock), deformation tests (library clips that work the joints hard), the weight view, and weight painting on the posed body. |
+| **Gear** | What the character wears and carries: game gear (brought in by `tools/game_import.py`), catalog weapons, shields and tools, and your own uploads. Each piece rides a bone with a gizmo placement; "Other ways to wear it" puts clothing on the skin or pins a part to a spot. Swap sets show one piece at a time. **Handles** say where hands hold it: the carry handle (the hand it rides), grips for the other hand, pulls (a point another bone draws, like a bowstring), each with the hand pose it closes to. Gear weight painting for clothing and pulled gear. |
+| **Look** | Texture layers over the model's own image: the hole fill (the magenta gaps AI texture generators leave, filled from nearby paint in 3D, seam-aware), repaints and old snapshots; each can be switched off, removed or reordered, and every change can be undone. Projection painting: mask on the model (smart brush, wand, brush), capture the views that see it squarely, have Codex (or an image of yours) paint them, preview the bake, keep it as a new layer. |
+| **Motion** | The unit's **slots** (each clip name the game plays) and trials. Arm a slot, then pick a card in the clip **Library** (the complete named Mixamo collection, bundled work and combat clips, creature clips, and your own edits; every card previews on your character). Per slot: speed, loop, in place, and an **adjustments** stack: ground (with Auto), blow timing, pace, hand pose, handle hold, keys. The timeline shows the playing slot's adjustments as lanes. **Edit** opens the clip editor ([docs/animating.md](docs/animating.md)). Copy a set to other characters. |
+| **Ship** | The unit: its height (set by eye in the scale room, among the game's own models), budget, levels, clip names, draft; its companion and the mount (a rider and his horse, set together); the contract checks, pass or fail, before you export; **Export to the game** (cancellable) and the last build record (strides, holds that failed, warnings). The game repo's path is set here. |
 
-## Layout
+Round the steps: the **character list** (search, import, rename, delete with a check for riders, units and running
+jobs, status from what the character can do now), the **Activity** drawer (this character's journal with Undo on each
+change you can take back, notes, and every job with its progress and Cancel), the **Hands** panel in Gear and Motion
+(each hand's layers for the slot playing, which one wins at the playhead and why, and the named hand poses), and
+**Settings** (the game repo). Hand poses can be shared by every character (`settings.json`).
 
+## How a character is kept
+
+One document per character (`characters/<id>/character.json`, schema 2: `src/model/types.ts`), in sections with one
+owner each: source, skeleton, skin, hands, gear, clips, look, mount. Every change you make is a **command**
+(`src/model/command-types.ts`) applied by one pure reducer on the server and, optimistically, in the app; each request
+is one entry in the character's **journal** (`journal.jsonl`: who, when, what, in words) and can be undone from the
+Activity drawer unless a later change touched the same thing. Long work (import, rig, finger trace, texture compose,
+export) runs as **jobs** that write through the same journal and can be cancelled. The rules and APIs behind this are
+in [docs/rebuild/DESIGN.md](docs/rebuild/DESIGN.md); why it was rebuilt this way is
+[docs/rebuild/PLAN.md](docs/rebuild/PLAN.md).
+
+## Game units: the contract and the flow
+
+The game's units are these characters, and the game gets them exactly as they are here.
+
+- **Rigsmith keeps its own unit list** (`workspace/game/units.json`, `src/model/unit.ts UnitSpec`; first copied from
+  the game's): which character each unit is, its height and budget, its levels, the clip names it plays, its
+  companion, and whether it is a draft (built only when named). Ship edits it (or `tools/rig.ts unit`), live in every
+  open page and journaled on the characters it names.
+- **The game's repo is written only by Export** (Ship's "Export to the game", `tools/rig.ts export UNIT`): the unit's
+  block of the game's `tools/rigsmith/units.json` (that block alone, every other byte kept), then the game's
+  `tools/rigsmith/build.sh` for it, which runs `tools/game_export.ts` (`tools/lib/unit_export.ts`). One export runs at
+  a time. Each build gets a run token (`RIGSMITH_RUN`, through `build.sh`'s environment into the build record); the
+  export passes only when every unit's record carries it and its `.glb` was written after the build started.
+  Anything else (a failed build, a missing record, Cancel) puts the game's `units.json` back as it was.
+- **One bake.** The export bakes each slot with the same code the viewer plays (`src/engine/bake.ts`: speed, blow
+  timing, pace, hands, ground, keys, gear tracks; `bakeRide` for a rider), then scales and grounds it into game units.
+
+What the game expects of a unit, each rule in `src/engine/contract.ts` (Ship's checks show them before you export):
+
+- `<models dir>/<unit>.glb`: the mesh named `<unit>`, levels `<unit>_LOD1`, `_LOD2` (default ratios 0.45, 0.15; none
+  for a mesh of 60 triangles or fewer), LOD0 within the budget (swapped parts not counted), soles at y = 0, facing +Z,
+  a `root` bone above `Hips`, one material `Main` (the game binds its own maps).
+- Clips named after the slots the spec lists. `Walk`, `Carry` and `Run` must step (the lesser foot swings at least
+  0.12 of the height); `Idle`, `Trade` and `Hunt` must stand (the hips' median at least 0.8 of their rest height); the
+  game times hits at 0.45 of an attack.
+- Gear: only parts the game built go in (`from: "emberhold:<unit>/<part>"`, brought in by `game_import`), each mesh
+  named after its part; a hidden piece stays out unless the game swaps it in by job or look (`Gear*`, `Head*`,
+  `Wear*`). A keyed piece gets its own `Prop_<gear>` bone the clips move; a pull handle a `Prop_<gear>_<handle>` bone.
+  Clothing and spot parts go as skinned meshes weighted as shown (`tools/lib/gearskin.ts`).
+- A companion (a pony beside it, the horse under it) is built the same way under the unit's root, its bones prefixed.
+  A rider's horse is the unit's companion with `ridden: true`; his lower body holds the seat while the rest plays his
+  slots, the horse's slots fitted to his by whole cycles. The horse's gear (`mount.gear`) has never shipped and still
+  doesn't (an open question for the owner).
+- The build record (`<work dir>/<unit>/rigsmith.json`, `src/model/unit.ts BuildRecord`): every key the game reads
+  (`texture`, the clip names, `companion`) plus, since schema 2, the run token, the slots as baked, the hands and the
+  gear ids. The game keeps it as `sources.rigsmith` in the unit's texture provenance.
+
+**The way back:** `tools/game_import.py` brings a unit back from its last build (its slots, hands and the parts it
+carries; old builds' clips and scripts read as Rigsmith reads an old character), for a character that lacks them or a
+part rebuilt in the game's Blender pipeline. New parts go through the gear upload; the rest is one undoable batch
+(`POST /api/characters/:id/restore`, `server/routes/restore.ts`). By default it only adds what is missing;
+`--replace` puts the character back as built; `--repivot` moves each game part's origin to where it is held;
+`--dry-run` prints the batch.
+
+```bash
+npm run export:game -- <spec.json> <models dir> <work dir> [unit ...]                # what the game's build.sh runs
+python3 tools/game_import.py ~/dev/games/emberhold [unit ...] [--replace] [--dry-run]  # fill a character from a build
+node tools/dev/ground.ts <unit.glb> ...                                              # how far each clip's feet sit off the ground
+npm run test:godot -- <models dir>/<unit>.glb                                        # the unit imported in headless Godot
 ```
-src/app/        Svelte UI (one page; steps in app/steps)
-src/state/      app state, viewer, animator, outfit, painter (Svelte 5 runes)
-src/engine/     three.js: stage, character view, joint editor, retargeting, props, garments,
-                projection painting, edge-aware selection, exporter, skeleton presets
-server/         local API mounted on the Vite server: workspace, Blender/Codex job queue, library
-blender/        Blender jobs: inspect/import, auto-rig (landmarks, skeleton, heat weights), texture fill,
-                library conversion
-static/         props, creature rig templates and their clips, bundled human clips
-tests/godot/    headless Godot import check for exported GLBs
+
+## The command line
+
+`tools/rig.ts` reads and changes characters as the app does: reads straight from the workspace (as schema 2, however
+old the file), changes as commands through the running server, so open pages update at once and the journal names the
+change (signed `agent`; `RIGSMITH_BY` overrides; `RIGSMITH_URL` for another port).
+
+```bash
+node tools/rig.ts list                                     # every character: unit, clips, gear, mount
+node tools/rig.ts show WHO [--json]                        # slots with adjustments, hands, gear with handles, mount
+node tools/rig.ts history WHO [N] | note WHO TEXT...       # the journal; a note in it
+node tools/rig.ts get WHO [PATH]                           # the record or a part (clips.Idle.adjustments, mount.pose.Hips)
+node tools/rig.ts set WHO FIELD JSON                       # name, joints, markers, boneMap, handPoses, hold, fingers, mount
+node tools/rig.ts do WHO COMMANDS | undo WHO [SEQ]         # any commands as one change; take one back
+node tools/rig.ts slot WHO SLOT CLIP [speed=1] [loop|once] [inplace|moving]
+node tools/rig.ts clips WHO QUERY [category]               # library clips for its rig
+node tools/rig.ts ride WHO HORSE|off                       # the app's default seat
+node tools/rig.ts render WHO [clips=Idle,Walk] [at=0,.25,.5,.75] [views=right,front] [size=320]
+node tools/rig.ts units | unit NAME JSON|null | export UNIT ...
+node tools/rig.ts check [UNIT ...]                         # is the game's file what Rigsmith builds now? (npm run verify:units)
 ```
+
+WHO is an id, a name or a game unit. `render` builds the unit (its filled slots) into `workspace/renders/<id>/` and
+draws each clip in Blender (`tools/render.py`). Without a server, these write the workspace directly (each refuses
+while a Rigsmith server answers, so that server stays the only writer; `--ignore-server` when the one answering serves
+another workspace):
+
+```bash
+node tools/apply.ts <id> <commands.json | -> [--by NAME]   # the offline twin of POST /api/characters/:id/commands
+node tools/restore.ts <id> <request.json | -> [--dry-run]  # the offline twin of POST /api/characters/:id/restore
+npm run migrate [-- --dry-run]                             # every v1 character and settings.json to schema 2
+npm run migrate:check [-- --hashes <file>]                 # then check each against its v1 record; no GLB or paint changed
+```
+
+The node tools share `tools/lib/node3d.ts` (three's loaders headless, a character's body as the viewer holds it,
+`readCharacter` for every character file, the clip source in Node).
+
+## The v1 compatibility layer (deprecated)
+
+The game repo's own scripts (`tools/rigsmith/import_new_units.py`, `import_gear.py`, `stage_new_units.sh`) speak the
+schema 1 HTTP API, and the game repo can't be changed from here. So the server keeps a v1 layer (`server/compat.ts`,
+`src/model/legacy.ts`) until they are ported:
+
+- `GET /api/characters[/:id]` answer the v1 view unless the request sends `x-rigsmith-schema: 2` (the app and the ported
+  tools always do).
+- `PATCH /api/characters/:id` takes only `animations`, `scripts`, `garments` and `props` in v1 shape, turned into one
+  batch of commands journaled under the caller's `x-rigsmith-by`; any other key answers 410.
+- The upload routes keep their paths and query parameters (`POST /api/characters?name=`,
+  `POST /api/characters/:id/garments?name=&kind=` with optional `bone=`, `from=`), and `/rig` and `/reimport` too.
+
+Every non-GET request must carry `x-rigsmith: 1` or `x-rigsmith-by: <tool>` (403 otherwise). Port a client by sending
+`x-rigsmith-schema: 2`, reading the schema 2 document, and writing through `POST /api/characters/:id/commands`
+(`{ commands }`, one undoable entry) or `tools/apply.ts`. Python readers of `character.json` check `schema == 2` and
+otherwise ask for `node tools/migrate.ts`. Remove the layer once nothing sends v1.
+
+## Workspace
+
+`workspace/` (gitignored; `RIGSMITH_WORKSPACE` points elsewhere). User data that can't be rebuilt is marked ★; back it
+up with `tools/dev/backup_workspace.sh`.
+
+| Path | What it is |
+| --- | --- |
+| `settings.json` ★ | The game repo and the shared hand poses. |
+| `characters/<id>/` ★ | One folder a character: `character.json` (schema 2), `character.v1.json` (the file before migration, kept once), `journal.jsonl`, `source/original.<ext>` (the upload, never deleted), `model.glb` (the normalized import), `rigged.glb` (the live rig), `weight_edits.json` (painted weights, re-applied on every re-rig), `thumbnail.webp`, `textures/` (the composite each image wears; `textures/layers/<id>.png` the look layers), `projections/<id>/` (projection painting captures), `garments/<id>/` (a gear piece's source, model and `weights.json`). |
+| `game/` ★ | `units.json` (Rigsmith's unit list), `builds/<unit>.json` (each unit's last export), `export-backup.json` (the game's `units.json` while an export runs). |
+| `library/` | The clip library: `clips/<id>.glb` and `manifest.json` (rebuildable), `sources/` ★ (downloaded FBX with hashes, and `custom/` edits), `creatures/<rig>/` ★ (saved creature clips), `mannequin/ybot.glb`, `audit.json`, `verify/`. |
+| `trash/` | Deleted characters (`<id>-<when>/`) and gear folders nothing uses: put one back to restore it. |
+| `renders/` | `rig.ts render` sheets and `rig.ts check` scratch. |
+| `cache/`, `exports/`, `backups/`, `audits/`, `rigdev/`, `scratch/` | Caches; old browser exports (the generic export is gone); hand-made safety copies; evidence from the rigging and naturalization work ([HANDOFF.md](HANDOFF.md)); rig R&D (its `gt/` is hand-made ground truth ★); throwaway scripts. |
+
+## The clip library
+
+```bash
+npm run library:sync     # download, checksum-verify and convert all 2,446 named FBXs
+npm run library          # rebuild from local sources and cache, no download
+npm run library:verify   # every source hash, converted name, skeleton, FPS and frame count
+npm run library:runtime  # every clip loaded and retargeted on Y Bot and a local character, and every clip a slot plays
+```
+
+Sources come from [Linzhan/Mixamo-Animations-Characters](https://huggingface.co/datasets/Linzhan/Mixamo-Animations-Characters),
+pinned to revision `7f134bc734557b1d9516cb476d25ea1f577e45c1` (the full `animation/` folder, static poses included).
+Downloads resume and use the publisher's SHA-256 hashes. Files live under
+`workspace/library/sources/mixamo-named/animation/`; converted clips have readable names such as
+`workspace/library/clips/mixamo-Jab_Cross_2.glb`. `metadata.csv` and `index.json` keep the original Mixamo names,
+descriptions and motion ids; `catalog-verification.json` records the full integrity check. Some publisher CSV frame
+counts are stale; playback uses the FBX's own timing. The FBXs keep their source terms.
+
+**Made clips** (`blender/clips/`): motions no library has, made by a script from library sources and written into the
+library by its own converter (`convert.py convert_clip`, on the source's armature as Blender holds it, so the clip
+keeps that source's rest skeleton). Each one's line in `work/sources.json` names its script and inputs; `build.py
+convert` remakes it when either changes. `custom-Spear_Thrust` (`spear_thrust.py`): a one-handed underhand thrust
+behind a shield, from Stabbing 2 and Sword And Shield Idle 4. Clips saved from the editor are `custom-<Name>`
+(`workspace/library/sources/custom/<id>.edit.json`; a creature's as a `.glb` under `library/creatures/<rig>/`).
 
 ## Checks
 
 ```bash
-npm run check                                   # types
-npm test                                        # unit tests incl. retargeting on real library clips
-npm run test:godot -- workspace/exports/X.glb   # imports a GLB in headless Godot, resolves every track
-python3 -m unittest discover -s blender/autorig -p test_heat.py
-.venv/bin/python -m unittest discover -s tools/skin_opt -p test_quality.py
-python3 tools/verify_autorig.py --out workspace/audits/rigging/generated --native
-node tools/dev/verify_rigs.ts workspace/audits/rigging/generated workspace/audits/rigging/checks.json
-node tools/dev/verify_rigs.ts workspace/audits/rigging/generated workspace/audits/rigging/extended.json --extended
-node tools/dev/verify_naturalize.ts workspace/audits/motion-checks.json
-node tools/dev/verify_naturalize.ts workspace/audits/dense-motion-checks.json --dense
-node tools/dev/verify_hands.ts workspace/audits/hand-checks.json skirmisher-19c713 mixamo-Grab_And_Slam
-node tools/dev/verify_surfaces.ts workspace/audits/surface-checks.json skirmisher-19c713 mixamo-Grab_And_Slam --frames 24,97
+npm run check            # check:app (svelte-check, errors) and check:tools (tsc -p tools)
+npm test                 # vitest: model, engine, server, app rules and tools (the unit export included)
+npm run test:python      # blender/autorig, blender/library and tools/skin_opt unittests (.venv)
+npm run lint
+npm run migrate:check    # every character still means what its v1 record meant
+npm run verify:units     # each game unit's file against what Rigsmith builds now
 ```
 
-The isolated rig check leaves saved characters alone. It verifies exported joint positions, finite normalized
-weights, four influences, matching split seams, and samples eight poses from each rig test clip. `--extended` adds
-16 catalog motions across eight human movement categories. Stretch, compression and RMS strain metrics measure
-deformation; a structurally valid rig can still crease or clip clothing. Native heat retries failed disconnected
-surfaces independently, then fills unbound pieces from the regional solution. Painted edits are reapplied before comparing candidates, and a failed build
-leaves the previous GLB intact. Independent surface islands can keep different candidate weights when every test
-agrees on both strain and extreme deformation; material and UV seams stay together. Overlapping connected markers
-are reported by name before fitting. The deformation comparison currently covers humans and horses; other templates
-keep their regular heat solver. Back up `workspace/characters` before a library-wide rebuild.
+How the rig, the weights and Naturalize work, and their own verification scripts (`tools/verify_autorig.py`,
+`tools/dev/verify_*.ts`, the Mixamo bench), are in [docs/rigging.md](docs/rigging.md).
 
-Previous skins are matched in bind space, with barycentric interpolation for small triangle-interior repairs.
-Painted vertices follow that surface across reordered vertices and UV splits; sparse strokes do not spread onto
-unpainted triangles. An ambiguous or missing painted point stops the rebuild and preserves the previous rig.
-Rig and remapped paint publication rolls back if the paint record cannot be written. The surface check reads the
-actual deformed triangles and distinguishes crossings already present at rest and in the source frame. Its crossing
-lengths are intersection contours, not penetration depths; a contour moving across faces is not a new collision.
+## Code layout
 
-The pose optimizer refines the selected heat/previous skin, then validates it again, including a spread of additional
-library motions. Its objective penalizes extreme compression and stretching symmetrically; volume is preserved only
-for individually closed, consistently oriented surfaces. Open robes and disconnected parts cannot inflate one another.
-Hand retargeting reads bind geometry around the placed wrist and knuckles, so repainting weights does not rotate the grip.
-
-Weight brushes follow the posed surface instead of reaching through nearby fingers or cloth. Healing needs an
-unmarked boundary; an entirely selected island is left unchanged. Naturalization resets the original pose for each
-sample, infers balance support from grounded heels/toes, and runs in cancellable batches. Failed/cancelled solves
-restore the source scene; the editor retains the previous clip if hand constraints or floor clearance fail.
-Temporal averaging uses orientations and unwraps corrections across 180 degrees. Dense motion verification samples
-every output frame and reports hand/floor error, foot movement, collision depth and angular acceleration. Contact
-increases are compared against the same body-part pair in the same source frame, after final hand/floor corrections.
-Naturalize uses the unedited clip to preserve captured elbow freedom while correcting added bow from edits;
-newly authored held poses retain the anatomical default. Elbow allowances and capsule endcaps vary continuously.
-Measured joint ranges clamp to the nearest allowed cell edge, preventing a tiny boundary crossing from snapping an
-arm to the cell centre and moving its hand off target.
-The finger contact pass first preserves tips with a three-joint redistribution, scores the rendered skin, and
-refines a continuous trajectory. It checks both proper crossings and covered surface estimated from oriented
-solid angles. Bind-area weighting prevents a compressed buried triangle from appearing improved. A whole
-finger is retained unchanged if any frame increases covered area or if RMS or peak angular acceleration rises;
-a constant pad tilt is also considered when a varying correction would add motion. Free fingers can instead
-uncurl gently toward their bind pose, by at most 10 degrees per joint and within the smaller of 0.4% of character
-height or 8% of the finger's length at the tip. A constant relaxation is tried first. If changing contacts prevent
-one adjustment from working throughout, the solver searches a smooth trajectory through each frame's safe
-relaxation interval. Actual float32 interpolants are checked again, unsafe intervals are removed, and the whole
-trajectory is re-solved. The stored quaternion tracks are also replayed at each interval midpoint; an unsafe
-interpolated pose constrains the adjacent choices before the trajectory is solved again. Both forms pass the
-same surface and motion guards. Extra contour length is allowed
-only on frames where covered area decreases.
-Contact trials reuse unaffected vertices and triangle pairs, cache skin transforms and face planes, and score
-intersection length without allocating segment objects. Coverage trials also retain stationary probes outside
-the moving patch's swept bounds when its boundary is unchanged. Open moving boundaries, separating seam
-copies, and probes near the winding threshold use full queries. Full-surface verification remains available.
-Prop carriers, attachments, authored fists, grip scripts and explicit finger keys are
-protected. Loop corrections share their duplicated endpoint; cancellation restores the pose and prior edit.
-Neither crossing length nor sampled coverage measures penetration depth or guarantees collision-free geometry.
-Midpoint checks increase temporal coverage but do not prove safety at every instant between samples.
-The solid-angle query detects enclosed geometry but open wrists and inconsistent orientation need comparison
-against the same source mesh. Boundary fans accelerate queries without approximating the solid-angle field;
-UV copies are cancelled only while their deformed positions coincide exactly.
-
-## Game units
-
-The RTS's player units are these characters, and the game gets them exactly as they are here. Rigsmith keeps its own
-list of them (`workspace/game/units.json`, `server/game.ts`; first copied from the game's): which character each unit
-is, its height and budget, its horse, and the clip names the game plays (the character's **slots**). It is edited in
-the Export step's "In the game" (or `tools/rig.ts unit`), saved at once and live in every page. **The game's repo
-(Settings `gameRepo`) is written only by Export** ("Export <unit> to the game", `tools/rig.ts export UNIT`): the unit's
-entry in its `tools/rigsmith/units.json` (that block alone, the rest of the file byte for byte), then its
-`tools/rigsmith/build.sh` for that unit (the model, its maps, the holds check). Tinkering never touches the game.
-
-```bash
-npm run export:game -- <spec.json> <models dir> <work dir> [unit ...]        # what the game's tools/rigsmith/build.sh runs
-python3 tools/game_import.py ~/dev/games/emberhold [unit ...] [--replace]     # fill a character in from the game's last build
-node tools/dev/tune_parity.ts <unit.glb> <character> <game height> <clip ...> # the viewer's clip against the exported one
-node tools/dev/ground.ts <unit.glb> ...                                       # how far each clip's feet sit off the ground
+```
+src/model/      the character document (types.ts), commands and their reducers, migrations, selectors, unit specs
+src/engine/     three.js, no DOM (runs headless in Node too): stage, character view, retargeting, the one bake
+                (bake.ts, hands.ts, timing.ts, keys.ts), gear placement, pulls, projection painting, the editor's solvers,
+                the game contract (contract.ts), GLB chunks (glb.ts), levels (lods.ts)
+src/state/      app state (Svelte 5 runes): app.svelte.ts and api.ts (every request), viewer, animator, one module a step
+src/app/        the UI: steps/<Step>Panel.svelte and a folder a step; src/ui/ the shared controls
+server/         the local API mounted on the Vite server: store (the per-character lock and journal), commands and
+                undo, jobs (Blender, Codex, torch, the game build; cancellable), routes/<area>.ts, the v1 layer
+blender/        Blender jobs: inspect, auto-rig (landmarks, skeleton, fingers, weights), texture fill and compose,
+                library conversion, made clips
+tools/          rig.ts, game_import.py, game_export.ts and lib/unit_export.ts, migrate.ts, apply.ts, restore.ts,
+                library tools, skin_opt/ (pose-optimized weights), dev/ (diagnostics)
+static/         catalog props, creature templates and their clips, bundled human clips, joint ranges
+tests/          godot/check_export.gd (a unit GLB in headless Godot)
+docs/           animating.md (gear in the clip editor), rigging.md (rigging and naturalization notes), rebuild/
 ```
 
-- **Slots** (Animate, "In the game"): each clip name the game plays, filled with a library clip. Arm a slot and press a
-  card's button, or play a card and press Use. Entries the game doesn't name are Trials: kept here, never exported.
-- **Tune** (Animate, under the slots; `src/engine/keys.ts`): on the slot playing, its **ground** (the whole body raised or
-  lowered through the clip, in cm in the game; Auto stands it on the floor by its flat feet, `src/engine/ground.ts`: the
-  frames a foot's heel and toe are down at one height, its lowest point only where it never plants one; All slots does
-  every slot the game plays at once; library clips and rig tests are stood on the floor so as they play) and **keys** on its bones (turns;
-  the Hips also move) and props (moves and turns about where they are held). Pause on a frame and drag the gizmo: letting
-  go keys it there. Keys sit at a phase of the clip, blend between, wrap round a loop and hold at a one-shot's ends. A
-  keyed prop gets its own bone in the game file (`Prop_<part>`) that the clips move.
-- **Edit animation** (Animate, top; `src/state/clipedit.svelte.ts`, `src/engine/PoseEditor.ts`, `ik.ts`, `limits.ts`,
-  `clipedit.ts`): *Edit* the clip playing (it plays as it is, the timeline empty) or make a *New clip from this frame*
-  (that pose held, its length set). Scrub, then drag a joint: a hand, a foot or the head reaches its limb there; any
-  other joint swings the bone above it; the diamond at the hips crouches and jumps (the feet stay where they stand, the
-  legs bend; Shift moves it anyhow); click a joint and turn it with the gizmo. Letting go keys every bone the drag
-  moved, at that frame (a turn from where the clip had it; on a clip with motion of its own a bone's first key also
-  pins it at the ends, so the change eases in and out). Keys tween smoothly (Catmull-Rom); every joint is held within
-  its range of motion as measured on real motion (`tools/rom.ts` -> `static/templates/rom/`: the library's 2,446 Mixamo
-  captures for a person, its template's clips for a horse); no foot goes under the floor further than the clip had it.
-  The timeline shows the keyed frames (diamonds; the selected bone's pink); Delete takes the frame's keys off. *Save as
-  a new clip* takes the edit back off the character onto the base clip's own skeleton (the retarget undone) and writes
-  it into the library as `custom-<Name>`, tagged custom, in the base clip's category (`POST /api/library/edits`,
-  `server/clipedits.ts` -> `workspace/library/sources/custom/<id>.edit.json`, made by `blender/clips/edit.py` through
-  the library's build). A creature's clip (a horse's: not a Mixamo clip) is saved as a .glb on its template's skeleton
-  into `workspace/library/creatures/<rig>/`, listed beside the bundled ones (`creatures/index.json`). The library's
-  *Custom* chip shows the clips made here (a badge on each card). The gizmo moves a joint (G; the limb follows) or
-  turns its bone (R; its own axes or the world's). *Props*: click one (a weapon) to select it; moving or turning it
-  keys its path at that frame and makes it lead (the hands on it follow its path, the body follows the hands); its
-  sockets (grips, kept on the garment: `GarmentSocket`) take a hand each (a new one is made where the hand is, its fist
-  snapped on the shaft and closed round it; moving or turning a hand on a socket changes the socket). Each frame the
-  body solves for its hands' goals (`src/engine/posespace.ts`, the library's natural-pose model: 66 numbers a pose,
-  PCA over the 131k frames, soft feet that pivot, slide or step, never under the floor, the hips free; for creatures
-  the rule search in `src/engine/bodysolve.ts`). *Naturalize* runs the model over the whole edited clip (smooth through
-  time, the hands kept on their sockets, the keyed joints pulled to where they were put). `src/engine/twohandpose.ts`
-  finds real two-handed grips in the library (`tools/twohand_poses.ts`: mostly close-handed, golf and baseball).
-- **Clip scripts** (Animate; `src/engine/scripts.ts`): switchable changes on top of the library motion: *Hold fist*,
-  *Blow timing* (an attack cut so its blow lands at a share of it, or to a window around the blow), *Pace*.
-- The order, the same in the viewer (`animator.scripted`) and the export: the clip at its speed, then the scripts, then the
-  ground, then the bone keys, then the props. `tune_parity.ts` checks the two agree (every bone and prop point).
-- **Gear** (Outfit): rigid garments, placed by one function the viewer and the export share (`src/engine/placement.ts`),
-  fitted on the bone in any pose (Rest, fists closed, or a clip paused on a frame). A hidden garment stays out of the
-  game, except the pieces the game shows by job (`Gear*`, `Head*`, `Wear*`). Only parts built in the game's Blender
-  pipeline go in (brought in by `game_import`, `from: "emberhold:..."`); others are left out with a warning.
-- **Accessories** (Outfit; `src/engine/garments.ts`, `src/engine/pulls.ts`): a garment's `mode` is its kind. *Props*
-  (`rigid`) ride one bone. *Clothes* (`clothing`) take the body's weights under each vertex (its policy's bones,
-  smoothed), then what was painted on them (the Rig step's brushes, the body under them there to Follow; kept in
-  `garments/<id>/weights.json`). *Parts* (`part`) are pinned to one spot of the body (picked, else the skin nearest
-  their middle): every vertex takes that spot's weights, so they move with the skin without bending; one with its own
-  animation (kept on import) plays it, riding the spot's leading bone. A *switch set* (`group`) shows one of its
-  pieces at a time. *Pulls* on a prop: a point another bone takes hold of while a clip holds it (per clip windows,
-  found by playing the clip: from the grip reaching the strand to the release or a full draw); the prop is skinned to
-  its own root and a `Prop_<prop>_<pull>` bone, a strand split at the point so it bends, each vertex rigid or soft as
-  painted. Clothes and parts reach the game as skinned meshes weighted as shown (`tools/lib/gearskin.ts`).
-- `game_import` fills in what a character lacks from the unit's last build (its record in the game's
-  `assets/textures/models/<unit>/<unit>.json`: clips, scripts, ground, keys, gear) and touches nothing already there;
-  `--replace` puts it back as built.
-- **Riding** (Outfit, Mount; `src/engine/mount.ts`): a character rides another (a horse on the horse template). "Rides"
-  seats him from the two bodies (`straddle`: the low point of the horse's back over the middle of its spine, his thighs
-  out round its barrel, the shins down its sides), then the gizmo moves the seat and shapes each held bone. His lower
-  body holds the seat; the rest of him plays his slots with his scripts, keys and gear. The horse plays its own slots
-  (the same names), fitted to his: loops by whole cycles (its gait leads), its Attack to his. The mount also picks the
-  horse's skin and which of its garments it wears (one horse, its clips tuned once, dressed per rider). In the game spec
-  the horse is the unit's `companion` with `ridden: true`; a unit still being made is a `draft` (built only when named).
-- **Markers** (Rig, "Adjust joints and re-rig" on a rigged one; `src/engine/markers.ts`, `static/templates/markers.json`):
-  a dozen points on one flat view (a person from the front, a horse from the side), seeded where the joints are; drag
-  the wrong ones and every joint follows live (as rigidly as it can, keeping the skeleton's shape), saved on letting
-  go. A person's finger tips go on a view of each hand ("Place finger markers": from the back of the hand, along the
-  fingers, cut to the hand; the other hand mirrored).
-- **The scale room** (Export, "Scale it with the game"; `src/app/export/ScaleRoom.svelte`): the character at the
-  height it plays at among the game's own models as the game draws them (its units at `units.visual_scale`, each
-  measured by its body; buildings and props as modelled; `/api/game/models`, read only): the player units beside it,
-  any building or prop behind. Set the height by eye; Save changes Rigsmith's unit (the game gets it on Export).
-- **Fix weights** (Rig; `src/engine/weightpaint.ts`, `src/state/paint.svelte.ts`, `server/weights.ts`): pause a test
-  clip on the frame that shows the problem and paint on the body as it stands. *Heal*: mark the problem skin, Heal
-  refills its weights smoothly from the good skin round it (skin pulled by a wrong bone goes with what surrounds it);
-  *Add*, *Remove*, *Smooth* a chosen bone by hand; *Follow*: the brushed skin takes the weights of the skin it covers
-  (looking in toward its nearest bone at rest: the trousers under a coat), or of the nearest bones where nothing is
-  close under it, so the body pushes it (a hem the legs walk through); *Bone*: the brushed skin moves with only the bone
-  under the brush, every other pull dropped (a face a hood drags, a buckle): the bone already moving most of the skin
-  where the stroke begins, named in the panel as you hover. Seams never part (their vertices are one point), four bones a vertex.
-  *Mirror left and right* (on): every stroke lands on the other side too, each point's twin taking the other side's
-  bone (LeftArm for RightArm), the middle line evened; *Left → right* / *Right → left* set the whole other side from
-  one (skin with no twin, a sash across one shoulder, stays as it is).
-  Save writes them into the rig and keeps them (`weight_edits.json`): every re-rig puts them back; Forget drops them.
-- **Test the rig** (Rig, Check deformation; `static/templates/tests.json`): library clips picked for how hard they
-  work the joints, per body type (a person: arm stretching, jumping jacks, an air squat, a fist pump, grab and slam,
-  thumbs up, counting, boxing, each with its fingers animated; a horse: its template's walk, run, rear, kick, eating,
-  lying down, head-butt, death), played on the rig in place, looped; pause and scrub on the timeline.
-- A person's feet keep their own rest angle in a retargeted clip and take its turn on top (`retarget.ts` alignment):
-  pointing the foot bone the way the source's points tipped the sole wherever the rigs' ankles sit at different heights
-  (until 2026-10-26 a standing clip's heel sank 3 % of the height through the floor, its toe floating).
-- A creature's hips under a root bone (the horse template's `root` is tilted) take their track in that bone's frame
-  (`retarget.ts`; until 2026-10-26 written in world space, which crouched the caravan pony's walk).
+## Other tools
 
-## The journal, and the tools an agent uses
-
-Every change to a character is journaled with who made it (`server/journal.ts`, `characters/<id>/journal.jsonl`): the
-app's own as "app", a tool's under its `x-rigsmith-by` header. The History section under every step shows it, newest
-first, with notes either side can leave. `tools/rig.ts` reads and changes characters as the app does, through the same
-server (so open pages update and the journal names the change):
+**Volume build**: a clean, watertight, evenly sampled stand-in for a character (sparse voxels via
+[sparse-cubes](https://github.com/navis-org/sparse-cubes), GPL-3.0, SurfaceNets meshing; under a second a character at
+1 cm voxels). **Retopology**: volume build → Instant Meshes
+([PyNanoInstantMeshes](https://pypi.org/project/PyNanoInstantMeshes/)) → [xatlas](https://github.com/jpcy/xatlas) UVs
+→ colour baked from the original in Cycles → GLB (~8–9 s a character at 8k triangles, 2K texture; uniform quads lose
+thin detail at the same budget, so best for messy generator output and for LODs). Neither is part of a step.
 
 ```bash
-node tools/rig.ts list | show WHO [--json] | history WHO [N] | note WHO TEXT | get WHO [PATH] | set WHO FIELD JSON
-node tools/rig.ts slot WHO SLOT CLIP [speed=1] [loop|once] [inplace|moving]   # fill a slot
-node tools/rig.ts clips WHO QUERY [category]                                    # library clips for its rig
-node tools/rig.ts ride WHO HORSE|off                                            # the app's default seat
-node tools/rig.ts render WHO [clips=Idle,Walk] [at=0,.25,.5,.75] [views=right,front] [size=320]
-node tools/rig.ts check [UNIT ...]                                              # is the game's file current?
-```
-
-`render` exports the unit (its filled slots) to `workspace/renders/<id>/` and draws each clip in Blender
-(`tools/render.py`: orthographic, frames across, views down, a ground line under the feet). WHO is an id, a name or a
-game unit. The node tools share `tools/lib/node3d.ts` (three's loaders headless, a character's body as the viewer
-holds it); `npx tsc -p tools` type-checks them.
-
-## Named animation library
-
-```bash
-npm run library:sync    # download, checksum-verify and convert all 2,446 named FBXs
-npm run library         # rebuild from local sources/cache, no download
-npm run library:verify  # verify every source hash, converted name, skeleton, FPS and frame count
-node tools/library_verify.ts # load and retarget every named clip on Y Bot and a local character
-```
-
-Sources come from [Linzhan/Mixamo-Animations-Characters](https://huggingface.co/datasets/Linzhan/Mixamo-Animations-Characters),
-pinned to revision `7f134bc734557b1d9516cb476d25ea1f577e45c1`. The full `animation/` folder includes static
-poses. Downloads resume and use the publisher's SHA-256 hashes. Files live under
-`workspace/library/sources/mixamo-named/animation/`; converted files use readable names such as
-`workspace/library/clips/mixamo-Jab_Cross_2.glb`. `metadata.csv` and `index.json` preserve the original
-Mixamo names, descriptions and motion IDs. The app reports completeness against that inventory;
-`catalog-verification.json` records the full integrity check. Some publisher CSV frame counts are stale;
-playback uses the actual FBX timing, and the report records those differences. The FBXs retain their source terms.
-
-**Made clips** (`blender/clips/`): motions none of the libraries have, made by a script from library sources and
-written into the library by its own converter (`convert.py convert_clip`, run on the source's armature as Blender
-holds it, so the clip keeps that source's exact rest skeleton). Each one's line in `work/sources.json` names its
-script (`make`) and sources (`inputs`): `build.py convert` remakes it when either changes; `build.py aggregate`
-lists it. `custom-Spear_Thrust` (`spear_thrust.py`): a one-handed underhand thrust behind a shield, from Stabbing 2
-(the body, retimed to a 1.25 s jab) and Sword And Shield Idle 4 (the shield arm, held before him against the torso's
-twist); the spear arm solved so the fist runs on one straight line and the shaft lies along it (the spear's axis in
-the hand measured on the Spearman's spear).
-
-The original hashed pack is not a reliable filename-to-name index for this collection. Saved sets
-must be checked and migrated before retiring it. Rebuilding keeps cached clips even if their old
-Downloads folder is gone, and retains recovered names when the separate names file is unavailable.
-
-### Rig quality vs Mixamo
-
-`tools/dev/bench.ts` drives two rigs of the same meshes (e.g. Mixamo's and ours) with the same clips through
-the same retargeter and scores deformation: edge stretch, rigidity of mid-limbs/head/feet, volume loss,
-weight bleed, joint centering. Body regions come from geometry (Mixamo's own weights are lopsided), and
-the 18 benchmark clips (`tools/skin_opt/holdout.json`) are never used to fit weights.
-
-```bash
-blender/autorig/dev/bench/rig_all.sh workspace/rigdev/bench/ours     # auto-rig the 12 Tripo characters
-node tools/dev/bench.ts workspace/rigdev/bench/mixamo workspace/rigdev/bench/ours
-```
-
-On the user's 12 Mixamo-rigged Tripo characters our automatic rigs have 27% less stretch, half the limb
-wobble and less than half the volume loss of Mixamo's hand-marked rigs.
-
-### Volume build
-
-A clean, watertight, evenly sampled stand-in for a character (for volumetric work later: weights on a
-proxy, inside/outside tests). Sparse voxels via [sparse-cubes](https://github.com/navis-org/sparse-cubes)
-(GPL-3.0), SurfaceNets meshing; under a second per character at the default 1 cm voxels (2–3 s at 5 mm). Single-layer cloth survives as a
-thin solid, sealed pockets inside the body are filled.
-
-```bash
-npm run setup:python                                       # once: .venv with sparse-cubes + trimesh
+npm run setup:python                                       # once: .venv with sparse-cubes, trimesh, PyTorch
 npm run volume -- workspace/characters/<id>/rigged.glb proxy.glb [--voxel 0.01] [--smooth 10]
-```
-
-### Retopology
-
-The in-repo, Linux take on MegaTopo's Blender + Instant Meshes mode: volume build → Instant Meshes
-([PyNanoInstantMeshes](https://pypi.org/project/PyNanoInstantMeshes/), quad field-aligned, at a target
-size) → [xatlas](https://github.com/jpcy/xatlas) UV atlas → colour baked from the original in Cycles
-(OptiX/CUDA, CPU fallback) → GLB. ~8–9 s per character at 8k triangles / 2K texture.
-
-```bash
 npm run retopo -- workspace/characters/<id>/model.glb clean.glb [--triangles 8000] [--texture 2048]
 ```
-
-Uniform quads spend triangles evenly, so at the same budget as a Tripo mesh thin parts (fingers, antler
-tips) lose detail; best for messy generator output and for LODs.
-
-### Pose-optimized weights
-
-Blender's weights are sharp at every joint but the shoulders, which bend over a tenth of the height
-(`blender/autorig/weights.py` soft_shoulders: an arm raised overhead turns ~125° from an A pose, and sharp weights put
-all of it in the armpit's first rows of triangles). After Blender rigs a humanoid, `server/skinopt.ts` poses it
-through 256 poses (`tools/skin_opt/pose_set.ts`): the unit's own clips and the Rig step's tests always, six each, the
-rest a random library draw; fits the weights on the GPU for minimal stretch (its root mean square, which spreads a
-stretch out: the mean gathered it into one hard band at the armpit), wobble and volume loss, one set of weights for
-each point and its mirror twin, so the two sides match
-(`tools/skin_opt/optimize.py`, PyTorch from the repo's `.venv` via `npm run setup:python`, or
-`RIGSMITH_TORCH_PYTHON`) and writes them into the GLB (`tools/skin_opt/apply.ts`). ~10–15 s on the GPU,
-~60 s on the CPU when the GPU is busy; skipped (with a warning) without PyTorch. Creatures keep their heat weights:
-trained on a template's own clips the optimizer tore a horse's chest and flank (`server/api.ts` runRig).
 
 Started from [Mesh2Motion](https://github.com/scottpetrovic/mesh2motion-app) (MIT code, CC0 assets).

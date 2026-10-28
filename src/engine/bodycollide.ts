@@ -13,8 +13,14 @@
 //
 // Two ways to ask: BodyCollider (the bones as they stand, for a caller with a capsule of its own: a prop's), and the
 // BoundShape the pose solver (src/engine/posespace.ts) walks on its own forward kinematics (typed arrays, no allocation).
+//
+// CharacterCollider is the one collision model every solve of the editor shares (the body solver, the gear fit in
+// src/engine/propfit.ts, the finger correction in src/engine/handcontacts.ts, the editor's own checks): these capsules for
+// the body, each hand's own skinned surface for its fingers (src/engine/surfacecontact.ts, built when first asked), and
+// held shafts as obstacles (shaftObstacles).
 import * as THREE from 'three'
-import { canonical } from './retarget.ts'
+import { canonical, type Side } from './retarget.ts'
+import { HandContactSurface } from './surfacecontact.ts'
 
 export interface BodyCollider {
   /** Deepest penetration (metres, 0 = none) of a capsule a–b of `radius` into the body as the bones stand now, ignoring the segments named (by bone). */
@@ -31,8 +37,9 @@ export interface SolidBody extends BodyCollider {
 
 /** A vertex counts for a bone when at least this much of it is weighted there. */
 const WEIGHTED = 0.55
-/** The leg's length (thigh and shin) of the Y Bot (src/engine/posespace.ts), what the overlaps allowed are scaled by. */
-const Y_BOT_LEG = 0.827
+/** The leg's length (thigh and shin) of the Y Bot, the body the pose model and these sizes were measured on: what the
+ * overlaps allowed here and the pose solver's units (src/engine/posespace.ts) are scaled by. */
+export const Y_BOT_LEG = 0.827
 /** The quantile of the offsets (and its mirror) that bounds a segment's section; its half-spread is the radius. */
 const EDGE = 0.9
 /** The part of a segment's length (from either end, as a fraction of it) the vertices must lie within to be measured. */
@@ -103,6 +110,10 @@ const DEFS: Def[] = [
     { name: `${s}Foot`, a: `${s}Foot`, b: `${s}ToeBase`, ext: 1.35, from: [`${s}Foot`, `${s}ToeBase`] },
   ]),
 ]
+
+/** The trunk's segments: they overlap one another, so a limb's or an obstacle's contact with them counts once, its
+ * deepest (the pose solver's collision rows, src/engine/posespace.ts). */
+export const TRUNK: ReadonlySet<string> = new Set(['Hips', 'Spine', 'Spine1', 'Neck'])
 
 /**
  * How much two segments of a kind may overlap before it counts (centimetres of a Y Bot's size): fitted capsules are not the
@@ -443,15 +454,6 @@ export function bodyColliderFor (root: THREE.Object3D, bones: Map<string, THREE.
   return c
 }
 
-/** Whether the editor keeps body parts out of one another (`solidsOf` gives none when off: a switch for the look of it, and for measuring the difference). */
-export const solids = { enabled: true }
-
-/** A character view's collider (cached per character), or undefined when its mesh can't be fitted (no skinned mesh, a bone missing): editing goes on without solids. */
-export function solidsOf (view: { root: THREE.Object3D, bones: Map<string, THREE.Bone> }): SolidBody | undefined {
-  if (!solids.enabled) return undefined
-  try { return bodyColliderFor(view.root, view.bones) } catch (error) { console.warn(`bodycollide: ${(error as Error).message}`); return undefined }
-}
-
 /** A collider of a fitted shape on a character's bones. */
 export function colliderOf (shape: BodyShape, bones: Map<string, THREE.Bone>): SolidBody {
   const byName = new Map<string, THREE.Bone>()
@@ -498,4 +500,118 @@ export function colliderOf (shape: BodyShape, bones: Map<string, THREE.Bone>): S
 /** The shape a collider carries (null for a BodyCollider of another make: the solver can't use it). */
 export function shapeOf (c: BodyCollider | undefined): BodyShape | null {
   return (c as Partial<SolidBody> | undefined)?.shape ?? null
+}
+
+// ---- held shafts -------------------------------------------------------------------------------------------------------
+
+/** A thing the body must stay clear of: a capsule in the world (a stretch of a spear's shaft), the segments named in
+ * `ignore` (by the bone each rides: the hands holding it) let through. */
+export interface Obstacle { from: THREE.Vector3, to: THREE.Vector3, radius: number, ignore?: string[] }
+
+/**
+ * A held shaft (a spear's) as what the body must stay clear of: the line `from`-`to` of `radius`, cut `margin` either
+ * side of each hold (`holds`: how far along it from `from` each hand holds it, metres), the hands holding it (`ignore`,
+ * by bone) let through. A stretch left between two cuts shorter than a quarter of the margin is no obstacle.
+ */
+export function shaftObstacles (from: THREE.Vector3, to: THREE.Vector3, radius: number, holds: readonly number[], margin: number, ignore: string[]): Obstacle[] {
+  const dir = to.clone().sub(from); const length = dir.length()
+  if (length < 1e-6) return []
+  dir.divideScalar(length)
+  const cuts = holds.map(t => [t - margin, t + margin] as [number, number]).sort((a, b) => a[0] - b[0])
+  const out: Obstacle[] = []
+  let at = 0
+  for (const [a, b] of [...cuts, [length, length] as [number, number]]) {
+    if (a - at > margin * 0.25) out.push({ from: from.clone().addScaledVector(dir, at), to: from.clone().addScaledVector(dir, Math.min(a, length)), radius, ignore })
+    at = Math.max(at, b)
+    if (at >= length) break
+  }
+  return out
+}
+
+// ---- the character's collider ---------------------------------------------------------------------------------------
+
+/**
+ * A character's collider (see the header): its body's capsules, fitted to its skinned mesh the first time they are
+ * needed (`body`; null when the mesh can't be fitted, no skin or a bone missing: then nothing collides and the solves go
+ * on without it), each hand's skinned surface for its fingers (`hand`, also built when first asked: reading a hand's
+ * skin is costly), and what held shafts reach into (`obstacleDepth`). It reads the bones as they stand when asked; the
+ * pose solver reads its `shape` on its own forward kinematics.
+ */
+export class CharacterCollider implements BodyCollider {
+  readonly root: THREE.Object3D
+  /** The body's height (the hands' surfaces measure and weld by it). */
+  readonly height: number
+  private readonly bones: Map<string, THREE.Bone>
+  private fitted: { body: SolidBody | null, problem: string | null } | null = null
+  private readonly surfaces = new Map<Side, HandContactSurface | null>()
+
+  constructor (root: THREE.Object3D, bones: Map<string, THREE.Bone>, height: number) {
+    this.root = root
+    this.bones = bones
+    this.height = height
+  }
+
+  /** The body's capsules, fitted the first time they are asked for (once per root: bodyColliderFor); null when the mesh
+   * can't be fitted (`problem` says why, and the console once). */
+  get body (): SolidBody | null { return this.fit().body }
+  get problem (): string | null { return this.fit().problem }
+
+  private fit (): { body: SolidBody | null, problem: string | null } {
+    if (this.fitted === null) {
+      try {
+        this.fitted = { body: bodyColliderFor(this.root, this.bones), problem: null }
+      } catch (error) {
+        this.fitted = { body: null, problem: (error as Error).message }
+        console.warn(`bodycollide: ${this.fitted.problem}`)
+      }
+    }
+    return this.fitted
+  }
+
+  /** The capsules' shape (what the pose solver walks: shapeOf), or null without a body. */
+  get shape (): BodyShape | null { return this.body?.shape ?? null }
+
+  penetration (a: THREE.Vector3, b: THREE.Vector3, radius: number, ignore: string[] = []): number {
+    return this.body?.penetration(a, b, radius, ignore) ?? 0
+  }
+
+  selfPenetration (): { worst: number, pairs: Array<[string, string, number]> } {
+    return this.body?.selfPenetration() ?? { worst: 0, pairs: [] }
+  }
+
+  /** How deep the deepest of `obstacles` is in the body as it stands now (metres), each but the segments it lets
+   * through and those named in `ignore`. */
+  obstacleDepth (obstacles: readonly Obstacle[], ignore: readonly string[] = []): number {
+    let worst = 0
+    for (const o of obstacles) worst = Math.max(worst, this.penetration(o.from, o.to, o.radius, [...(o.ignore ?? []), ...ignore]))
+    return worst
+  }
+
+  /** A hand's width (its capsule's widest), or null without a body. */
+  handWidth (side: Side): number | null {
+    const seg = this.shape?.segments.find(s => s.name === `${side}Hand`)
+    return seg === undefined ? null : 2 * Math.max(seg.r1, seg.r2)
+  }
+
+  /** A hand's own skinned surface (its fingers' contacts), built the first time it is asked; null when it can't be read
+   * (a skeleton the root doesn't own: a plain Object3D clone of a live character). */
+  hand (side: Side): HandContactSurface | null {
+    if (!this.surfaces.has(side)) {
+      let surface: HandContactSurface | null
+      try { surface = new HandContactSurface(this.root, side, this.height) } catch { surface = null }
+      this.surfaces.set(side, surface)
+    }
+    return this.surfaces.get(side) ?? null
+  }
+}
+
+const colliders = new WeakMap<THREE.Object3D, CharacterCollider>()
+/** A character's collider, made once per root (and height): its fit and its hands' surfaces are kept. */
+export function colliderFor (root: THREE.Object3D, bones: Map<string, THREE.Bone>, height: number): CharacterCollider {
+  let c = colliders.get(root)
+  if (c === undefined || c.height !== height) {
+    c = new CharacterCollider(root, bones, height)
+    colliders.set(root, c)
+  }
+  return c
 }

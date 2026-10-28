@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import * as THREE from 'three'
-import { extentY, transformGlb } from './glbtransform.ts'
+import { extentY, transformedGlb, transformGlb } from './glbtransform.ts'
 
 let dir = ''
 beforeEach(async () => { dir = await mkdtemp(path.join(os.tmpdir(), 'rigsmith-glbtransform-')) })
@@ -75,5 +75,21 @@ describe('a rig resized and moved in place', () => {
     await writeFile(file, out)
     await transformGlb(file, 2, [0, 1, 0])
     expect(extentY(await readFile(file)).min).toBeCloseTo(0, 6)
+  })
+
+  it('leaves the bytes it was given as they were, and refuses a rig whose clips move its bones', () => {
+    const { glb } = rig()
+    const copy = Buffer.from(glb)
+    const out = transformedGlb(glb, 2, [0, 1, 0])
+    expect(Buffer.compare(glb, copy)).toBe(0)
+    expect(extentY(out).min).toBeCloseTo(0, 6)
+    const n = glb.readUInt32LE(12); const g = JSON.parse(glb.subarray(20, 20 + n).toString())
+    g.animations = [{ channels: [{ sampler: 0, target: { node: 3, path: 'translation' } }], samplers: [{ input: 0, output: 0 }] }]
+    const json = Buffer.from(JSON.stringify(g).padEnd(Math.ceil(JSON.stringify(g).length / 4) * 4, ' '))
+    const bin = glb.subarray(28 + n)
+    const moved = Buffer.alloc(28 + json.length + bin.length)
+    moved.writeUInt32LE(0x46546C67, 0); moved.writeUInt32LE(2, 4); moved.writeUInt32LE(moved.length, 8); moved.writeUInt32LE(json.length, 12); moved.writeUInt32LE(0x4E4F534A, 16); json.copy(moved, 20)
+    moved.writeUInt32LE(bin.length, 20 + json.length); moved.writeUInt32LE(0x004E4942, 24 + json.length); bin.copy(moved, 28 + json.length)
+    expect(() => transformedGlb(moved, 2, [0, 0, 0])).toThrow(/not resized in place/)
   })
 })

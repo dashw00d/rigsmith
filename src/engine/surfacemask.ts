@@ -44,6 +44,10 @@ export class SurfaceMask {
   private readonly colors: Uint8ClampedArray
   readonly parts: Part[] = []
   private overlays: THREE.Mesh[] = []
+  /** Texels masked (>= 128), kept as the mask changes so `any` needn't scan it. */
+  private masked = 0
+  /** A whole upload of the drawn layer is due (rows added meanwhile would narrow it to them). */
+  private wholeDue = true
   version = 0
 
   constructor (texture: THREE.Texture, meshes: THREE.Mesh[]) {
@@ -59,6 +63,7 @@ export class SurfaceMask {
     this.texture.magFilter = THREE.LinearFilter
     this.texture.minFilter = THREE.LinearFilter
     this.texture.needsUpdate = true
+    this.texture.onUpdate = () => { this.wholeDue = false }
     // the colours, in mask rows (a flipped texture's image runs the other way)
     const canvas = document.createElement('canvas')
     canvas.width = this.width; canvas.height = this.height
@@ -73,7 +78,7 @@ export class SurfaceMask {
     }
   }
 
-  get any (): boolean { return this.data.some(v => v >= 128) }
+  get any (): boolean { return this.masked > 0 }
 
   // ---- drawing on the model ---------------------------------------------------------------------
 
@@ -104,10 +109,23 @@ export class SurfaceMask {
     }
   }
 
-  /** The mask changed: the drawn layer follows. */
-  private changed (): void {
-    const { data, rgba } = this
-    for (let i = 0; i < data.length; i++) { const v = data[i]; rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = v; rgba[i * 4 + 3] = 255 }
+  /** The mask changed (only inside `rect`, texels [x0, y0, x1, y1] inclusive, when given): the drawn layer follows,
+   * row by row over just that part (a dab touches a few hundred texels of millions). */
+  private changed (rect?: [number, number, number, number]): void {
+    const { data, rgba, width } = this
+    const [x0, y0, x1, y1] = rect ?? [0, 0, width - 1, this.height - 1]
+    if (x1 < x0 || y1 < y0) return
+    const whole = rect === undefined || this.wholeDue || (x1 - x0 + 1) * (y1 - y0 + 1) > data.length / 4
+    if (whole) { this.texture.clearUpdateRanges(); this.wholeDue = true }
+    for (let y = y0; y <= y1; y++) {
+      for (let i = y * width + x0, end = y * width + x1; i <= end; i++) {
+        const v = data[i]
+        const was = rgba[i * 4]
+        if ((v >= 128) !== (was >= 128)) this.masked += v >= 128 ? 1 : -1
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = v; rgba[i * 4 + 3] = 255
+      }
+      if (!whole) this.texture.addUpdateRange((y * width + x0) * 4, (x1 - x0 + 1) * 4)
+    }
     this.texture.needsUpdate = true
     this.version++
   }
@@ -142,18 +160,27 @@ export class SurfaceMask {
     const limit = 0.04 + tolerance * 0.5
     const corner = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
     const x = new THREE.Vector3()
+    const W = this.width
+    const rect: [number, number, number, number] = [W, this.height, -1, -1]
     for (const t of tris) {
       for (let k = 0; k < 3; k++) corner[k].copy(posed.get(part.point[part.index[t * 3 + k]])!)
-      this.raster(this.parts.indexOf(part), t, (i, a, b, c) => {
+      this.raster(meshIndex, t, (i, a, b, c) => {
         if (reference !== undefined && colorDistance(this.colors, i * 4, reference[0], reference[1], reference[2]) > limit) return
         x.set(0, 0, 0).addScaledVector(corner[0], a).addScaledVector(corner[1], b).addScaledVector(corner[2], c)
         const f = 1 - THREE.MathUtils.smoothstep(x.distanceTo(at), radius * 0.75, radius)
         if (f <= 0) return
         const v = Math.round(f * 255)
-        this.data[i] = value === 1 ? Math.max(this.data[i], v) : Math.min(this.data[i], 255 - v)
+        const next = value === 1 ? Math.max(this.data[i], v) : Math.min(this.data[i], 255 - v)
+        if (next === this.data[i]) return
+        this.data[i] = next
+        const tx = i % W; const ty = (i - tx) / W
+        if (tx < rect[0]) rect[0] = tx
+        if (ty < rect[1]) rect[1] = ty
+        if (tx > rect[2]) rect[2] = tx
+        if (ty > rect[3]) rect[3] = ty
       })
     }
-    this.changed()
+    this.changed(rect)
   }
 
   /** The texture's colour at texture coordinates (a hit's uv), as the smart brush's and the wand's reference. */
@@ -211,6 +238,13 @@ export class SurfaceMask {
   }
 
   clear (): void { this.data.fill(0); this.changed() }
+
+  /** Set from another mask's values laid as this one (the same model loaded again). */
+  restore (data: Uint8Array): void {
+    if (data.length !== this.data.length) return
+    for (let i = 0; i < data.length; i++) this.data[i] = this.covered[i] === 1 ? data[i] : 0
+    this.changed()
+  }
 
   /** Set from a saved mask image (a capture's uvmask.png), any size. */
   load (image: HTMLImageElement | HTMLCanvasElement | ImageBitmap): void {

@@ -9,13 +9,9 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { loadGlbFile as load } from '../../src/engine/headless.ts'
 import { canonical, captureRest, retarget } from '../../src/engine/retarget.ts'
 
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images') }
-console.error = () => {}
 const args = process.argv.slice(2)
 const flag = (name: string): string | undefined => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined }
 const [rigPath, prefix] = args
@@ -26,10 +22,6 @@ let seed = Number(flag('--seed') ?? 1)
 const random = (): number => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296 }
 
 const LIBRARY = path.resolve(import.meta.dirname, '../../workspace/library')
-async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[], parser?: unknown }> {
-  const data = readFileSync(file)
-  return await new Promise((resolve, reject) => { new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '', r => { resolve(r as never) }, reject) })
-}
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 
 // Training clips: a template's own clips (--from), or a random draw from the humanoid library.

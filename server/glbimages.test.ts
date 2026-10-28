@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { cleanImageName, swapImages } from './glbimages.ts'
+import { cleanName } from '../src/engine/projection.ts'
+import { cleanImageName, imageNames, sameImage, swapImages } from './glbimages.ts'
 
 let dir = ''
 beforeEach(async () => { dir = await mkdtemp(path.join(os.tmpdir(), 'rigsmith-glbimages-')) })
@@ -49,20 +50,62 @@ describe('a texture put into a GLB in place', () => {
     await mkdir(path.join(dir, 'textures'))
     const painted = Buffer.from('a longer painted image!')
     await writeFile(path.join(dir, 'textures', `${cleanImageName('tex-1 a.b')}.png`), painted)
-    expect(await swapImages(rig, path.join(dir, 'textures'))).toBe(1)
+    expect(await swapImages(rig, path.join(dir, 'textures'))).toEqual({ swapped: 1, restored: 0, matched: ['tex-1_a_b'] })
     const [before, image, after] = await views(rig)
     expect(before).toEqual(Buffer.from([1, 2, 3, 4, 5, 6]))
     expect(image).toEqual(painted)
     expect(after).toEqual(Buffer.from([9, 8, 7, 6]))
-    // (the same again: nothing to do)
-    expect(await swapImages(rig, path.join(dir, 'textures'))).toBe(0)
+    // (the same again: nothing to do, though the image still has its file)
+    expect(await swapImages(rig, path.join(dir, 'textures'))).toEqual({ swapped: 0, restored: 0, matched: ['tex-1_a_b'] })
   })
 
-  it('puts an image back as the original has it when its override is gone', async () => {
-    const rig = path.join(dir, 'rigged.glb'); const model = path.join(dir, 'model.glb')
+  it('puts an image back from the restore source when its composite is gone', async () => {
+    const rig = path.join(dir, 'rigged.glb')
     await writeFile(rig, glb(Buffer.from('painted over')))
-    await writeFile(model, glb(Buffer.from('as made')))
-    expect(await swapImages(rig, path.join(dir, 'no-textures'), model)).toBe(1)
-    expect((await views(rig))[1]).toEqual(Buffer.from('as made'))
+    await mkdir(path.join(dir, 'restore'))
+    await writeFile(path.join(dir, 'restore', 'tex-1_a_b.png'), Buffer.from('as the source has it'))
+    expect(await swapImages(rig, path.join(dir, 'no-textures'), path.join(dir, 'restore'))).toEqual({ swapped: 0, restored: 1, matched: ['tex-1_a_b'] })
+    expect((await views(rig))[1]).toEqual(Buffer.from('as the source has it'))
+  })
+
+  it('prefers the composite to the restore source, and leaves images neither has', async () => {
+    const rig = path.join(dir, 'rigged.glb')
+    await writeFile(rig, glb(Buffer.from('old'), 'Body'))
+    await mkdir(path.join(dir, 'textures')); await mkdir(path.join(dir, 'restore'))
+    await writeFile(path.join(dir, 'textures', 'Body.png'), Buffer.from('composite'))
+    await writeFile(path.join(dir, 'restore', 'Body.png'), Buffer.from('source'))
+    expect((await swapImages(rig, path.join(dir, 'textures'), path.join(dir, 'restore'))).swapped).toBe(1)
+    expect((await views(rig))[1]).toEqual(Buffer.from('composite'))
+    expect(await swapImages(rig, path.join(dir, 'restore-elsewhere'))).toEqual({ swapped: 0, restored: 0, matched: [] })
+    expect(await imageNames(rig)).toEqual(['Body'])
+  })
+})
+
+describe('image names', () => {
+  // What Blender 5.2's bpy.path.clean_name makes of each (it keeps '-', U+00FF and everything above U+00FF).
+  const names: Array<[string, string]> = [
+    ['Diffuse Texture', 'Diffuse_Texture'],
+    ['tripo_rgb_c141c76d-3257-46b4-83da-8d803f5a26f2', 'tripo_rgb_c141c76d-3257-46b4-83da-8d803f5a26f2'],
+    ['tex-1 a.b', 'tex-1_a_b'],
+    ['Image_0', 'Image_0'],
+    ['_albedo', '_albedo'],
+    ['a/b\\c:d', 'a_b_c_d'],
+    ['Üé ÿ', '___ÿ'],
+    ['名前.png', '名前_png'],
+    ['x\u0000y~z', 'x_y_z'],
+    ['', ''],
+  ]
+
+  it('cleans as Blender does, the same on the server and in the browser', () => {
+    for (const [name, clean] of names) {
+      expect(cleanImageName(name)).toBe(clean)
+      expect(cleanName(name)).toBe(clean)
+    }
+  })
+
+  it('takes a name cleaned before the rebuild (- made _) for the same image', () => {
+    expect(sameImage('tripo_rgb_c141c76d_3257', 'tripo_rgb_c141c76d-3257')).toBe(true)
+    expect(sameImage('Diffuse Texture', 'Diffuse_Texture')).toBe(true)
+    expect(sameImage('Image_0', 'Image_1')).toBe(false)
   })
 })

@@ -9,6 +9,8 @@ import heapq
 
 import numpy as np
 
+from mixamo import ANATOMY
+
 
 def _graph(verts, tris, region):
     """Edges (i, j, length) among region vertices, coincident vertices welded."""
@@ -227,15 +229,9 @@ def point_at(line, s):
     return line[i] + (s - cum[i]) / max(lengths[i], 1e-12) * seg[i]
 
 
-# Where a finger's joints sit along the hand, from Mixamo's proportions (autorig/skeleton.py FINGER_LAYOUT, as
-# fractions of the wrist -> fingertip distance along the hand): the knuckle, then the two joints between knuckle and tip
-# as fractions of that span.
-ANATOMY = {
-    'Index': (0.567, 0.357, 0.690),
-    'Middle': (0.560, 0.364, 0.705),
-    'Ring': (0.568, 0.366, 0.707),
-    'Pinky': (0.593, 0.371, 0.686),
-}
+# ANATOMY (where a finger's joints sit along the hand, from Mixamo's proportions: the knuckle as a fraction of the
+# wrist -> fingertip reach along the hand, then the two joints between knuckle and tip as fractions of that span) comes
+# from static/templates/human-skeleton.json through mixamo.py: the marker board lays fingers by the same table.
 
 
 def finger_chains(labeled, wrist=None, axis=None):

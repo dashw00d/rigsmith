@@ -70,8 +70,10 @@ FINGER_LAYOUT = {
     'Ring': [(0.54, -0.08, 0.0), (0.69, -0.085, 0.0), (0.83, -0.09, 0.0), (0.95, -0.09, 0.0)],
     'Pinky': [(0.51, -0.15, 0.0), (0.64, -0.16, 0.0), (0.75, -0.165, 0.0), (0.86, -0.17, 0.0)],
 }
-# Fallback when the hand can't be measured: the old forearm frame (x along the forearm, y forward,
-# z = x cross forward), units of forearm length.
+# The deliberate fallback when the hand can't be measured (hands.py finds no hand frame: a fist, a hand in a sleeve
+# or fused to a prop), so every finger joint of the level still gets a place (_add_fingers): laid in the forearm frame
+# (x along the forearm, y forward, z = x cross forward), in units of forearm length. Kept on purpose, not left over:
+# the user then places the fingers on the marker board's hand views or in 3D.
 FOREARM_FINGER_LAYOUT = {
     'Thumb': [(0.196, 0.15, 0.128), (0.353, 0.271, 0.231), (0.503, 0.363, 0.343), (0.635, 0.406, 0.388)],
     'Index': [(0.556, 0.004, 0.071), (0.806, -0.025, 0.087), (1.015, -0.012, 0.153), (1.207, 0.123, 0.234)],

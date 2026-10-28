@@ -1,4 +1,5 @@
-// `use:tooltip={'text'}`: a styled tooltip that appears after a short hover delay.
+// `use:tooltip={'text'}`: a styled tooltip that appears after a short hover delay, or when the element takes the
+// keyboard's focus (so a hint is never mouse-only). Escape hides it.
 let tip: HTMLDivElement | null = null
 let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -6,6 +7,7 @@ function element (): HTMLDivElement {
   if (tip === null) {
     tip = document.createElement('div')
     tip.className = 'rs-tooltip'
+    tip.setAttribute('role', 'tooltip')
     Object.assign(tip.style, {
       position: 'fixed', zIndex: '1000', pointerEvents: 'none', padding: '5px 8px', borderRadius: '6px',
       background: '#232833', color: '#e9ebf1', font: '500 11.5px/1.35 var(--font)', maxWidth: '260px',
@@ -38,9 +40,15 @@ export function tooltip (node: HTMLElement, text: string | undefined | null) {
     clearTimeout(timer)
     if (tip !== null) tip.style.opacity = '0'
   }
+  // (focus from a click shows nothing more than the hover did; focus from the keyboard is :focus-visible)
+  const focus = (): void => { if (node.matches(':focus-visible')) show() }
+  const key = (event: KeyboardEvent): void => { if (event.key === 'Escape') hide() }
   node.addEventListener('pointerenter', show)
   node.addEventListener('pointerleave', hide)
   node.addEventListener('pointerdown', hide)
+  node.addEventListener('focus', focus)
+  node.addEventListener('blur', hide)
+  node.addEventListener('keydown', key)
   return {
     update (next: string | undefined | null) { current = next },
     destroy () {
@@ -48,6 +56,9 @@ export function tooltip (node: HTMLElement, text: string | undefined | null) {
       node.removeEventListener('pointerenter', show)
       node.removeEventListener('pointerleave', hide)
       node.removeEventListener('pointerdown', hide)
+      node.removeEventListener('focus', focus)
+      node.removeEventListener('blur', hide)
+      node.removeEventListener('keydown', key)
     },
   }
 }

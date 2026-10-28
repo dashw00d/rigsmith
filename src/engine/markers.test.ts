@@ -2,16 +2,22 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
-import { edgesOf, fitMarkers, insideDepth, jointsFrom, markerRay, pinsOf, placeMarker, seed, solve, useMarkerSets, type MarkerSet, type V3 } from './markers.ts'
+import { edgesOf, fitMarkers, insideDepth, jointsFrom, markerRay, markerSet, markerSets, pinsOf, placeMarker, seed, solve, type MarkerSet, type V3 } from './markers.ts'
 import { hierarchy } from './mixamo.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..')
 const json = JSON.parse(readFileSync(path.join(ROOT, 'static', 'templates', 'markers.json'), 'utf8')) as Record<string, MarkerSet>
-useMarkerSets(json)
 const horse = JSON.parse(readFileSync(path.join(ROOT, 'static', 'templates', 'horse.json'), 'utf8')) as { joints: Record<string, V3>, parents: Record<string, string | null> }
 const dist = (a: V3, b: V3): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
 
 describe('markers', () => {
+  it('reads the marker sets from the data file: a person and a horse, no other body', () => {
+    expect(Object.keys(markerSets()).sort()).toEqual(Object.keys(json).filter(k => !k.startsWith('_')).sort())
+    expect(markerSet('human')).toEqual(json.human)
+    expect(markerSet('horse')?.view).toBe('side')
+    expect(markerSet('dragon')).toBeNull()
+  })
+
   it('picks the hand inside the camera slab and excludes the leg behind it', () => {
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 2.6, 3.4)
     camera.position.z = 3
@@ -33,6 +39,21 @@ describe('markers', () => {
     edited.head = [edited.head[0], edited.head[1] + 0.04, edited.head[2]]
     const fitted = fitMarkers('horse', json.horse, m, edited, horse.parents)
     expect(jointsFrom(json.horse, fitted, horse.parents, 0).head).toEqual(edited.head)
+  })
+
+  it('reopened, keep markers that still give the skeleton, and seed again ones that no longer do', () => {
+    const m = seed('horse', json.horse, horse.joints)
+    const hoof = m.positions.front_hoof
+    const moved = { ...m, positions: { ...m.positions, front_hoof: [hoof[0], hoof[1] - 0.05, hoof[2]] as V3 } }
+    // (what the board saved with them: the skeleton they give)
+    const solved = jointsFrom(json.horse, moved, horse.parents, 0)
+    const kept = fitMarkers('horse', json.horse, moved, solved, horse.parents)
+    expect(kept.positions).toEqual(moved.positions)
+    expect(kept.base).toEqual(moved.base)
+    // (the skeleton reset since, or a board an older solve made: they start again on the joints as they are)
+    const again = fitMarkers('horse', json.horse, moved, horse.joints, horse.parents)
+    expect(again).toEqual(seed('horse', json.horse, horse.joints))
+    expect(again.positions.front_hoof).toEqual(horse.joints.front_leg_foot_l)
   })
 
   it('carries finger tips with a moved wrist, mirrors the other hand, and preserves finger lengths', () => {

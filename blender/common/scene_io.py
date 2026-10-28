@@ -1,4 +1,5 @@
 """Import/export helpers shared by Blender jobs."""
+import atexit
 import os
 import shutil
 import tempfile
@@ -30,11 +31,27 @@ def _safe_extract(archive, target):
                 shutil.copyfileobj(src, out)
 
 
+# Folders zips were extracted to. Their textures are read until the model is exported, so they go when the job ends
+# (cleanup(), and at exit for a job that stopped early).
+_temp_dirs = []
+
+
+def cleanup():
+    """Remove the folders this job extracted zips to."""
+    while _temp_dirs:
+        shutil.rmtree(_temp_dirs.pop(), ignore_errors=True)
+
+
+atexit.register(cleanup)
+
+
 def resolve_model_file(path):
-    """A model file path; zips are extracted to a temp dir and the first model inside is returned."""
+    """A model file path; zips are extracted to a temp dir (removed by cleanup()) and the first model inside is
+    returned."""
     if not path.lower().endswith('.zip'):
         return path
-    target = tempfile.mkdtemp(prefix='rigtool-')
+    target = tempfile.mkdtemp(prefix='rigsmith-')
+    _temp_dirs.append(target)
     _safe_extract(path, target)
     found = []
     for base, _, files in os.walk(target):
@@ -230,36 +247,37 @@ def strip_existing_rigs(meshes):
         ob.matrix_world.identity()
 
 
-def scale_model(meshes, s):
-    """Resize a model about its origin (its whole hierarchy: Import → Size's scale)."""
-    if abs(s - 1) < 1e-9:
-        return
+def _roots(objects):
     roots = set()
-    for ob in meshes:
+    for ob in objects:
         while ob.parent is not None:
             ob = ob.parent
         roots.add(ob)
-    for ob in roots:
+    return roots
+
+
+def scale_model(meshes, s, rig=None):
+    """Resize a model about its origin (its whole hierarchy: Import → Size's scale). `rig`: the armature skinning the
+    meshes, moved with them even where it isn't their parent (apply_rig_scale then bakes it into its bones)."""
+    if abs(s - 1) < 1e-9:
+        return
+    for ob in _roots(list(meshes) + ([rig] if rig is not None else [])):
         ob.scale = ob.scale * s
         ob.location = ob.location * s
     bpy.context.view_layer.update()
 
 
-def ground(meshes):
-    """Stand a model on the floor: its lowest point moved to z = 0 (its whole hierarchy moved, nothing scaled).
-    A model exported centred on its origin would otherwise stand half in the ground. Returns how far it moved."""
+def ground(meshes, rig=None):
+    """Stand a model on the floor: its lowest point (at rest) moved to z = 0 (its whole hierarchy moved, nothing
+    scaled). A model exported centred on its origin would otherwise stand half in the ground. `rig` as scale_model.
+    Returns how far it moved."""
     verts, _ = mesh_arrays(meshes)
     if not len(verts):
         return 0.0
     dz = -float(verts[:, 2].min())
     if abs(dz) < 1e-5:
         return 0.0
-    roots = set()
-    for ob in meshes:
-        while ob.parent is not None:
-            ob = ob.parent
-        roots.add(ob)
-    for ob in roots:
+    for ob in _roots(list(meshes) + ([rig] if rig is not None else [])):
         ob.location.z += dz
     bpy.context.view_layer.update()
     return dz

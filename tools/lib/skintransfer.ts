@@ -186,3 +186,61 @@ export function transferPainting (target: THREE.Object3D, source: THREE.Object3D
   if (covered.size !== byVertex.size) throw new Error(`${byVertex.size-covered.size} painted vertices no longer match the rebuilt surface; the previous rig has been kept`)
   return out
 }
+
+/**
+ * Before a re-rig: does painting made on `source` (the live rig) still find its points on `target` (the model the
+ * next rig is built from, which needn't be skinned)? Each painted vertex needs a vertex of the target within the
+ * transfer's tolerance, after the same floor alignment as alignRest. Null when every one does, else what is wrong, in
+ * words. A pre-check: the rig's own transferPainting decides in the end, but a model the painting has left (imported
+ * again from another file, resized differently) is refused here, before minutes of rigging.
+ */
+export function paintingProblem (target: THREE.Object3D, source: THREE.Object3D, painted: WeightEdit[]): string | null {
+  if (painted.length === 0) return null
+  target.updateMatrixWorld(true); source.updateMatrixWorld(true)
+  const old = skinMeshes(source)
+  const meshes: THREE.Mesh[] = []
+  target.traverse(o => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh) })
+  if (meshes.length === 0) return 'The model has no meshes'
+  const v = new THREE.Vector3()
+  const extent = (list: THREE.Mesh[]): THREE.Box3 => {
+    const box = new THREE.Box3()
+    for (const m of list) {
+      const p = m.geometry.attributes.position
+      for (let i = 0; i < p.count; i++) box.expandByPoint(v.fromBufferAttribute(p, i).applyMatrix4(m.matrixWorld))
+    }
+    return box
+  }
+  const a = extent(meshes), b = extent(old)
+  if (a.isEmpty() || b.isEmpty()) return 'The model or the rig has no vertices'
+  const size = b.getSize(new THREE.Vector3())
+  const tolerance = Math.max(size.length() * 1e-3, 1e-7)
+  // (a pure move, as alignRest makes one: the model stood on the floor since the rig)
+  const shift = size.distanceTo(a.getSize(new THREE.Vector3())) <= tolerance ? a.min.clone().sub(b.min) : new THREE.Vector3()
+  const cells = new Map<string, THREE.Vector3[]>()
+  const cell = (p: THREE.Vector3): number[] => [p.x, p.y, p.z].map(x => Math.floor(x / tolerance))
+  for (const m of meshes) {
+    const p = m.geometry.attributes.position
+    for (let i = 0; i < p.count; i++) {
+      const at = new THREE.Vector3().fromBufferAttribute(p, i).applyMatrix4(m.matrixWorld)
+      const key = cell(at).join(',')
+      const list = cells.get(key)
+      if (list === undefined) cells.set(key, [at])
+      else list.push(at)
+    }
+  }
+  let missing = 0, lost = 0
+  for (const e of painted) {
+    const mesh = old[e.mesh]
+    if (!Number.isSafeInteger(e.vertex) || mesh === undefined || e.vertex < 0 || e.vertex >= mesh.geometry.attributes.position.count) { lost++; continue }
+    const p = v.fromBufferAttribute(mesh.geometry.attributes.position, e.vertex).applyMatrix4(mesh.matrixWorld).add(shift)
+    const c = cell(p)
+    let found = false
+    for (let x = -1; x <= 1 && !found; x++) for (let y = -1; y <= 1 && !found; y++) for (let z = -1; z <= 1 && !found; z++) {
+      found = (cells.get(`${c[0] + x},${c[1] + y},${c[2] + z}`) ?? []).some(q => q.distanceTo(p) <= tolerance)
+    }
+    if (!found) missing++
+  }
+  if (lost > 0) return `${lost} painted points aren't in the live rig any more`
+  if (missing > 0) return `${missing} of ${painted.length} painted points no longer lie on the model's surface, so the rig could not keep them`
+  return null
+}

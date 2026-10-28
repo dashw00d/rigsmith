@@ -1,7 +1,13 @@
-// Animation library: reads workspace/library/manifest.json and serves filtered, paginated pages.
+// The clip library: one searchable list of three catalogs, merged when asked: workspace/library/manifest.json (the
+// converted Mixamo collection and clips made here, written by blender/library), the clips bundled with the app
+// (static/animations/<rig>-*.glb, several per file) and the clips the animation editor made for creature rigs
+// (workspace/library/creatures/index.json). One category vocabulary for all three (blender/library/aggregate.py's);
+// each catalog is re-read when its file changes. Serves filtered, paginated pages (server/routes/library.ts).
 import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { LIBRARY, readJson, ROOT } from './workspace.ts'
+import { readGlb, type Gltf } from '../src/engine/glb.ts'
+import type { ClipKey } from '../src/model/types.ts'
+import { LIBRARY, readJson, ROOT } from './store.ts'
 
 export interface Clip {
   id: string
@@ -30,6 +36,7 @@ export interface Clip {
   fps: number
   frames: number
   duration: number
+  /** One of CATEGORIES. */
   category: string
   confidence?: number
   tags: string[]
@@ -38,8 +45,9 @@ export interface Clip {
   duplicateOf?: string | null
   /** Skeleton the clip is for: 'human' (Mixamo) or a creature template id. */
   rig?: string
-  /** A clip made with props leading (in the animation editor): each prop's path, as a slot's prop keys (by prop name). */
-  propPaths?: Record<string, Array<{ u: number, q: [number, number, number, number], p?: [number, number, number] }>>
+  /** A clip made with gear leading (in the animation editor): each piece's path, by gear name (shared across
+   * characters; a slot takes them as keys on its own gear of that name, select.gearKeysFromPaths). */
+  propPaths?: Record<string, ClipKey[]>
   /** Absolute URL when the clip lives outside workspace/library (bundled clips). */
   href?: string
 }
@@ -62,8 +70,36 @@ export interface CatalogStatus {
   poseCount: number
 }
 
-let cache: { mtime: number, manifest: Manifest } | null = null
-let bundled: Clip[] | null = null
+/** The categories every clip is filed under, in the order they are offered (blender/library/aggregate.py's
+ * CATEGORIES: the converted library's own; bundled clips are filed into the same ones). */
+export const CATEGORIES: ReadonlyArray<{ id: string, label: string }> = [
+  { id: 'locomotion', label: 'Locomotion' }, { id: 'idle', label: 'Idle' }, { id: 'combat', label: 'Combat' },
+  { id: 'reactions', label: 'Reactions' }, { id: 'jump', label: 'Jump & Acrobatics' }, { id: 'climb', label: 'Climb & Hang' },
+  { id: 'crouch-prone', label: 'Crouch & Prone' }, { id: 'sit-lie', label: 'Sit & Lie' }, { id: 'dance', label: 'Dance' },
+  { id: 'gesture', label: 'Gesture' }, { id: 'work', label: 'Work' }, { id: 'sports', label: 'Sports & Fitness' },
+  { id: 'transition', label: 'Transition' }, { id: 'pose', label: 'Pose' },
+]
+
+// (a bundled clip's category from its animation name: the first that matches, else gesture)
+const CATEGORY_WORDS: Array<[string, RegExp]> = [
+  ['climb', /climb|ladder|hang/i],
+  ['locomotion', /walk|run|trot|gallop|canter|jog|sprint|swim|crawl|sneak|strafe|turn|side.?wind|fly|glide|flap/i],
+  ['combat', /attack|punch|kick|slash|sword|bite|stab|shoot|bow|spell|cast|block|ground.?pound|head.?but|roar|tail/i],
+  ['reactions', /death|die|dead|hit|knock|fall|damage/i],
+  ['jump', /jump|flip|vault|roll|rear/i],
+  ['work', /chop|farm|harvest|plant|water|fix|dig|mine|build|hammer|carry|push|pull|pick|craft|cook|fish|chest|consume|eat|drink|drive/i],
+  ['dance', /dance/i],
+  ['gesture', /wave|cheer|salute|bow\b|talk|angry|confused|insult|help|clap|point|nod|shake|howl|bark/i],
+  ['sit-lie', /sit|lay|sleep|lie|rest/i],
+  ['crouch-prone', /crouch|prone|kneel/i],
+  ['idle', /idle|stand|breath|alert|coil|float/i],
+  ['pose', /pose/i],
+]
+
+export function categorize (name: string): string {
+  return CATEGORY_WORDS.find(([, re]) => re.test(name))?.[0] ?? 'gesture'
+}
+
 const haystacks = new WeakMap<Clip, { names: string, all: string }>()
 
 /** Lower-case text a search term may match: the names (name, description, candidates) and all of it (+ tags, category). */
@@ -74,7 +110,7 @@ function haystack (c: Clip): { names: string, all: string } {
       c.sourceName === undefined ? undefined : `${c.sourceName}.fbx`,
       ...(c.candidates ?? []).flatMap(k => [k.name, k.description])]
       .filter(Boolean).join('\n').toLowerCase()
-    text = { names, all: [names, ...c.tags, c.category].join('\n').toLowerCase() }
+    text = { names, all: [names, ...c.tags, c.category, labelOf(c.category)].join('\n').toLowerCase() }
     haystacks.set(c, text)
   }
   return text
@@ -88,58 +124,58 @@ function nameRank (c: Clip): number {
 
 const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare
 
-const CATEGORY_WORDS: Array<[string, RegExp]> = [
-  ['locomotion', /walk|run|trot|gallop|jog|sprint|swim|crawl|sneak|strafe|turn|side.?wind|fly|glide|flap|climb/i],
-  ['combat', /attack|punch|kick|slash|sword|bite|stab|shoot|bow|spell|cast|block|ground.?pound|head.?but|roar|tail/i],
-  ['reactions', /death|die|dead|hit|knock|fall|damage/i],
-  ['jump', /jump|flip|vault|roll|rear/i],
-  ['work', /chop|farm|harvest|plant|water|fix|dig|mine|build|hammer|carry|push|pull|pick|craft|cook|fish|chest|consume|eat|drink|drive/i],
-  ['dance', /dance/i],
-  ['gesture', /wave|cheer|salute|bow\b|talk|angry|confused|insult|help|clap|point|nod|shake|howl|bark/i],
-  ['sit-lie', /sit|lay|sleep|lie|rest/i],
-  ['crouch-prone', /crouch|prone|kneel/i],
-  ['idle', /idle|stand|breath|alert|coil|float/i],
-]
-
-function categorize (name: string): string {
-  return CATEGORY_WORDS.find(([, re]) => re.test(name))?.[0] ?? 'gesture'
+function labelOf (id: string): string {
+  return CATEGORIES.find(c => c.id === id)?.label ?? id.replace(/-/g, ' & ').replace(/^\w/, ch => ch.toUpperCase())
 }
 
-/** Clips bundled with the app (static/animations/<rig>-*.glb), several per file. */
-async function bundledClips (): Promise<Clip[]> {
-  if (bundled !== null) return bundled
-  const dir = path.join(ROOT, 'static', 'animations')
+// ---- the catalogs ----------------------------------------------------------------------------------------------------
+
+const bundled = new Map<string, { mtime: number, clips: Clip[] }>()
+
+/** Clips bundled with the app (static/animations/<rig>-*.glb, several per file), each file re-read when it changes. */
+async function bundledClips (dir = path.join(ROOT, 'static', 'animations')): Promise<Clip[]> {
+  let files: string[]
+  try { files = (await readdir(dir)).filter(f => f.endsWith('.glb')).sort() } catch { return [] }
+  for (const gone of [...bundled.keys()]) if (!files.includes(gone)) bundled.delete(gone)
   const out: Clip[] = []
-  for (const file of (await readdir(dir)).filter(f => f.endsWith('.glb')).sort()) {
-    const rig = file.split('-')[0]
-    const data = await readFile(path.join(dir, file))
-    const json = JSON.parse(data.subarray(20, 20 + data.readUInt32LE(12)).toString('utf8')) as {
-      animations?: Array<{ name: string, samplers: Array<{ input: number }> }>, accessors: Array<{ max?: number[] }>
+  for (const file of files) {
+    let mtime: number
+    try { mtime = (await stat(path.join(dir, file))).mtimeMs } catch { continue }
+    let entry = bundled.get(file)
+    if (entry === undefined || entry.mtime !== mtime) {
+      entry = { mtime, clips: clipsOfBundle(file, readGlb(await readFile(path.join(dir, file))).json) }
+      bundled.set(file, entry)
     }
-    for (const anim of json.animations ?? []) {
-      if (/rest.?pose/i.test(anim.name)) continue
-      const duration = Math.max(...anim.samplers.map(sm => json.accessors[sm.input].max?.[0] ?? 0))
-      const name = anim.name.replace(/_/g, ' ').replace(/\bRM\b/, '(root motion)').trim()
-      const loop = /idle|walk|run|trot|swim|fly|glide|flap|crawl|sneak|dance|wind/i.test(anim.name)
-      out.push({
-        id: `${rig}-${anim.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-        name,
-        source: 'bundled',
-        nameSource: 'bundled',
-        file: file,
-        fps: 30,
-        frames: Math.round(duration * 30) + 1,
-        duration,
-        category: categorize(anim.name),
-        tags: [loop ? 'loop' : 'one-shot', /RM$/.test(anim.name) ? 'root-motion' : 'in-place'],
-        loop,
-        inPlace: !/RM$/.test(anim.name),
-        rig,
-        href: `/animations/${file}#${encodeURIComponent(anim.name)}`,
-      })
-    }
+    out.push(...entry.clips)
   }
-  bundled = out
+  return out
+}
+
+function clipsOfBundle (file: string, json: Gltf): Clip[] {
+  const rig = file.split('-')[0]
+  const out: Clip[] = []
+  for (const anim of json.animations ?? []) {
+    if (anim.name === undefined || /rest.?pose/i.test(anim.name)) continue
+    const duration = Math.max(0, ...anim.samplers.map(sm => json.accessors?.[sm.input]?.max?.[0] ?? 0))
+    const loop = /idle|walk|run|trot|canter|gallop|swim|fly|glide|flap|crawl|sneak|dance|wind/i.test(anim.name)
+    const rootMotion = /RM$/.test(anim.name)
+    out.push({
+      id: `${rig}-${anim.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+      name: anim.name.replace(/_/g, ' ').replace(/\bRM\b/, '(root motion)').trim(),
+      source: 'bundled',
+      nameSource: 'bundled',
+      file,
+      fps: 30,
+      frames: Math.round(duration * 30) + 1,
+      duration,
+      category: categorize(anim.name),
+      tags: [loop ? 'loop' : 'one-shot', rootMotion ? 'root-motion' : 'in-place'],
+      loop,
+      inPlace: !rootMotion,
+      rig,
+      href: `/animations/${file}#${encodeURIComponent(anim.name)}`,
+    })
+  }
   return out
 }
 
@@ -153,10 +189,15 @@ async function creatureClips (): Promise<Clip[]> {
   try { mtime = (await stat(file)).mtimeMs } catch { return [] }
   if (creatures === null || creatures.mtime !== mtime) {
     const index = await readJson<{ clips: Clip[] }>(file, { clips: [] })
-    creatures = { mtime, clips: index.clips.map(c => ({ ...c, href: `/files/library/${c.file}` })) }
+    creatures = { mtime, clips: index.clips.map(c => ({ ...c, category: known(c.category), href: `/files/library/${c.file}` })) }
   }
   return creatures.clips
 }
+
+// (a category from outside the vocabulary is filed as a gesture, so every clip can be found by its category)
+const known = (category: string | undefined): string => CATEGORIES.some(c => c.id === category) ? category! : 'gesture'
+
+let cache: { mtime: number, manifest: Manifest } | null = null
 
 async function manifest (): Promise<Manifest> {
   const file = path.join(LIBRARY, 'manifest.json')
@@ -164,7 +205,8 @@ async function manifest (): Promise<Manifest> {
   try { mtime = (await stat(file)).mtimeMs } catch { return { version: 0, skeleton: 'mixamo', categories: [], clips: [] } }
   if (cache === null || cache.mtime !== mtime) {
     const loaded = await readJson<Manifest>(file, { version: 0, skeleton: 'mixamo', categories: [], clips: [] })
-    loaded.clips = loaded.clips.filter(c => c.duplicateOf === null || c.duplicateOf === undefined).map(c => ({ ...c, rig: c.rig ?? 'human' }))
+    loaded.clips = loaded.clips.filter(c => c.duplicateOf === null || c.duplicateOf === undefined)
+      .map(c => ({ ...c, rig: c.rig ?? 'human', category: known(c.category) }))
     cache = { mtime, manifest: loaded }
   }
   return cache.manifest
@@ -183,18 +225,39 @@ async function auditFindings (): Promise<Record<string, { problems: Clip['proble
   return audit.clips
 }
 
+async function allClips (): Promise<Clip[]> {
+  return [...(await manifest()).clips, ...await bundledClips(), ...await creatureClips()]
+}
+
+// ---- the query -------------------------------------------------------------------------------------------------------
+
 export interface LibraryQuery { category?: string, query?: string, source?: string, rig?: string, page: number, pageSize: number }
 
-export async function queryLibrary (q: LibraryQuery) {
+export interface LibraryResult {
+  /** Clips matching every filter. */
+  total: number
+  /** Clips for the rig, whatever the filters. */
+  all: number
+  page: number
+  pages: number
+  pageSize: number
+  catalog: CatalogStatus | null
+  /** Clips made here (the animation editor's, the scripted ones) for the rig: source custom. */
+  custom: number
+  /** Every category, with how many clips match the search and the source in it (the category filter aside). */
+  categories: Array<{ id: string, label: string, count: number }>
+  clips: Array<Clip & { url: string }>
+}
+
+export async function queryLibrary (q: LibraryQuery): Promise<LibraryResult> {
   const m = await manifest()
   const findings = await auditFindings()
-  const rig = q.rig ?? 'human'
-  const all = [...m.clips, ...await bundledClips(), ...await creatureClips()].filter(c => c.rig === rig)
+  const rig = q.rig === undefined || q.rig === '' ? 'human' : q.rig
+  const all = (await allClips()).filter(c => c.rig === rig)
   const terms = (q.query ?? '').toLowerCase().split(/\s+/).filter(Boolean)
-  const matches = all.filter(c =>
-    (q.category === undefined || q.category === '' || c.category === q.category) &&
-    (q.source === undefined || q.source === '' || c.source === q.source) &&
-    terms.every(t => haystack(c).all.includes(t)))
+  // (searched and of the source: what the categories count, before the category filter)
+  const found = all.filter(c => (q.source === undefined || q.source === '' || c.source === q.source) && terms.every(t => haystack(c).all.includes(t)))
+  const matches = found.filter(c => q.category === undefined || q.category === '' || c.category === q.category)
   // Names starting a word with every term first ("laying", not "playing"), then names containing
   // them, then clips found only through tags ("left" ~ turn-left).
   const starts = terms.map(t => new RegExp(`(^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
@@ -204,28 +267,25 @@ export async function queryLibrary (q: LibraryQuery) {
   }
   matches.sort((a, b) => relevance(a) - relevance(b) || nameRank(a) - nameRank(b) || byName(a.name, b.name) ||
     byName(a.description ?? '', b.description ?? '') || a.duration - b.duration)
-  const pageSize = Math.min(Math.max(q.pageSize, 1), 96)
+  const pageSize = Math.min(Math.max(Number.isFinite(q.pageSize) ? Math.floor(q.pageSize) : 24, 1), 96)
   const pages = Math.max(1, Math.ceil(matches.length / pageSize))
-  const page = Math.min(Math.max(q.page, 0), pages - 1)
+  const page = Math.min(Math.max(Number.isFinite(q.page) ? Math.floor(q.page) : 0, 0), pages - 1)
   const counts = new Map<string, number>()
-  for (const c of all) counts.set(c.category, (counts.get(c.category) ?? 0) + 1)
-  const labels = new Map(m.categories.map(c => [c.id, c.label]))
-  const order = m.categories.length > 0 ? m.categories.map(c => c.id) : CATEGORY_WORDS.map(([id]) => id)
+  for (const c of found) counts.set(c.category, (counts.get(c.category) ?? 0) + 1)
   return {
     total: matches.length,
+    all: all.length,
     page,
     pages,
     pageSize,
     catalog: rig === 'human' ? m.catalog ?? null : null,
-    /** Clips made here (the animation editor's, the scripted ones): source custom. */
     custom: all.filter(c => c.source === 'custom').length,
-    categories: order.map(id => ({ id, label: labels.get(id) ?? id.replace(/-/g, ' & ').replace(/^\w/, ch => ch.toUpperCase()), count: counts.get(id) ?? 0 })),
+    categories: CATEGORIES.map(({ id, label }) => ({ id, label, count: counts.get(id) ?? 0 })),
     clips: matches.slice(page * pageSize, (page + 1) * pageSize).map(c => ({ ...c, url: c.href ?? `/files/library/${c.file}`, problems: findings[c.id]?.problems })),
   }
 }
 
 /** A clip's category, by id (any rig's: the library's, the bundled, the made ones). */
 export async function categoryOf (id: string): Promise<string | null> {
-  const m = await manifest()
-  return [...m.clips, ...await bundledClips(), ...await creatureClips()].find(c => c.id === id)?.category ?? null
+  return (await allClips()).find(c => c.id === id)?.category ?? null
 }

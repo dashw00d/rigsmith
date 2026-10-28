@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
 import { CharacterView } from '../../src/engine/CharacterView.ts'
-import type { Garment } from '../../server/workspace.ts'
-import { gearSkin, pullSkin } from './gearskin.ts'
+import type { Gear, GearAttach } from '../../src/model/types.ts'
+import { gearSkin, pullHandles, pullSkin } from './gearskin.ts'
 
 // A 2 x 2 body sheet at z = 0: Hips at x = 0, LeftUpLeg at x = 2, each vertex weighted to LeftUpLeg by x / 2.
 function body (): CharacterView {
@@ -32,9 +32,9 @@ function patch (x: number, y: number): THREE.BufferGeometry {
   return g
 }
 
-const garment = (over: Partial<Garment>): Garment => ({
-  id: 't', name: 'Test', status: 'ready', mode: 'clothing', policy: 'body', bone: 'Hips', position: [0, 0, 0], rotation: [0, 0, 0], scale: 1, hideBody: false, ...over,
-})
+const PLACE = { position: [0, 0, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], scale: 1 }
+const gear = (attach: GearAttach, over: Partial<Gear> = {}): Gear => ({ id: 't', name: 'Test', status: 'ready', attach, handles: [], ...over })
+const clothing = (over: Partial<Gear> = {}): Gear => gear({ kind: 'skin', policy: 'body', place: PLACE }, over)
 // the export's joints: another order than the body's skeleton (root first, the leg before the hips)
 const JOINTS = ['root', 'LeftUpLeg', 'Hips']
 const bonesOf = (s: { indices: Uint16Array, weights: Float32Array }, v: number): Record<string, number> => {
@@ -43,48 +43,57 @@ const bonesOf = (s: { indices: Uint16Array, weights: Float32Array }, v: number):
   return out
 }
 
-describe('game export: clothing and parts skinned as the viewer skins them', () => {
-  it('weights clothing like the skin under it, by bone name on the export skeleton', () => {
-    const { skins, lead } = gearSkin(body(), garment({}), [patch(0, 1), patch(1.95, 1)], [], [], JOINTS)
+describe('game export: skin and spot gear skinned as the viewer skins them', () => {
+  it('weights skin gear like the skin under it, by bone name on the export skeleton', () => {
+    const { skins, lead } = gearSkin(body(), clothing(), [patch(0, 1), patch(1.95, 1)], [], [], JOINTS)
     expect(bonesOf(skins[0], 0).Hips).toBeGreaterThan(0.95)
     expect(bonesOf(skins[1], 0).LeftUpLeg).toBeGreaterThan(0.95)
     expect(lead).toBe('Hips')
   })
 
-  it('lays painted weights over only while the garment counts them', () => {
+  it('lays painted weights over only while the piece counts them', () => {
     const edits = [{ mesh: 1, vertex: 2, weights: [['Hips', 3], ['LeftUpLeg', 1]] as Array<[string, number]> }]
-    const painted = gearSkin(body(), garment({ painted: 1 }), [patch(0, 1), patch(1.95, 1)], edits, [], JOINTS)
+    const painted = gearSkin(body(), clothing({ painted: 1 }), [patch(0, 1), patch(1.95, 1)], edits, [], JOINTS)
     expect(painted.painted).toBe(1)
     expect(bonesOf(painted.skins[1], 2)).toEqual({ Hips: 0.75, LeftUpLeg: 0.25 })
-    expect(bonesOf(gearSkin(body(), garment({}), [patch(0, 1), patch(1.95, 1)], edits, [], JOINTS).skins[1], 2).LeftUpLeg).toBeGreaterThan(0.95)
+    expect(bonesOf(gearSkin(body(), clothing(), [patch(0, 1), patch(1.95, 1)], edits, [], JOINTS).skins[1], 2).LeftUpLeg).toBeGreaterThan(0.95)
   })
 
-  it('gives every vertex of a part its spot\'s weights; a mechanism rides the spot\'s leading bone', () => {
-    const g = garment({ mode: 'part', anchor: [1.5, 1, 0] })
-    const { skins, spot } = gearSkin(body(), g, [patch(0, 0), patch(1.9, 1.9)], [], [], JOINTS)
+  it('gives every vertex of spot gear its spot\'s weights; a mechanism rides the spot\'s leading bone', () => {
+    const pinned = (animation?: string): Gear => gear({ kind: 'spot', place: PLACE, anchor: [1.5, 1, 0], animation })
+    const { skins, spot } = gearSkin(body(), pinned(), [patch(0, 0), patch(1.9, 1.9)], [], [], JOINTS)
     expect(spot).toEqual([['LeftUpLeg', 0.75], ['Hips', 0.25]])
     for (const s of skins) for (let v = 0; v < 3; v++) expect(bonesOf(s, v)).toEqual({ LeftUpLeg: 0.75, Hips: 0.25 })
-    const turning = gearSkin(body(), { ...g, animation: 'Turn' }, [patch(0, 0)], [], ['Turn'], JOINTS)
+    const turning = gearSkin(body(), pinned('Turn'), [patch(0, 0)], [], ['Turn'], JOINTS)
     expect(turning.mechanism).toBe('Turn')
     expect(bonesOf(turning.skins[0], 1)).toEqual({ LeftUpLeg: 1 })
-    // (an animation its model lacks: a plain part, as the viewer has it)
-    expect(gearSkin(body(), { ...g, animation: 'Gone' }, [patch(0, 0)], [], [], JOINTS).mechanism).toBeUndefined()
+    // (an animation its model lacks: a plain spot, as the viewer has it)
+    expect(gearSkin(body(), pinned('Gone'), [patch(0, 0)], [], [], JOINTS).mechanism).toBeUndefined()
   })
 
-  it('refuses a weight on a bone the export lacks', () => {
-    expect(() => gearSkin(body(), garment({}), [patch(1.95, 1)], [], [], ['root', 'Hips'])).toThrow('LeftUpLeg')
+  it('refuses a weight on a bone the export lacks, and bone gear', () => {
+    expect(() => gearSkin(body(), clothing(), [patch(1.95, 1)], [], [], ['root', 'Hips'])).toThrow('LeftUpLeg')
+    expect(() => gearSkin(body(), gear({ kind: 'bone', bone: 'Hips', place: PLACE }), [patch(0, 1)], [], [], JOINTS)).toThrow('Hips')
   })
 })
 
-describe('game export: a prop\'s pulls rigged as the viewer rigs them', () => {
+describe('game export: bone gear\'s pulls rigged as the viewer rigs them', () => {
   // a string: a thin straight tube along z, vertices only at its ends
   const string = (): THREE.BufferGeometry => new THREE.CylinderGeometry(0.002, 0.002, 0.7, 6, 1).rotateX(Math.PI / 2)
-  const bow = (painted = 0): Garment => garment({
-    mode: 'rigid', name: 'Bow', bone: 'LeftHand', painted,
-    pulls: [{ id: 'p', name: 'Draw', bone: 'RightHand', grip: [0, 0, 0], rest: [0, 0, 0.1] }],
+  const bow = (painted = 0): Gear => gear({ kind: 'bone', bone: 'LeftHand', place: PLACE }, {
+    name: 'Bow', painted,
+    handles: [
+      { id: 'carry', name: 'Carried', kind: 'carry', hand: 'Left' },
+      { id: 'p', name: 'Draw', kind: 'pull', hand: 'Right', pull: { bone: 'RightHand', grip: [0, 0, 0], rest: [0, 0, 0.1] } },
+    ],
   })
-  // the export's joints: the bone the prop rides at 7, the pull's bone at 9
+  // the export's joints: the bone the piece rides at 7, the pull's bone at 9
   const joints = [7, 9]
+
+  it('takes the pull handles with a point, in handle order', () => {
+    expect(pullHandles(bow()).map(h => h.id)).toEqual(['p'])
+    expect(pullHandles({ handles: [{ id: 'x', name: 'X', kind: 'pull' }] })).toEqual([])
+  })
 
   it('splits the strand at the pull and weights the ring there to the pull\'s joint, the rest to the ride bone', () => {
     const g0 = string()
@@ -99,12 +108,16 @@ describe('game export: a prop\'s pulls rigged as the viewer rigs them', () => {
     }
   })
 
-  it('lays painted weights over by the pull bone\'s name, only while the prop counts them', () => {
-    const edits = [{ mesh: 0, vertex: 0, weights: [['PropRoot', 1], ['Prop_Bow_Draw', 3]] as Array<[string, number]> }]
+  it('lays painted weights over, keyed PropRoot and pull:<handle id>, only while the piece counts them', () => {
+    const edits = [{ mesh: 0, vertex: 0, weights: [['PropRoot', 1], ['pull:p', 3]] as Array<[string, number]> }]
     const painted = pullSkin(bow(1), [string()], edits, joints)
     expect(painted.painted).toBe(1)
     expect(Array.from(painted.skins[0].indices.slice(0, 2))).toEqual([9, 7])
     expect(Array.from(painted.skins[0].weights.slice(0, 2))).toEqual([0.75, 0.25])
     expect(pullSkin(bow(0), [string()], edits, joints).skins[0].indices[0]).toBe(7)
+  })
+
+  it('refuses joints that don\'t match its pulls', () => {
+    expect(() => pullSkin(bow(), [string()], [], [7])).toThrow('1 pulls')
   })
 })

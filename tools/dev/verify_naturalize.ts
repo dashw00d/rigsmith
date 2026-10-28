@@ -1,7 +1,7 @@
 // Real-library naturalization acceptance: body sizes, contacts, hand constraints,
 // finite rotations and independent source-frame sampling. Does not modify assets.
 // node tools/dev/verify_naturalize.ts <report.json> [character-id ...] [--dense] [--clips id,id]
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
 import { body, character, entrySource, isBone, load, ROOT, WORKSPACE } from '../lib/node3d.ts'
@@ -42,8 +42,9 @@ function acceleration (poses: Float32Array[], dt: number): { rms: number, p95: n
 }
 const rows = []
 for (const id of readdirSync(path.join(WORKSPACE, 'characters'))) {
+  if (!existsSync(path.join(WORKSPACE, 'characters', id, 'character.json'))) continue
   const c = character(id)
-  if ((c.template ?? 'human') !== 'human' || !c.files.rigged || (only.length > 0 && !only.includes(id))) continue
+  if (c.skeleton.template !== 'human' || c.files.rigged === undefined || (only.length > 0 && !only.includes(id))) continue
   const view = await body(id); const root = view.root; const bones = view.bones
   const rest = view.rest!
   const offsets = retargetOffsets(sourceRest, rest).offsets

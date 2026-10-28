@@ -1,68 +1,123 @@
-// Painted weights (the Rig step's "Fix weights", src/engine/weightpaint.ts) written into a rig, in place: JOINTS_0 /
-// WEIGHTS_0 of its skinned primitives (the same accessors, so the rest of the file stays byte for byte), by vertex and
-// bone name. Kept per character (weight_edits.json) and written again after each rig, so a re-rig keeps them.
+// Painted weights (the Skin step's weight painting, src/engine/weightpaint.ts) written into a rig: JOINTS_0 / WEIGHTS_0
+// of its skinned primitives (the same accessors, so the rest of the file stays byte for byte), by vertex and bone name.
+// Kept per character (weight_edits.json, keyed "mesh:vertex") and written again after each rig, so a re-rig keeps
+// them. Every file here is replaced whole (written beside it as <file>.<hex>.tmp, then moved over it: the restart
+// clean-up deletes strays), so a crash mid-save never cuts a rig or its record short. The callers that write a
+// character's files hold its withFiles lock (server/store.ts).
+import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { copyFile, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { characterDir } from './workspace.ts'
+import { accessor, type Glb, readGlb } from '../src/engine/glb.ts'
+import { characterDir } from './store.ts'
 
+/** A painted vertex: its skinned primitive (CharacterView.bodySkinned order: the file's skinned primitives in scene
+ * order, depth first), the vertex, and its bones by name with their weights. */
 export interface WeightEdit { mesh: number, vertex: number, weights: Array<[string, number]> }
 
-interface Gltf {
-  scene?: number
-  scenes: Array<{ nodes: number[] }>
-  nodes: Array<{ name?: string, mesh?: number, skin?: number, children?: number[] }>
-  meshes: Array<{ primitives: Array<{ attributes: Record<string, number> }> }>
-  skins: Array<{ joints: number[] }>
-  accessors: Array<{ bufferView: number, byteOffset?: number, componentType: number, count: number, normalized?: boolean }>
-  bufferViews: Array<{ byteOffset?: number, byteStride?: number }>
-}
-const SIZE: Record<number, number> = { 5121: 1, 5123: 2, 5126: 4 }
 // (three.js's PropertyBinding.sanitizeNodeName: the bone names the app knows)
 const sanitize = (name: string): string => name.replace(/\s/g, '_').replace(/[[\].:/]/g, '')
 
-function write (buf: Buffer, type: number, offset: number, value: number, normalized: boolean): void {
-  if (type === 5126) buf.writeFloatLE(value, offset)
-  else if (type === 5121) buf.writeUInt8(normalized ? Math.round(value * 255) : value, offset)
-  else if (type === 5123) buf.writeUInt16LE(normalized ? Math.round(value * 65535) : value, offset)
-  else throw new Error(`component type ${type}`)
-}
+/** One skinned primitive of a GLB: its vertex count, the bone names its JOINTS_0 indexes, and its skin accessors
+ * (none on a primitive the file left unskinned). */
+export interface SkinnedPart { count: number, joints: string[], attributes: { JOINTS_0?: number, WEIGHTS_0?: number } }
 
-/** Write edits into a GLB's skin; the skinned primitives counted as the app counts its skinned meshes (scene order,
- * depth first). Returns the vertices written. */
-export async function writeWeights (glbPath: string, edits: WeightEdit[]): Promise<number> {
-  const glb = await readFile(glbPath)
-  const jsonLength = glb.readUInt32LE(12)
-  const gltf = JSON.parse(glb.subarray(20, 20 + jsonLength).toString('utf8')) as Gltf
-  const bin = 20 + jsonLength + 8
-  const parts: Array<{ node: number, prim: { attributes: Record<string, number> } }> = []
+/** The skinned primitives as the app counts its skinned meshes (three.js makes every primitive of a skinned node one):
+ * scene order, depth first. */
+export function skinnedParts (glb: Glb): SkinnedPart[] {
+  const { nodes = [], meshes = [], skins = [], scenes = [], accessors = [] } = glb.json
+  const parts: SkinnedPart[] = []
   const visit = (n: number): void => {
-    const node = gltf.nodes[n]
-    if (node.mesh !== undefined && node.skin !== undefined) for (const prim of gltf.meshes[node.mesh].primitives) parts.push({ node: n, prim })
+    const node = nodes[n]
+    if (node.mesh !== undefined && node.skin !== undefined) {
+      const joints = skins[node.skin].joints.map(j => sanitize(nodes[j].name ?? ''))
+      for (const prim of meshes[node.mesh].primitives) {
+        const { JOINTS_0, WEIGHTS_0, POSITION } = prim.attributes
+        const skinned = JOINTS_0 !== undefined && WEIGHTS_0 !== undefined
+        parts.push({ count: skinned ? accessors[POSITION ?? JOINTS_0]?.count ?? 0 : 0, joints, attributes: skinned ? { JOINTS_0, WEIGHTS_0 } : {} })
+      }
+    }
     for (const c of node.children ?? []) visit(c)
   }
-  for (const n of gltf.scenes[gltf.scene ?? 0].nodes) visit(n)
+  for (const n of scenes[glb.json.scene ?? 0]?.nodes ?? []) visit(n)
+  return parts
+}
+
+/**
+ * Painted edits as a request sent them, checked against the rig they are for: each names a skinned primitive and a
+ * vertex it has, and bones its skin has, with weights that are numbers from 0 up (some above 0). Throws (the route
+ * answers 400) at the first that doesn't; returns them cleaned (each vertex once, its latest).
+ */
+export function checkEdits (parts: Array<Pick<SkinnedPart, 'count' | 'joints'>>, edits: unknown): WeightEdit[] {
+  if (!Array.isArray(edits) || edits.length === 0) throw new Error('No weights to write')
+  const out = new Map<string, WeightEdit>()
+  for (const [i, e] of edits.entries()) {
+    const at = `edit ${i}`
+    if (typeof e !== 'object' || e === null) throw new Error(`${at} isn't a weight edit`)
+    const { mesh, vertex, weights } = e as Record<string, unknown>
+    if (!Number.isInteger(mesh) || !Number.isInteger(vertex)) throw new Error(`${at}: mesh and vertex must be whole numbers`)
+    const part = parts[mesh as number]
+    if (part === undefined || (mesh as number) < 0) throw new Error(`${at}: the rig has no skinned mesh ${String(mesh)} (it has ${parts.length})`)
+    if ((vertex as number) < 0 || (vertex as number) >= part.count) throw new Error(`${at}: mesh ${String(mesh)} has no vertex ${String(vertex)} (it has ${part.count})`)
+    if (!Array.isArray(weights) || weights.length === 0) throw new Error(`${at}: no weights`)
+    const clean: Array<[string, number]> = []
+    for (const w of weights) {
+      if (!Array.isArray(w) || w.length !== 2 || typeof w[0] !== 'string' || typeof w[1] !== 'number' || !Number.isFinite(w[1]) || w[1] < 0) {
+        throw new Error(`${at}: each weight must be [bone, a number from 0 up]`)
+      }
+      if (!part.joints.includes(w[0])) throw new Error(`${at}: the rig has no bone ${w[0]}`)
+      clean.push([w[0], w[1]])
+    }
+    if (clean.every(([, w]) => w <= 0)) throw new Error(`${at}: every weight is 0`)
+    out.set(`${mesh as number}:${vertex as number}`, { mesh: mesh as number, vertex: vertex as number, weights: clean })
+  }
+  return [...out.values()]
+}
+
+/** A temp file beside `file`, for it to be moved over it: <file>.<hex>.tmp. */
+const tempBeside = (file: string): string => `${file}.${randomBytes(6).toString('hex')}.tmp`
+
+/** `file` replaced whole or not at all: written beside it, then moved over it. */
+async function replaceFile (file: string, data: Uint8Array | string): Promise<void> {
+  const temp = tempBeside(file)
+  try {
+    await writeFile(temp, data)
+    await rename(temp, file)
+  } finally {
+    await rm(temp, { force: true })
+  }
+}
+
+/** Write edits into a GLB's bytes, in place; the skinned primitives counted as skinnedParts counts them. Edits naming
+ * what the file doesn't have are skipped (check them first with checkEdits). Returns the vertices written. */
+export function paintGlb (bytes: Uint8Array, edits: WeightEdit[]): number {
+  const glb = readGlb(bytes)
+  const parts = skinnedParts(glb)
   let written = 0
   for (const e of edits) {
     const part = parts[e.mesh]
-    if (part === undefined) continue
-    const joints = gltf.skins[gltf.nodes[part.node].skin!].joints.map(j => sanitize(gltf.nodes[j].name ?? ''))
-    const ja = gltf.accessors[part.prim.attributes.JOINTS_0]; const wa = gltf.accessors[part.prim.attributes.WEIGHTS_0]
+    const { JOINTS_0, WEIGHTS_0 } = part?.attributes ?? {}
+    if (JOINTS_0 === undefined || WEIGHTS_0 === undefined) continue
+    // (in place in the file's bytes: the same accessors, so every other byte stays)
+    const ja = accessor(glb, JOINTS_0); const wa = accessor(glb, WEIGHTS_0)
     if (e.vertex >= ja.count) continue
-    const jv = gltf.bufferViews[ja.bufferView]; const wv = gltf.bufferViews[wa.bufferView]
-    const jStride = jv.byteStride ?? SIZE[ja.componentType] * 4; const wStride = wv.byteStride ?? SIZE[wa.componentType] * 4
-    const jBase = bin + (jv.byteOffset ?? 0) + (ja.byteOffset ?? 0) + e.vertex * jStride
-    const wBase = bin + (wv.byteOffset ?? 0) + (wa.byteOffset ?? 0) + e.vertex * wStride
-    const top = e.weights.map(([name, w]) => [joints.indexOf(name), w] as [number, number]).filter(([j, w]) => j >= 0 && w > 0).sort((a, b) => b[1] - a[1]).slice(0, 4)
+    const top = e.weights.map(([name, w]) => [part.joints.indexOf(name), w] as [number, number]).filter(([j, w]) => j >= 0 && w > 0).sort((a, b) => b[1] - a[1]).slice(0, 4)
     const total = top.reduce((t, [, w]) => t + w, 0)
     if (total <= 0) continue
     for (let k = 0; k < 4; k++) {
-      write(glb, ja.componentType, jBase + k * SIZE[ja.componentType], top[k]?.[0] ?? 0, false)
-      write(glb, wa.componentType, wBase + k * SIZE[wa.componentType], (top[k]?.[1] ?? 0) / total, wa.normalized === true)
+      ja.set(e.vertex, k, top[k]?.[0] ?? 0)
+      wa.set(e.vertex, k, (top[k]?.[1] ?? 0) / total)
     }
     written++
   }
-  await writeFile(glbPath, glb)
+  return written
+}
+
+/** Write edits into a GLB file's skin (paintGlb), the file replaced whole. Returns the vertices written. */
+export async function writeWeights (glbPath: string, edits: WeightEdit[]): Promise<number> {
+  const bytes = await readFile(glbPath)
+  const written = paintGlb(bytes, edits)
+  await replaceFile(glbPath, bytes)
   return written
 }
 
@@ -74,16 +129,55 @@ export async function weightEdits (id: string): Promise<WeightEdit[]> {
   return Object.values(JSON.parse(await readFile(editsFile(id), 'utf8')) as Record<string, WeightEdit>)
 }
 
-/** Keep these edits (each vertex's latest) beside the character's earlier ones. */
+/** Keep these edits (each vertex's latest) beside the character's earlier ones. Returns how many are kept. */
 export async function keepWeightEdits (id: string, edits: WeightEdit[]): Promise<number> {
   const all: Record<string, WeightEdit> = existsSync(editsFile(id)) ? JSON.parse(await readFile(editsFile(id), 'utf8')) as Record<string, WeightEdit> : {}
   for (const e of edits) all[`${e.mesh}:${e.vertex}`] = e
-  await writeFile(editsFile(id), JSON.stringify(all))
+  // (whole or not at all: a half-written record would pair old addresses with nothing)
+  await replaceFile(editsFile(id), JSON.stringify(all))
   return Object.keys(all).length
 }
 
-export async function dropWeightEdits (id: string): Promise<void> {
-  if (existsSync(editsFile(id))) await writeFile(editsFile(id), '{}')
+/** Forget the painting: the record emptied (the live rig keeps the weights until the next rig). Returns how many there
+ * were. */
+export async function dropWeightEdits (id: string): Promise<number> {
+  if (!existsSync(editsFile(id))) return 0
+  const had = (await weightEdits(id)).length
+  await replaceFile(editsFile(id), '{}')
+  return had
+}
+
+/**
+ * Save painting into a character's live rig (`glbPath`): the edits written into the GLB and kept in
+ * weight_edits.json. The new GLB is written beside the rig, then the record is kept, then the GLB moved over the rig:
+ * a crash on the way leaves the rig whole (at worst with strokes in the record it hasn't taken yet, which the next rig
+ * puts back), never painted past its record or cut short. A rig that can't be replaced puts the record back as it was.
+ * Returns the vertices written and how many edits the record keeps.
+ */
+export async function savePainting (id: string, glbPath: string, edits: WeightEdit[]): Promise<{ written: number, kept: number }> {
+  const bytes = await readFile(glbPath)
+  const written = paintGlb(bytes, edits)
+  const record = editsFile(id)
+  const before = existsSync(record) ? await readFile(record, 'utf8') : null
+  const temp = tempBeside(glbPath)
+  try {
+    await writeFile(temp, bytes)
+    const kept = await keepWeightEdits(id, edits)
+    try {
+      await rename(temp, glbPath)
+    } catch (error) {
+      try {
+        if (before === null) await rm(record, { force: true })
+        else await replaceFile(record, before)
+      } catch (rollback) {
+        throw new AggregateError([error, rollback], 'The painting was not saved, and its record could not be put back', { cause: rollback })
+      }
+      throw error
+    }
+    return { written, kept }
+  } finally {
+    await rm(temp, { force: true })
+  }
 }
 
 /** Publish a completed rig together with its remapped painting. Roll back the

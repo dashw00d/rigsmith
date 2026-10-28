@@ -1,7 +1,8 @@
-// The 3D stage: renderer, camera, orbit controls, lighting, ground. One per viewport.
+// The 3D stage: renderer, camera, orbit controls, lighting (src/engine/lighting.ts, the one rig), ground. One per
+// viewport.
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
+import { light, place, tone, type LightRig } from './lighting.ts'
 
 type FrameCallback = (dt: number) => void
 
@@ -12,38 +13,25 @@ export class Stage {
   readonly controls: OrbitControls
   readonly content = new THREE.Group()
   private readonly ground: THREE.Group
-  private readonly key: THREE.DirectionalLight
+  private readonly lights: LightRig
   private readonly callbacks = new Set<FrameCallback>()
-  private readonly clock = new THREE.Clock()
+  private readonly clock = new THREE.Timer()
   private readonly resizeObserver: ResizeObserver
   private framing: { from: THREE.Vector3, to: THREE.Vector3, targetFrom: THREE.Vector3, targetTo: THREE.Vector3, t: number } | null = null
 
-  constructor (readonly container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true })
+  readonly container: HTMLElement
+
+  constructor (container: HTMLElement) {
+    this.container = container
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace
-    this.renderer.toneMapping = THREE.AgXToneMapping
-    this.renderer.toneMappingExposure = 1.1
+    tone(this.renderer)
     this.renderer.shadowMap.enabled = true
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    this.renderer.shadowMap.type = THREE.PCFShadowMap
     container.appendChild(this.renderer.domElement)
     this.renderer.domElement.style.display = 'block'
 
-    const pmrem = new THREE.PMREMGenerator(this.renderer)
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
-    this.scene.environmentIntensity = 0.55
-
-    this.scene.add(new THREE.HemisphereLight(0xd4dcff, 0x1a1c22, 0.9))
-    this.key = new THREE.DirectionalLight(0xfff4e8, 2.2)
-    this.key.position.set(2.5, 4, 3)
-    this.key.castShadow = true
-    this.key.shadow.mapSize.set(2048, 2048)
-    this.key.shadow.bias = -0.0004
-    this.key.shadow.radius = 4
-    this.scene.add(this.key, this.key.target)
-    const rim = new THREE.DirectionalLight(0x8ea2ff, 1.4)
-    rim.position.set(-3, 2.5, -4)
-    this.scene.add(rim)
+    this.lights = light(this.scene, this.renderer, { shadows: true })
 
     this.ground = this.makeGround()
     this.scene.add(this.ground, this.content)
@@ -111,11 +99,11 @@ export class Stage {
     grid.scale.setScalar(height * 6)
     ;(grid.material as THREE.ShaderMaterial).uniforms.uScale.value = height * 6
     const s = Math.max(height * 1.5, 0.5)
-    const cam = this.key.shadow.camera
+    const cam = this.lights.key.shadow.camera
     cam.left = -s; cam.right = s; cam.top = s; cam.bottom = -s
     cam.near = 0.01; cam.far = height * 20
     cam.updateProjectionMatrix()
-    this.key.position.set(height * 2.5, height * 4, height * 3)
+    place(this.lights, height)
     this.camera.near = height * 0.01
     this.camera.far = height * 200
     this.camera.updateProjectionMatrix()
@@ -171,6 +159,7 @@ export class Stage {
   covered = false
 
   private tick (): void {
+    this.clock.update()
     const dt = Math.min(this.clock.getDelta(), 0.1)
     if (this.covered) return
     if (this.framing !== null) {
@@ -208,17 +197,6 @@ export class Stage {
   project (point: THREE.Vector3): { x: number, y: number, visible: boolean } {
     const p = point.clone().project(this.camera)
     return { x: (p.x + 1) / 2 * this.container.clientWidth, y: (1 - p.y) / 2 * this.container.clientHeight, visible: p.z < 1 }
-  }
-
-  async snapshot (width = 256, height = 256): Promise<Blob> {
-    const canvas = document.createElement('canvas')
-    canvas.width = width
-    canvas.height = height
-    const src = this.renderer.domElement
-    const side = Math.min(src.width, src.height)
-    const ctx = canvas.getContext('2d')!
-    ctx.drawImage(src, (src.width - side) / 2, (src.height - side) / 2, side, side, 0, 0, width, height)
-    return await new Promise(resolve => { canvas.toBlob(b => { resolve(b!) }, 'image/webp', 0.9) })
   }
 
   dispose (): void {

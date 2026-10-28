@@ -28,10 +28,32 @@ export function surfaceIslands (positions: ArrayLike<number>, indices: ArrayLike
 /** An average improvement cannot excuse an increase in extreme deformation on
  * another motion. Keep the existing RMS guard too, then select individual islands. */
 export function retainReference (generated: number[], reference: number[], severe: number[], referenceSevere: number[]): boolean {
+  return explainRetain(generated, reference, severe, referenceSevere).retain
+}
+
+const percent = (a: number, b: number): number => Math.round((a / Math.max(b, 1e-12) - 1) * 100)
+
+/**
+ * retainReference with its reason, for the rig report: what the generated skin did against the reference on the tests
+ * (`names`, one per test), as a phrase with no subject ("strained Air squat 15% more", "was no worse on any of the 8
+ * tests (6% less strain)"). The first rule that keeps the reference is the one given.
+ */
+export function explainRetain (generated: number[], reference: number[], severe: number[], referenceSevere: number[], names: string[] = []): { retain: boolean, why: string } {
   const n = generated.length
   if (n === 0 || [generated, reference, severe, referenceSevere].some(a => a.length !== n || a.some(x => !Number.isFinite(x) || x < 0))) throw new Error('Invalid deformation scores')
   const sum = (a: number[]): number => a.reduce((s,x) => s+x, 0)
-  return sum(generated) > sum(reference)*1.01 || generated.some((x,i) => x > reference[i]*1.1) || severe.some((x,i) => x > referenceSevere[i])
+  const name = (i: number): string => names[i] ?? `test ${i + 1}`
+  const tests = n === 1 ? 'the test' : `the ${n} tests`
+  if (sum(generated) > sum(reference)*1.01) return { retain: true, why: `strained ${tests} ${percent(sum(generated), sum(reference))}% more in all` }
+  const worse = generated.findIndex((x,i) => x > reference[i]*1.1)
+  if (worse >= 0) return { retain: true, why: `strained ${name(worse)} ${percent(generated[worse], reference[worse])}% more` }
+  const torn = severe.findIndex((x,i) => x > referenceSevere[i])
+  if (torn >= 0) {
+    const more = severe[torn] - referenceSevere[torn]
+    return { retain: true, why: `stretched ${more} more ${more === 1 ? 'edge' : 'edges'} past double length on ${name(torn)}` }
+  }
+  const gain = -percent(sum(generated), sum(reference))
+  return { retain: false, why: `was no worse on ${n === 1 ? 'the test' : `any of ${tests}`}${gain >= 1 ? ` (${gain}% less strain)` : ''}` }
 }
 
 /** Start with the whole-model winner. Use the other skin on an island only when

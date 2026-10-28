@@ -14,13 +14,8 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { loadGlbFile as load } from '../../src/engine/headless.ts'
 import { canonical, captureRest, retarget } from '../../src/engine/retarget.ts'
-
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images') }
-console.error = () => {}
 
 const CLIPS = ['mixamo-Walking_19', 'mixamo-Dying', 'mixamo-Standing_Draw_Arrow', 'mixamo-Carrying', 'mixamo-Digging', 'mixamo-Combo_Punch', 'mixamo-Flying_Kick',
   'mixamo-Air_Squat', 'mixamo-Push_Up', 'mixamo-Backflip_2', 'mixamo-Climbing_6', 'mixamo-Pick_Up_Item_2', 'mixamo-Spell_Cast', 'mixamo-Crouched_Sneaking_Left',
@@ -34,10 +29,6 @@ const clipIds = flag('--clips')?.split(',') ?? CLIPS
 const framesPerClip = Number(flag('--frames') ?? 12)
 const only = flag('--only')?.split(',')
 
-async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
-  const data = readFileSync(file)
-  return await new Promise((resolve, reject) => { new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '', r => { resolve(r as never) }, reject) })
-}
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 
 interface MeshData { positions: Float32Array, index: Uint32Array, skin: Array<Array<[string, number]>>, meshes: THREE.SkinnedMesh[] }
@@ -393,7 +384,8 @@ async function score (file: string, groupsFrom: { positions: Float32Array, skin:
 const clips = await Promise.all(clipIds.map(async id => await load(path.join(LIBRARY, `${id}.glb`))))
 const names = readdirSync(dirA).filter(f => f.endsWith('.glb')).map(f => f.slice(0, -4)).filter(n => only === undefined || only.includes(n))
 const rows: Array<{ name: string, a: Score, b: Score }> = []
-const KEYS: Array<[keyof Score, string, number]> = [['stretch', 'stretch', 1000], ['stretch99', 'str p99', 100], ['rigid', 'rigid%H', 1], ['rigidG', 'rigidGeo', 1], ['volume', 'vol%', 1], ['bleed', 'bleed%', 1], ['bleedG', 'bleedGeo', 1], ['center', 'center', 1]]
+type Metric = Exclude<keyof Score, 'detail'>
+const KEYS: Array<[Metric, string, number]> = [['stretch', 'stretch', 1000], ['stretch99', 'str p99', 100], ['rigid', 'rigid%H', 1], ['rigidG', 'rigidGeo', 1], ['volume', 'vol%', 1], ['bleed', 'bleed%', 1], ['bleedG', 'bleedGeo', 1], ['center', 'center', 1]]
 console.log(`${'character'.padEnd(15)}` + KEYS.map(([, label]) => `${label.padStart(9)} A/B      `).join(''))
 for (const name of names) {
   const a = await score(path.join(dirA, `${name}.glb`), null, clips)
@@ -403,7 +395,7 @@ for (const name of names) {
   rows.push({ name, a: a.score, b: b.score })
   console.log(name.padEnd(15) + KEYS.map(([k, , s]) => `${(a.score[k] * s).toFixed(2).padStart(7)} /${(b.score[k] * s).toFixed(2).padStart(6)} ${b.score[k] < a.score[k] ? '✓' : '✗'}  `).join(''))
 }
-const mean = (k: keyof Score, side: 'a' | 'b'): number => rows.reduce((s, r) => s + r[side][k], 0) / rows.length
+const mean = (k: Metric, side: 'a' | 'b'): number => rows.reduce((s, r) => s + r[side][k], 0) / rows.length
 console.log('mean'.padEnd(15) + KEYS.map(([k, , s]) => `${(mean(k, 'a') * s).toFixed(2).padStart(7)} /${(mean(k, 'b') * s).toFixed(2).padStart(6)} ${mean(k, 'b') < mean(k, 'a') ? '✓' : '✗'}  `).join(''))
 console.log('wins B'.padEnd(15) + KEYS.map(([k]) => `${String(rows.filter(r => r.b[k] < r.a[k]).length).padStart(7)}/${rows.length}         `).join(''))
 if (args.includes('--detail')) {

@@ -1,0 +1,132 @@
+// A game unit as Rigsmith keeps it (workspace/game/units.json, spliced into the game's tools/rigsmith/units.json by
+// Ship). One declaration for the server (server/game.ts), the export (tools/lib/unit_export.ts), the Ship step and
+// Motion's slot list. Keys the game adds (tex, clan, glow, head, clan_trim, thrown, props, parts_tex, villager_parts,
+// _note...) are kept as they are. Also what a unit export writes about its build (BuildRecord).
+import type { ClipKey, HandPoseRef, Mount, Side, Slot } from './types.ts'
+
+export interface UnitSpec {
+  /** The Rigsmith character id. */
+  character: string
+  /** Game units, soles to the top of the head. */
+  height: number
+  /** LOD0 triangle budget (swapped parts not counted). */
+  budget: number
+  /** The clip names the game plays: each must be a slot name of the character. */
+  clips: string[]
+  /** LOD ratios of LOD0 (default [0.45, 0.15]). */
+  lods?: number[]
+  /** Split the body's own head off as its own mesh (a swappable head). */
+  head?: { name: string, above?: number }
+  /** Where this one's .glb goes instead of the models dir (relative to the game repo). */
+  models_dir?: string
+  /** Skipped by a build that names no units; cleared by the first export. */
+  draft?: boolean
+  companion?: CompanionSpec
+  [k: string]: unknown
+}
+
+export interface CompanionSpec {
+  character: string
+  /** Its height in game units. */
+  height: number
+  /** Its bones' prefix (they share the unit's skeleton under root). */
+  prefix: string
+  budget: number
+  /** Its surface, "Atlas_<material>". */
+  material: string
+  /** Where it stands from the unit's origin (game x, z) and which way it faces (degrees about +Y). */
+  at?: [number, number]
+  yaw?: number
+  /** The feet whose planted one paces its walk (default: a horse's four). */
+  feet?: string[]
+  /** The unit rides it: the rider sits on its seat bone (the rider's mount), the horse's gait leads. */
+  ridden?: boolean
+  [k: string]: unknown
+}
+
+export interface GameSpec { units: Record<string, UnitSpec>, defaults?: Partial<UnitSpec>, [k: string]: unknown }
+
+/** What a unit export built (<work dir>/<unit>/rigsmith.json, tools/lib/unit_export.ts). Read by the game
+ * (emb_rigsmith.py: texture, the clip names, companion), by tools/game_import.py and by the Ship step. Every key a
+ * schema 1 build wrote is kept except `scripts` (the slots and hands say it now). */
+export interface BuildRecord {
+  schema: 2
+  unit: string
+  generator: string
+  /** The run token the build was started with (RIGSMITH_RUN): the Ship job trusts a record only with its own. */
+  run: string | null
+  rigsmith: { commit: string, character: string, name: string, rig: string | null }
+  /** Game units, and game units per character unit. */
+  height: number
+  scale: number
+  bones: number
+  triangles: { source: number, budget: number, lods: number[], head?: number[], parts: Record<string, number[]> }
+  /** By the game's clip names. */
+  clips: Record<string, BuiltClip>
+  /** By mesh name: where each piece went, or why it was left out (`left`). */
+  gear: Record<string, BuiltGear>
+  companion?: BuiltCompanion
+  /** The planted foot's speed in Walk and Run, game units a second (a rider's: his horse's). */
+  walkStride: number | null
+  runStride?: number | null
+  mount?: Mount
+  texture: { file: string, sha256: string } | null
+  rigged: { file: string, sha256: string }
+  /** The slots exported, as baked: every adjustment (disabled ones too), gear referred to by its name. */
+  slots: Slot[]
+  /** The character's hands.hold. */
+  hands: Partial<Record<Side, HandPoseRef>>
+  /** Every gear piece of the character by id (its handles' names by id, when it has any). */
+  gearIds: Record<string, { name: string, from?: string, handles?: Record<string, string> }>
+  /** What the build warned about, in words (also printed). */
+  warnings: string[]
+}
+
+export interface BuiltClip {
+  /** The library clip and where it loads from. */
+  clip: string
+  url?: string
+  loop: boolean
+  inPlace: boolean
+  speed: number
+  /** Its length as baked (a rider's before it is fitted to his horse's). */
+  seconds: number
+  /** The library audit's complaints about the clip. */
+  audit?: string[]
+  /** Blow timing: the blow (seconds into the clip at its speed), the part kept, where in the clip the hit lands. */
+  blow?: number
+  kept?: [number, number]
+  hit?: number
+  /** Pace: the slot it follows and how much faster it plays for it. */
+  pacedLike?: string
+  retimed?: number
+  /** The ground adjustment's lift, character units. */
+  lift?: number
+  /** Keys by bone and by gear name: their counts, and the keys themselves (game_import restores from them). */
+  keys?: { bones?: Record<string, number>, props?: Record<string, number> }
+  keyData?: { bones?: Record<string, ClipKey[]>, props?: Record<string, ClipKey[]> }
+  /** The lesser foot's swing and the hips' median height, shares of the unit's height (src/engine/contract.ts). */
+  footSwing?: number
+  hipsMedian?: number
+}
+
+export interface BuiltGear {
+  /** Why it was left out; nothing else is set then but its kind and swap set. */
+  left?: string
+  /** 'prop' (on a bone), 'clothing' (on the skin), 'part' (at a spot). */
+  kind: 'prop' | 'clothing' | 'part'
+  group?: string
+  /** The bone it rides (skin and spot gear: the bone leading it). */
+  bone?: string
+  [k: string]: unknown
+}
+
+export interface BuiltCompanion {
+  character: string
+  triangles: { source: number, budget: number, lods: number[] }
+  /** Its slots by the unit's clip names: what played and how it was fitted. */
+  clips: Record<string, Record<string, unknown>>
+  walkStride: number | null
+  runStride?: number
+  [k: string]: unknown
+}

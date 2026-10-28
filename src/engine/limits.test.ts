@@ -4,25 +4,15 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { describe, expect, it } from 'vitest'
+import { loadGlbFile as load } from './headless.ts'
 import { canonical } from './retarget.ts'
 import { JointLimits, type Rom } from './limits.ts'
-
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images in tests') }
 
 const ROOT = path.resolve(__dirname, '../..')
 const LIBRARY = path.join(ROOT, 'workspace/library')
 const have = existsSync(path.join(LIBRARY, 'mannequin', 'ybot.glb'))
 const rom = JSON.parse(readFileSync(path.join(ROOT, 'static/templates/rom/human.json'), 'utf8')) as Rom
-
-async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
-  const data = readFileSync(file)
-  const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
-  return await new Promise((resolve, reject) => { new GLTFLoader().parse(buffer, '', r => { resolve(r) }, reject) })
-}
 
 async function ybot (): Promise<{ scene: THREE.Group, bones: Map<string, THREE.Bone>, limits: JointLimits }> {
   const { scene } = await load(path.join(LIBRARY, 'mannequin', 'ybot.glb'))

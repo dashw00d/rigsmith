@@ -10,15 +10,16 @@
 /**
  * Bone categories for grouping bones by anatomical area
  */
-export enum BoneCategory {
-  Torso = 'torso',
-  Arms = 'arms',
-  Hands = 'hands',
-  Legs = 'legs',
-  Wings = 'wings',
-  Tail = 'tail',
-  Unknown = 'unknown'
-}
+export const BoneCategory = {
+  Torso: 'torso',
+  Arms: 'arms',
+  Hands: 'hands',
+  Legs: 'legs',
+  Wings: 'wings',
+  Tail: 'tail',
+  Unknown: 'unknown',
+} as const
+export type BoneCategory = typeof BoneCategory[keyof typeof BoneCategory]
 
 /**
  * Side of the body a bone belongs to.
@@ -26,40 +27,42 @@ export enum BoneCategory {
  * Center ("this bone is deliberately on the midline"). Side inheritance in
  * BoneChainResolver only fills in Unknown, never overwrites Center.
  */
-export enum BoneSide {
-  Left = 'left',
-  Right = 'right',
-  Center = 'center',
-  Unknown = 'unknown'
-}
+export const BoneSide = {
+  Left: 'left',
+  Right: 'right',
+  Center: 'center',
+  Unknown: 'unknown',
+} as const
+export type BoneSide = typeof BoneSide[keyof typeof BoneSide]
 
 /**
  * Canonical humanoid joint slots. Every bone - source or target - is resolved to
  * one of these, and mapping is then a lookup on (slot, side, ordinal) rather than
  * a comparison of two rig-specific bone names.
  */
-export enum BoneSlot {
-  Pelvis = 'pelvis',
-  Spine = 'spine',
-  Neck = 'neck',
-  Head = 'head',
-  Clavicle = 'clavicle',
-  UpperArm = 'upperarm',
-  LowerArm = 'lowerarm',
-  Hand = 'hand',
-  Thigh = 'thigh',
-  Calf = 'calf',
-  Foot = 'foot',
-  Ball = 'ball',
-  FingerThumb = 'finger.thumb',
-  FingerIndex = 'finger.index',
-  FingerMiddle = 'finger.middle',
-  FingerRing = 'finger.ring',
-  FingerPinky = 'finger.pinky',
-  Tail = 'tail',
-  Wing = 'wing',
-  Unknown = 'unknown'
-}
+export const BoneSlot = {
+  Pelvis: 'pelvis',
+  Spine: 'spine',
+  Neck: 'neck',
+  Head: 'head',
+  Clavicle: 'clavicle',
+  UpperArm: 'upperarm',
+  LowerArm: 'lowerarm',
+  Hand: 'hand',
+  Thigh: 'thigh',
+  Calf: 'calf',
+  Foot: 'foot',
+  Ball: 'ball',
+  FingerThumb: 'finger.thumb',
+  FingerIndex: 'finger.index',
+  FingerMiddle: 'finger.middle',
+  FingerRing: 'finger.ring',
+  FingerPinky: 'finger.pinky',
+  Tail: 'tail',
+  Wing: 'wing',
+  Unknown: 'unknown',
+} as const
+export type BoneSlot = typeof BoneSlot[keyof typeof BoneSlot]
 
 /**
  * Metadata extracted from a bone name plus its place in the skeleton hierarchy

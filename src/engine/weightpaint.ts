@@ -1,6 +1,6 @@
-// Weight painting on a posed body (the Rig step's "Fix weights"). Vertices split at UV seams are one point here (they
-// always get the same weights, so a seam never tears). Brushes work on the body as it stands now (a clip paused on the
-// frame that shows the problem):
+// Weight painting on a posed body (the Skin step's weight painting, and a gear piece's in the Gear step). Vertices split
+// at UV seams are one point here (they always get the same weights, so a seam never tears). Brushes work on the body
+// as it stands now (a clip paused on the frame that shows the problem):
 //   area    mark the problem skin; "Heal" then refills its weights smoothly from the good skin round it (each point
 //           the mean of its neighbours, the skin round the area held): skin pulled by a wrong bone goes with what
 //           surrounds it
@@ -11,10 +11,12 @@
 //           leading where the stroke began
 // Mirror (on by default): each stroke lands on the other side too, on each point's mirror twin with its bones swapped
 // for the other side's (LeftArm for RightArm), and a point on the middle line is evened between its sides; "Copy a
-// side" sets the whole other side from one. Twins are found at rest, across the hips.
+// side" sets the whole other side from one. Twins are found at rest, across the hips; the other side's bone is the
+// skeleton's own pair (templates.ts skeletonSpec's mirror, which the joint editor uses too; a person's by default).
 // At most four bones a vertex, normalized. Edits are kept by vertex and bone name, to save and to re-apply after a
 // re-rig (the source mesh, and so its vertex order, stays).
 import * as THREE from 'three'
+import { swapSide as personMirror } from './templates.ts'
 
 export type Weights = Map<number, number>   // bone index -> weight
 
@@ -49,14 +51,8 @@ interface Rest {
   under: Map<number, { part: number, face: number, bary: [number, number, number] } | null>
 }
 
-/** The bone on the other side's name: Left/Right (a person's), and _l/_r, .L/.R, L_/R_ (a creature's: a horse's
- * front_leg_upper_l). The same name for a middle bone. */
-export function mirrorName (n: string): string {
-  if (/Left|Right/.test(n)) return n.replace(/Left|Right/g, m => (m === 'Left' ? 'Right' : 'Left'))
-  const swapped = n.replace(/([_.])([lLrR])(?=$|[_.\d])/g, (_m, sep: string, c: string) => sep + ({ l: 'r', r: 'l', L: 'R', R: 'L' } as Record<string, string>)[c])
-  if (swapped !== n) return swapped
-  return n.replace(/^([lLrR])(?=[_.])/, c => ({ l: 'r', r: 'l', L: 'R', R: 'L' } as Record<string, string>)[c])
-}
+/** The bone on the other side's name (itself for a bone in the middle). */
+export type MirrorName = (bone: string) => string
 
 export class WeightPainter {
   readonly parts: Part[] = []
@@ -68,7 +64,8 @@ export class WeightPainter {
   /** Strokes land on both sides. */
   mirror = true
 
-  constructor (meshes: THREE.SkinnedMesh[]) {
+  /** `mirror`: the skeleton's left/right pairs (a person's by default). */
+  constructor (meshes: THREE.SkinnedMesh[], mirror: MirrorName = personMirror) {
     for (const mesh of meshes) {
       const g = mesh.geometry
       const pos = g.attributes.position
@@ -98,7 +95,7 @@ export class WeightPainter {
       }
       const { twin, side } = twins(mesh, members, tol)
       const names = mesh.skeleton.bones.map(b => b.name)
-      const swap = Int32Array.from(names.map((n, i) => { const j = names.indexOf(mirrorName(n)); return j >= 0 ? j : i }))
+      const swap = Int32Array.from(names.map((n, i) => { const j = names.indexOf(mirror(n)); return j >= 0 ? j : i }))
       this.parts.push({ mesh, point, members, adj, rest: Float32Array.from(pos.array as ArrayLike<number>), twin, swap, side })
       this.area.push(new Map())
       this.edited.push(new Set())

@@ -1,11 +1,12 @@
 // @vitest-environment node
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import * as THREE from 'three'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { describe,expect,it,vi } from 'vitest'
 import { body,entrySource,isBone } from '../../tools/lib/node3d.ts'
-import { captureRest,retarget } from './retarget.ts'
+import { captureRest,retarget,retargetOffsets } from './retarget.ts'
 import { correctHandContacts,correctHandContactsAsync,HandContactSurface } from './handcontacts.ts'
+import { JointLimits,type Rom } from './limits.ts'
 
 function triangleHand (): {root:THREE.Group,mesh:THREE.SkinnedMesh,bone:THREE.Bone} {
   const root = new THREE.Group(), bone = new THREE.Bone(), geo = new THREE.BufferGeometry()
@@ -248,4 +249,28 @@ describe.skipIf(!have)('endpoint-preserving contact correction',()=>{
     const before=coverage(clip),after=coverage(result.clip)
     expect(after[0]).toBeCloseTo(before[0],12);expect(after[1]).toBeLessThan(before[1])
   },25000)
+  it('keeps a finger joint the clip has in its range in it, given the ranges (src/engine/limits.ts)',async()=>{
+    const view=await body('skirmisher-19c713'),src=await entrySource({clipId:'mixamo-Grab_And_Slam'})
+    const srcRest=captureRest(src.scene,isBone),rest=view.rest!
+    const full=retarget(src.scene,srcRest,src.clip,rest,{fps:30,inPlace:true})
+    const clip=THREE.AnimationUtils.subclip(full,'changing grab',72,84,30)
+    const rom=JSON.parse(readFileSync('static/templates/rom/human.json','utf8')) as Rom
+    const limits=new JointLimits(rom,retargetOffsets(srcRest,rest).offsets,n=>rest.bones.get(n)?.parent??null)
+    const result=correctHandContacts(view.root,clip,{height:view.height,tipTolerance:view.height*.004,protect:['Left'],limits,nameOf:b=>b.name})
+    const joints=[...view.bones.keys()].filter(n=>/^RightHand(?:Index|Middle|Ring|Pinky|Thumb)[123]$/.test(n)&&limits.has(n))
+    expect(joints.length).toBeGreaterThan(0)
+    const turns=(c:THREE.AnimationClip,f:number):Map<string,THREE.Quaternion>=>{
+      const mixer=new THREE.AnimationMixer(view.root),action=mixer.clipAction(c)
+      action.setLoop(THREE.LoopOnce,1);action.clampWhenFinished=true;action.play();mixer.setTime(c.duration*f/(result.frames-1))
+      const out=new Map(joints.map(n=>[n,view.bones.get(n)!.quaternion.clone()]))
+      mixer.stopAllAction();mixer.uncacheRoot(view.root);return out
+    }
+    let checked=0
+    for(let f=0;f<result.frames;f++){
+      const before=turns(clip,f),after=turns(result.clip,f)
+      for(const n of joints)if(limits.within(n,before.get(n)!)){checked++;expect(limits.within(n,after.get(n)!),`${n} on frame ${f}`).toBe(true)}
+    }
+    expect(checked).toBeGreaterThan(0)
+    expect(result.tipMiss).toBeLessThan(view.height*.004+1e-7)
+  },90000)
 })

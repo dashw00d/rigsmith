@@ -2,7 +2,10 @@
 Writes a normalized preview GLB and, for unrigged humanoid meshes, auto-detected joint positions.
 
 blender -b --factory-startup --python inspect.py -- --input <file> --out <dir> [--animations]
+  [--scale <s>] [--ground] [--fingers none|one|two|full] [--overrides <textures dir>]
 --animations keeps the model's own animations in the preview (an accessory's: a mechanism's moving parts).
+--scale and --ground size a character (Import -> Size) and stand it on the floor, rigged or not: a rigged file's
+skeleton is sized with its skin, so later imports keep the size the character was given.
 """
 import argparse
 import os
@@ -23,11 +26,12 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--input', required=True)
     p.add_argument('--out', required=True)
-    p.add_argument('--fingers', default='two')
+    p.add_argument('--fingers', default='full')
     p.add_argument('--overrides')
     p.add_argument('--scale', type=float, default=1.0, help="a character's size against its file (Import -> Size)")
-    p.add_argument('--ground', action='store_true', help='a character: an unrigged mesh stood on the floor (lowest point at 0)')
+    p.add_argument('--ground', action='store_true', help='a character: sized by --scale and stood on the floor (lowest point at 0)')
     p.add_argument('--animations', action='store_true')
+    p.add_argument('--no-joints', action='store_true', help='gear: a model worn, not a body (no human joint detection)')
     a = p.parse_args(report.args())
     os.makedirs(a.out, exist_ok=True)
     warnings = []
@@ -57,9 +61,11 @@ def main():
         if preset == 'mixamo':
             normalize_bone_names(arm, meshes)
 
-    if kind == 'mesh' and a.ground:
-        scene_io.scale_model(meshes, a.scale)
-        moved = scene_io.ground(meshes)
+    if kind in ('mesh', 'rigged') and a.ground:
+        # (a rigged file's armature goes with its skin; apply_rig_scale below bakes both into the bones and vertices)
+        rig = arm if kind == 'rigged' else None
+        scene_io.scale_model(meshes, a.scale, rig)
+        moved = scene_io.ground(meshes, rig)
         if abs(moved) > 1e-3:
             warnings.append(f'Stood on the floor: moved {moved:+.3f} up (its lowest point was off the ground).')
 
@@ -71,7 +77,7 @@ def main():
     }
 
     joints = None
-    if kind == 'mesh':
+    if kind == 'mesh' and not a.no_joints:
         report.progress(0.6, 'Finding joints')
         try:
             from landmarks import detect_markers
@@ -100,4 +106,7 @@ def main():
                    'model': 'model.glb' if kind != 'animation' else None, 'animated': has_action, 'warnings': warnings})
 
 
-main()
+try:
+    main()
+finally:
+    scene_io.cleanup()

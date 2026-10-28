@@ -1,37 +1,29 @@
-// A prop's whole-clip fit (src/state/clipedit.svelte.ts: "Leads", and a hand attached to a grip): one generation over
-// every frame, no gizmo. The prop leads, so the hands on it are goals and the body follows them; where those goals
-// ask the body for too much (arms at full stretch or crushed, a joint past its range, an elbow bowing, a hand through
-// the torso, the upper body yanked by a fast spear) the PROP moves a little (a smooth offset in the world, from where its
-// path has it) until the body can hold it with room to spare, and its motion stays the same motion.
+// A piece of gear's whole-clip fit (src/state/clipedit.svelte.ts fitPath: "Leads the body" turned on, or a hand put on
+// a piece that leads; "the piece" below): one generation over every frame, no gizmo. The piece leads, so the hands on
+// it are goals and the body follows them; where those goals ask the body for too much (arms at full stretch or crushed,
+// a joint past its range, an elbow bowing, a hand through the torso, the upper body yanked by a fast spear) the PIECE
+// moves a little (a smooth offset in the world, from where its path has it) until the body can hold it with room to
+// spare, and its motion stays the same motion. Only where there is a pose model (a person): the fit is the
+// natural-pose solver's.
 //
-// The score of a frame with the prop at an offset (FitLab.solve, then `cost`): the natural-pose solver's own objective
+// The score of a frame with the piece at an offset (FitLab.solve, then `cost`): the natural-pose solver's own objective
 // of the body that holds it (src/engine/posespace.ts: the hands' misses, the joints' ranges, the elbow rule, balance, how
 // far from the clip's pose and how unnatural the pose is), the arms' reach margin, the body through itself and the
-// prop through the body (the collider), the body's jerk against the neighbouring frames' bodies, and how far the prop
-// moved and how unevenly. Candidates are scored with the solver's quick mode (a few steps; a full solve is ~45 ms), by a
-// compass search over three world axes (away from the body horizontally, sideways, up) from coarse to fine, forward and
-// back through the clip a sweep each so a frame sees its neighbours' bodies. The offsets are then smoothed and written
-// as a few keys of the prop's path (keysFromOffsets: Hermite through the fewest frames that reproduce them).
-//
-// Grip auto-placement (placeGrip) uses the same score: a hand attached to a prop another hand holds slides along the shaft
-// (and rolls round it) to where the whole clip is easiest, no nearer another fist than a fist's width.
+// piece through the body (the character's collider, src/engine/bodycollide.ts), the body's jerk against the neighbouring
+// frames' bodies, and how far the piece moved and how unevenly. Candidates are scored with the solver's quick mode (a
+// few steps; a full solve is ~45 ms), by a compass search over three world axes (away from the body horizontally,
+// sideways, up) from coarse to fine, forward and back through the clip a sweep each so a frame sees its neighbours'
+// bodies. The offsets are then smoothed and written as a few keys of the piece's path (smoothCurve, then fewestKeys:
+// the fewest keys whose curve reproduces them).
 import * as THREE from 'three'
-import type { ClipKey } from '../../server/workspace.ts'
+import type { ClipKey } from '../model/types.ts'
 import { applyBoneKeys, sampleKeys } from './keys.ts'
-import { frameTimes, GRIP_CLEAR, handGoals, legsOf, onPath, propObstacles, type PropRig, type Socket } from './clipedit.ts'
-import type { BodyState, bodyBones, solveBody } from './bodysolve.ts'
+import { bonesOf, frameTimes, gearObstacles, GRIP_CLEAR, handGoals, legsOf, onPath, type GearRig } from './clipedit.ts'
+import type { BodyCollider } from './bodycollide.ts'
+import { wp } from './geom.ts'
 import type { JointLimits } from './limits.ts'
 import type { PoseRig } from './PoseEditor.ts'
-import { BODY, FOLLOW, heading, type NaturalBodyState, type ObjectiveTerms } from './posespace.ts'
-
-/** What src/engine/bodycollide.ts's collider gives (the body as the bones stand now); a stub that gives 0 stands in until it is passed. */
-export interface BodyColliderLike {
-  /** A capsule a-b of `radius` against the body now: how deep (metres) it is in it. */
-  penetration (a: THREE.Vector3, b: THREE.Vector3, radius: number, ignore?: string[]): number
-  /** The body through itself now: the worst depth (metres) and the pairs. */
-  selfPenetration (): { worst: number, pairs: Array<[string, string, number]> }
-}
-export const NO_COLLIDER: BodyColliderLike = { penetration: () => 0, selfPenetration: () => ({ worst: 0, pairs: [] }) }
+import { BODY, FOLLOW, heading, type BodySolver, type BodyState } from './posespace.ts'
 
 /** The weights of the score (units: the solver's own objective at 1; centimetres squared for the rest). */
 export const FIT = {
@@ -64,14 +56,15 @@ export interface FitInput {
   posable: THREE.Object3D
   rig: PoseRig
   limits: JointLimits | null
-  /** The props as the edit has them: the prop locked, its hands attached (a carrier's synthetic socket included). */
-  props: PropRig
-  prop: string
+  /** The gear as the edit has it (by gear id): the piece locked, its hands attached (the carrying hand's handle included). */
+  gearRig: GearRig
+  /** The piece fitted (its gear id). */
+  gear: string
   height: number
-  solver: { solve: typeof solveBody, bones: typeof bodyBones }
-  collider?: BodyColliderLike | null
-  /** The prop's long axis in its own node's frame (the end by the carrying hand, the far end) and its radius (metres). */
-  shaft?: { from: THREE.Vector3, to: THREE.Vector3, radius?: number } | null
+  /** The body solve (posespace.ts createBodySolver). */
+  solver: BodySolver
+  /** The character's collider on `posable` (bodycollide.ts colliderFor); none: nothing collides. */
+  collider?: BodyCollider | null
   floor?: number
 }
 
@@ -88,21 +81,11 @@ export interface Sample {
   prop: number
   /** The score of the frame on its own (no neighbours). */
   cost: number
-  /** The solver's score term by term; how far the chest turned (degrees) and the hips moved (cm) from the clip's pose to hold it. */
-  terms?: ObjectiveTerms
-  twist: number
-  shift: number
   /** The body joints' world positions (cm), BODY order. */
   pos: Float64Array
 }
 
 const fingersOf = (hand: 'Left' | 'Right'): string[] => ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'].flatMap(f => [1, 2, 3, 4].map(i => `${hand}Hand${f}${i}`))
-
-function bonesOf (root: THREE.Object3D): Map<string, THREE.Bone> {
-  const out = new Map<string, THREE.Bone>()
-  root.traverse(o => { if ((o as THREE.Bone).isBone === true) out.set(o.name, o as THREE.Bone) })
-  return out
-}
 
 /** Every frame of a clip as it stands on the edit before the prop moves, to solve the body on again and again. */
 export class FitLab {
@@ -125,7 +108,7 @@ export class FitLab {
 
   constructor (input: FitInput) {
     this.input = input
-    const { base, keys, loop, rest, posable, rig, props, prop } = input
+    const { base, keys, loop, rest, posable, rig, gearRig: props, gear: prop } = input
     this.keyed = applyBoneKeys(base, keys, loop, rest)
     this.bones = bonesOf(posable)
     this.all = [...this.bones.values()]
@@ -180,69 +163,62 @@ export class FitLab {
   }
 
   /** The prop's shaft at `place` as the obstacles the body keeps clear of (but where `rig`'s hands hold it). */
-  obstaclesAt (rig: PropRig, place: THREE.Matrix4): ReturnType<typeof propObstacles> {
-    const { prop, height } = this.input
-    return propObstacles({ ...rig, paths: { [prop]: { locked: true, keys: [] } } }, p => (p === prop ? place : null), GRIP_CLEAR * height)
+  obstaclesAt (rig: GearRig, place: THREE.Matrix4): ReturnType<typeof gearObstacles> {
+    const { gear: prop, height } = this.input
+    return gearObstacles({ ...rig, paths: { [prop]: { locked: true, keys: [] } } }, p => (p === prop ? place : null), GRIP_CLEAR * height)
   }
 
   /** How deep (cm) the prop is in the body on frame `i` as the edit has it before any solve (the prop where its path has it). */
   rawDepth (i: number): number {
-    const collider = this.input.collider ?? NO_COLLIDER
+    const collider = this.input.collider
+    if (collider === undefined || collider === null) return 0
     this.restore(i)
     let worst = 0
-    for (const o of this.obstaclesAt(this.input.props, this.places[i])) worst = Math.max(worst, collider.penetration(o.from, o.to, o.radius, o.ignore) * 100)
+    for (const o of this.obstaclesAt(this.input.gearRig, this.places[i])) worst = Math.max(worst, collider.penetration(o.from, o.to, o.radius, o.ignore) * 100)
     return worst
   }
 
   /** The prop's place on frame `i` as its path has it now (the fit's offset not yet on it). */
   placeAt (i: number): THREE.Matrix4 { return this.places[i] }
 
-  /** Solve frame `i` with the prop moved by `offset` (world) from where its path has it, and `sockets` for the prop's (default: the edit's). */
-  solve (i: number, offset: THREE.Vector3, opts: { sockets?: Socket[], quick?: boolean, prev?: BodyState | null } = {}): Sample {
-    const { posable, props, prop, loop, height, limits, solver } = this.input
+  /** Solve frame `i` (quickly) with the prop moved by `offset` (world) from where its path has it. */
+  solve (i: number, offset: THREE.Vector3, opts: { prev?: BodyState | null } = {}): Sample {
+    const { posable, gearRig: props, gear: prop, loop, height, limits, solver } = this.input
     this.evals++
     this.restore(i)
-    // (the body as the clip has it, before the solve: how far the solve turns and moves it to hold the prop)
-    const chest0 = this.bones.get('Spine2')?.getWorldQuaternion(new THREE.Quaternion()) ?? null
-    const hips0 = this.bones.get(this.input.rig.hips)?.getWorldPosition(new THREE.Vector3()) ?? null
     const t = this.times[i]; const u = this.keyed.duration > 0 ? t / this.keyed.duration : 0
     const rode = new Map(this.rode[i]); rode.set(prop, this.places[i])
-    const rig: PropRig = { ...props, paths: { ...props.paths, [prop]: { locked: true, keys: [{ u: 0, q: [0, 0, 0, 1], p: offset.toArray() as [number, number, number] }] } }, sockets: opts.sockets === undefined ? props.sockets : { ...props.sockets, [prop]: opts.sockets } }
+    const rig: GearRig = { ...props, paths: { ...props.paths, [prop]: { locked: true, keys: [{ u: 0, q: [0, 0, 0, 1], p: offset.toArray() as [number, number, number] }] } } }
     const goals = handGoals(posable, this.bones, rig, u, loop, rode)
     const nameOf = (b: THREE.Bone): string => b.name
     // (the prop where this offset puts it is solid, as in the edit's own solve: the body keeps clear of it but where the hands hold it)
     const place = this.places[i].clone().premultiply(new THREE.Matrix4().makeTranslation(offset.x, offset.y, offset.z))
     const obstacles = this.obstaclesAt(rig, place)
-    const res = goals.length === 0 ? null : solver.solve(this.bones, goals, { limits, nameOf, legs: this.legs, height, floor: this.input.floor ?? 0, soles: this.soles, quick: opts.quick !== false, obstacles, follow: opts.prev === undefined || opts.prev === null ? undefined : FOLLOW.weight } as Parameters<typeof solveBody>[2], opts.prev ?? null)
+    const res = goals.length === 0 ? null : solver(this.bones, goals, { limits, nameOf, legs: this.legs, height, floor: this.input.floor ?? 0, soles: this.soles, quick: true, obstacles, follow: opts.prev === undefined || opts.prev === null ? undefined : FOLLOW.weight }, opts.prev ?? null)
     posable.updateMatrixWorld(true)
-    const obj = (res?.state as NaturalBodyState | undefined)?.objective?.end.total ?? null
-    const wp = (n: string): THREE.Vector3 => this.bones.get(n)!.getWorldPosition(new THREE.Vector3())
+    const obj = res?.state.objective?.end.total ?? null
+    const at = (n: string): THREE.Vector3 => wp(this.bones.get(n)!)
     const pos = new Float64Array(BODY.length * 3)
-    BODY.forEach((n, k) => { if (this.bones.has(n)) wp(n).multiplyScalar(100).toArray(pos, k * 3) })
+    BODY.forEach((n, k) => { if (this.bones.has(n)) at(n).multiplyScalar(100).toArray(pos, k * 3) })
     // (the hands' reach: how much of its arm's length each is stretched, and past what is easy)
     let reach = 0
     for (const g of goals) {
-      const s = wp(`${g.hand}Arm`); const e = wp(`${g.hand}ForeArm`); const h = wp(`${g.hand}Hand`)
+      const s = at(`${g.hand}Arm`); const e = at(`${g.hand}ForeArm`); const h = at(`${g.hand}Hand`)
       const r = s.distanceTo(h) / Math.max(s.distanceTo(e) + e.distanceTo(h), 1e-6)
       reach += Math.max(0, r - FIT.reachHigh) ** 2 + Math.max(0, FIT.reachLow - r) ** 2
     }
     let out = 0
     if (limits !== null) for (const n of BODY) { const b = this.bones.get(n); if (b !== undefined && n !== this.input.rig.hips && limits.has(n) && !limits.within(n, b.quaternion)) out++ }
-    const collider = this.input.collider ?? NO_COLLIDER
-    const self = collider.selfPenetration().worst * 100
-    // (the prop through the body: its shaft but where the hands hold it)
+    const collider = this.input.collider ?? null
+    const self = (collider?.selfPenetration().worst ?? 0) * 100
+    // (the piece through the body: its shaft but where the hands hold it)
     let prp = 0
-    for (const o of obstacles) prp = Math.max(prp, collider.penetration(o.from, o.to, o.radius, [...(o.ignore ?? []), ...goals.flatMap(g => fingersOf(g.hand))]) * 100)
+    if (collider !== null) for (const o of obstacles) prp = Math.max(prp, collider.penetration(o.from, o.to, o.radius, [...(o.ignore ?? []), ...goals.flatMap(g => fingersOf(g.hand))]) * 100)
     const miss = (res?.miss ?? 0) * 100
     const slack = Math.max(0, prp - FIT.propSlack)
     const over = Math.max(0, miss - FIT.missFree)
     const cost = (obj ?? 0) + FIT.miss * over * over + FIT.reach * reach + FIT.limit * out + FIT.self * self * self + FIT.prop * slack * slack
-    const chest1 = this.bones.get('Spine2')?.getWorldQuaternion(new THREE.Quaternion()) ?? null
-    const hips1 = this.bones.get(this.input.rig.hips)?.getWorldPosition(new THREE.Vector3()) ?? null
-    const twist = chest0 === null || chest1 === null ? 0 : THREE.MathUtils.radToDeg(chest0.angleTo(chest1))
-    const shift = hips0 === null || hips1 === null ? 0 : hips0.distanceTo(hips1) * 100
-    const terms = (res?.state as NaturalBodyState | undefined)?.objective?.end
-    return { state: res?.state ?? null, obj, miss, reach, out, self, prop: prp, cost, pos, terms, twist, shift }
+    return { state: res?.state ?? null, obj, miss, reach, out, self, prop: prp, cost, pos }
   }
 }
 
@@ -329,7 +305,7 @@ export async function fitProp (input: FitInput, progress: (label: string) => voi
   // (the offsets on every frame: a smooth curve through the searched ones, near each, its bend from frame to frame kept
   // small (each searched on its own, they wobble); then the path as it was plus that curve written as the fewest keys
   // whose curve follows it to KEYS.tol: a few keys that tween, not one per frame)
-  const existing = input.props.paths[input.prop]?.keys ?? []
+  const existing = input.gearRig.paths[input.gear]?.keys ?? []
   const curve = smoothCurve(n, at, O, KEYS.bend)
   const uOf = (i: number): number => (duration > 0 ? lab.times[i] / duration : 0)
   const want = lab.times.map((_, i) => {
@@ -399,149 +375,4 @@ export function fewestKeys (want: Array<{ p: THREE.Vector3, q: THREE.Quaternion 
     if (worst <= 1 || at < 0 || chosen.size >= most) return keys
     chosen.add(at)
   }
-}
-
-// ---- grip auto-placement -----------------------------------------------------------------------------------------------
-
-/** The pull of a grip to where it was (per cm slid, per degree rolled, squared), and what the body turning and moving to
- * hold a grip costs (per 10 degrees the chest turns, per cm the hips move, squared). */
-const GRIP = { slide: 4, roll: 0.3, twist: 2, shift: 0.1 }
-
-/**
- * A grip's score on a frame: how well the body holds it, not how near the clip's own pose it stays (a one-handed clip's
- * free arm hangs where a second hand never goes, so nearness to it would pull the grip there): the hands' misses, the
- * arms' reach, joints out of range, the elbow rule, balance and the feet, the body through itself and the prop through
- * the body, and how far the body had to turn and move to hold it.
- */
-export function gripCost (x: Sample): number {
-  const t = x.terms
-  const held = t === undefined ? 0 : t.hands + t.feet + t.balance + t.elbows + t.collide + t.limits
-  const over = Math.max(0, x.miss - FIT.missFree); const slack = Math.max(0, x.prop - FIT.propSlack)
-  return held + FIT.miss * over * over + FIT.reach * x.reach + FIT.limit * x.out + FIT.self * x.self * x.self + FIT.prop * slack * slack +
-    GRIP.twist * (x.twist / 10) ** 2 + GRIP.shift * x.shift ** 2
-}
-
-export interface GripInput extends FitInput {
-  /** The hand to place, its socket (id) on the prop, and the hand's grip: the fist's middle and the grip line, in the hand's own frame. */
-  hand: 'Left' | 'Right'
-  socket: string
-  grip: { axis: THREE.Vector3, fist: THREE.Vector3 } | null
-  /** The other hands on the prop: their fists' places along the shaft are kept a fist's width away. */
-  others?: Array<{ hand: 'Left' | 'Right', socket: Socket, grip: { fist: THREE.Vector3 } | null }>
-  /** The best spot whatever the socket had (no pull back to it), the roll round the shaft looked for all the way round first. */
-  free?: boolean
-}
-
-export interface GripResult {
-  socket: Socket
-  /** Where along the shaft (0 at the end by the carrying hand, 1 at the far end), and the roll (degrees), against where it was. */
-  s: number
-  roll: number
-  was: { s: number, roll: number }
-  /** The score over the sampled frames before and after, and how many frames were sampled. */
-  before: number
-  after: number
-  frames: number
-  evals: number
-  ms: number
-}
-
-/** A socket slid `ds` metres along the shaft direction `d` and rolled `roll` radians about it through the fist (all in the prop's frame). */
-export function movedSocket (s: Socket, d: THREE.Vector3, ds: number, roll: number, fist: THREE.Vector3 | null): Socket {
-  const p = new THREE.Vector3(...s.position); const q = new THREE.Quaternion(...s.rotation)
-  const f = fist === null ? p.clone() : fist.clone().applyQuaternion(q).add(p)
-  const turn = new THREE.Quaternion().setFromAxisAngle(d, roll)
-  const p2 = f.clone().add(p.clone().sub(f).applyQuaternion(turn)).addScaledVector(d, ds)
-  const q2 = turn.multiply(q).normalize()
-  const r5 = (v: number[]): number[] => v.map(x => Math.round(x * 1e5) / 1e5)
-  return { ...s, position: r5(p2.toArray()) as Socket['position'], rotation: r5(q2.toArray()) as Socket['rotation'] }
-}
-
-/**
- * The spot for a hand on a prop another hand holds: along the shaft (and the roll round it) where the whole clip is
- * easiest on the body (the same score as the fit's, the prop where its path has it), no nearer another hand's fist than
- * a fist's width and off the shaft's very ends. A coarse grid, then a finer one round the best.
- */
-export async function placeGrip (input: GripInput, progress: (label: string) => void = () => {}): Promise<GripResult | null> {
-  const t0 = performance.now()
-  const shaft = input.shaft
-  const sock = input.props.sockets[input.prop]?.find(x => x.id === input.socket)
-  if (shaft === null || shaft === undefined || sock === undefined) return null
-  const lab = new FitLab(input)
-  const d = shaft.to.clone().sub(shaft.from); const length = d.length(); d.normalize()
-  // (where a fist sits on the shaft, 0..1 from the end by the carrying hand)
-  const fistAt = (s: Socket, grip: { fist: THREE.Vector3 } | null): number => {
-    const q = new THREE.Quaternion(...s.rotation)
-    const f = (grip?.fist ?? new THREE.Vector3()).clone().applyQuaternion(q).add(new THREE.Vector3(...s.position))
-    return f.sub(shaft.from).dot(d) / length
-  }
-  const nowS = fistAt(sock, input.grip)
-  const wasRoll = 0
-  const fist = input.height * FIT.fist
-  const others = (input.others ?? []).map(o => fistAt(o.socket, o.grip))
-  const ok = (s: number): boolean => s >= 0.08 && s <= 0.85 && others.every(o => Math.abs(s - o) * length >= fist)
-  // (frames sampled: every third, always the last)
-  const frames: number[] = []
-  for (let i = 0; i < lab.n; i += 3) frames.push(i)
-  if (frames[frames.length - 1] !== lab.n - 1) frames.push(lab.n - 1)
-  const zero = new THREE.Vector3()
-  const scoreOf = (s: number, roll: number): number => {
-    if (!ok(s)) return Infinity
-    const cand = movedSocket(sock, d, (s - nowS) * length, roll, input.grip?.fist ?? null)
-    const sockets = input.props.sockets[input.prop].map(x => (x.id === sock.id ? cand : x))
-    let sum = 0
-    for (const i of frames) { const r = lab.solve(i, zero, { sockets }); sum += gripCost(r) }
-    // (the grip stays where the user had it unless the clip is clearly easier elsewhere: a pull to it, per cm slid squared and per degree rolled squared; none when free)
-    if (input.free === true) return sum
-    return sum + GRIP.slide * ((s - nowS) * length * 100) ** 2 + GRIP.roll * THREE.MathUtils.radToDeg(roll) ** 2
-  }
-  progress('Placing the grip: the clip as it stands')
-  const tried: Array<{ s: number, roll: number, c: number }> = []
-  const score = (s: number, roll: number): number => { const c = scoreOf(s, roll); if (Number.isFinite(c)) tried.push({ s, roll, c }); return c }
-  const before = score(nowS, 0)
-  let best = { s: nowS, roll: 0, c: Number.isFinite(before) ? before : Infinity }
-  // (free: the roll round the shaft first, all the way round in twelfths, where the grip is (or the middle, if it can't be there))
-  let roll0 = 0
-  if (input.free === true) {
-    const at = ok(nowS) ? nowS : 0.45
-    for (let k = 1; k < 12; k++) {
-      progress(`Placing the grip: rolled ${k * 30}°`)
-      const c = score(at, k * Math.PI / 6)
-      if (c < best.c) { best = { s: at, roll: k * Math.PI / 6, c }; roll0 = k * Math.PI / 6 }
-      await yieldUi()
-    }
-  }
-  const slides: number[] = []
-  for (let s = 0.1; s <= 0.85; s += 0.075) slides.push(s)
-  for (const s of slides) {
-    for (const roll of [roll0 - 0.5, roll0, roll0 + 0.5]) {
-      progress(`Placing the grip: ${Math.round(s * 100)}% along the shaft`)
-      const c = score(s, roll)
-      if (c < best.c) best = { s, roll, c }
-    }
-    await yieldUi()
-  }
-  // (a finer look round the best)
-  for (const [ds, dr] of [[0.04, 0.25], [0.02, 0.12]]) {
-    const c0 = { ...best }
-    for (const [a, b] of [[ds, 0], [-ds, 0], [0, dr], [0, -dr]]) {
-      const c = score(c0.s + a, c0.roll + b)
-      if (c < best.c) best = { s: c0.s + a, roll: c0.roll + b, c }
-    }
-    await yieldUi()
-  }
-  // (the quick solves are a guide: the best few are solved in full, and one the hands can't hold to half a centimetre on every sampled frame is passed over; none that does and the grip stays)
-  const order = [...tried].sort((a, b) => a.c - b.c).filter((x, i, all) => all.findIndex(y => Math.abs(y.s - x.s) < 0.01 && Math.abs(y.roll - x.roll) < 0.05) === i).slice(0, 3)
-  let chosen: { s: number, roll: number, c: number } | null = null
-  for (const cand of order) {
-    progress(`Placing the grip: checking ${Math.round(cand.s * 100)}%`)
-    const sockets = input.props.sockets[input.prop].map(x => (x.id === sock.id ? movedSocket(sock, d, (cand.s - nowS) * length, cand.roll, input.grip?.fist ?? null) : x))
-    let worst = 0
-    for (const i of frames) { worst = Math.max(worst, lab.solve(i, zero, { sockets, quick: false }).miss); await yieldUi() }
-    if (worst <= 0.5) { chosen = cand; break }
-  }
-  if (chosen === null) return null
-  best = chosen
-  const socket = movedSocket(sock, d, (best.s - nowS) * length, best.roll, input.grip?.fist ?? null)
-  return { socket, s: best.s, roll: THREE.MathUtils.radToDeg(best.roll), was: { s: nowS, roll: wasRoll }, before, after: best.c, frames: frames.length, evals: lab.evals, ms: performance.now() - t0 }
 }

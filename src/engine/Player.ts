@@ -9,7 +9,10 @@ export class Player {
   loop = true
   private readonly rest = new Map<THREE.Object3D, { p: THREE.Vector3, q: THREE.Quaternion, s: THREE.Vector3 }>()
 
-  constructor (readonly root: THREE.Object3D) {
+  readonly root: THREE.Object3D
+
+  constructor (root: THREE.Object3D) {
+    this.root = root
     this.mixer = new THREE.AnimationMixer(root)
     root.traverse(o => { if ((o as THREE.Bone).isBone) this.rest.set(o, { p: o.position.clone(), q: o.quaternion.clone(), s: o.scale.clone() }) })
   }

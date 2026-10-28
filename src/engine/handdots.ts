@@ -1,6 +1,6 @@
-// Posing a hand by its finger joints (Rig → Hand poses): a ring on each joint past the knuckle and on each fingertip.
-// Dragging one turns the joint behind it toward the pointer, so the finger curls in, opens out or spreads; the
-// caller holds the turn within what a finger reaches and keeps it as the pose.
+// Posing a hand by its finger joints (the Hands panel's pose editor): a ring on each joint past the knuckle and on each
+// fingertip. Dragging one turns the joint behind it toward the pointer, so the finger curls in, opens out or spreads;
+// the caller holds the turn within what a finger reaches and keeps it as the pose.
 import * as THREE from 'three'
 import { FINGERS, type Side } from './handposes.ts'
 import type { Stage } from './Stage.ts'
@@ -23,7 +23,12 @@ export class HandDots {
   private readonly off: Array<() => void> = []
   private readonly texture: THREE.CanvasTexture
 
-  constructor (private readonly stage: Stage, root: THREE.Object3D, side: Side, private readonly events: HandDotsEvents) {
+  private readonly stage: Stage
+  private readonly events: HandDotsEvents
+
+  constructor (stage: Stage, root: THREE.Object3D, side: Side, events: HandDotsEvents) {
+    this.stage = stage
+    this.events = events
     const wanted = new Set(FINGERS.flatMap(f => [1, 2, 3, 4].map(i => `${side}Hand${f}${i}`)))
     root.traverse(o => { if ((o as THREE.Bone).isBone && wanted.has(o.name) && !this.bones.has(o.name)) this.bones.set(o.name, o as THREE.Bone) })
     this.texture = ring(side === 'Left' ? '#6aaaff' : '#ff7ab8')

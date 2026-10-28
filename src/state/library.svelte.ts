@@ -1,23 +1,29 @@
-// Library browsing state: category, search, pagination.
+// Browsing the clip library (server/library.ts): the rig it shows clips for, the filters (category, source, search)
+// and the page. Another rig starts from no filters: a category or a search of one rig's clips means nothing for another.
 import { api, type LibraryPage } from './api.ts'
 
 const PAGE_SIZE = 24
+const SEARCH_AFTER = 180
 
 class LibraryState {
   category = $state('')
   /** Only the clips made here (source custom), or every clip (''). */
   source = $state('')
   query = $state('')
-  /** Skeleton the library is showing clips for ('human' or a creature template). */
+  /** The skeleton it shows clips for: 'human' or a creature template. */
   rig = $state('human')
   page = $state(0)
-  data = $state<LibraryPage | null>(null)
+  data = $state.raw<LibraryPage | null>(null)
   loading = $state(false)
   error = $state<string | null>(null)
   private token = 0
   private debounce: ReturnType<typeof setTimeout> | undefined
 
+  /** Some filter narrows what shows. */
+  get filtered (): boolean { return this.category !== '' || this.source !== '' || this.query.trim() !== '' }
+
   async load (): Promise<void> {
+    clearTimeout(this.debounce)
     const token = ++this.token
     this.loading = true
     try {
@@ -27,7 +33,7 @@ class LibraryState {
       this.page = data.page
       this.error = null
     } catch (error) {
-      if (token === this.token) this.error = (error as Error).message
+      if (token === this.token) this.error = error instanceof Error ? error.message : String(error)
     } finally {
       if (token === this.token) this.loading = false
     }
@@ -39,25 +45,25 @@ class LibraryState {
     void this.load()
   }
 
-  /** Show only the clips made here (or all again). */
+  /** Only the clips made here (or all again). */
   setSource (source: string): void {
     this.source = source
     this.page = 0
     void this.load()
   }
 
-  /** Load the page again (a clip was saved). */
+  /** The page again (a clip was saved). */
   reload (): void { void this.load() }
 
   setQuery (query: string): void {
     this.query = query
     this.page = 0
     clearTimeout(this.debounce)
-    this.debounce = setTimeout(() => { void this.load() }, 180)
+    // (a stale answer is dropped by the token; this only spares the server one request per key)
+    this.debounce = setTimeout(() => { void this.load() }, SEARCH_AFTER)
   }
 
   resetFilters (): void {
-    clearTimeout(this.debounce)
     this.query = ''
     this.category = ''
     this.source = ''
@@ -65,12 +71,11 @@ class LibraryState {
     void this.load()
   }
 
+  /** Show another rig's clips, from no filters (loads the first time even for the same rig). */
   setRig (rig: string): void {
     if (rig === this.rig && this.data !== null) return
     this.rig = rig
-    this.category = ''
-    this.page = 0
-    void this.load()
+    this.resetFilters()
   }
 
   go (page: number): void {

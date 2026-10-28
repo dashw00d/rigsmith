@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
 import { applyBoneKeys, applyLift, sampleKeys } from './keys.ts'
-import type { ClipKey } from '../../server/workspace.ts'
+import type { ClipKey } from '../model/types.ts'
 
 const turn = (deg: number): ClipKey['q'] => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(deg)).toArray() as ClipKey['q']
 const angle = (q: THREE.Quaternion): number => Math.round(THREE.MathUtils.radToDeg(2 * Math.acos(Math.min(1, Math.abs(q.w)))))

@@ -1,11 +1,13 @@
-// Riding, the same in the viewer and in the game export (tools/game_export.ts): the rider's lower body held in its seated
-// pose, his rest space placed on the horse's back, and the two characters' clips of a slot played together as the game
-// plays them: a loop fitted by whole cycles (the horse's gait leads), the horse's attack fitted to the rider's (his blow
-// is the game's hit), anything else at its own length.
+// Riding, the same in the viewer and in the game export (tools/lib/unit_export.ts, through src/engine/bake.ts
+// bakeRide): the rider's held bones kept in their seated pose, his rest space placed on the horse's back, and the two
+// characters' clips of a slot played together as the game plays them: a loop fitted by whole cycles (the horse's gait
+// leads), the horse's attack fitted to the rider's (his blow is the game's hit), anything else at its own length.
+// Also the seat's sizes from the game's units (the Ship step and the viewer seat him by them).
 import * as THREE from 'three'
-import type { Mount } from '../../server/workspace.ts'
+import type { Character, Mount } from '../model/types.ts'
+import type { CompanionSpec, UnitSpec } from '../model/unit.ts'
 import type { RestSkeleton } from './retarget.ts'
-import { retime } from './scripts.ts'
+import { retime } from './timing.ts'
 
 /** The bones a rider holds still by default: his hips and legs. */
 export const LOWER_BODY = ['Hips', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'LeftToeBase', 'LeftToe_End', 'RightUpLeg', 'RightLeg', 'RightFoot', 'RightToeBase', 'RightToe_End']
@@ -165,4 +167,29 @@ export function fitRide (rider: THREE.AnimationClip, horse: THREE.AnimationClip,
     return { rider, horse: h, report: { fitted: true } }
   }
   return { rider, horse, report: {} }
+}
+
+// ---- sizes from the game's units --------------------------------------------------------------------------------
+
+/** A rider's and his horse's game heights: the height of the unit he is, and its companion's when that is his horse
+ * (else the horse's own unit's, if it is one). Null where no unit says. */
+export function mountHeights (units: Record<string, UnitSpec>, rider: string, horse: string | undefined): { rider: number | null, horse: number | null } {
+  const list = Object.values(units)
+  const mine = list.find(u => u.character === rider)
+  const positive = (h: unknown): number | null => typeof h === 'number' && Number.isFinite(h) && h > 0 ? h : null
+  if (horse === undefined) return { rider: positive(mine?.height), horse: null }
+  const companion = mine?.companion?.character === horse ? positive(mine.companion.height) : null
+  return { rider: positive(mine?.height), horse: companion ?? positive(list.find(u => u.character === horse)?.height) }
+}
+
+/** The companion entry for a horse the unit rides (or a pony it leads): what the unit's companion had (its height,
+ * prefix, budget, where it stands...) on this character, its surface named after it when it is another one. A new one
+ * gets the game's horse: 2.3 tall, Horse_ (or Pony_) bones, 7000 triangles. */
+export function companionFor (horse: Pick<Character, 'id' | 'name'>, ridden: boolean, was?: CompanionSpec): CompanionSpec {
+  const material = horse.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'horse'
+  const base: CompanionSpec = was ?? { character: horse.id, height: 2.3, prefix: ridden ? 'Horse_' : 'Pony_', budget: 7000, material }
+  const out: CompanionSpec = { ...base, character: horse.id, material: was !== undefined && was.character === horse.id ? was.material : material }
+  if (ridden) out.ridden = true
+  else delete out.ridden
+  return out
 }

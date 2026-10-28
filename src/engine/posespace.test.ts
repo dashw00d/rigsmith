@@ -1,21 +1,16 @@
 // @vitest-environment node
-// Natural movement (src/engine/posespace.ts) on the Y Bot and a character, against the library's motion captures and the
-// plain solvers (ik.ts's reach, twohand.ts); skipped without the local library (and the pose model, tools/posespace.ts).
+// Natural movement (src/engine/posespace.ts) on the Y Bot and a character, against the library's motion captures and
+// plain IK (ik.ts's reach); skipped without the local library (and the pose model, tools/posespace.ts).
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { describe, expect, it } from 'vitest'
+import { loadGlbFile as load } from './headless.ts'
 import { canonical, captureRest, retargetOffsets, type RestSkeleton } from './retarget.ts'
 import { JointLimits, type Rom } from './limits.ts'
 import { reach, setWorldQuaternion, type Leg } from './ik.ts'
 import { handGrip } from './clipedit.ts'
-import { solveBody } from './bodysolve.ts'
-import { BODY, DIM, FOLLOW, NB, NaturalRig, PoseModel, contactFeet, createBodySolver, encodeSource, elbowAllowed, gripAxisOf, mirrorPose, naturalizeClip, naturalizeClipAsync, naturalizeFrames, poseTargets, restSoles, type NaturalGoal, type PoseModelData } from './posespace.ts'
-
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images in tests') }
+import { BODY, DIM, FOLLOW, NB, NaturalRig, PoseModel, contactFeet, createBodySolver, deltaOf, encodeSource, elbowAllowed, gripAxisOf, knuckleGrip, mirrorPose, naturalizeClip, naturalizeClipAsync, naturalizeFrames, poseTargets, restSoles, seedOf, type NaturalGoal, type PoseModelData } from './posespace.ts'
 
 const ROOT = path.resolve(__dirname, '../..')
 const LIBRARY = path.join(ROOT, 'workspace/library')
@@ -28,10 +23,6 @@ const SKIRMISHER = path.join(ROOT, 'workspace/characters/skirmisher-19c713/rigge
 const haveSkirmisher = have && existsSync(SKIRMISHER) && existsSync(path.join(LIBRARY, 'clips', 'custom-Spear_Thrust.glb'))
 
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
-async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
-  const data = readFileSync(file)
-  return await new Promise((resolve, reject) => { new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '', r => { resolve(r) }, reject) })
-}
 const wp = (o: THREE.Object3D): THREE.Vector3 => o.getWorldPosition(new THREE.Vector3())
 const wq = (o: THREE.Object3D): THREE.Quaternion => o.getWorldQuaternion(new THREE.Quaternion())
 const nameOf = (b: THREE.Bone): string => canonical(b.name)
@@ -55,6 +46,55 @@ describe('elbow allowance through a moving clip', () => {
       const right = (elbowAllowed(x+h) - elbowAllowed(x))/h
       expect(Math.abs(left-right)).toBeLessThan(1e-3)
     }
+  })
+})
+
+describe('the body solve\'s small pieces', () => {
+  it('measures what a pose moved from another: each joint the short way round, the heading wrapped', () => {
+    const p = Float64Array.from({ length: DIM }, (_, i) => Math.sin(i) * 0.4)
+    const start = { p, yaw: Math.PI - 0.1, hips: new THREE.Vector3(0, 1, 0) }
+    const now = { p: Float64Array.from(p), yaw: -Math.PI + 0.1, hips: new THREE.Vector3(0.1, 0.9, 0) }
+    now.p[3] += 0.2
+    const d = deltaOf(now, start)
+    expect(d).toHaveLength(DIM + 4)
+    expect(d[3]).toBeCloseTo(0.2, 12)
+    expect(d[4]).toBeCloseTo(0, 12)
+    expect(d[DIM]).toBeCloseTo(0.2, 12)
+    expect([d[DIM + 1], d[DIM + 2], d[DIM + 3]].map(x => Math.round(x * 1e9) / 1e9)).toEqual([0.1, -0.1, 0])
+    expect(Math.max(...deltaOf(start, start).map(Math.abs))).toBe(0)
+  })
+
+  it('reads one grip line off the knuckles, for the rest skeleton and the bones as they stand', () => {
+    const bones = new Map<string, THREE.Bone>()
+    const wrist = new THREE.Bone(); wrist.name = 'LeftHand'; wrist.position.set(0.5, 1.2, 0.1); wrist.quaternion.setFromEuler(new THREE.Euler(0.3, -0.4, 0.2))
+    bones.set(wrist.name, wrist)
+    for (const [n, at] of [['Index1', [0.03, 0.08, 0]], ['Pinky1', [-0.03, 0.07, 0]], ['Middle1', [0.01, 0.085, 0]], ['Thumb1', [0.03, 0.02, 0.03]]] as const) {
+      const b = new THREE.Bone(); b.name = `LeftHand${n}`; b.position.set(at[0], at[1], at[2]); wrist.add(b); bones.set(b.name, b)
+    }
+    wrist.updateMatrixWorld(true)
+    const at = (n: string): THREE.Vector3 | null => { const b = bones.get(n); return b === undefined ? null : b.getWorldPosition(new THREE.Vector3()) }
+    const grip = knuckleGrip(at, 'Left', { position: wrist.getWorldPosition(new THREE.Vector3()), turn: wrist.getWorldQuaternion(new THREE.Quaternion()) })!
+    expect(gripAxisOf(bones, 'Left')!.angleTo(grip.axis)).toBeLessThan(1e-9)
+    // (in the hand's own frame: across the knuckles, little finger to index, leaning 25 degrees toward the heel)
+    const across = new THREE.Vector3(0.06, 0.01, 0); const up = new THREE.Vector3(0.01, 0.085, 0).normalize()
+    across.addScaledVector(up, -across.dot(up)).normalize()
+    expect(THREE.MathUtils.radToDeg(grip.axis.angleTo(across))).toBeCloseTo(25, 6)
+    expect(grip.axis.dot(up)).toBeLessThan(0)
+    // (no fingers: no grip)
+    expect(knuckleGrip(() => null, 'Left', { position: new THREE.Vector3(), turn: new THREE.Quaternion() })).toBeNull()
+  })
+
+  it('keeps a body\'s pose to start a later solve from: the body\'s turns and the hips\' place', () => {
+    const bones = new Map<string, THREE.Bone>()
+    for (const n of ['Hips', 'Spine', 'LeftHandIndex1']) { const b = new THREE.Bone(); b.name = n; bones.set(n, b) }
+    bones.get('Hips')!.position.set(0, 0.9, 0.1); bones.get('Spine')!.quaternion.set(0, 0.1, 0, 1).normalize()
+    const seed = seedOf(bones)
+    expect([...seed.turns.keys()]).toEqual(['Hips', 'Spine'])
+    expect(seed.turns.get('Spine')!.angleTo(bones.get('Spine')!.quaternion)).toBe(0)
+    expect(seed.hips.toArray()).toEqual([0, 0.9, 0.1])
+    // (a copy: moving the bones after doesn't change it)
+    bones.get('Hips')!.position.set(0, 0, 0)
+    expect(seed.hips.y).toBe(0.9)
   })
 })
 
@@ -96,12 +136,6 @@ async function poseFromClip (b: Body, id: string, t: number): Promise<Float64Arr
   b.scene.updateMatrixWorld(true)
   return p
 }
-
-/** The rule-based two-handed solver this one is meant to beat (src/engine/twohand.ts), while it is in the tree. */
-interface TwoHandHold { hand: 'Left' | 'Right', bone: string, fist: [number, number, number], shaft: [number, number, number], turn: [number, number, number, number], fistOffset: [number, number, number] }
-type HoldTwoHanded = (bones: Map<string, THREE.Bone>, hold: TwoHandHold, opts: { limits: JointLimits | null, nameOf: (b: THREE.Bone) => string, legs: Leg[] }, prev: null) => { miss: number }
-const baselinePath = './twohand.ts'
-const baseline = await import(/* @vite-ignore */ baselinePath).then(m => (m as { holdTwoHanded: HoldTwoHanded }).holdTwoHanded).catch(() => null)
 
 const IDLES = ['mixamo-Breathing_Idle', 'mixamo-Box_Idle', 'mixamo-Action_Idle_To_Standing_Idle']
 
@@ -251,7 +285,7 @@ describe.skipIf(!have)('reaching a hand goal', () => {
 })
 
 describe.skipIf(!have)('both hands on a shaft', () => {
-  it('reaches both fists and turns the chest toward the shaft, against twohand.ts', async () => {
+  it('reaches both fists and turns the chest toward the shaft', async () => {
     const b = await body(YBOT, false)
     const ybotRest = (await load(YBOT)).scene
     ybotRest.updateMatrixWorld(true)
@@ -283,24 +317,6 @@ describe.skipIf(!have)('both hands on a shaft', () => {
         const axisOff = (): number => { const a = axis('Left').angleTo(shaft); return THREE.MathUtils.radToDeg(Math.min(a, Math.PI - a)) }
         const startMiss = fist('Left').distanceTo(target)
 
-        // twohand.ts: the right hand carries the spear, the left fist goes on the shaft
-        const carrier = bone('RightHand')
-        const inv = carrier.matrixWorld.clone().invert()
-        const locked = new THREE.Quaternion().setFromUnitVectors(axis('Left'), shaft).multiply(wq(bone('LeftHand')))
-        const hold: TwoHandHold = {
-          hand: 'Left', bone: 'RightHand',
-          fist: target.clone().applyMatrix4(inv).toArray() as [number, number, number],
-          shaft: shaft.clone().transformDirection(inv).toArray() as [number, number, number],
-          turn: wq(carrier).invert().multiply(locked).toArray() as [number, number, number, number],
-          fistOffset: grip.Left.fist.toArray() as [number, number, number],
-        }
-        const t0 = performance.now()
-        baseline?.(b.bones, hold, { limits: b.limits, nameOf, legs: b.legs }, null)
-        const oldMs = performance.now() - t0
-        b.scene.updateMatrixWorld(true)
-        const old = baseline === null ? null : { miss: fist('Left').distanceTo(target), carrier: fist('Right').distanceTo(right), axis: axisOff(), yaw: shoulders(), total: b.model.cost(b.rig.encode().p).total, ms: oldMs }
-        restore()
-
         // the natural solver: the right hand kept, the left fist at the point with its grip along the shaft
         const res = b.rig.solve([{ bone: 'LeftHand', at: grip.Left.fist, position: target, axis: { local: grip.Left.axis, world: shaft, either: true } }],
           { keep: ['LeftFoot', 'RightFoot', 'RightHand'], mode: 'full' })
@@ -308,12 +324,12 @@ describe.skipIf(!have)('both hands on a shaft', () => {
         const now = { miss: fist('Left').distanceTo(target), carrier: fist('Right').distanceTo(right), axis: axisOff(), yaw: shoulders(), total: res.cost.total, ms: res.ms }
         const feet = b.legs.map(l => wp(l.end))
         restore()
-        rows.push({ startMiss, startYaw, startTotal: start.p.length > 0 ? b.model.cost(start.p).total : 0, shaftYaw: angle, oldMiss: old?.miss ?? NaN, oldCarrier: old?.carrier ?? NaN, oldAxis: old?.axis ?? NaN, oldYaw: old?.yaw ?? NaN, oldTotal: old?.total ?? NaN, oldMs: old?.ms ?? NaN, newMiss: now.miss, newCarrier: now.carrier, newAxis: now.axis, newYaw: now.yaw, newTotal: now.total, newMs: now.ms, feet: feet.length })
+        rows.push({ startMiss, startYaw, startTotal: start.p.length > 0 ? b.model.cost(start.p).total : 0, shaftYaw: angle, newMiss: now.miss, newCarrier: now.carrier, newAxis: now.axis, newYaw: now.yaw, newTotal: now.total, newMs: now.ms, feet: feet.length })
       }
     }
     const f = (x: number): string => x.toFixed(2)
     for (const r of rows) {
-      console.log(`shaft ${r.shaftYaw} deg (start: left fist ${f(r.startMiss * 100)} cm off, shoulders ${f(r.startYaw)} deg): twohand.ts miss ${f(r.oldMiss * 100)} cm, carrier ${f(r.oldCarrier * 100)} cm, shoulders ${f(r.oldYaw)} deg, cost ${f(r.oldTotal)}, ${f(r.oldMs)} ms | natural miss ${f(r.newMiss * 100)} cm, carrier ${f(r.newCarrier * 100)} cm, grip ${f(r.newAxis)} deg off, shoulders ${f(r.newYaw)} deg, cost ${f(r.newTotal)}, ${f(r.newMs)} ms`)
+      console.log(`shaft ${r.shaftYaw} deg (start: left fist ${f(r.startMiss * 100)} cm off, shoulders ${f(r.startYaw)} deg): natural miss ${f(r.newMiss * 100)} cm, carrier ${f(r.newCarrier * 100)} cm, grip ${f(r.newAxis)} deg off, shoulders ${f(r.newYaw)} deg, cost ${f(r.newTotal)}, ${f(r.newMs)} ms`)
     }
     for (const r of rows) {
       // both reached
@@ -327,22 +343,16 @@ describe.skipIf(!have)('both hands on a shaft', () => {
       // (and not far past it: a little past keeps the wrist easy)
       expect(r.newYaw).toBeLessThan(Math.max(r.shaftYaw, r.startYaw) + 15)
     }
-    // against the rule-based turn: as well reached, and more natural (the shoulders' line twisting less for the same grip)
-    if (baseline !== null) {
-      expect(mean(rows.map(r => r.newMiss))).toBeLessThanOrEqual(mean(rows.map(r => r.oldMiss)) + 0.002)
-      expect(mean(rows.map(r => r.newTotal))).toBeLessThan(mean(rows.map(r => r.oldTotal)))
-    } else console.log('(src/engine/twohand.ts is gone: nothing to compare with)')
   })
 })
 
-describe.skipIf(!have)('the drop-in for solveBody', () => {
-  it('takes bodysolve.ts solveBody\'s arguments: hand goals (a wrist place and turn) with the feet soft', async () => {
+describe.skipIf(!have)('the editor\'s body solve', () => {
+  it('takes hand goals (a wrist place and turn) with the feet soft', async () => {
     const b = await body(YBOT, false)
-    // (a turn that yields round its grip line is tested below: here the turns are asked exactly, as solveBody has them)
+    // (a turn that yields round its grip line is tested below: here the turns are asked exactly)
     const solveNatural = createBodySolver(b.model, null, { roll: false })
     const bone = (n: string): THREE.Bone => b.bones.get(n)!
     const nat: Array<{ miss: number, ms: number, total: number, feet: number, turn: number }> = []
-    const old: Array<{ miss: number, ms: number, total: number, feet: number, turn: number }> = []
     for (const id of IDLES) {
       for (const d of GOALS.slice(0, 4)) {
         for (const quick of [false, true]) {
@@ -354,7 +364,7 @@ describe.skipIf(!have)('the drop-in for solveBody', () => {
               { hand: 'Right', at: wp(bone('RightHand')), turn: wq(bone('RightHand')) },
             ]
           }
-          const run = async (solver: typeof solveBody): Promise<typeof nat[number]> => {
+          const run = async (solver: typeof solveNatural): Promise<typeof nat[number]> => {
             const goals = await goalsAt()
             const feet = b.legs.map(l => wp(l.end))
             const t0 = performance.now()
@@ -367,20 +377,47 @@ describe.skipIf(!have)('the drop-in for solveBody', () => {
               turn: Math.max(...goals.map(g => THREE.MathUtils.radToDeg(wq(bone(`${g.hand}Hand`)).angleTo(g.turn)))) + 0 * r.miss,
             }
           }
-          if (!quick) { nat.push(await run(solveNatural)); old.push(await run(solveBody)) } else { const n = await run(solveNatural); expect(n.miss).toBeLessThan(0.01) }
+          if (!quick) nat.push(await run(solveNatural)); else { const n = await run(solveNatural); expect(n.miss).toBeLessThan(0.01) }
         }
       }
     }
     const f = (xs: number[]): string => `${(mean(xs) * 100).toFixed(2)} cm (worst ${(Math.max(...xs) * 100).toFixed(2)})`
-    console.log(`solveBody: miss ${f(old.map(r => r.miss))}, ${median(old.map(r => r.ms)).toFixed(1)} ms, cost ${mean(old.map(r => r.total)).toFixed(1)}, feet ${f(old.map(r => r.feet))}`)
-    console.log(`natural:   miss ${f(nat.map(r => r.miss))}, ${median(nat.map(r => r.ms)).toFixed(1)} ms, cost ${mean(nat.map(r => r.total)).toFixed(1)}, feet ${f(nat.map(r => r.feet))}`)
+    console.log(`natural: miss ${f(nat.map(r => r.miss))}, ${median(nat.map(r => r.ms)).toFixed(1)} ms, cost ${mean(nat.map(r => r.total)).toFixed(1)}, feet ${f(nat.map(r => r.feet))}`)
     for (const r of nat) {
       expect(r.miss).toBeLessThan(0.01)
       expect(r.feet).toBeLessThan(0.03)
       expect(r.turn).toBeLessThan(1)
     }
-    expect(mean(nat.map(r => r.miss))).toBeLessThanOrEqual(mean(old.map(r => r.miss)) + 0.001)
-    expect(mean(nat.map(r => r.total))).toBeLessThan(mean(old.map(r => r.total)))
+  })
+
+  it('starts a frame\'s solve where a quick one of it left the body (a live drag let go): the hands met, and nearer it', async () => {
+    const b = await body(YBOT, false)
+    const solve = createBodySolver(b.model, null, {})
+    const bone = (n: string): THREE.Bone => b.bones.get(n)!
+    const soles = b.legs.map(l => [l.end, l.ball, l.tip].map(x => (x === null ? -Infinity : wp(x).y)))
+    const at = (): THREE.Vector3[] => BODY.map(n => wp(bone(n)))
+    const far = (x: THREE.Vector3[], y: THREE.Vector3[]): number => Math.max(...x.map((p, i) => p.distanceTo(y[i])))
+    const rows: string[] = []
+    for (const id of IDLES) {
+      await poseFromClip(b, id, 0.3)
+      const goals = (['Left', 'Right'] as const).map(hand => ({ hand, at: wp(bone(`${hand}Hand`)).add(new THREE.Vector3(0.05, -0.1, 0.3)), turn: wq(bone(`${hand}Hand`)) }))
+      const opts = { limits: b.limits, nameOf, legs: b.legs, height: 1.7, floor: 0, soles }
+      solve(b.bones, goals, { ...opts, quick: true }, null)
+      b.scene.updateMatrixWorld(true)
+      const quick = at(); const seed = seedOf(b.bones)
+      await poseFromClip(b, id, 0.3)
+      const cold = solve(b.bones, goals, opts, null)
+      b.scene.updateMatrixWorld(true)
+      const coldAt = at()
+      await poseFromClip(b, id, 0.3)
+      const seeded = solve(b.bones, goals, { ...opts, seed }, null)
+      b.scene.updateMatrixWorld(true)
+      const seededAt = at()
+      rows.push(`${id}: full solve ${(far(coldAt, quick) * 100).toFixed(2)} cm from the quick one cold, ${(far(seededAt, quick) * 100).toFixed(2)} cm seeded; hands off ${(cold.miss * 100).toFixed(2)} / ${(seeded.miss * 100).toFixed(2)} cm`)
+      expect(seeded.miss).toBeLessThan(0.01)
+      expect(far(seededAt, quick)).toBeLessThanOrEqual(far(coldAt, quick) + 0.01)
+    }
+    console.log(rows.join('\n'))
   })
 })
 
@@ -448,7 +485,7 @@ describe.skipIf(!have)('soft feet', () => {
     expect(res.keepMiss).toBeLessThan(0.002)
   })
 
-  it('the drop-in: soft feet by default, planted on request, the hips free to lunge and drop', async () => {
+  it('the body solve: soft feet by default, planted on request, the hips free to lunge and drop', async () => {
     const b = await body(YBOT, false)
     const bone = (n: string): THREE.Bone => b.bones.get(n)!
     const soles = b.legs.map(l => [l.end, l.ball, l.tip].map(x => (x === null ? -Infinity : wp(x).y)))
@@ -890,7 +927,7 @@ describe.skipIf(!haveCharacter || !existsSync(path.join(LIBRARY, 'clips', 'custo
     console.log(rows.join('\n'))
   })
 
-  it('the drop-in does the same through solveBody\'s arguments, planted or soft, quick or not', async () => {
+  it('the body solve does the same through its hand goals, planted or soft, quick or not', async () => {
     const b = await body(CHARACTER, true)
     const duration = (await load(path.join(LIBRARY, 'clips', 'custom-Spear_Thrust.glb'))).animations[0].duration
     const soles = b.legs.map(l => [l.end, l.ball, l.tip].map(x => (x === null ? -Infinity : wp(x).y)))
@@ -1048,7 +1085,7 @@ describe.skipIf(!haveSkirmisher)('the elbow: the skirmisher\'s underhand guard, 
     expect(give.miss).toBeLessThanOrEqual(exact.miss + 0.003)
   })
 
-  it('the drop-in gets it by default (elbow cost, roll yield, balance, soft feet)', async () => {
+  it('the body solve gets it by default (elbow cost, roll yield, balance, soft feet)', async () => {
     const b = await body(SKIRMISHER, true)
     const soles = b.legs.map(l => [l.end, l.ball, l.tip].map(x => (x === null ? -Infinity : wp(x).y)))
     const out: string[] = []

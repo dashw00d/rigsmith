@@ -1,10 +1,10 @@
-// Keyframed tweaks on a clip, the same in the viewer and in the game export (tools/game_export.ts): the clip's ground
-// height (its lift), turns (and the Hips' moves) on bones, and moves and turns of props. Applied last, on the clip as it
-// plays: after its speed and the character's scripts. Keys sit at a phase of the clip (u: 0 its start, 1 its end), so a
-// clip played faster keeps them on the same moment of the motion; a looping clip's keys wrap round, a one-shot's hold
-// their first and last values.
+// Keyframed tweaks on a clip, applied by the one bake (src/engine/bake.ts) for the viewer and the game export alike: the
+// clip's ground height (its lift), turns (and the Hips' moves) on bones, and moves and turns of gear. Applied last, on
+// the clip as it plays: after its speed, timing and hands. Keys sit at a phase of the clip (u: 0 its start, 1 its end),
+// so a clip played faster keeps them on the same moment of the motion; a looping clip's keys wrap round, a one-shot's
+// hold their first and last values.
 import * as THREE from 'three'
-import type { ClipKey } from '../../server/workspace.ts'
+import type { ClipKey } from '../model/types.ts'
 
 export const KEY_FPS = 30
 
@@ -58,7 +58,6 @@ export function frameTimes (duration: number): number[] {
   const n = Math.max(1, Math.round(duration * KEY_FPS))
   return Array.from({ length: n + 1 }, (_, i) => (i === n ? duration : i * duration / n))
 }
-const frames = frameTimes
 
 function trackValue (track: THREE.KeyframeTrack | undefined, t: number, size: number, fallback: number[]): number[] {
   if (track === undefined) return fallback
@@ -93,7 +92,7 @@ export function applyBoneKeys (clip: THREE.AnimationClip, bones: Record<string, 
   const keyed = Object.entries(bones ?? {}).filter(([, ks]) => ks.length > 0)
   if (keyed.length === 0) return clip
   let tracks = [...clip.tracks]
-  const times = frames(clip.duration)
+  const times = frameTimes(clip.duration)
   for (const [bone, keys] of keyed) {
     const r = rest(bone)
     if (r === null) continue
@@ -118,15 +117,15 @@ export function applyBoneKeys (clip: THREE.AnimationClip, bones: Record<string, 
   return new THREE.AnimationClip(clip.name, clip.duration, tracks)
 }
 
-/** A prop's local transform over a clip: its placement (or rest) then its key's move and turn about its own origin,
+/** A gear piece's local transform over a clip: its placement (or rest) then its key's move and turn about its own origin,
  * `place` · [p_key·moveScale, q_key]. Tracks named `${node}.position` / `.quaternion`, baked on the frames. */
 export function propTracks (node: string, duration: number, keys: ClipKey[] | undefined, loop: boolean,
   place: { position: THREE.Vector3, quaternion: THREE.Quaternion }, placeScale: number, moveScale = 1): THREE.KeyframeTrack[] {
-  const times = keys !== undefined && keys.length > 0 ? frames(duration) : [0, duration]
+  const times = keys !== undefined && keys.length > 0 ? frameTimes(duration) : [0, duration]
   const ps: number[] = []; const qs: number[] = []
   for (const t of times) {
     const { q, p } = sampleKeys(keys ?? [], duration > 0 ? t / duration : 0, loop)
-    // place · offset: the offset's move is in the prop's placed frame (turned by its placement, sized by its scale)
+    // place · offset: the offset's move is in the gear's placed frame (turned by its placement, sized by its scale)
     const pos = p.clone().multiplyScalar(placeScale * moveScale).applyQuaternion(place.quaternion).add(place.position)
     ps.push(...pos.toArray())
     qs.push(...place.quaternion.clone().multiply(q).toArray())
@@ -134,7 +133,7 @@ export function propTracks (node: string, duration: number, keys: ClipKey[] | un
   return [new THREE.VectorKeyframeTrack(`${node}.position`, times, ps), new THREE.QuaternionKeyframeTrack(`${node}.quaternion`, times, qs)]
 }
 
-/** propTracks undone: the prop node `node`'s path in `clip`, frame by frame, as keys from its placement (null when the
+/** propTracks undone: the gear node `node`'s path in `clip`, frame by frame, as keys from its placement (null when the
  * clip has no track for it, or holds it where it is placed all through). */
 export function propKeysOf (clip: THREE.AnimationClip, node: string, place: { position: THREE.Vector3, quaternion: THREE.Quaternion }, placeScale: number): ClipKey[] | null {
   const pt = clip.tracks.find(t => t.name === `${node}.position`); const qt = clip.tracks.find(t => t.name === `${node}.quaternion`)
@@ -155,34 +154,4 @@ export function propKeysOf (clip: THREE.AnimationClip, node: string, place: { po
     return { u: clip.duration > 0 ? t / clip.duration : 0, q: q.toArray().map(round) as ClipKey['q'], p: p.toArray().map(round) as ClipKey['p'] }
   })
   return moved ? keys : null
-}
-
-/** The ground: per frame of `clip` on `root` (a posable copy), the lowest point of `body`'s skin. Leaves the bones as
- * they were. */
-export function lowestPoints (root: THREE.Object3D, body: THREE.SkinnedMesh, clip: THREE.AnimationClip, rate = 15, step = 3): number[] {
-  const saved: Array<[THREE.Object3D, THREE.Vector3, THREE.Quaternion, THREE.Vector3]> = []
-  root.traverse(o => { if ((o as THREE.Bone).isBone === true) saved.push([o, o.position.clone(), o.quaternion.clone(), o.scale.clone()]) })
-  const mixer = new THREE.AnimationMixer(root)
-  const action = mixer.clipAction(clip)
-  action.play()
-  const pos = body.geometry.attributes.position
-  const v = new THREE.Vector3()
-  const out: number[] = []
-  for (let t = 0; t <= clip.duration + 1e-6; t += 1 / rate) {
-    mixer.setTime(t)
-    root.updateMatrixWorld(true)
-    let y = Infinity
-    for (let i = 0; i < pos.count; i += step) {
-      v.fromBufferAttribute(pos, i)
-      body.applyBoneTransform(i, v)
-      v.applyMatrix4(body.matrixWorld)
-      if (v.y < y) y = v.y
-    }
-    out.push(y)
-  }
-  action.stop()
-  mixer.uncacheRoot(root)
-  for (const [o, p, q, s] of saved) { o.position.copy(p); o.quaternion.copy(q); o.scale.copy(s) }
-  root.updateMatrixWorld(true)
-  return out
 }

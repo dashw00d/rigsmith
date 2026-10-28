@@ -1,18 +1,9 @@
 // After retargeting, does the character's palm face where the clip's palm faces?
 // node tools/dev/palm_eval.ts <character.glb> <clip.glb>...  (prints mean/max palm and finger angle errors)
-import { readFileSync } from 'node:fs'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { loadGlbFile as load } from '../../src/engine/headless.ts'
 import { canonical, captureRest, retarget, type RestSkeleton } from '../../src/engine/retarget.ts'
 
-const g = globalThis as Record<string, unknown>
-g.self ??= globalThis
-g.createImageBitmap ??= async () => { throw new Error('no images') }
-console.error = () => {}
-async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
-  const data = readFileSync(file)
-  return await new Promise((resolve, reject) => { new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '', r => { resolve(r as never) }, reject) })
-}
 const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 const nodes = (root: THREE.Object3D): Map<string, THREE.Object3D> => { const m = new Map<string, THREE.Object3D>(); root.traverse(o => { if (isBone(o) && !m.has(canonical(o.name))) m.set(canonical(o.name), o) }); return m }
 const [charPath, ...clipPaths] = process.argv.slice(2)

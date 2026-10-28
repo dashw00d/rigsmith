@@ -1,4 +1,6 @@
-// A loaded character in the stage: meshes, skeleton, display modes (shaded / weights / x-ray / clay).
+// A loaded character in the stage: meshes, skeleton, display modes (shaded / weights / x-ray / clay). It is what the
+// viewer (src/state/viewer.svelte.ts) puts on the stage and hands to every area's onLoad hook; it knows only its own
+// file (gear and the rest that areas hang on its bones are theirs to add and take off).
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { captureRest, type RestSkeleton } from './retarget.ts'
@@ -19,6 +21,11 @@ export class CharacterView {
   readonly root: THREE.Group
   readonly meshes: THREE.Mesh[] = []
   readonly skinned: THREE.SkinnedMesh[] = []
+  /** The skinned primitives of the character's own file, in glTF scene order (depth first; a mesh of several
+   * primitives is one per primitive, in order). Painted weights name a primitive by its index here, and the server's
+   * weights route reads the file in the same order (it refuses an index out of range). Taken at load, so nothing an
+   * area adds later (gear) is ever in it. */
+  readonly bodySkinned: readonly THREE.SkinnedMesh[]
   readonly skeleton: THREE.Skeleton | null
   readonly bones = new Map<string, THREE.Bone>()
   readonly box = new THREE.Box3()
@@ -31,6 +38,7 @@ export class CharacterView {
   private readonly clay = new THREE.MeshStandardMaterial({ color: 0xb9bfcc, roughness: 0.75, metalness: 0 })
   private weightMaterial: THREE.MeshLambertMaterial | null = null
   private skeletonLines: THREE.LineSegments | null = null
+  private offSkeletonLines: (() => void) | null = null
   private mode: DisplayMode = 'shaded'
   private highlightBone: string | null = null
 
@@ -54,6 +62,7 @@ export class CharacterView {
       }
       if ((object as THREE.Bone).isBone) this.bones.set(object.name, object as THREE.Bone)
     })
+    this.bodySkinned = [...this.skinned]
     this.skeleton = this.skinned[0]?.skeleton ?? null
     root.updateMatrixWorld(true)
     for (const mesh of this.meshes) {
@@ -176,7 +185,7 @@ export class CharacterView {
       this.skeletonLines.renderOrder = 10
       this.skeletonLines.frustumCulled = false
       stage.scene.add(this.skeletonLines)
-      stage.onFrame(() => { this.updateSkeletonLines() })
+      this.offSkeletonLines = stage.onFrame(() => { this.updateSkeletonLines() })
     }
     this.skeletonLines.visible = visible
   }
@@ -198,11 +207,17 @@ export class CharacterView {
     positions.needsUpdate = true
   }
 
-  dispose (stage: Stage): void {
-    stage.content.remove(this.root)
+  /** Off the stage (or whatever holds it), and every GPU resource it made let go. */
+  dispose (stage?: Stage): void {
+    if (stage !== undefined) stage.content.remove(this.root)
+    this.root.removeFromParent()
+    this.offSkeletonLines?.()
+    this.offSkeletonLines = null
     if (this.skeletonLines !== null) {
-      stage.scene.remove(this.skeletonLines)
+      this.skeletonLines.removeFromParent()
       this.skeletonLines.geometry.dispose()
+      ;(this.skeletonLines.material as THREE.Material).dispose()
+      this.skeletonLines = null
     }
     this.root.traverse(object => {
       const mesh = object as THREE.Mesh

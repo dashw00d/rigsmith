@@ -56,15 +56,15 @@ describe('mirrored weight painting', () => {
   })
 })
 
-describe('mirrorName', () => {
-  it('swaps a person\'s and a creature\'s side names, and leaves a middle bone', async () => {
-    const { mirrorName } = await import('./weightpaint.ts')
-    expect(mirrorName('front_leg_upper_l')).toBe('front_leg_upper_r')
-    expect(mirrorName('LeftHand')).toBe('RightHand')
-    expect(mirrorName('ear.L')).toBe('ear.R')
-    expect(mirrorName('l_eye')).toBe('r_eye')
-    expect(mirrorName('spine_01')).toBe('spine_01')
-    expect(mirrorName('tail_lower')).toBe('tail_lower')
+describe('mirror pairs', () => {
+  it('a creature\'s strokes land on its own pair of the bone', async () => {
+    const { swapSide } = await import('./templates.ts')
+    const mesh = strip()
+    for (const [i, bone] of mesh.skeleton.bones.entries()) bone.name = ['hips', 'arm_l', 'arm_r'][i]
+    const p = new WeightPainter([mesh], swapSide)
+    p.begin()
+    p.add(0, new Map([[2, 1]]), 1, 0.5)
+    expect(weight(p, 0, 2)).toBeCloseTo(0.5)
   })
 })
 

@@ -50,12 +50,19 @@
 //
 // A whole clip: naturalizeFrames / naturalizeClip solve every frame this way with the corrections between neighbouring
 // frames pulled together (swept forward and back), so the pass is smooth over time and the edit's own motion stays.
+//
+// This is the animation editor's one body solver (createBodySolver: its build, its live drags in 'quick' mode, the gear
+// fit, Naturalize) and its one measure of whether a pose is a person's: the model's naturalness and the costs above
+// (elbows, wrists, balance, upright, feet). Joint ranges are src/engine/limits.ts's (a soft cost here, a hard clamp in
+// IK); collisions are src/engine/bodycollide.ts's. Without a pose model (a creature) the editor reaches by IK alone.
 import * as THREE from 'three'
 import { canonical } from './retarget.ts'
 import { keepOffFloor, reach, setWorldQuaternion, type Leg, type Limb, type NameOf } from './ik.ts'
 import type { JointLimits } from './limits.ts'
-import type { BodyState, HandGoal, SolveOptions } from './bodysolve.ts'
-import { BoundShape, shapeOf, type BodyCollider, type BodyShape } from './bodycollide.ts'
+import { BoundShape, shapeOf, TRUNK, Y_BOT_LEG, type BodyCollider, type BodyShape, type Obstacle } from './bodycollide.ts'
+import { wp, wq } from './geom.ts'
+
+export type { Obstacle }
 
 /** The bones of the pose, parents first. */
 export const BODY = ['Hips', 'Spine', 'Spine1', 'Spine2', 'Neck', 'Head',
@@ -211,6 +218,20 @@ function unwrapRotation (p: Float64Array, reference: ArrayLike<number>, o: numbe
   for (let k = 0; k < 3; k++) p[o + k] *= factor
 }
 
+/** What pose `now` moved from `start` (a solve's `delta`, and the shape of a warm start): the pose's numbers (each
+ * joint's rotation vector nearest the start's), the heading's turn, the hips' move. */
+export function deltaOf (now: NaturalPose, start: NaturalPose): Float64Array {
+  const delta = new Float64Array(DIM + EXTRA)
+  delta.set(now.p)
+  for (let d = 0; d < DIM; d += 3) unwrapRotation(delta, start.p, d)
+  for (let d = 0; d < DIM; d++) delta[d] -= start.p[d]
+  delta[DIM] = Math.atan2(Math.sin(now.yaw - start.yaw), Math.cos(now.yaw - start.yaw))
+  delta[DIM + 1] = now.hips.x - start.hips.x
+  delta[DIM + 2] = now.hips.y - start.hips.y
+  delta[DIM + 3] = now.hips.z - start.hips.z
+  return delta
+}
+
 /**
  * The pose vector of a body in the model's own skeleton (the Y Bot's frames): `turns[i]` is BODY[i]'s local turn, the
  * hips' its WORLD turn. Writes DIM numbers to `out`; returns the hips' heading (what was taken out of the hips' turn).
@@ -332,10 +353,6 @@ export interface NaturalOptions {
   obstacles?: Obstacle[]
 }
 
-/** A thing the body must stay clear of: a capsule in the world (a stretch of a spear's shaft), the segments named in
- * `ignore` (by the bone each rides: the hands holding it) let through. */
-export interface Obstacle { from: THREE.Vector3, to: THREE.Vector3, radius: number, ignore?: string[] }
-
 /** A pose: its numbers, the hips' heading and position. */
 export interface NaturalPose { p: Float64Array, yaw: number, hips: THREE.Vector3 }
 
@@ -422,7 +439,6 @@ export interface RigOptions {
 // the units residuals are measured in: a centimetre of a body the Y Bot's size, five degrees
 const CM = 0.01
 const FIVE = THREE.MathUtils.degToRad(5)
-const Y_BOT_LEG = 0.827
 /** A kept bone's weight against a goal's (at 1). */
 export const KEEP_WEIGHT = 12
 const PRIOR = { near: 1, natural: 2, angle: 1, heading: 1, hips: 1 }
@@ -524,7 +540,7 @@ export const WRIST = { free: THREE.MathUtils.degToRad(25), steep: THREE.MathUtil
  * the most it slides either way and the most it slides from one frame to the next (shares of the body's height). */
 export const SLIDE = { cost: 1.5, follow: 4, most: 0.05, step: 0.01 }
 
-/** A clip's frames solved in turn pull each frame's correction toward the last one's (NaturalSolveOptions.follow): per radian squared (the hips' metres count four times). Each frame's search starts cold, from its own keyed pose: the pull is the only thing carried over. */
+/** A clip's frames solved in turn pull each frame's correction toward the last one's (BodySolveOptions.follow): per radian squared (the hips' metres count four times). Each frame's search starts cold, from its own keyed pose: the pull is the only thing carried over. */
 export const FOLLOW = { weight: 100 }
 /** A full search that ends a hard goal more than this off (metres of a Y Bot) is tried again from its other start (NaturalRig.solve). */
 const WARM_RETRY = 0.002
@@ -538,8 +554,6 @@ function giveResidual (c: number, g: Float64Array, o: number): number {
   const r = g[o + 2] * u * (1 + k * k)
   return c < 0 ? -r : r
 }
-/** The collider's trunk segments (bodycollide.ts): they overlap one another, so a limb's or an obstacle's contact with them counts once, its deepest. */
-const TRUNK = new Set(['Hips', 'Spine', 'Spine1', 'Neck'])
 /** The body's segments: [bone, the bone whose joint ends the segment (null: the joint itself), share of the mass]. */
 const SEGMENTS: Array<[string, string | null, number]> = [
   ['Hips', 'Spine', 0.14], ['Spine', 'Spine1', 0.11], ['Spine1', 'Spine2', 0.11], ['Spine2', 'Neck', 0.14], ['Neck', 'Head', 0.02], ['Head', null, 0.07],
@@ -616,9 +630,6 @@ interface Compiled {
   /** 0: always; 1: only while the feet are held (the first stage); 2: only once they are released (soft feet, the floor). */
   phase: 0 | 1 | 2
 }
-
-const wq = (o: THREE.Object3D): THREE.Quaternion => o.getWorldQuaternion(new THREE.Quaternion())
-const wp = (o: THREE.Object3D): THREE.Vector3 => o.getWorldPosition(new THREE.Vector3())
 
 /**
  * A character's body bound to the pose model: encode its pose, put one back, and solve goals. Built once per character
@@ -1687,14 +1698,7 @@ export class NaturalRig {
       }
     }
     const now = this.encode()
-    const delta = new Float64Array(DIM + EXTRA)
-    delta.set(now.p)
-    for (let d = 0; d < DIM; d += 3) unwrapRotation(delta, start.p, d)
-    for (let d = 0; d < DIM; d++) delta[d] -= start.p[d]
-    delta[DIM] = Math.atan2(Math.sin(now.yaw - start.yaw), Math.cos(now.yaw - start.yaw))
-    delta[DIM + 1] = now.hips.x - start.hips.x
-    delta[DIM + 2] = now.hips.y - start.hips.y
-    delta[DIM + 3] = now.hips.z - start.hips.z
+    const delta = deltaOf(now, start)
     return { miss, keepMiss, turnMiss, cost: this.model.cost(now.p), startCost, pose: now, delta, iterations, ms, floorMiss: Math.max(0, floorMiss), feetMoved: moved, softMiss, balance: feet.length > 0 ? this.balanceOf(feet) : null, rollYield, give: gave, slid }
   }
 }
@@ -1721,9 +1725,6 @@ function solveSPD (H: Float64Array, n: number, mu: number, b: Float64Array): boo
 /** The model from its file's contents. */
 export function loadPoseModel (data: PoseModelData): PoseModel { return new PoseModel(data) }
 
-/** Reach `goals` with the most natural pose nearest the start (NaturalRig.solve). */
-export function solveNatural (rig: NaturalRig, goals: NaturalGoal[], opts: NaturalOptions = {}): NaturalResult { return rig.solve(goals, opts) }
-
 /**
  * Each sole point's height above the floor (the ankle, the ball and the toes' tip of both feet, by bone name), from the
  * bones as they stand: call it with the character standing at rest on the floor (the `floor.soles` of a solve).
@@ -1741,23 +1742,79 @@ export function restSoles (bones: Map<string, THREE.Bone>, floorY = 0): Record<s
   return out
 }
 
-// ---- a drop-in for src/engine/bodysolve.ts solveBody -----------------------------------------------------------------
+// ---- the editor's body solve -------------------------------------------------------------------------------------------
 
-/** What the drop-in hands back as the frame's state: bodysolve's four numbers (as they came out, for show and for a rule-based next frame) and this solver's own warm start. */
-export type NaturalBodyState = BodyState & { warm?: Float64Array, objective?: NaturalResult['objective'], /** each hand's slide along its shaft (metres) */ slid?: Partial<Record<'Left' | 'Right', number>> }
-/** solveBody's options, and: `planted` (the feet hard-locked, the first solver's behaviour), the `floor` (world y) and `soles` (each leg's [ankle, ball, tip] rest heights above it, as ik.ts keepOffFloor takes them) that keep every sole point from going under it. */
-export interface NaturalSolveOptions extends SolveOptions {
-  planted?: boolean, floor?: number, soles?: number[][]
-  /** The hands carrying a prop (it rides the hand: its turn is the prop's, held exactly; the other hands' turns give). A goal marked `carrier: true` counts too, and so does a hand with a non-bone object (a garment) on it. */
-  carrying?: Array<'Left' | 'Right'>
-  /** Things the body must stay clear of on this frame (a leading prop's shaft, but where the hands hold it): with the solver's `collide`. */
-  obstacles?: Obstacle[]
-  /** Follow the previous frame: its correction (the state's `warm`) is where this frame's is pulled to, at this weight (per radian squared; FOLLOW). A clip's frames are solved in turn, so a choice the goals leave open (which foot steps, how deep the hips drop, where the elbow points) is made the same way on neighbouring frames, not one way on one and the other on the next. */
-  follow?: number
-  /** Soft goals passed through to the solve as they are (the editor's: the body's root held near where it was seen when a prop was let go). */
-  soft?: NaturalGoal[]
+/** A hand's goal on a frame (src/engine/clipedit.ts handGoals: a hand on a handle of gear, the hand carrying a piece). */
+export interface HandGoal {
+  hand: 'Left' | 'Right'
+  /** Where the wrist goes, and the hand's turn (world). */
+  at: THREE.Vector3
+  turn: THREE.Quaternion
+  /** The hand's fingers (local turns) while it holds. */
+  fingers?: Record<string, [number, number, number, number]>
+  /** Where the hand holds a shaft (src/engine/clipedit.ts Grip: the hold point and the shaft's line through it, in the
+   * wrist's own turn, from the wrist, world units). The solve keeps this point on its goal (`at` + `turn` carrying it),
+   * and lets the turn give about it. */
+  grip?: { axis: THREE.Vector3, fist: THREE.Vector3 }
+  /** Held exactly (its handle placed exactly): its place and turn as given, no give. */
+  exact?: boolean
+  /** The hand carries the piece (it rides the hand): its turn is the piece's place, held exactly. */
+  carrier?: boolean
+  /** A hand on a leading piece's shaft: it may slide along it (`dir`, world, unit) from `back` (metres, negative) to
+   * `ahead`, at a cost, and its turn gives, so at an extreme it gives on the piece before its wrist bends past its range. */
+  slide?: { dir: THREE.Vector3, back: number, ahead: number }
 }
-export type BodySolver = (bones: Map<string, THREE.Bone>, goals: HandGoal[], opts: NaturalSolveOptions, prev: BodyState | null) => { state: BodyState, miss: number }
+
+/** A body's local pose by bone name (each bone's turn; the hips' place too), as a solve left it: what a later solve of
+ * the same frame starts from (BodySolveOptions.seed). */
+export interface SeedPose { turns: Map<string, THREE.Quaternion>, hips: THREE.Vector3 }
+
+/** What a frame's solve hands the next: for show, how far the chest turned (`yaw`) and leaned and the hips went
+ * (`forward`, `drop`, shares of the height); the solve's correction (`warm`: the next frame's is pulled toward it), its
+ * score, and each hand's slide along its shaft (metres). */
+export interface BodyState {
+  yaw: number
+  lean: number
+  forward: number
+  drop: number
+  warm?: Float64Array
+  objective?: NaturalResult['objective']
+  slid?: Partial<Record<'Left' | 'Right', number>>
+}
+
+export interface BodySolveOptions {
+  limits: JointLimits | null
+  nameOf: NameOf
+  /** The legs that stand (their soles kept off the floor). */
+  legs: Leg[]
+  /** The body's height (a hand's slide from frame to frame is a share of it). */
+  height: number
+  /** A live drag: a few steps, a few ms (NaturalOptions.mode 'quick'); otherwise a bake, to the end. */
+  quick?: boolean
+  /** The feet hard-locked (the first solver's behaviour); `floor` (world y) and `soles` (each leg's [ankle, ball, tip]
+   * rest heights above it, as ik.ts keepOffFloor takes them) keep every sole point from going under it. */
+  planted?: boolean
+  floor?: number
+  soles?: number[][]
+  /** The hands carrying a prop (it rides the hand: its turn is the prop's, held exactly; the other hands' turns give). A
+   * goal marked `carrier` counts too, and so does a hand with a non-bone object (a garment) on it. */
+  carrying?: Array<'Left' | 'Right'>
+  /** Things the body must stay clear of on this frame (a leading piece's shaft, but where the hands hold it): with the
+   * solver's `collide`. */
+  obstacles?: Obstacle[]
+  /** Follow the previous frame: its correction (the state's `warm`) is where this frame's is pulled to, at this weight
+   * (per radian squared; FOLLOW). A clip's frames are solved in turn, so a choice the goals leave open (which foot steps,
+   * how deep the hips drop, where the elbow points) is made the same way on neighbouring frames. */
+  follow?: number
+  /** Soft goals passed through to the solve as they are (the editor's: the body's root held near where it was seen when
+   * a piece was let go). */
+  soft?: NaturalGoal[]
+  /** Where an earlier solve of this frame left the body (a live drag's, quick): the search starts there (NaturalOptions
+   * warm), when that scores better than the frame's own pose, so letting go doesn't jump. */
+  seed?: SeedPose
+}
+/** The editor's body solve on one frame (createBodySolver): writes the bones; returns the state and the worst hand miss. */
+export type BodySolver = (bones: Map<string, THREE.Bone>, goals: HandGoal[], opts: BodySolveOptions, prev: BodyState | null) => { state: BodyState, miss: number }
 /** The gaze: how hard the head is held to the turn the clip gives it (per 5 degrees off, soft). */
 export const GAZE = { weight: 1.5 }
 
@@ -1772,55 +1829,81 @@ export interface BodySolverOptions {
   balance?: boolean
   /** The anatomical elbow cost (an elbow bowing forward off its shoulder-to-hand line more than the hand's height allows): default true. */
   elbows?: boolean
-  /** The hands carrying a prop (see NaturalSolveOptions.carrying): their turns are held exactly, whatever give says. */
+  /** The hands carrying a prop (see BodySolveOptions.carrying): their turns are held exactly, whatever give says. */
   carrying?: Array<'Left' | 'Right'>
   /** A hand's turn yields at all: false asks every hand's turn exactly. Default true. */
   roll?: boolean
   /** A hand's turn gives a little on every axis (GIVE: the roll round its grip line the cheapest, then the swing of the line), the position staying tight; false: only the roll yields (the grip line exact). Default true. */
   give?: boolean
-  /** The body's solids (buildBodyCollider): body parts may not end up inside one another. Default: none (on whenever one is given). */
+  /** The body's solids (src/engine/bodycollide.ts: a CharacterCollider, or buildBodyCollider's): body parts may not end up inside one another. Default: none (on whenever one is given). */
   collide?: BodyCollider | null
 }
 
 /**
- * A hand's grip line in the hand's own frame, from its knuckles (as src/engine/clipedit.ts handGrip has it: across the
- * knuckles from the little finger's to the index's, leaning 25 degrees toward the heel of the hand): the line a shaft takes
- * through the fist. Null for a hand without fingers.
+ * A hand's grip from its knuckles, in the hand's own frame (`at` gives a bone's world place by name, `wrist` the hand's
+ * world place and turn): the line a shaft takes through the fist (across the knuckles from the little finger's to the
+ * index's, leaning 25 degrees toward the heel of the hand: out of the thumb's side), and the fist's middle (by the
+ * knuckles, a little into the palm). Null for a hand without fingers. src/engine/clipedit.ts handGrip reads it off the
+ * rest skeleton, gripAxisOf off the bones as they stand.
  */
-export function gripAxisOf (bones: Map<string, THREE.Bone>, hand: 'Left' | 'Right'): THREE.Vector3 | null {
-  const wrist = bones.get(`${hand}Hand`)
-  const index = bones.get(`${hand}HandIndex1`); const middle = bones.get(`${hand}HandMiddle1`) ?? index
-  const little = bones.get(`${hand}HandPinky1`) ?? bones.get(`${hand}HandRing1`) ?? bones.get(`${hand}HandMiddle1`)
-  if (wrist === undefined || index === undefined || little === undefined || middle === undefined) return null
-  wrist.updateMatrixWorld(true)
-  const h = wp(wrist)
-  const f = wp(middle).sub(h).normalize()
-  const k = wp(index).sub(wp(little))
-  if (k.length() < 1e-9) return null
+export function knuckleGrip (at: (bone: string) => THREE.Vector3 | null, hand: 'Left' | 'Right', wrist: { position: THREE.Vector3, turn: THREE.Quaternion }): { axis: THREE.Vector3, fist: THREE.Vector3 } | null {
+  const of = (n: string): THREE.Vector3 | null => at(`${hand}${n}`)?.clone() ?? null
+  const index = of('HandIndex1'); const little = of('HandPinky1') ?? of('HandRing1') ?? of('HandMiddle1'); const middle = of('HandMiddle1') ?? index
+  if (index === null || little === null || middle === null || index.distanceTo(little) < 1e-6) return null
+  const h = wrist.position
+  const along = middle.clone().sub(h)
+  const length = along.length()
+  const f = along.normalize()
+  const k = index.clone().sub(little)
+  const width = k.length()
   k.addScaledVector(f, -k.dot(f)).normalize()
+  // (the palm's side: where the thumb is, off the plane of the knuckles)
+  const n = new THREE.Vector3().crossVectors(f, k).normalize()
+  const thumb = of('HandThumb1')
+  if (thumb !== null && thumb.clone().sub(h).dot(n) < 0) n.negate()
   const lean = THREE.MathUtils.degToRad(25)
-  return k.multiplyScalar(Math.cos(lean)).addScaledVector(f, -Math.sin(lean)).normalize().applyQuaternion(wq(wrist).invert())
+  const axis = k.clone().multiplyScalar(Math.cos(lean)).addScaledVector(f, -Math.sin(lean)).normalize()
+  const fist = index.clone().add(little).multiplyScalar(0.5).addScaledVector(f, 0.12 * length).addScaledVector(n, 0.35 * width)
+  const inv = wrist.turn.clone().invert()
+  return { axis: axis.applyQuaternion(inv), fist: fist.sub(h).applyQuaternion(inv) }
 }
 
-/** The bones the natural solve moves (to bake their tracks): the whole body's, and the fingers a goal closes. (The Hips' position track too, when the hips may move.) */
-export function bodyBonesNatural (goals: Array<{ hand: 'Left' | 'Right', fingers?: Record<string, unknown> }>, legs: Leg[]): string[] {
+/** A hand's grip line in the hand's own frame, from its knuckles as the bones stand (knuckleGrip). Null for a hand
+ * without fingers. */
+export function gripAxisOf (bones: Map<string, THREE.Bone>, hand: 'Left' | 'Right'): THREE.Vector3 | null {
+  const wrist = bones.get(`${hand}Hand`)
+  if (wrist === undefined) return null
+  wrist.updateMatrixWorld(true)
+  const at = (n: string): THREE.Vector3 | null => { const b = bones.get(n); return b === undefined ? null : wp(b) }
+  return knuckleGrip(at, hand, { position: wp(wrist), turn: wq(wrist) })?.axis ?? null
+}
+
+/** The bones the body solve moves (to bake their tracks): the whole body's, and the fingers a goal closes. (The Hips'
+ * position track too, when the hips may move.) */
+export function bodyBones (goals: Array<{ hand: 'Left' | 'Right', fingers?: Record<string, unknown> }>, legs: Leg[]): string[] {
   return [...new Set([...BODY, ...goals.flatMap(g => Object.keys(g.fingers ?? {})), ...legs.flatMap(l => [l.upper.name, l.lower.name, l.end.name])])]
 }
 
+/** A body's local pose as it stands (each of `names`' turn, and the hips' place): a seed for a later solve. */
+export function seedOf (bones: Map<string, THREE.Bone>, names: readonly string[] = BODY): SeedPose {
+  const turns = new Map<string, THREE.Quaternion>()
+  for (const n of names) { const b = bones.get(n); if (b !== undefined) turns.set(n, b.quaternion.clone()) }
+  return { turns, hips: bones.get('Hips')?.position.clone() ?? new THREE.Vector3() }
+}
+
 /**
- * solveBody's contract on the natural-pose solver: on a frame as the clip has it, each hand with a goal (its wrist's
+ * The editor's body solve, on the natural-pose solver: on a frame as the clip has it, each hand with a goal (its wrist's
  * world place and its world turn) reaches it, the whole body turning, leaning, bending and (hipsMove) shifting the way
  * people's bodies do together to let it. The feet (opts.legs) are SOFT: they stay where they stand until the pose needs
- * them to slide, twist or tilt, and no sole point goes under the floor (opts.floor, opts.soles); `planted` locks them
- * as before. Writes the bones; returns the state (`prev` of the next frame: it carries the solver's warm start) and
+ * them to slide, twist or tilt, and no sole point goes under the floor (opts.floor, opts.soles); `planted` locks them.
+ * Writes the bones; returns the state (`prev` of the next frame: it carries the correction the next one follows) and
  * the worst hand miss left (world units). `opts.quick` is a drag, live (a few steps, a few ms); otherwise a bake (to the
- * end, about 10-25 ms). `opts.height` is not needed (the solver knows the body's size). A body missing some of the 22
- * body bones is left as it is (miss Infinity).
+ * end, about 10-25 ms). A body missing some of the 22 body bones is left as it is (miss Infinity).
  */
 export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Quaternion> | null, options: BodySolverOptions = {}): BodySolver {
   const rigs = new WeakMap<Map<string, THREE.Bone>, { rig: NaturalRig, limits: JointLimits | null }>()
   return (bones, goals, opts, prev) => {
-    const zero: NaturalBodyState = { yaw: 0, lean: 0, forward: 0, drop: 0 }
+    const zero: BodyState = { yaw: 0, lean: 0, forward: 0, drop: 0 }
     if (goals.length === 0) return { state: prev ?? zero, miss: 0 }
     let held = rigs.get(bones)
     if (held === undefined || held.limits !== opts.limits) {
@@ -1846,8 +1929,13 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
     const lateral = wp(bones.get('LeftArm')!).sub(wp(bones.get('RightArm')!)); lateral.y = 0
     lateral.normalize()
     // (each frame's search starts cold, from the frame as the clip has it; the last frame's correction is only what this one's is pulled toward: a warm start carried the last answer's branch on, through frames where the clip's own pose wants another)
-    const last = (prev as NaturalBodyState | null)?.warm
+    const last = prev?.warm
     const follow = opts.follow !== undefined && last !== undefined ? { ref: last, weight: opts.follow } : undefined
+    // (a seed: where an earlier solve of this frame left the body (a live drag's, the pose the user saw when letting
+    // go), as a warm start from the frame as it stands, and what the solve is pulled toward, at the follow weight: a
+    // full solve would otherwise keep a cold search's lower total and the body would jump on release, DESIGN.md §8)
+    const warm = opts.seed === undefined ? undefined : warmFrom(rig, bones, opts.seed)
+    const smooth = warm !== undefined ? { ref: warm, weight: FOLLOW.weight } : follow
     // (a hand holding a shaft: the point it holds at is the goal's point on the bone, so its turn gives about that point and the hand stays on the shaft; the goal's place is that point's, `at` + the turn carrying it)
     const heldAt = new Map<HandGoal, THREE.Vector3>()
     // (the gaze: the head kept facing where the clip has it look (its turn on this frame as the clip has it, softly), so a
@@ -1861,11 +1949,11 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
       // (a hand on a leading prop's shaft gives instead: it may turn in its grip and slide along the shaft a little, at a
       // cost, before its wrist bends past its range; the prop is where its path puts it, whatever hand holds it how)
       const onShaft = g.slide !== undefined
-      const carries = !onShaft && ((g as { carrier?: boolean }).carrier === true || g.exact === true || (opts.carrying ?? options.carrying)?.includes(g.hand) === true ||
+      const carries = !onShaft && (g.carrier === true || g.exact === true || (opts.carrying ?? options.carrying)?.includes(g.hand) === true ||
         (hand?.children.some(c => (c as THREE.Bone).isBone !== true && c.children.length > 0) ?? false))
       // (a clip's frames in turn: a hand slides at most SLIDE.step a frame from where the last frame had it, so it eases
       // along the shaft and never jumps up it in a frame)
-      const lastSlid = opts.follow !== undefined ? (prev as NaturalBodyState | null)?.slid?.[g.hand] : undefined
+      const lastSlid = opts.follow !== undefined ? prev?.slid?.[g.hand] : undefined
       const step = SLIDE.step * opts.height
       const was = g.slide === undefined || lastSlid === undefined ? 0 : Math.min(g.slide.ahead, Math.max(g.slide.back, lastSlid))
       const range: [number, number] | undefined = g.slide === undefined ? undefined
@@ -1882,7 +1970,7 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
       heldAt.set(g, place)
       return { bone: `${g.hand}Hand`, at: held.fist.clone().divideScalar(scale), position: place, turn: g.turn, exact: true, ...turn, ...slide }
     }), ...gaze, ...(opts.soft ?? [])], {
-      feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, smooth: follow, collide: options.collide ?? undefined, obstacles: opts.obstacles,
+      feet, planted: opts.planted ?? options.planted, balance: options.balance, elbows: options.elbows, floor, mode: opts.quick === true ? 'quick' : 'full', hipsMove: options.hipsMove ?? true, smooth, warm, collide: options.collide ?? undefined, obstacles: opts.obstacles,
     })
     // (the fingers as asked; the miss as it stands: a hand holding a shaft by its hold point)
     let miss = 0
@@ -1900,18 +1988,24 @@ export function createBodySolver (model: PoseModel, offsets: Map<string, THREE.Q
     logTo(wq(spine).multiply(turnBefore.invert()), rv, 0)
     const ahead = new THREE.Vector3().crossVectors(lateral, new THREE.Vector3(0, 1, 0)).normalize()
     const moved = wp(hips).sub(hipsBefore)
-    const state: NaturalBodyState = { yaw: rv[1], lean: rv[0] * lateral.x + rv[2] * lateral.z, forward: moved.dot(ahead) / opts.height, drop: -moved.y / opts.height, warm: res.delta, objective: res.objective, slid: Object.fromEntries((res.slid ?? []).map(x => [x.bone.replace('Hand', ''), x.along])) }
+    const state: BodyState = { yaw: rv[1], lean: rv[0] * lateral.x + rv[2] * lateral.z, forward: moved.dot(ahead) / opts.height, drop: -moved.y / opts.height, warm: res.delta, objective: res.objective, slid: Object.fromEntries((res.slid ?? []).map(x => [x.bone.replace('Hand', ''), x.along])) }
     return { state, miss }
   }
 }
 
-let bound: BodySolver | null = null
-/** Once per character: the model and the retarget's K the drop-in solves with (retargetOffsets(source rest, character rest).offsets; null for the model's own skeleton). */
-export function bindNaturalBody (model: PoseModel, offsets: Map<string, THREE.Quaternion> | null, options: BodySolverOptions = {}): void { bound = createBodySolver(model, offsets, options) }
-/** bodysolve.ts solveBody's signature, solved naturally (bindNaturalBody first). */
-export const solveBodyNatural: BodySolver = (bones, goals, opts, prev) => {
-  if (bound === null) throw new Error('solveBodyNatural: bindNaturalBody(model, offsets) first')
-  return bound(bones, goals, opts, prev)
+/** The warm start a seed gives (deltaOf: from the body as it stands to the seed), the bones left as they stood. */
+function warmFrom (rig: NaturalRig, bones: Map<string, THREE.Bone>, seed: SeedPose): Float64Array {
+  const hips = rig.bones[0]
+  const saved = [...seed.turns].flatMap(([n, q]) => { const b = bones.get(n); return b === undefined ? [] : [[b, b.quaternion.clone(), q] as const] })
+  const hipsAt = hips.position.clone()
+  const start = rig.encode()
+  for (const [b, , q] of saved) b.quaternion.copy(q)
+  hips.position.copy(seed.hips)
+  const seeded = rig.encode()
+  for (const [b, q] of saved) b.quaternion.copy(q)
+  hips.position.copy(hipsAt)
+  hips.updateMatrixWorld(true)
+  return deltaOf(seeded, start)
 }
 
 // ---- the whole clip: a naturalize pass ---------------------------------------------------------------------------------

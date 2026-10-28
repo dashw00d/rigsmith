@@ -1,56 +1,23 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte'
-  import { Box, Bone, Focus, Grid2x2, Palette, ScanEye } from '@lucide/svelte'
-  import * as THREE from 'three'
+  // The viewport: the stage (src/state/viewer.svelte.ts puts the selected character on it), the display mode, bones and
+  // framing tools, the one busy pill (the character's job, app.busy, a model loading), why a model didn't load, and
+  // whatever overlays the areas registered (viewer.setOverlay): over the stage, or docked under it (the timeline). It
+  // knows nothing of the areas themselves.
+  import { onMount } from 'svelte'
+  import { Bone, Box, Focus, Grid2x2, Palette, RefreshCw, ScanEye, TriangleAlert } from '@lucide/svelte'
+  import { heightOf, phaseOf } from '../model/select.ts'
+  import type { DisplayMode } from '../engine/CharacterView.ts'
   import { app } from '../state/app.svelte.ts'
   import { viewer } from '../state/viewer.svelte.ts'
-  import { prettyBone, side } from '../engine/mixamo.ts'
-  import type { DisplayMode } from '../engine/CharacterView.ts'
-  import type { Joints } from '../engine/JointEditor.ts'
   import Segmented from '../ui/Segmented.svelte'
-  import { tooltip } from '../ui/tooltip.ts'
   import { allowsShortcut } from '../ui/shortcuts.ts'
-  import Timeline from './animate/Timeline.svelte'
-  import { animator } from '../state/animator.svelte.ts'
-  import { clipEdit } from '../state/clipedit.svelte.ts'
-  import { outfit } from '../state/outfit.svelte.ts'
-  import { painter } from '../state/painter.svelte.ts'
-  import MaskPainter from './texture/MaskPainter.svelte'
-  import MarkerBoard from './rig/MarkerBoard.svelte'
-  import { markerBoard } from '../state/markers.svelte.ts'
-  import ScaleRoom from './export/ScaleRoom.svelte'
-  import { scaleRoom } from '../state/scaleroom.svelte.ts'
-  import { paint } from '../state/paint.svelte.ts'
+  import { tooltip } from '../ui/tooltip.ts'
+  import { shownFile } from './status.ts'
 
-  let container: HTMLDivElement
+  let container = $state<HTMLDivElement | null>(null)
+  let dock = $state<HTMLDivElement | null>(null)
 
-  onMount(() => viewer.attach(container))
-  // (the stage rests while the marker board or the scale room covers it)
-  $effect(() => {
-    const on = (markerBoard.open && app.step === 'rig') || scaleRoom.open
-    if (viewer.stage !== null) viewer.stage.covered = on
-    // (markers go on the body at rest: a clip playing stops)
-    if (markerBoard.open && app.step === 'rig') untrack(() => { if (animator.current !== null) animator.stop() })
-  })
-
-  $effect(() => {
-    // Re-sync whenever the selected character (or its files/status) or the step changes.
-    const c = app.selected
-    void c?.revision
-    void c?.status
-    void c?.props
-    void c?.garments
-    void c?.mount
-    void outfit.fitting
-    void viewer.sync(c, app.step)
-  })
-
-  // (the 3D joint editor shows the joints as saved: placed by markers, reset, or edited from the CLI)
-  $effect(() => {
-    const joints = app.selected?.joints
-    void viewer.editor
-    untrack(() => { viewer.followJoints(joints as Joints | undefined) })
-  })
+  onMount(() => (container === null ? undefined : viewer.attach(container)))
 
   const modes: Array<{ value: DisplayMode, label: string, icon: typeof Box }> = [
     { value: 'shaded', label: 'Shaded', icon: Palette },
@@ -58,92 +25,122 @@
     { value: 'weights', label: 'Weights', icon: Grid2x2 },
     { value: 'xray', label: 'X-ray', icon: ScanEye },
   ]
-  let mode = $state<DisplayMode>(viewer.mode)
-  $effect(() => { mode = viewer.mode })
 
-  const label = $derived.by(() => {
-    void viewer.frame
-    const name = viewer.hoveredJoint ?? viewer.selectedJoint
-    if (name === null || viewer.editor === null || viewer.stage === null) return null
-    const p = viewer.editor.position(name)
-    if (p === null) return null
-    const s = viewer.stage.project(new THREE.Vector3(p.x, p.y, p.z))
-    return { name, x: s.x, y: s.y, side: side(name) }
+  const c = $derived(app.selected)
+  const job = $derived(c === null ? undefined : app.jobFor(c.id))
+  const phase = $derived(c === null ? null : phaseOf(c, job))
+  const nothingToShow = $derived(c !== null && shownFile(c) === undefined)
+  const over = $derived(viewer.overlays.filter(([, o]) => o.dock !== 'bottom'))
+  const docked = $derived(viewer.overlays.filter(([, o]) => o.dock === 'bottom'))
+  const blocked = $derived(viewer.overlays.some(([, o]) => o.blocksInput === true))
+  // (the stage's own tools hide under an overlay that covers it: the marker board, the scale room)
+  const covered = $derived(viewer.overlays.some(([, o]) => o.covers === true))
+  const busy = $derived.by(() => {
+    if (job !== undefined && job.status === 'running') return { text: job.message || job.label, progress: job.progress }
+    if (app.busy !== null) return { text: app.busy, progress: null }
+    if (viewer.loading) return { text: 'Loading model', progress: null }
+    if (job !== undefined) return { text: 'Queued', progress: null }
+    return null
   })
 
-  const job = $derived(app.selected === null ? undefined : app.jobFor(app.selected.id))
+  // (the toasts sit above the dock while it shows)
+  $effect(() => {
+    const node = dock
+    if (node === null) return
+    const root = document.documentElement
+    const update = (): void => { root.style.setProperty('--playback-dock-height', `${node.offsetHeight}px`) }
+    const observer = new ResizeObserver(update)
+    observer.observe(node)
+    update()
+    return () => { observer.disconnect(); root.style.removeProperty('--playback-dock-height') }
+  })
+
+  function onkeydown (e: KeyboardEvent): void {
+    if (e.key.toLowerCase() === 'f' && allowsShortcut(e) && app.selected !== null) viewer.focus()
+  }
 </script>
 
-<div class="viewport" class:working={clipEdit.busy !== null} bind:this={container}>
-  <div class="vignette" aria-hidden="true"></div>
+<svelte:window {onkeydown} />
 
-  {#if app.selected}
-    <div class="toolbar">
-      <Segmented options={modes} bind:value={mode} size="sm" iconsOnly label="Display mode" onchange={(m) => viewer.setMode(m)} />
-      {#if viewer.character?.skeleton}
-        <button class="tool" class:on={viewer.skeleton} aria-label="Show bones" aria-pressed={viewer.skeleton} onclick={() => viewer.setSkeleton(!viewer.skeleton)} use:tooltip={'Show bones'}><Bone size={14} /></button>
-      {/if}
-      <button class="tool" aria-label="Frame character" onclick={() => viewer.focus()} use:tooltip={'Frame character (F)'}><Focus size={14} /></button>
-    </div>
-    <div class="caption">
-      <span class="name">{app.selected.name}</span>
-      {#if app.selected.stats}
-        <span class="faint mono">{app.selected.stats.triangles.toLocaleString()} tris · {app.selected.stats.height.toFixed(2)} m</span>
-      {/if}
-    </div>
-  {/if}
+<div class="frame">
+  <div class="viewport" class:blocked bind:this={container}>
+    <div class="vignette" aria-hidden="true"></div>
 
-  {#if label}
-    <div class="joint-label {label.side}" style="transform: translate({label.x}px, {label.y}px)">
-      {prettyBone(label.name)}{#if label.side !== 'center'}<span class="faint"> · {label.side}</span>{/if}
-    </div>
-  {/if}
+    {#if c !== null && !nothingToShow && !covered}
+      <div class="toolbar">
+        <Segmented options={modes} value={viewer.mode} size="sm" iconsOnly label="Display mode" onchange={(m) => { viewer.setMode(m) }} />
+        {#if viewer.character?.skeleton}
+          <button class="tool" class:on={viewer.skeleton} aria-label="Show bones" aria-pressed={viewer.skeleton} onclick={() => { viewer.setSkeleton(!viewer.skeleton) }} use:tooltip={'Show bones'}><Bone size={14} /></button>
+        {/if}
+        <button class="tool" aria-label="Frame the character" onclick={() => { viewer.focus() }} use:tooltip={'Frame the character (F)'}><Focus size={14} /></button>
+      </div>
+      <div class="caption">
+        <span class="name">{c.name}</span>
+        {#if c.source.stats}
+          <span class="faint mono">{c.source.stats.triangles.toLocaleString()} tris · {heightOf(c).toFixed(2)} m</span>
+        {/if}
+      </div>
+    {/if}
 
-  {#if app.step === 'animate' || app.step === 'export' || app.step === 'outfit' || (app.step === 'rig' && animator.current?.test === true)}<Timeline />{/if}
-  {#if painter.active && app.step === 'texture'}<MaskPainter />{/if}
-  {#if scaleRoom.open && app.selected && viewer.character && scaleRoom.unit && scaleRoom.entry}
-    {#key `${app.selected.id}|${scaleRoom.unit}|${scaleRoom.companion}`}
-      <ScaleRoom view={viewer.character} unit={scaleRoom.unit} entry={scaleRoom.entry} companion={scaleRoom.companion} />
-    {/key}
-  {/if}
-  {#if markerBoard.open && app.step === 'rig' && app.selected && viewer.character && markerBoard.set && markerBoard.parents && markerBoard.setName}
-    {#key `${app.selected.id}|${markerBoard.setName}`}
-      <MarkerBoard character={app.selected} view={viewer.character} set={markerBoard.set} setName={markerBoard.setName} parents={markerBoard.parents} />
-    {/key}
-  {/if}
+    <!-- (each overlay places itself in the viewport, as its own component says; a covering one hides the stage) -->
+    {#each over as [key, o] (key)}
+      {@const Overlay = o.component}
+      <Overlay {...o.props ?? {}} />
+    {/each}
 
-  {#if animator.error}<div class="busy error">{animator.error}</div>{/if}
+    {#if viewer.loadError !== null && c !== null}
+      <div class="load-error" role="alert">
+        <TriangleAlert size={15} />
+        <span>{viewer.loadError}</span>
+        <button class="retry" onclick={() => { viewer.reload() }}><RefreshCw size={12} /> Try again</button>
+      </div>
+    {:else if busy !== null}
+      <div class="busy" role="status">
+        <div class="ring"></div>
+        <span>{busy.text}</span>
+        {#if busy.progress !== null}<div class="bar"><div style:width="{Math.round(busy.progress * 100)}%"></div></div>{/if}
+      </div>
+    {/if}
 
-  {#if job || viewer.loading || animator.loading || clipEdit.busy || outfit.busy || painter.busy || markerBoard.busy || scaleRoom.busy || paint.busyText}
-    <div class="busy" role="status">
-      <div class="ring"></div>
-      <span>{job ? job.message : viewer.loading ? 'Loading model' : clipEdit.busy ?? markerBoard.busy ?? scaleRoom.busy ?? paint.busyText ?? painter.busy ?? (outfit.busy ? 'Fitting clothes' : 'Retargeting animation')}</span>
-      {#if job?.status === 'running'}<div class="bar"><div style="width: {Math.round(job.progress * 100)}%"></div></div>{/if}
-    </div>
-  {/if}
-
-  {#if !app.selected}
-    <div class="hello">
-      <h1>Drop a character to begin</h1>
-      <p class="muted">Raw meshes get rigged automatically. Rigged Mixamo characters go straight to animation.</p>
+    {#if c === null}
+      <div class="hello">
+        <h1>Drop a character to begin</h1>
+        <p class="muted">FBX, GLB, OBJ, DAE or a Tripo ZIP. Meshes get a rig made here; rigged characters are converted onto it.</p>
+      </div>
+    {:else if nothingToShow && phase !== null && phase.phase !== 'importing'}
+      <div class="hello">
+        <h1>{phase.phase === 'animation-only' ? 'An animation file' : phase.phase === 'error' ? 'Nothing to show' : 'No model yet'}</h1>
+        <p class="muted">{phase.phase === 'animation-only' ? 'It has motion but no model to show.' : phase.phase === 'error' ? (c.error ?? phase.label) : 'Import it again from the Import step.'}</p>
+      </div>
+    {/if}
+  </div>
+  {#if docked.length > 0}
+    <div class="dock" bind:this={dock}>
+      {#each docked as [key, o] (key)}
+        {@const Docked = o.component}
+        <Docked {...o.props ?? {}} />
+      {/each}
     </div>
   {/if}
 </div>
 
-<svelte:window onkeydown={(e) => { if (e.key.toLowerCase() === 'f' && allowsShortcut(e)) viewer.focus() }} />
-
 <style>
+  .frame { position: absolute; inset: 0; display: flex; flex-direction: column; }
   .viewport {
-    position: absolute;
-    inset: 0;
+    position: relative;
+    flex: 1;
+    min-height: 0;
     background: radial-gradient(120% 90% at 50% 18%, #1b2030 0%, #12151c 45%, #0b0c10 100%);
     overflow: hidden;
     container-type: size;
     user-select: none;
   }
+  .dock { flex: none; position: relative; min-height: 0; border-top: 1px solid var(--line); background: var(--bg-1); }
   .vignette { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 160px rgb(0 0 0 / 55%); }
-  .working :global(canvas) { pointer-events: none; }
-  .toolbar { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; align-items: center; z-index: 2; }
+  /* (the stage's own canvas only, a direct child (Stage appends it here): an overlay's canvases, like the scale room's,
+     keep their input) */
+  .blocked > :global(canvas) { pointer-events: none; }
+  .toolbar { position: absolute; top: 12px; left: 12px; display: flex; gap: 6px; align-items: center; z-index: 4; }
   .tool {
     width: 28px;
     height: 28px;
@@ -156,28 +153,10 @@
   }
   .tool:hover { color: var(--text-1); }
   .tool.on { color: var(--accent-strong); border-color: rgb(142 162 255 / 40%); background: var(--accent-soft); }
-  .caption { position: absolute; left: 16px; right: 16px; top: 52px; display: flex; flex-direction: column; gap: 2px; pointer-events: none; }
-  .caption .name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .caption .name { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .caption { position: absolute; left: 16px; right: 16px; top: 52px; display: flex; flex-direction: column; gap: 2px; pointer-events: none; z-index: 1; }
+  .caption .name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
   .caption .mono { font-size: 11px; }
-  .joint-label {
-    position: absolute;
-    left: 0;
-    top: 0;
-    margin: -34px 0 0 12px;
-    padding: 4px 8px;
-    border-radius: 6px;
-    background: var(--bg-2);
-    box-shadow: var(--shadow-pop);
-    font-size: 11.5px;
-    font-weight: 550;
-    pointer-events: none;
-    white-space: nowrap;
-    border-left: 3px solid var(--side-center);
-  }
-  .joint-label.left { border-left-color: var(--side-left); }
-  .joint-label.right { border-left-color: var(--side-right); }
-  .busy {
+  .busy, .load-error {
     position: absolute;
     z-index: 10;
     left: 50%;
@@ -196,13 +175,17 @@
     width: max-content;
     font-size: 12px;
   }
-  .ring { width: 14px; height: 14px; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
-  .busy.error { color: var(--danger); }
-  .busy .bar { width: 80px; height: 3px; background: var(--bg-4); border-radius: 2px; overflow: hidden; }
+  .load-error { color: var(--danger); border-color: rgb(242 119 122 / 35%); border-radius: var(--r-3); }
+  .load-error span { overflow-wrap: anywhere; }
+  .load-error :global(svg) { flex: none; }
+  .retry { flex: none; display: flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 12px; border: 1px solid var(--line-strong); background: var(--bg-2); color: var(--text-1); font-size: 11.5px; }
+  .retry:hover { border-color: var(--accent); }
+  .ring { flex: none; width: 14px; height: 14px; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  .busy .bar { flex: none; width: 80px; height: 3px; background: var(--bg-4); border-radius: 2px; overflow: hidden; }
   .busy .bar div { height: 100%; background: var(--accent); transition: width var(--med); }
-  .hello { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; pointer-events: none; gap: 6px; }
+  .hello { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; pointer-events: none; gap: 6px; padding: 24px; }
   .hello h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
-  .hello p { margin: 0; }
+  .hello p { margin: 0; max-width: 460px; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @container (max-height: 380px) { .caption { display: none; } .busy { top: 48px; } }
+  @container (max-height: 380px) { .caption { display: none; } .busy, .load-error { top: 48px; } }
 </style>

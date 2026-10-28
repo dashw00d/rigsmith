@@ -1,34 +1,35 @@
-"""The canonical Mixamo skeleton: bone names (bare, no `mixamorig:` prefix) and hierarchy."""
+"""The canonical Mixamo skeleton: bone names (bare, no `mixamorig:` prefix), hierarchy by finger level, and where a
+long finger's joints sit along the hand.
 
-SPINE = ['Hips', 'Spine', 'Spine1', 'Spine2', 'Neck', 'Head', 'HeadTop_End']
-FINGERS = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']
+All of it is read from static/templates/human-skeleton.json, the one table the app (src/model/skeletons.ts,
+src/engine/mixamo.ts) reads too.
+"""
+import json
+import os
+
+_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'static', 'templates', 'human-skeleton.json')
+with open(_FILE) as _f:
+    _HUMAN = json.load(_f)
+
+FINGERS = list(_HUMAN['fingers'])
 
 # Finger chains included per detail level (Mixamo's skeleton LOD options).
-FINGER_LEVELS = {
-    'none': [],
-    'one': ['Index'],
-    'two': ['Thumb', 'Index'],
-    'full': FINGERS,
-}
+FINGER_LEVELS = {level: list(chains) for level, chains in _HUMAN['fingerLevels'].items()}
+
+# [bone, parent] or [bone, parent, finger] at the full level, parents first.
+_BONES = _HUMAN['bones']
+
+# Where a long finger's joints sit along the hand (Mixamo's proportions): the knuckle's reach along the hand as a
+# fraction of the tip's, then the two middle joints as fractions of knuckle -> tip.
+ANATOMY = {finger: tuple(v) for finger, v in _HUMAN['anatomy'].items()}
+
+SPINE = [bone for bone, *rest in _BONES[:7]]
 
 
 def hierarchy(fingers='two'):
     """Ordered list of (bone, parent) with parents before children."""
-    bones = [('Hips', None), ('Spine', 'Hips'), ('Spine1', 'Spine'), ('Spine2', 'Spine1'),
-             ('Neck', 'Spine2'), ('Head', 'Neck'), ('HeadTop_End', 'Head')]
-    for side in ('Left', 'Right'):
-        bones += [(f'{side}Shoulder', 'Spine2'), (f'{side}Arm', f'{side}Shoulder'),
-                  (f'{side}ForeArm', f'{side}Arm'), (f'{side}Hand', f'{side}ForeArm')]
-        for finger in FINGER_LEVELS[fingers]:
-            parent = f'{side}Hand'
-            for i in range(1, 5):
-                name = f'{side}Hand{finger}{i}'
-                bones.append((name, parent))
-                parent = name
-    for side in ('Left', 'Right'):
-        bones += [(f'{side}UpLeg', 'Hips'), (f'{side}Leg', f'{side}UpLeg'), (f'{side}Foot', f'{side}Leg'),
-                  (f'{side}ToeBase', f'{side}Foot'), (f'{side}Toe_End', f'{side}ToeBase')]
-    return bones
+    wanted = FINGER_LEVELS[fingers]
+    return [(b[0], b[1]) for b in _BONES if len(b) < 3 or b[2] in wanted]
 
 
 def is_leaf_end(name):

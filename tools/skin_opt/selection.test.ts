@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { retainReference, selectIslands, surfaceIslands } from './selection.ts'
+import { explainRetain, retainReference, selectIslands, surfaceIslands } from './selection.ts'
 
 describe('skin candidate selection', () => {
   it('rejects a better mean strain when another motion gains extreme deformation', () => {
@@ -21,5 +21,13 @@ describe('skin candidate selection', () => {
   it('rejects nonfinite or incompatible score tables', () => {
     expect(() => selectIslands([[NaN]], [[1]], false)).toThrow()
     expect(() => selectIslands([[1]], [[1,2]], false)).toThrow()
+  })
+  it('says which rule kept the reference, in plain words', () => {
+    const names = ['Walk', 'Air squat']
+    expect(explainRetain([.3,.3], [.2,.2], [0,0], [0,0], names)).toEqual({ retain: true, why: 'strained the 2 tests 50% more in all' })
+    expect(explainRetain([.1,.23], [.2,.2], [0,0], [0,0], names)).toEqual({ retain: true, why: 'strained Air squat 15% more' })
+    expect(explainRetain([.1,.1], [.2,.2], [10,21], [20,20], names)).toEqual({ retain: true, why: 'stretched 1 more edge past double length on Air squat' })
+    expect(explainRetain([.1,.1], [.2,.2], [10,20], [20,20], names)).toEqual({ retain: false, why: 'was no worse on any of the 2 tests (50% less strain)' })
+    expect(explainRetain([.2], [.2], [0], [0])).toEqual({ retain: false, why: 'was no worse on the test' })
   })
 })

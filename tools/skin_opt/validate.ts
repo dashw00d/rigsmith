@@ -1,16 +1,23 @@
 // Compare generated weights with the previous weights on the NEW skeleton.
 // Transfer only between matching bind geometry; never undo edited joint placements.
-// node tools/skin_opt/validate.ts <candidate.glb> <previous.glb> <human|horse|...>
+// node tools/skin_opt/validate.ts <candidate.glb> <previous.glb> <human|horse|...> [--exclude id,id]
+// --exclude: clips not to score on (the ones the pose optimizer just trained on); the library spread takes other clips
+//   in their place, so the set keeps its size (tools/lib/deformation.ts).
+// Prints one JSON line: whether they could be compared (else `reason`), whether the reference was kept whole
+// (`retained`) or on some surface islands (`hybrid`, `switched` of `islands`), and `why`: what the candidate did
+// against the reference on the tests, in words for the rig report. The kept weights are written into the candidate.
+import { parseArgs } from 'node:util'
 import * as THREE from 'three'
 import { load, entrySource, isBone } from '../lib/node3d.ts'
 import { deformationTests } from '../lib/deformation.ts'
 import { captureRest, retarget } from '../../src/engine/retarget.ts'
 import { writeWeights, type WeightEdit } from '../../server/weights.ts'
-import { retainReference, selectIslands, surfaceIslands } from './selection.ts'
+import { explainRetain, selectIslands, surfaceIslands } from './selection.ts'
 import { skinMeshes, transferSkin } from '../lib/skintransfer.ts'
 
-const [candidate, previous, template = 'human'] = process.argv.slice(2)
-const sets = deformationTests(true)
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { exclude: { type: 'string' } } })
+const [candidate, previous, template = 'human'] = positionals
+const sets = deformationTests(true, (values.exclude ?? '').split(',').filter(id => id !== ''))
 const tests = sets[template] ?? []
 const root = (await load(candidate)).scene
 const oldRoot = (await load(previous)).scene
@@ -109,12 +116,15 @@ if (tests.length === 0) {
   // Retain the whole-model guard, then improve independent islands only when
   // every test agrees. Cross-mesh material seams share an island too.
   const extremeCounts = (rows: number[][]): number[] => rows.map(r => r.reduce((s,x) => s+x, 0))
-  const preferPrior = retainReference(generated, prior, extremeCounts(generatedScores.severe), extremeCounts(previousScores.severe))
+  const verdict = explainRetain(generated, prior, extremeCounts(generatedScores.severe), extremeCounts(previousScores.severe), tests.map(t => t.name))
+  const preferPrior = verdict.retain
   const selection = selectIslands([...generatedParts, ...generatedScores.severe], [...previousParts, ...previousScores.severe], preferPrior)
+  // (islands that took the other skin than the whole-model winner)
+  const switched = selection.filter(s => s !== preferPrior).length
   const chosen = edits.filter(e => selection[islands.labels[offsets[e.mesh]+e.vertex]])
   if (chosen.length > 0) await writeWeights(candidate, chosen)
   const selected = total(generatedParts.map((r,i) => r.map((x,c) => selection[c] ? previousParts[i][c] : x)))
   const retained = chosen.length === edits.length
   const hybrid = chosen.length > 0 && !retained
-  console.log(JSON.stringify({ compared: true, projected, retained, hybrid, islands: islands.count, retainedVertices: chosen.length, generated: average(generated), previous: average(prior), selected: average(selected), clips: tests.map((t,i) => ({ name:t.name, generated:generated[i], previous:prior[i], selected:selected[i] })) }))
+  console.log(JSON.stringify({ compared: true, projected, retained, hybrid, why: verdict.why, switched, islands: islands.count, retainedVertices: chosen.length, generated: average(generated), previous: average(prior), selected: average(selected), clips: tests.map((t,i) => ({ name:t.name, generated:generated[i], previous:prior[i], selected:selected[i] })) }))
 }

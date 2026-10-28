@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
-import { transferPainting, transferSkin } from './skintransfer.ts'
+import { paintingProblem, transferPainting, transferSkin } from './skintransfer.ts'
 
 const points = [[0,0,0],[1,0,0],[0,1,0],[1,1,0]]
 function surface (vertices = points, indices = [0,1,2,2,1,3], weight = (v: number): number => points[v]?.[0] ?? .5): THREE.Group {
@@ -84,5 +84,28 @@ describe('paint preservation across a rebuild', () => {
     expect(() => transferPainting(surface([points[0],points[2],points[3]],[0,2,1]),surface(),paint)).toThrow('painted vertices no longer match')
     const target = surface(); target.getObjectByName('B')!.name = 'C'
     expect(() => transferPainting(target,surface(),paint)).toThrow('Painted bone')
+  })
+})
+
+describe('painting pre-check before a re-rig', () => {
+  /** The model as import leaves it: plain meshes, no skin. */
+  function model (vertices = points, at = new THREE.Vector3()): THREE.Group {
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices.flat(), 3))
+    const root = new THREE.Group(); root.add(new THREE.Mesh(geometry)); root.position.copy(at); root.updateMatrixWorld(true)
+    return root
+  }
+  const painted = [{ mesh: 0, vertex: 3, weights: [['B', 1]] as Array<[string, number]> }]
+
+  it('passes painting whose points the model still has, also when it stood on the floor since', () => {
+    expect(paintingProblem(model(), surface(), painted)).toBeNull()
+    expect(paintingProblem(model([points[3], points[0], points[1], points[2]]), surface(), painted)).toBeNull()
+    expect(paintingProblem(model(points, new THREE.Vector3(0, 0.5, 0)), surface(), painted)).toBeNull()
+    expect(paintingProblem(model([[5, 5, 5]]), surface(), [])).toBeNull()
+  })
+
+  it('says how many painted points the model has lost', () => {
+    expect(paintingProblem(model([points[0], points[1], points[2], [2, 2, 0]]), surface(), painted)).toMatch(/^1 of 1 painted points/)
+    expect(paintingProblem(model(), surface(), [{ mesh: 0, vertex: 9, weights: [['B', 1]] }])).toMatch(/aren't in the live rig/)
   })
 })
