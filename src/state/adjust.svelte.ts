@@ -1,5 +1,5 @@
 // A slot's adjustments as the Motion step's stack shows them (src/app/motion/rules.ts rowsOf: its settings, and its
-// blow fit, pace and keys as rows) and changes them: added with sensible starts, switched on and off, edited, removed;
+// blow fit and pace as rows) and changes them: added with sensible starts, switched on and off, edited, removed;
 // every change a command (app.do) on what the row stands for (slot.adjust.*, slot.time, slot.event.*, slot.keys.set),
 // which plays the slot again as it now bakes (the animator replays what changed under it). A slot stores its times
 // against its source clip (docs/motion-plan.md §1); what the stack and the timeline show is the clip as it plays, so
@@ -7,25 +7,17 @@
 // playing). Also the tools that read the slot as it plays: the playhead's frame
 // (one numbering: frames of the clip as it plays, 30 a second, within one ridden cycle), the ground stood on the floor
 // by the feet (src/engine/ground.ts through the bake), the blow set to the frame shown, a pull's holds found by playing
-// it, and keys made with the gizmo (a bone's turn, or the pelvis's and gear's moves): letting go keys the change there,
-// against the clip as it plays before its keys (src/engine/keys.ts).
-import * as THREE from 'three'
-import type { Adjustment, Character, ClipKey, Side, Slot, Window } from './api.ts'
+// it. Keys are the timeline's (src/state/timeline.svelte.ts) and the posing's (src/state/pose.svelte.ts).
+import type { Adjustment, Character, Side, Slot, Window } from './api.ts'
 import type { Command } from '../model/command-types.ts'
 import { IDENTITY, sourceAt, windowsToPlayed, windowsToSource, type TimeMap } from '../model/timemap.ts'
 import { app } from './app.svelte.ts'
 import { animator, type NowPlaying } from './animator.svelte.ts'
-import { gizmo } from './gizmo.svelte.ts'
 import { newId } from '../model/ids.ts'
-import { carriedBy, gearById, hitOf, slotById } from '../model/select.ts'
-import { gearNode } from '../engine/geom.ts'
-import { garmentMatrix } from '../engine/placement.ts'
-import { pelvisName } from '../engine/retarget.ts'
+import { carriedBy, hitOf, slotById } from '../model/select.ts'
 import {
-  BLOW_EDGE, cycleAt, FIT, framesOf, freeWindows, handWindows, KEYS, keysOf, PACE, rowsOf, snapPhase, targetOf, timeAt, withKey, type Row, type RowKind,
+  BLOW_EDGE, cycleAt, FIT, framesOf, freeWindows, handWindows, KEYS, PACE, rowsOf, snapPhase, timeAt, type Row, type RowKind,
 } from '../app/motion/rules.ts'
-
-export type KeyMode = 'rotate' | 'translate'
 
 type Of<K extends Adjustment['kind']> = Extract<Adjustment, { kind: K }>
 
@@ -35,12 +27,8 @@ const reason = (error: unknown): string => (error instanceof Error ? error.messa
 class Adjust {
   /** The adjustment open in the stack (its editor shown). */
   open = $state<string | null>(null)
-  /** What the keys editor keys: 'bone:<name>' or 'gear:<gear id>' (null: nothing). */
-  target = $state<string | null>(null)
-  mode = $state<KeyMode>('rotate')
   /** What it is working on (null: idle). */
   busy = $state<string | null>(null)
-  private attached: THREE.Object3D | null = null
 
   // ---- the playhead --------------------------------------------------------------------------------------------
 
@@ -306,97 +294,6 @@ class Adjust {
       this.busy = null
     }
   }
-
-  // ---- keys ------------------------------------------------------------------------------------------------------
-
-  /** The object a key target moves on stage. */
-  object (c: Character, target: string | null): THREE.Object3D | null {
-    const view = animator.view
-    const t = target === null ? null : targetOf(target)
-    if (t === null || view === null) return null
-    if (t.kind === 'bones') return view.bones.get(t.name) ?? null
-    const g = gearById(c, t.name)
-    return g === undefined ? null : view.root.getObjectByName(gearNode(g)) ?? null
-  }
-
-  /** Whether a target can be moved, not only turned: gear, and the bone carrying the body's moves (the pelvis). */
-  moves (target: string | null): boolean {
-    const t = target === null ? null : targetOf(target)
-    if (t === null) return false
-    if (t.kind === 'gear') return true
-    const rest = animator.view?.rest
-    return rest != null && pelvisName(rest) === t.name
-  }
-
-  /** The gizmo on the target while the slot plays (paused on a frame to key); off otherwise. */
-  show (c: Character, slotId: string, on: boolean): void {
-    const object = on && this.playingSlot(slotId) !== null ? this.object(c, this.target) : null
-    if (object === null) { this.hide(); return }
-    if (!this.moves(this.target) && this.mode === 'translate') this.mode = 'rotate'
-    gizmo.attach(object, { mode: this.mode, space: 'local', onCommit: () => { void this.commit(c.id, slotId) } })
-    this.attached = object
-  }
-
-  hide (): void {
-    if (this.attached === null) return
-    gizmo.detach(this.attached)
-    this.attached = null
-  }
-
-  /** Key the target where it stands now, at the frame shown (what the gizmo left, or as the clip has it). */
-  async commit (characterId: string, slotId: string): Promise<boolean> {
-    const c = app.byId(characterId)
-    const now = this.playingSlot(slotId)
-    const target = this.target
-    const t = target === null ? null : targetOf(target)
-    const object = c === null ? null : this.object(c, target)
-    const v = this.playhead(slotId)
-    if (c === null || now?.baked == null || t === null || target === null || object === null || v === null) return false
-    const u = round(sourceAt(now.baked.time, v), 6)
-    const at = v
-    let key: ClipKey
-    if (t.kind === 'bones') {
-      // (against the clip as it plays before its keys, at the time of this frame in the cycle shown)
-      const time = timeAt(at, cycleAt(animator.time / Math.max(animator.duration, 1e-9), now.cycles), now.cycles, animator.duration)
-      const rest = animator.view?.rest?.bones.get(t.name)
-      const base = new THREE.Quaternion().fromArray(trackAt(now.baked.unkeyed, `${t.name}.quaternion`, time, rest?.localQuaternion.toArray() ?? [0, 0, 0, 1]))
-      key = { u, q: rounded(base.invert().multiply(object.quaternion).normalize().toArray()) as ClipKey['q'] }
-      if (this.moves(target)) {
-        const p = object.position.clone().sub(new THREE.Vector3().fromArray(trackAt(now.baked.unkeyed, `${t.name}.position`, time, rest?.localPosition.toArray() ?? [0, 0, 0])))
-        if (p.length() > 1e-6) key.p = p.toArray().map(v => round(v, 5)) as ClipKey['p']
-      }
-    } else {
-      // (gear keys are moves and turns from where it is placed, in its placed, sized frame)
-      const g = gearById(c, t.name)
-      if (g === undefined || g.attach.kind !== 'bone') return false
-      const gp = new THREE.Vector3(); const gq = new THREE.Quaternion()
-      garmentMatrix(g.attach.place).decompose(gp, gq, new THREE.Vector3())
-      const unturn = gq.clone().invert()
-      key = { u, q: rounded(unturn.clone().multiply(object.quaternion).normalize().toArray()) as ClipKey['q'] }
-      const p = object.position.clone().sub(gp).applyQuaternion(unturn).divideScalar(g.attach.place.scale || 1)
-      if (p.length() > 1e-6) key.p = p.toArray().map(v => round(v, 5)) as ClipKey['p']
-    }
-    return await this.setKeys(c, slotId, target, keys => withKey(keys, key))
-  }
-
-  /** A key with no change at the frame shown: the clip as it is there (it keeps a tweak from spreading past it). */
-  async noChangeHere (c: Character, slotId: string): Promise<boolean> {
-    const v = this.playhead(slotId)
-    const target = this.target
-    if (v === null || target === null) return false
-    const u = round(sourceAt(this.timeOf(slotId), v), 6)
-    return await this.setKeys(c, slotId, target, keys => withKey(keys, { u, q: [0, 0, 0, 1] }))
-  }
-
-  /** Change one target's keys on the slot (source time): one slot.keys.set. */
-  async setKeys (c: Character, slotId: string, target: string, change: (keys: ClipKey[]) => ClipKey[]): Promise<boolean> {
-    const slot = slotById(c, slotId)
-    const t = targetOf(target)
-    if (slot === undefined || t === null) return false
-    const keys = change(keysOf(slot, target))
-    this.open = KEYS
-    return await app.do(c.id, { type: 'slot.keys.set', slot: slotId, tracks: [t.kind === 'bones' ? { bone: t.name, keys } : { gear: t.name, keys }] }) !== null
-  }
 }
 
 /** The pull handles of the character's ready gear, as a hold names them. */
@@ -407,15 +304,5 @@ export function pullHandles (c: Character): Array<{ gear: string, handle: string
 function find<K extends Adjustment['kind']> (slot: Slot | undefined, kind: K, id?: string): Of<K> | undefined {
   return slot?.adjustments.find((a): a is Of<K> => a.kind === kind && (id === undefined || a.id === id))
 }
-
-/** A track's value at `time` (`fallback` when the clip has no such track). */
-function trackAt (clip: THREE.AnimationClip, name: string, time: number, fallback: number[]): number[] {
-  const track = clip.tracks.find(x => x.name === name)
-  if (track === undefined) return fallback
-  const interpolant = (track as unknown as { createInterpolant: () => THREE.Interpolant }).createInterpolant()
-  return Array.from(interpolant.evaluate(time) as ArrayLike<number>).slice(0, fallback.length)
-}
-
-const rounded = (q: number[]): number[] => q.map(v => round(v, 6))
 
 export const adjust = new Adjust()

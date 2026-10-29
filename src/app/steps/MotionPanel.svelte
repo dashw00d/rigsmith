@@ -32,7 +32,7 @@
   // (another character: nothing keyed or opened of the last one's)
   $effect(() => {
     void character.id
-    untrack(() => { adjust.target = null; adjust.open = null; pose.select(null); pose.selectGear(null) })
+    untrack(() => { adjust.open = null; pose.select(null); pose.selectGear(null) })
   })
 
   const phase = $derived(phaseOf(character, app.jobFor(character.id)))

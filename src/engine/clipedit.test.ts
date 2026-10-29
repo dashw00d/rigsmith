@@ -1,39 +1,26 @@
 // @vitest-environment node
-// The editor's clip: a library clip retargeted onto a character and taken back (the retarget undone) is the clip it
-// was (skipped without the local library and a rigged character); a live drag's solve of its frame is the build's once
-// it is let go (on a person: skipped without the Y Bot and the pose model).
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+// The build of a slot's clip with hands on gear (src/engine/clipedit.ts): gear grip frames, gear moved in the hand, the
+// hands by IK, a hand pose's setting, a clip's pose at a time; a live drag's solve of its frame is the build's once it
+// is let go (on a person: skipped without the Y Bot and the pose model).
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { describe, expect, it } from 'vitest'
-import { captureRest, retarget } from './retarget.ts'
 import {
-  bonePoseAt, bonesOf, buildEdit, carrierGrip, editNameOf, frameAt, frameSolve, fromHere, gripName, handleMisses, handOn, handPoseSource, keyFor, legsOf, letGoFrames,
-  mergeWindows, parseWindows, reachGoals, saveIntoSlotCommands, saveToSlotCommands, toHere, unretarget, windowsText, withoutGearKeys, type EditBody, type GearRig, type PlayedAs,
+  bonePoseAt, bonesOf, buildEdit, carrierGrip, frameAt, frameSolve, gripName, handleMisses, handOn, handPoseSource, keyFor, legsOf, letGoFrames, reachGoals,
+  type EditBody, type GearRig,
 } from './clipedit.ts'
 import { handleRef } from './hands.ts'
 import { makeCharacter, makeGear, makeSlot } from '../model/fixtures.ts'
 import { frameTimes } from './keys.ts'
 import { BODY, createBodySolver, FOLLOW, PoseModel, seedOf, type BodySolveOptions, type BodySolver, type BodyState, type HandGoal, type PoseModelData } from './posespace.ts'
-import type { Adjustment, Character, ClipEvent, ClipKey, Gear, Handle, Quat, Slot } from '../model/types.ts'
-import { resolveTime } from '../model/timemap.ts'
+import type { Character, ClipKey, Gear, Handle, Quat } from '../model/types.ts'
 
 const g = globalThis as Record<string, unknown>
 g.self ??= globalThis
 g.createImageBitmap ??= async () => { throw new Error('no images in tests') }
 
 const ROOT = path.resolve(__dirname, '../..')
-const CLIP = path.join(ROOT, 'workspace/library/clips/mixamo-Jumping_Jacks.glb')
-const chars = path.join(ROOT, 'workspace/characters')
-const rigged = existsSync(chars) ? readdirSync(chars).map(d => path.join(chars, d, 'rigged.glb')).find(f => existsSync(f) && !/horse|pony/.test(f)) : undefined
-const have = existsSync(CLIP) && rigged !== undefined
-
-async function load (file: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
-  const data = readFileSync(file)
-  return await new Promise((resolve, reject) => { new GLTFLoader().parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), '', r => { resolve(r) }, reject) })
-}
-const isBone = (o: THREE.Object3D): boolean => (o as THREE.Bone).isBone === true
 
 describe('gear grip frames', () => {
   it('reconstructs the carrying hand from fixed rest transforms, including prop scale', () => {
@@ -57,60 +44,6 @@ describe('gear grip frames', () => {
     const clip = new THREE.AnimationClip('drift', 1, [new THREE.VectorKeyframeTrack('RightHand.position', [0, 1], [0, 0, 0, .1, 0, 0])])
     expect(Math.max(...handleMisses(clip, root, rig))).toBeCloseTo(.1, 6)
     expect(right.position.length()).toBe(0)
-  })
-})
-
-describe.skipIf(!have)('taking an edited clip back to the library', () => {
-  it('gives back the clip it was retargeted from', async () => {
-    const src = await load(CLIP)
-    const target = await load(rigged!)
-    const sRest = captureRest(src.scene, isBone)
-    const tRest = captureRest(target.scene, isBone)
-    const onTarget = retarget(src.scene, sRest, src.animations[0], tRest, { fps: 30 })
-    const back = unretarget(onTarget, target.scene, tRest, sRest, src.animations[0])
-    // the source as it plays, against what came back, frame by frame: every bone's local turn, and the hips
-    const mixer = new THREE.AnimationMixer(src.scene)
-    mixer.clipAction(src.animations[0]).play()
-    let worst = 0; let hipsWorst = 0
-    const per = new Map<string, number>()
-    back.rotations.forEach((frame, f) => {
-      mixer.setTime(Math.min(f / back.fps, src.animations[0].duration))
-      back.bones.forEach((name, b) => {
-        const node = sRest.bones.get(name)!.node
-        const q = new THREE.Quaternion().fromArray(frame[b])
-        const a = THREE.MathUtils.radToDeg(q.angleTo(node.quaternion))
-        per.set(name, Math.max(per.get(name) ?? 0, a))
-        worst = Math.max(worst, a)
-      })
-      const hips = sRest.bones.get('Hips')!.node
-      hipsWorst = Math.max(hipsWorst, new THREE.Vector3().fromArray(back.hips[f]).distanceTo(hips.position))
-    })
-    if (worst >= 0.5) console.log([...per].filter(([, a]) => a > 0.5).map(([n, a]) => `${n} ${a.toFixed(1)}`).join(', '), 'in target:', [...per.keys()].filter(n => !tRest.bones.has(n)).join(','))
-    expect(worst).toBeLessThan(0.5)
-    expect(hipsWorst).toBeLessThan(0.005)
-  })
-})
-
-describe('a creature\'s hips under a turning root bone', () => {
-  it('keeps the root\'s turn out of the hips\' position', () => {
-    const make = (): THREE.Group => {
-      const scene = new THREE.Group()
-      const root = new THREE.Bone(); root.name = 'root'
-      const hips = new THREE.Bone(); hips.name = 'Hips'; hips.position.set(0, 1, 0.5)
-      const spine = new THREE.Bone(); spine.name = 'Spine'; spine.position.set(0, 0.3, 0)
-      scene.add(root); root.add(hips); hips.add(spine)
-      return scene
-    }
-    const src = make(); const tgt = make()
-    const sRest = captureRest(src, isBone, n => n)
-    const tRest = captureRest(tgt, isBone, n => n)
-    const turned = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4)
-    const clip = new THREE.AnimationClip('turn', 1, [
-      new THREE.QuaternionKeyframeTrack('root.quaternion', [0, 1], [0, 0, 0, 1, ...turned.toArray()]),
-    ])
-    const back = unretarget(clip, tgt, tRest, sRest)
-    const worst = Math.max(...back.hips.map(h => new THREE.Vector3().fromArray(h).distanceTo(new THREE.Vector3(0, 1, 0.5))))
-    expect(worst).toBeLessThan(1e-4)
   })
 })
 
@@ -146,174 +79,10 @@ describe('gear moved in the hand', () => {
   })
 })
 
-describe('windows typed as text', () => {
-  it('reads them as they are shown, in percent, with a dash or a hyphen', () => {
-    expect(parseWindows('50–80%')).toEqual([[0.5, 0.8]])
-    expect(parseWindows('50-80%')).toEqual([[0.5, 0.8]])
-    expect(parseWindows('50%–80%, 90 - 100 %')).toEqual([[0.5, 0.8], [0.9, 1]])
-    expect(parseWindows('45.7–80%')).toEqual([[0.457, 0.8]])
-    // (percent and phases mixed, part by part)
-    expect(parseWindows('20–50%, 0.8-1')).toEqual([[0.2, 0.5], [0.8, 1]])
-    // (no %: phases, so 50-80 is a typo, said)
-    expect(parseWindows('50-80')).toBeNull()
-    expect(parseWindows('50–120%')).toBeNull()
-    expect(parseWindows('50%')).toBeNull()
-  })
-
-  it('reads parts of a clip, merged and sorted, and says when a part can\'t be read', () => {
-    expect(parseWindows('0.2-0.5, 0.8-1')).toEqual([[0.2, 0.5], [0.8, 1]])
-    expect(parseWindows('0.8 - 1; .2–.5')).toEqual([[0.2, 0.5], [0.8, 1]])
-    expect(parseWindows('0.1-0.4, 0.3-0.6')).toEqual([[0.1, 0.6]])
-    expect(parseWindows('0.5 to 0.2')).toEqual([[0.2, 0.5]])
-    expect(parseWindows('')).toEqual([])
-    expect(parseWindows('never')).toEqual([])
-    expect(parseWindows('0.2-0.5, oops')).toBeNull()
-    expect(parseWindows('0.2-1.5')).toBeNull()
-    expect(parseWindows('0.5')).toBeNull()
-  })
-
-  it('shows them as everywhere, in percent, and reads that back as it was', () => {
-    expect(windowsText([[0.2, 0.5], [0.8, 1]])).toBe('20–50%, 80–100%')
-    expect(windowsText([[0, 0.457]])).toBe('0–45.7%')
-    expect(windowsText([[1 / 3, 2 / 3]])).toBe('33.3–66.7%')
-    expect(windowsText(undefined)).toBe('')
-    expect(windowsText([])).toBe('')
-    for (const w of [[[0.2, 0.5], [0.8, 1]], [[0.001, 0.457]], [[0.1, 0.999]]] as Array<Array<[number, number]>>) expect(parseWindows(windowsText(w))).toEqual(w)
-  })
-
-  it('opens from the frame shown to the end, and lets go there', () => {
-    expect(fromHere([[0.1, 0.2]], 0.6)).toEqual([[0.1, 0.2], [0.6, 1]])
-    expect(fromHere([[0.5, 0.7]], 0.6)).toEqual([[0.5, 1]])
-    expect(toHere([[0.1, 0.4], [0.6, 1]], 0.7)).toEqual([[0.1, 0.4], [0.6, 0.7]])
-    expect(toHere([[0.6, 1]], 0.5)).toEqual([])
-  })
-
-  it('merges windows that touch, drops empty ones and keeps them in the clip', () => {
-    expect(mergeWindows([[0.5, 0.6], [0.2, 0.5], [0.9, 0.9], [-1, 0.1]])).toEqual([[0, 0.1], [0.2, 0.6]])
-  })
-})
-
 describe('names', () => {
-  it('offers "<clip> edit" once, never "edit edit"', () => {
-    expect(editNameOf('Attack')).toBe('Attack edit')
-    expect(editNameOf('Attack edit')).toBe('Attack edit')
-    expect(editNameOf('Attack edit 2')).toBe('Attack edit 2')
-    expect(editNameOf('Attack (editing)')).toBe('Attack edit')
-    expect(editNameOf('Attack edit (naturalized)')).toBe('Attack edit')
-    expect(editNameOf('  ')).toBe('Clip edit')
-  })
-
   it('names a new grip handle after its hand, numbered when taken', () => {
     expect(gripName('Left', ['Carried'])).toBe('Left grip')
     expect(gripName('Left', ['Left grip', 'Left grip 2'])).toBe('Left grip 3')
-  })
-})
-
-describe('saving an edit to its slot', () => {
-  const adjustments: Adjustment[] = [
-    { id: 'g', kind: 'ground', enabled: true, lift: 0.02 },
-    { id: 'h', kind: 'handPose', enabled: true, hand: 'Left', pose: 'clip', windows: [[0.5, 1]], gear: 'bow' },
-    { id: 'hh', kind: 'handleHold', enabled: true, gear: 'bow', handle: 'draw', windows: [[0.2, 0.6]] },
-    { id: 'o', kind: 'handPose', enabled: false, hand: 'Right', pose: 'default', windows: [[0, 0.1]] },
-  ]
-  const slot: Slot = {
-    id: 's1', name: 'Attack', clip: { id: 'mixamo-Slash' }, speed: 1.4, loop: false, inPlace: true, adjustments,
-    time: { fit: { enabled: true, at: 0.45 }, pace: { enabled: false, like: 'walk' } }, bones: { Spine: [{ u: 0.5, q: [0, 0, 0, 1] }] },
-    events: [{ id: 'e', name: 'swing', u: 0.6 }],
-  }
-  // (as it played: the fit kept the second half of its source, the blow it measured landing at 45 %)
-  const played: PlayedAs = { time: resolveTime({ seconds: 1, speed: 1, kept: [0.5, 1] }), events: [{ id: 'e', name: 'swing', t: 0.2 }, { id: 'hit', name: 'hit', t: 0.45 }] }
-  const keys = { bow: [{ u: 0, q: [0, 0, 0, 1] as [number, number, number, number], p: [0, 0, 0] as [number, number, number] }] }
-  let n = 0
-  const newId = (): string => `new${++n}`
-
-  it('as it plays: one fill at speed 1 with no time of its own, ground kept, hands and events where they played, gear keys from the edit', () => {
-    const [cmd] = saveToSlotCommands(slot, 'plays', { id: 'custom-Attack_Edit' }, { loop: false, gearKeys: keys, newId, played })
-    expect(cmd).toEqual({
-      type: 'slot.fill', id: 's1', clip: { id: 'custom-Attack_Edit' }, speed: 1, loop: false, inPlace: true, keepAdjustments: false,
-      adjustments: [
-        adjustments[0],
-        { ...adjustments[1], windows: [[0, 1]] },
-        // (clipped to what played)
-        { ...adjustments[2], windows: [[0, expect.closeTo(0.2, 12)]] },
-        // (switched off it played no part: it stays as it was)
-        adjustments[3],
-      ],
-      gear: { bow: { keys: keys.bow } },
-      events: [{ id: 'e', name: 'swing', u: 0.2 }, { id: 'hit', name: 'hit', u: 0.45 }],
-    })
-  })
-
-  it('the clip alone: its speed, time, settings and events kept, gear the edit moved keyed on top', () => {
-    const [cmd] = saveToSlotCommands(slot, 'alone', { id: 'x' }, { loop: false, gearKeys: keys, newId, played })
-    expect(cmd).toEqual({ type: 'slot.fill', id: 's1', clip: { id: 'x' }, speed: 1.4, loop: false, inPlace: true, keepAdjustments: true, gear: { bow: { keys: keys.bow } } })
-  })
-
-  it('copies what it keeps (the slot may be live state)', () => {
-    const [cmd] = saveToSlotCommands(slot, 'plays', { id: 'x' }, { loop: false, gearKeys: {}, newId, played })
-    const ground = (cmd as { adjustments: Adjustment[] }).adjustments[0]
-    expect(ground).toEqual(adjustments[0])
-    expect(ground).not.toBe(adjustments[0])
-  })
-})
-
-describe('saving an edit as one of the character\'s slots', () => {
-  const adjustments: Adjustment[] = [
-    { id: 'g', kind: 'ground', enabled: true, lift: 0.02 },
-    { id: 'h', kind: 'handPose', enabled: true, hand: 'Left', pose: 'clip', windows: [[0.5, 1]], gear: 'bow' },
-    { id: 'hh', kind: 'handleHold', enabled: true, gear: 'bow', handle: 'draw', windows: [[0.2, 0.6]] },
-  ]
-  const idle: Slot = { id: 's1', name: 'Idle', clip: { id: 'mixamo-Idle' }, speed: 1.2, loop: true, inPlace: true, adjustments, time: { fit: { enabled: true, at: 0.45 } } }
-  const run: Slot = { id: 's2', name: 'Run', clip: { id: 'mixamo-Run' }, speed: 1.5, loop: true, inPlace: true, adjustments: [], time: { pace: { enabled: true, like: 's1' } } }
-  const keys = { bow: [{ u: 0, q: [0, 0, 0, 1] as [number, number, number, number] }] }
-  let n = 0
-  const newId = (): string => `new${++n}`
-  const played: PlayedAs = { time: resolveTime({ seconds: 1, speed: 1 }), events: [{ id: 'hit', name: 'hit', t: 0.45 }] }
-  const o = { loop: false, inPlace: false, lift: 0.03, gearKeys: {}, newId, played }
-
-  it('into the slot it was made on: as saving to it does', () => {
-    expect(saveIntoSlotCommands({ slot: idle, name: 'Idle' }, { slot: idle, mode: 'plays' }, { id: 'x' }, o))
-      .toEqual(saveToSlotCommands(idle, 'plays', { id: 'x' }, { loop: true, gearKeys: {}, newId, played }))
-  })
-
-  it('over another slot: speed 1, its loop and in place kept, what it had gone, the edit\'s ground, hands, events and gear keys', () => {
-    const [cmd] = saveIntoSlotCommands({ slot: run, name: 'Run' }, { slot: idle, mode: 'plays' }, { id: 'custom-Run' }, { ...o, gearKeys: keys })
-    expect(cmd).toMatchObject({ type: 'slot.fill', id: 's2', clip: { id: 'custom-Run' }, speed: 1, loop: true, inPlace: true, keepAdjustments: false, gear: { bow: { keys: keys.bow } } })
-    const got = (cmd as { adjustments: Adjustment[] }).adjustments
-    expect(got.map(a => a.kind)).toEqual(['ground', 'handPose', 'handleHold'])
-    expect(got[0]).toMatchObject({ lift: 0.03 })
-    // (copies with ids of their own: the slot they came from keeps its own)
-    expect(got.every(a => /^new/.test(a.id))).toBe(true)
-    expect(got[1]).not.toBe(adjustments[1])
-    expect((cmd as { events: ClipEvent[] }).events).toEqual([{ id: expect.stringMatching(/^new/) as unknown as string, name: 'hit', u: 0.45 }])
-  })
-
-  it('a new clip held from a frame, or a library preview: a new slot by the name, the edit\'s loop and in place, no hands copied', () => {
-    const [cmd] = saveIntoSlotCommands({ slot: null, name: 'Attack' }, { slot: null, mode: 'held' }, { id: 'custom-Attack' }, { ...o, lift: 0 })
-    expect(cmd).toMatchObject({ type: 'slot.fill', name: 'Attack', clip: { id: 'custom-Attack' }, loop: false, inPlace: false, adjustments: [] })
-    expect((cmd as { newId?: string }).newId).toMatch(/^new/)
-  })
-
-  it('a slot\'s clip alone saved over another: nothing of the slot it was made on comes with it', () => {
-    const [cmd] = saveIntoSlotCommands({ slot: run, name: 'Run' }, { slot: idle, mode: 'alone' }, { id: 'x' }, { ...o, lift: 0 })
-    expect((cmd as { adjustments: Adjustment[] }).adjustments).toEqual([])
-    expect(cmd).not.toHaveProperty('events')
-  })
-})
-
-describe('an edit opened again from its record', () => {
-  it('leaves out the slot\'s keys on the pieces the record\'s paths move again, and nothing else', () => {
-    const k = (u: number): { u: number, q: [number, number, number, number] } => ({ u, q: [0, 0, 0, 1] })
-    const slot: Slot = {
-      id: 's', name: 'Attack', clip: { id: 'x' }, speed: 1, loop: false, inPlace: true, adjustments: [{ id: 'g', kind: 'ground', enabled: true, lift: 0.02 }],
-      bones: { Spine: [k(0.5)] }, gear: { spear: { keys: [k(0)] }, shield: { keys: [k(0.2)] }, axe: { keys: [k(0.1)], shown: [{ u: 0.5, shown: false }] } },
-    }
-    expect(withoutGearKeys(slot, ['spear', 'axe'])).toEqual({ ...slot, gear: { shield: { keys: [k(0.2)] }, axe: { shown: [{ u: 0.5, shown: false }] } } })
-    // (nothing left of its tracks: they go)
-    expect(withoutGearKeys({ ...slot, gear: { spear: { keys: [k(0)] } } }, ['spear'])).not.toHaveProperty('gear')
-    expect(withoutGearKeys(slot, [])).toBe(slot)
-    // (the slot is left as it was)
-    expect(slot.gear!.spear).toEqual({ keys: [k(0)] })
   })
 })
 

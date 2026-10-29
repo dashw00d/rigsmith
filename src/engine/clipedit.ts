@@ -1,25 +1,20 @@
-// The animation editor's clip (src/state/clipedit.svelte.ts): a base clip as it plays on the character, the keys made
-// on it (turns on bones, and the hips' moves, at moments of the clip: src/engine/keys.ts, tweened smoothly), and the
-// floor: a foot the edit put under the ground lifted back (only what the edit sank: the base plays as it was). Gear
-// (bone-attached pieces, by gear id) can lead: the hands on its handles follow its path and the body the hands. Saving
-// takes the edited clip back onto the base's own skeleton (the retarget undone: Qsource = Qcharacter * K^-1), for the
-// library, and puts it in the slot it was made on with the slot's adjustments sorted by kind (saveToSlotCommands).
-// The body follows the hands with the natural-pose solver (src/engine/posespace.ts createBodySolver) where there is a
-// pose model (a person); without one (a creature, or the model not loaded) the hands reach their handles by IK alone.
+// The build of a slot's clip with hands kept on gear (src/engine/ikbuild.ts, the one bake's stage; the posing in Motion,
+// src/state/pose.svelte.ts, reads the same rig for its live IK): a base clip as it plays on the character, the keys
+// made on it (turns on bones, and the hips' moves, at moments of the clip: src/engine/keys.ts), and the floor: a foot
+// the keys put under the ground lifted back (only what they sank: the base plays as it was). Gear (bone-attached pieces,
+// by gear id) can lead: the hands on its handles follow its path. The body follows the hands with the natural-pose
+// solver (src/engine/posespace.ts createBodySolver) only when asked (Solve body, a frame's frameSolve); the build reaches
+// the hands to their handles by IK alone.
 import * as THREE from 'three'
-import type { Command } from '../model/command-types.ts'
-import type { Adjustment, Character, ClipEvent, ClipKey, ClipRef, GearTrack, Handle, HandPoseRef, Quat, Side, Slot, Vec3, Window } from '../model/types.ts'
-import { gearTracksOf } from '../model/select.ts'
-import { windowsToPlayed, type TimeMap } from '../model/timemap.ts'
-import type { BakedEvent } from './bake.ts'
-import { applyBoneKeys, frameTimes, KEY_FPS, sampleKeys } from './keys.ts'
+import type { Character, ClipKey, Handle, HandPoseRef, Quat, Side, Slot, Vec3, Window } from '../model/types.ts'
+import { applyBoneKeys, frameTimes, sampleKeys } from './keys.ts'
 import { keepOffFloor, reach, setWorldQuaternion, type Leg, type NameOf } from './ik.ts'
 import { bodyBones, FOLLOW, knuckleGrip, type BodySolveOptions, type BodySolver, type BodyState, type HandGoal, type NaturalGoal, type SeedPose } from './posespace.ts'
 import { shaftObstacles, type Obstacle } from './bodycollide.ts'
 import { principalAxis } from './geom.ts'
 import { handleRef } from './hands.ts'
 import type { JointLimits } from './limits.ts'
-import { pelvisName, retargetOffsets, type RestSkeleton } from './retarget.ts'
+import type { RestSkeleton } from './retarget.ts'
 import type { PoseRig } from './PoseEditor.ts'
 
 /** A track's value at time `t`, or `fallback` where the clip has none. */
@@ -660,140 +655,6 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
   return new THREE.AnimationClip(keyed.name, keyed.duration, tracks)
 }
 
-/** A clip in the library's form: local turns of the source skeleton's bones per frame, and the hips' local position. */
-export interface SourceFrames {
-  fps: number
-  bones: string[]
-  /** Per frame, per bone: [x, y, z, w]. */
-  rotations: number[][][]
-  /** Per frame: the hips' local position. */
-  hips: number[][]
-}
-
-/**
- * The edited clip (played on `posable`, the character) taken back onto `source` (the base's skeleton at rest): each bone's
- * world turn the character's then K^-1 (src/engine/retarget.ts retargetOffsets), local to its parent; the hips' move
- * from rest scaled back to the source's size, less `lift` (the viewer stood the clip on its floor by it). A bone the
- * character hasn't keeps `base`'s motion (the source clip), if given.
- */
-export function unretarget (clip: THREE.AnimationClip, posable: THREE.Object3D, target: RestSkeleton, source: RestSkeleton, base?: THREE.AnimationClip, lift = 0): SourceFrames {
-  const { offsets, scale } = retargetOffsets(source, target)
-  const nodes = new Map<string, THREE.Object3D>()
-  for (const [name, b] of target.bones) {
-    let found: THREE.Object3D | undefined
-    posable.traverse(o => { if (found === undefined && o.name === b.node.name && (o as THREE.Bone).isBone === true) found = o })
-    if (found !== undefined) nodes.set(name, found)
-  }
-  const order = source.order
-  const mixer = new THREE.AnimationMixer(posable)
-  const action = mixer.clipAction(clip)
-  action.setLoop(THREE.LoopOnce, 1)
-  action.clampWhenFinished = true
-  action.play()
-  const times = frameTimes(clip.duration)
-  const rotations: number[][][] = []
-  const hips: number[][] = []
-  const sHips = pelvisName(source); const tHips = pelvisName(target)
-  const sh = source.bones.get(sHips)!; const th = target.bones.get(tHips)
-  const q = new THREE.Quaternion()
-  for (const t of times) {
-    mixer.setTime(t)
-    posable.updateMatrixWorld(true)
-    const world = new Map<string, THREE.Quaternion>()
-    const frame: number[][] = []
-    for (const name of order) {
-      const s = source.bones.get(name)!
-      const parentWorld = s.parent !== null && world.has(s.parent) ? world.get(s.parent)! : new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(source.parentWorld.get(name) ?? new THREE.Matrix4()))
-      const node = nodes.get(name); const k = offsets.get(name)
-      let w: THREE.Quaternion
-      if (node !== undefined && k !== undefined) w = node.getWorldQuaternion(q).clone().multiply(k.clone().invert())
-      // (a bone the character hasn't, fingers it lacks: as the base clip has it, else at rest)
-      else w = parentWorld.clone().multiply(base !== undefined ? new THREE.Quaternion().fromArray(trackAt(base, `${s.node.name}.quaternion`, t * base.duration / Math.max(clip.duration, 1e-9), s.localQuaternion.toArray())) : s.localQuaternion)
-      world.set(name, w)
-      frame.push(parentWorld.clone().invert().multiply(w).normalize().toArray())
-    }
-    rotations.push(frame)
-    const node = nodes.get(tHips)
-    if (node !== undefined && th !== undefined) {
-      const move = node.getWorldPosition(new THREE.Vector3()).sub(th.worldPosition).sub(new THREE.Vector3(0, lift, 0)).divideScalar(scale)
-      const at = sh.worldPosition.clone().add(move)
-      // (into the hips' parent's frame: the object holding it when it is a top bone, else its parent bone as this frame
-      // turns it: a horse's hips hang below a root bone, and a turn of that root is the root's alone)
-      const parent = sh.parent === null ? source.parentWorld.get(sHips) : posedWorldOf(source, sh.parent, order, frame)
-      hips.push((parent !== undefined ? at.applyMatrix4(parent.clone().invert()) : at).toArray())
-    } else hips.push(sh.localPosition.toArray())
-  }
-  mixer.stopAllAction()
-  mixer.uncacheRoot(posable)
-  // (the frames' own rate: a clip not a whole number of frames long keeps its length)
-  return { fps: clip.duration > 0 ? (times.length - 1) / clip.duration : KEY_FPS, bones: order, rotations, hips }
-}
-
-/** A source bone's world matrix in one frame of `rotations` (each bone's local turn, by `order`; a bone above the
- *  hips keeps its rest offset). */
-function posedWorldOf (source: RestSkeleton, name: string, order: string[], frame: number[][]): THREE.Matrix4 {
-  const b = source.bones.get(name)
-  if (b === undefined) return new THREE.Matrix4()
-  const i = order.indexOf(name)
-  const turn = i < 0 ? b.localQuaternion : new THREE.Quaternion().fromArray(frame[i])
-  const local = new THREE.Matrix4().compose(b.localPosition, turn, b.localScale)
-  const above = b.parent === null ? (source.parentWorld.get(name) ?? new THREE.Matrix4()) : posedWorldOf(source, b.parent, order, frame)
-  return above.clone().multiply(local)
-}
-
-// ---- windows: parts of a clip as phases, typed as text ("20–50%, 80–100%" or "0.2-0.5, 0.8-1") -------------------
-
-/** Windows sorted, those that overlap or touch made one, empty ones dropped, each within 0..1. */
-export function mergeWindows (windows: readonly Window[]): Window[] {
-  const sorted = windows.map(([a, b]): Window => [Math.max(0, Math.min(a, b)), Math.min(1, Math.max(a, b))])
-    .filter(([a, b]) => b - a > 1e-6).sort((x, y) => x[0] - y[0])
-  const out: Window[] = []
-  for (const w of sorted) {
-    const last = out.at(-1)
-    if (last !== undefined && w[0] <= last[1] + 1e-6) last[1] = Math.max(last[1], w[1])
-    else out.push([w[0], w[1]])
-  }
-  return out
-}
-
-/** Windows typed as they are shown, "20–50%, 80–100%" (a hyphen does for the dash, "50%–80%" too), or as phases,
- * "0.2-0.5, 0.8-1" ("to" does too). '' (or "never") is none; null when a part can't be read, so a typo is said rather
- * than dropped. */
-export function parseWindows (text: string): Window[] | null {
-  const parts = text.split(/[,;]/).map(x => x.trim()).filter(x => x !== '')
-  if (parts.length === 0 || (parts.length === 1 && /^never$/i.test(parts[0]))) return []
-  const out: Window[] = []
-  for (const part of parts) {
-    const m = /^(\d*\.?\d+)\s*(%?)\s*(?:-|–|—|to)\s*(\d*\.?\d+)\s*(%?)$/i.exec(part)
-    if (m === null) return null
-    // (a part with a % is in percent, both ends; one without, in phases)
-    const percent = m[2] === '%' || m[4] === '%'
-    const most = percent ? 100 : 1
-    const a = Number(m[1]); const b = Number(m[3])
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a > most || b > most) return null
-    out.push(percent ? [Math.round(a * 1e4) / 1e6, Math.round(b * 1e4) / 1e6] : [a, b])
-  }
-  return mergeWindows(out)
-}
-
-/** A phase in percent: whole, or to a tenth when it isn't (a window set from a frame keeps its place when typed back). */
-const percentText = (x: number): string => String(Math.round(x * 1000) / 10)
-
-/** Windows as they are shown everywhere, "20–50%, 80–100%" ('' for none). */
-export function windowsText (windows: readonly Window[] | undefined): string {
-  return (windows ?? []).map(([a, b]) => `${percentText(a)}–${percentText(b)}%`).join(', ')
-}
-
-/** From phase `u` to the clip's end added (held, or open, from the frame shown on). */
-export function fromHere (windows: readonly Window[], u: number): Window[] {
-  return mergeWindows([...windows, [u, 1]])
-}
-
-/** Let go at phase `u`: the windows cut there, nothing after it. */
-export function toHere (windows: readonly Window[], u: number): Window[] {
-  return mergeWindows(windows.filter(([a]) => a < u).map(([a, b]): Window => [a, Math.min(b, u)]))
-}
-
 // ---- hand poses -------------------------------------------------------------------------------------------------
 
 /** A setting a hand's pose on a handle is read from: one of the slot's own hand poses (by adjustment id), the handle's
@@ -826,113 +687,7 @@ export function handPoseSource (c: Character, slot: Slot | null, side: Side, gea
   return null
 }
 
-// ---- saving ------------------------------------------------------------------------------------------------------
-
-/** The name an edit of `name` is offered under: "Attack edit", never "Attack edit edit" (an edit of an edit keeps its
- * name; the server gives a second clip of a name its own id). The editor's "(editing)" marks are taken off. */
-export function editNameOf (name: string): string {
-  const base = name.replace(/( \((editing|naturalized)\))+$/, '').trim() || 'Clip'
-  return /\sedit(\s+\d+)?$/i.test(base) ? base : `${base} edit`
-}
-
-/** How the edit was opened: the slot's clip as it plays (its speed, timing, hands, ground and keys in it), the slot's
- * clip alone (none of them), or a new clip made from one frame. */
-export type EditMode = 'plays' | 'alone' | 'held'
-
-/** How the slot an edit was opened on played (its baked time map and events), what saving it as played needs: the
- * saved clip IS that played clip, so whatever the slot stored against its old source moves to where it played. */
-export interface PlayedAs { time: TimeMap, events: BakedEvent[] }
-
-/** A slot's hand settings (hand poses, handle holds) and events laid on the clip as it played (`played`): the saved
- * clip's own time. Copies, with fresh ids when `newId` is given. */
-function asPlayed (slot: Slot, played: PlayedAs | undefined, newId?: () => string): { adjustments: Adjustment[], events: ClipEvent[] } {
-  const map = played?.time
-  const fresh = (id: string): string => (newId === undefined ? id : newId())
-  const adjustments = (JSON.parse(JSON.stringify(slot.adjustments)) as Adjustment[]).flatMap((a): Adjustment[] => {
-    if (!a.enabled || (a.kind !== 'handPose' && a.kind !== 'handleHold')) return []
-    if (a.kind === 'handleHold') {
-      const windows = map === undefined ? a.windows : windowsToPlayed(map, a.windows)
-      return windows.length === 0 ? [] : [{ ...a, id: fresh(a.id), windows }]
-    }
-    if (a.windows === undefined) return [{ ...a, id: fresh(a.id) }]
-    const windows = map === undefined ? a.windows : windowsToPlayed(map, a.windows)
-    return windows.length === 0 ? [] : [{ ...a, id: fresh(a.id), windows }]
-  })
-  // (the events as they played, the blow the fit measured among them: the saved clip has no fit, its hit is an event)
-  const events = (played?.events ?? eventsOfSlot(slot)).filter(e => e.t >= 0 && e.t <= 1).map((e): ClipEvent => ({
-    id: newId !== undefined ? newId() : e.id, name: e.name, u: e.t,
-    ...(e.to !== undefined ? { to: Math.min(1, e.to) } : {}), ...(e.sound !== undefined ? { sound: e.sound } : {}), ...(e.bone !== undefined ? { bone: e.bone } : {}),
-  }))
-  return { adjustments, events }
-}
-
-const eventsOfSlot = (slot: Slot): BakedEvent[] => (slot.events ?? []).map(e => ({ ...e, t: e.u }))
-
-/**
- * The one batch that puts an edit, saved as library clip `clip`, into the slot it was made on (DESIGN.md §6 row 2).
- * Made 'as it plays' the edit is the slot's clip as it played (`played`: its time map and events), so the saved clip is
- * played at speed 1 with no time map of its own (its speed, blow fit, pace, markers and holds are in it), its keys on
- * bones baked in; the ground stays (the saved frames had its lift taken out); keys on gear are what the edit's gear does
- * now (`gearKeys`, from the edited clip); hand poses, handle holds and events stay, moved to where they played (the
- * saved clip's own time). Made on 'the clip alone', the slot keeps its speed, time, settings and events (the edited
- * clip has the source's own time), and gear the edit moved is keyed on top (per gear).
- */
-export function saveToSlotCommands (slot: Slot, mode: Exclude<EditMode, 'held'>, clip: ClipRef, o: { loop: boolean, gearKeys: Record<string, ClipKey[]>, newId: () => string, played?: PlayedAs }): Command[] {
-  const gear = gearTracksOf(o.gearKeys)
-  if (mode === 'alone') {
-    return [{ type: 'slot.fill', id: slot.id, clip, speed: slot.speed, loop: o.loop, inPlace: slot.inPlace, keepAdjustments: true, ...(Object.keys(gear).length > 0 ? { gear } : {}) }]
-  }
-  const { adjustments, events } = asPlayed(slot, o.played)
-  const ground = slot.adjustments.filter(a => a.kind === 'ground').map(a => JSON.parse(JSON.stringify(a)) as Adjustment)
-  // (switched off, a hand setting played no part, so it stays as it was)
-  const off = slot.adjustments.filter(a => !a.enabled && a.kind !== 'ground').map(a => JSON.parse(JSON.stringify(a)) as Adjustment)
-  return [{
-    type: 'slot.fill', id: slot.id, clip, speed: 1, loop: o.loop, inPlace: slot.inPlace, keepAdjustments: false,
-    adjustments: [...ground, ...adjustments, ...off], ...(Object.keys(gear).length > 0 ? { gear } : {}), ...(events.length > 0 ? { events } : {}),
-  }]
-}
-
-/**
- * The one batch that puts an edit, saved as library clip `clip`, into a slot of the character chosen by name (the
- * editor's one save, "Save as Attack"; the designer, 2026-10-28: "I super just need to be able to save animations with
- * the character as a replacement to attack or run"). The slot it was made on: as saveToSlotCommands puts it there. Any
- * other (a slot the game plays, a trial, or a new one by `target.name`) plays it as it was shown: at speed 1, its own
- * loop and in place kept (a new one: the edit's), what it had for its old clip gone, the ground the edit stood on
- * (`lift`), the gear keys the edit moved, and, made 'as it plays' on a slot, that slot's hand poses, handle holds and
- * events where they played (`played`).
- */
-export function saveIntoSlotCommands (target: { slot: Slot | null, name: string }, from: { slot: Slot | null, mode: EditMode }, clip: ClipRef,
-  o: { loop: boolean, inPlace: boolean, lift: number, gearKeys: Record<string, ClipKey[]>, newId: () => string, played?: PlayedAs }): Command[] {
-  const t = target.slot
-  if (t !== null && from.slot !== null && t.id === from.slot.id && from.mode !== 'held') return saveToSlotCommands(t, from.mode, clip, { loop: t.loop, gearKeys: o.gearKeys, newId: o.newId, played: o.played })
-  const hands = from.mode === 'plays' && from.slot !== null ? asPlayed(from.slot, o.played, o.newId) : { adjustments: [], events: [] }
-  const lift = Math.round(o.lift * 1e4) / 1e4
-  const adjustments: Adjustment[] = [
-    ...(Math.abs(lift) >= 1e-4 ? [{ id: o.newId(), kind: 'ground', enabled: true, lift } as Adjustment] : []),
-    ...hands.adjustments,
-  ]
-  const gear = gearTracksOf(o.gearKeys)
-  const tracks = { ...(Object.keys(gear).length > 0 ? { gear } : {}), ...(hands.events.length > 0 ? { events: hands.events } : {}) }
-  if (t !== null) return [{ type: 'slot.fill', id: t.id, clip, speed: 1, loop: t.loop, inPlace: t.inPlace, keepAdjustments: false, adjustments, ...tracks, note: null }]
-  return [{ type: 'slot.fill', name: target.name, newId: o.newId(), clip, loop: o.loop, inPlace: o.inPlace, adjustments, ...tracks }]
-}
-
-/** A slot with its keys on the pieces `gear` (by gear id) taken off its gear tracks (a track gone when nothing is left
- * on it): an edit opened again from its record, whose paths for those pieces make that motion again. A copy; the slot
- * is left as it is. */
-export function withoutGearKeys (slot: Slot, gear: readonly string[]): Slot {
-  if (gear.length === 0 || slot.gear === undefined) return slot
-  const tracks: Record<string, GearTrack> = {}
-  for (const [id, t] of Object.entries(slot.gear)) {
-    if (!gear.includes(id)) { tracks[id] = t; continue }
-    const rest = { ...t }
-    delete rest.keys
-    if (Object.keys(rest).length > 0) tracks[id] = rest
-  }
-  const out: Slot = { ...slot, gear: tracks }
-  if (Object.keys(tracks).length === 0) delete out.gear
-  return out
-}
+// ---- grips ---------------------------------------------------------------------------------------------------------
 
 /** A handle name for `hand` on a piece not yet taken by its other handles: "Left grip", "Left grip 2"... */
 export function gripName (hand: Side, taken: readonly string[]): string {

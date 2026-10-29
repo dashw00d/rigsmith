@@ -594,7 +594,7 @@
     {#if p !== null}
       <div class="tracks" bind:this={tracksEl} style:max-height={`${height}px`} style:--label={`${LABEL}px`} onwheel={(e) => onWheel(e)}>
         {#each rows as row (row.key)}
-          <div class="row {row.kind}" data-row={row.key} class:selected={row.kind === 'bone' && row.bone === pose.selected} class:hovered={row.kind === 'bone' && row.bone === pose.hovered}
+          <div class="row k-{row.kind}" data-row={row.key} class:selected={row.kind === 'bone' && row.bone === pose.selected} class:hovered={row.kind === 'bone' && row.bone === pose.hovered}
             data-tracks={'tracks' in row ? row.tracks.join('|') : row.kind === 'events' ? 'events' : ''}>
             <div class="label" class:indent1={row.kind === 'group' || row.kind === 'gear' || row.kind === 'bar'} class:indent2={row.kind === 'bone'}>
               {#if row.kind === 'section' || row.kind === 'group'}
@@ -742,9 +742,9 @@
   .row:hover { background: rgb(255 255 255 / 2.5%); }
   .row.selected { background: var(--accent-soft); }
   .row.hovered .label .name { color: var(--text-1); }
-  .row.section { margin-top: 3px; }
-  .row.section .label { font-weight: 600; color: var(--text-2); }
-  .row.summary .label { font-weight: 600; color: var(--text-1); }
+  .row.k-section { margin-top: 3px; }
+  .row.k-section .label { font-weight: 600; color: var(--text-2); }
+  .row.k-summary .label { font-weight: 600; color: var(--text-1); }
   .row.strips { height: auto; min-height: 0; }
   .label { display: flex; align-items: center; gap: 2px; min-width: 0; padding-right: 6px; font-size: 11px; color: var(--text-3); }
   .label.indent1 { padding-left: 12px; }
@@ -762,7 +762,7 @@
   .label .speed { width: 50px; height: 16px; font-size: 10px; margin-left: 4px; padding: 0; }
   .lane { position: relative; height: 15px; border-radius: 3px; background: var(--bg-2); overflow: hidden; touch-action: none; cursor: crosshair; }
   .lane.free { height: auto; background: transparent; overflow: visible; cursor: default; }
-  .row.section .lane, .row.summary .lane { background: var(--bg-3); }
+  .row.k-section .lane, .row.k-summary .lane { background: var(--bg-3); }
   .region-band { position: absolute; top: 0; bottom: 0; background: rgb(107 211 138 / 8%); pointer-events: none; }
   .playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--text-2); pointer-events: none; }
   .key { position: absolute; top: 3px; width: 9px; height: 9px; margin-left: -4.5px; padding: 0; border: 1px solid rgb(0 0 0 / 55%); background: var(--warn); transform: rotate(45deg); border-radius: 1.5px; cursor: grab; z-index: 2; }
