@@ -95,16 +95,33 @@ describe('game export: bone gear\'s pulls rigged as the viewer rigs them', () =>
     expect(pullHandles({ handles: [{ id: 'x', name: 'X', kind: 'pull' }] })).toEqual([])
   })
 
-  it('splits the strand at the pull and weights the ring there to the pull\'s joint, the rest to the ride bone', () => {
+  it('splits the strand at the pull and weights it to the pull\'s joint falling straight to nothing at the tips, so a drawn string is a V', () => {
     const g0 = string()
     const before = g0.attributes.position.count
     const { geometries, skins } = pullSkin(bow(), [g0], [], joints)
     const pos = geometries[0].attributes.position
     expect(pos.count).toBeGreaterThan(before)
+    // (the string runs from z -0.35 to 0.35; the nock rests at z 0.1)
+    const share = (z: number): number => Math.max(0, z >= 0.1 ? 1 - (z - 0.1) / 0.25 : 1 - (0.1 - z) / 0.45)
+    const draw = new THREE.Vector3(0.05, -0.2, 0.03)
     for (let v = 0; v < pos.count; v++) {
-      const ring = Math.abs(pos.getZ(v) - 0.1) < 1e-4
-      expect(skins[0].indices[v * 4]).toBe(ring ? 9 : 7)
-      expect(skins[0].weights[v * 4]).toBe(1)
+      const z = pos.getZ(v)
+      const w = share(z)
+      const [i0, i1] = [skins[0].indices[v * 4], skins[0].indices[v * 4 + 1]]
+      const [w0, w1] = [skins[0].weights[v * 4], skins[0].weights[v * 4 + 1]]
+      if (w > 1e-6) {
+        expect([i0, i1]).toEqual([9, 7])
+        expect(w0).toBeCloseTo(w, 5)
+        expect(w0 + w1).toBeCloseTo(1, 6)
+      } else {
+        expect(i0).toBe(7)
+        expect(w0).toBeCloseTo(1, 6)
+      }
+      // (drawn: the nock moved by `draw`, each vertex by its share of it, onto the line from its tip to the drawn nock)
+      const tip = new THREE.Vector3(0, 0, z >= 0.1 ? 0.35 : -0.35)
+      const nock = new THREE.Vector3(0, 0, 0.1).add(draw)
+      const at = new THREE.Vector3(pos.getX(v), pos.getY(v), z).addScaledVector(draw, i0 === 9 ? w0 : 0)
+      expect(new THREE.Line3(tip, nock).closestPointToPoint(at, true, new THREE.Vector3()).distanceTo(at)).toBeLessThan(0.0021)
     }
   })
 

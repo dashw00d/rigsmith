@@ -135,17 +135,43 @@ export function defaultPullWeights (geometry: THREE.BufferGeometry, pulls: Reado
   const indices = new Uint16Array(count * 4)
   const weights = new Float32Array(count * 4)
   for (let i = 0; i < count; i++) weights[i * 4] = 1
-  const v = new THREE.Vector3()
   pulls.forEach((p, k) => {
-    const rest = new THREE.Vector3(...p.rest)
-    const { vertices, axis, length } = strandNear(geometry, rest)
-    for (const i of vertices) {
-      v.fromBufferAttribute(geometry.attributes.position, i)
-      if (Math.abs(v.clone().sub(rest).dot(axis)) > length * 0.02) continue
-      indices[i * 4] = 1 + k; weights[i * 4] = 1
+    for (const [i, w] of stringWeights(geometry, new THREE.Vector3(...p.rest))) {
+      if (w <= 1e-6) continue
+      // (the pull's share and the piece's: a vertex is moved by w of the nock's move)
+      indices[i * 4] = 1 + k; weights[i * 4] = w
+      indices[i * 4 + 1] = 0; weights[i * 4 + 1] = 1 - w
     }
   })
   return { indices, weights }
+}
+
+/**
+ * How much of the nock's move each vertex of the string through `rest` takes: 1 at the nock, falling in a straight line
+ * to 0 at each end of the string. The pull only moves its bone (never turns it), so the drawn string is then exactly
+ * two straight lines from the bow's tips to the fingers, however many rings the string's mesh has (a weight of 1 on
+ * the nock's ring alone left the rings between it and the tips where they were: the string bent in a zigzag; the
+ * designer, 2026-10-29). Only vertices on the string's line count: a bow modelled with its string joined to its limbs
+ * keeps its limbs still.
+ */
+export function stringWeights (geometry: THREE.BufferGeometry, rest: THREE.Vector3): Map<number, number> {
+  const { vertices, axis, length } = strandNear(geometry, rest)
+  const v = new THREE.Vector3()
+  const along = new Map<number, number>()
+  for (const i of vertices) {
+    v.fromBufferAttribute(geometry.attributes.position, i).sub(rest)
+    const s = v.dot(axis)
+    if (v.addScaledVector(axis, -s).length() > length * 0.04) continue
+    along.set(i, s)
+  }
+  const out = new Map<number, number>()
+  if (along.size === 0) return out
+  const lo = Math.min(...along.values()); const hi = Math.max(...along.values())
+  for (const [i, s] of along) {
+    const w = s >= 0 ? (hi > 1e-9 ? 1 - s / hi : 1) : (lo < -1e-9 ? 1 - s / lo : 1)
+    out.set(i, Math.min(1, Math.max(0, w)))
+  }
+  return out
 }
 
 /** The middle of the longest, thinnest piece among `meshes` (a bowstring), in their parent's space (each mesh's own

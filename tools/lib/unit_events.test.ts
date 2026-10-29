@@ -89,13 +89,13 @@ const CHARS = ['archer-b8157d', 'knight-3076bf', 'horse-31ad32']
 const have = CHARS.every(id => existsSync(path.join(WORKSPACE, 'characters', id, 'character.json')))
 
 /** A workspace whose characters are the real ones, files linked, each record copied for `edit` to change. */
-/** What every scratch copy starts from, whatever the workspace holds now: the archer's Attack with its blow fit off and
- * no events of its own (its fit pins to its hit event, which the events copy replaces: the clip would change with it). */
+/** What every scratch copy starts from, whatever the workspace holds now: no events of their own in any clip (the test
+ * adds its own; a fit pinned to a hit event measures its blow again), and the archer's Attack with its blow fit off
+ * (its events are replaced: the clip would change with a hit it had). */
 function baseline (c: Character): void {
-  const attack = c.id === 'archer-b8157d' ? c.clips.find(x => x.name === 'Attack') : undefined
-  if (attack === undefined) return
-  attack.events = []
-  if (attack.time?.fit !== undefined) attack.time.fit.enabled = false
+  for (const s of c.clips) delete s.events
+  const fit = c.id === 'archer-b8157d' ? c.clips.find(x => x.name === 'Attack')?.time?.fit : undefined
+  if (fit !== undefined) fit.enabled = false
 }
 
 function scratchWorkspace (dir: string, edit: (c: Character) => void): string {
