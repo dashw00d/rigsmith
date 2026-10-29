@@ -100,6 +100,25 @@ describe('restoreCommands', () => {
     expect(notes.join('\n')).toMatch(/no clip Run/)
   })
 
+  it('takes a named clip\'s variants with it, and one variant alone by the name the game plays it as', () => {
+    const c = makeRigged({ gear: [bow()] })
+    const record = v3Record()
+    const slots = record.slots as Slot[]
+    const attack = slots.find(s => s.name === 'Attack')!
+    slots.push({ ...structuredClone(attack), id: 'src-attack-3', name: 'Attack 3' }, { ...structuredClone(attack), id: 'src-attack-2', name: 'Attack 2' })
+    const { after, notes } = apply(c, { record, replace: true, clips: ['Idle', 'Attack', 'Walk'] })
+    expect(after.clips.map(s => s.name)).toEqual(['Idle', 'Attack', 'Attack 2', 'Attack 3', 'Walk'])
+    expect(notes.join('\n')).not.toMatch(/no clip/)
+    const one = apply(c, { record, replace: true, clips: ['Idle', 'Attack_2'] })
+    expect(one.after.clips.map(s => s.name)).toEqual(['Idle', 'Attack 2'])
+    expect(one.notes.join('\n')).not.toMatch(/no clip/)
+    // (a schema 2 record's too)
+    const v2 = v2Record()
+    const v2Slots = v2.slots as V2Slot[]
+    v2Slots.push({ ...structuredClone(v2Slots[1]), id: 'src-attack-2', name: 'Attack 2' })
+    expect(apply(c, { record: v2, replace: true, clips: ['Attack'] }).after.clips.map(s => s.name)).toEqual(['Attack', 'Attack 2'])
+  })
+
   it('without replace adds only the clips it lacks and keeps its own hands', () => {
     const own = makeSlot({ id: 'mine', name: 'Idle', clip: { id: 'mixamo-Breathing' } })
     const c = makeRigged({ gear: [bow()], clips: [own], hands: { poses: [], hold: { Left: 'clip' } } })
@@ -154,6 +173,26 @@ describe('restoreCommands', () => {
     expect(after.clips[1].time?.fit).toMatchObject({ enabled: true, at: 0.45 })
     expect(after.clips[1].gear).toMatchObject({ bowid001: { keys: [{ u: 0.3 }] } })
     expect(after.hands.hold).toEqual({ Right: { fist: 'mixamo-Holding' } })
+  })
+
+  it('moves a schema 1 record\'s keys into source time through the cut it records, given the clip\'s length', () => {
+    const c = makeRigged({ gear: [bow()] })
+    const record = (blow: Record<string, unknown>, did: unknown): Record<string, unknown> => ({
+      clips: { Attack: { clip: 'mixamo-Shoot', loop: false, inPlace: true, speed: 1, keyData: { bones: { Spine: [{ u: 0.5, q: [0, 0, 0, 1] }] } }, ...blow } },
+      scripts: [{ id: 's2', kind: 'blow', enabled: true, clip: 'Attack', at: 0.45, did }],
+    })
+    // (a 2 s clip, the blow at 0.6 s: before 0.45 of it, so the end is cut to 0.6 / 0.45 s)
+    const end = 0.6 / 0.45 / 2
+    const seconds = { clipSeconds: (id: string): number | undefined => (id === 'mixamo-Shoot' ? 2 : undefined) }
+    for (const r of [record({ blow: 0.6 }, undefined), record({}, { blow: 0.6, kept: [0, 1.333] })]) {
+      const plan = restoreCommands(c, { record: r, replace: true }, ids, file, seconds)
+      const attack = applyCommands(c, plan.commands).character.clips.find(s => s.name === 'Attack')!
+      expect(attack.bones!.Spine[0].u).toBeCloseTo(0.5 * end, 12)
+    }
+    // (without the length its keys stay as the record has them, and it says so)
+    const loose = apply(c, { record: record({ blow: 0.6 }, undefined), replace: true })
+    expect(loose.after.clips.find(s => s.name === 'Attack')!.bones!.Spine[0].u).toBe(0.5)
+    expect(loose.notes.join('\n')).toMatch(/couldn't be measured/)
   })
 
   it('a hand pose the character lacks becomes the default fist, noted only for what is restored', () => {

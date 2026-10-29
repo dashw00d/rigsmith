@@ -6,10 +6,12 @@
 //
 //   record   schema 3: its slots (gear named by name), hands (hands.hold) and gearIds (to map handle ids by name);
 //            schema 2: the same, its slots moved into source time through the blow cut the record says (its clips'
-//            `blow`, the library clip's length: src/model/migrate.ts slotFromV2); schema 1: its clips (clip, url, loop, inPlace, speed, lift, keyData) and scripts, read with the v1
-//            converters (src/model/migrate.ts slotsFromV1 / holdsFromV1). A build from before Rigsmith held the clips
-//            is sent as a schema 1 record game_import made from the game's old clip table.
-//   clips    the game's clip names to take, in order (default: every clip of the record)
+//            `blow`, the library clip's length: src/model/migrate.ts slotFromV2); schema 1: its clips (clip, url, loop, inPlace, speed, lift, keyData,
+//            blow) and scripts, read with the v1 converters (src/model/migrate.ts slotsFromV1 / holdsFromV1), its keys
+//            moved into source time through the cut it records as a v1 file's are. A build from before Rigsmith held
+//            the clips is sent as a schema 1 record game_import made from the game's old clip table.
+//   clips    the game's clip names to take, in order (default: every clip of the record); a clip's variants (`Attack 2`...,
+//            src/model/variants.ts) come with it, and one is taken alone by the name the game plays it as (Attack_2)
 //   replace  as the build has it: the set replaced, the hands it held taken and, when `gear` is given, gear it doesn't
 //            name removed (files are never deleted; an undo brings it back). Without it, only what the character lacks
 //            comes in: clips of names it has no slot for, the hands only when it holds none, gear only as named.
@@ -25,6 +27,7 @@ import { applyCommands, CommandError } from '../../src/model/commands.ts'
 import { newId } from '../../src/model/ids.ts'
 import { holdsFromV1, slotFromV2, slotsFromV1 } from '../../src/model/migrate.ts'
 import { freshSet, gearById } from '../../src/model/select.ts'
+import { exportName, gameNameOf, variantName, variantOf } from '../../src/model/variants.ts'
 import type { Character, Gear, GearTrack, HandPoseRef, Placement, Side, Slot } from '../../src/model/types.ts'
 import type { V1AnimationEntry, V1ClipScript } from '../../src/model/v1.ts'
 import type { V2Slot } from '../../src/model/v2.ts'
@@ -74,7 +77,9 @@ interface RecordV2 {
 }
 /** v1 build record fields restore reads (tools/game_export.ts before schema 2). */
 interface RecordV1 {
-  clips?: Record<string, { clip?: string, url?: string, loop?: boolean, inPlace?: boolean, speed?: number, lift?: number, keyData?: V1AnimationEntry['keys'] }>
+  /** `blow`: where its blow cut found the blow (seconds of the clip at its speed). */
+  clips?: Record<string, { clip?: string, url?: string, loop?: boolean, inPlace?: boolean, speed?: number, lift?: number, keyData?: V1AnimationEntry['keys'], blow?: number }>
+  /** `did` of a blow script: what its cut found (`blow` as above). */
   scripts?: Array<V1ClipScript & { did?: unknown }>
 }
 
@@ -127,13 +132,13 @@ export function restoreCommands (c: Character, req: RestoreRequest, makeId: () =
   const record = req.record
   if (isObj(record)) {
     const v2 = (record.schema === 2 || record.schema === 3) && Array.isArray(record.slots)
-    const set = v2 ? fromV2(record as unknown as RecordV2, work, req.clips, notes, o.clipSeconds) : fromV1(record as RecordV1, work, notes)
+    const set = v2 ? fromV2(record as unknown as RecordV2, work, req.clips, notes, o.clipSeconds) : fromV1(record as RecordV1, work, notes, o.clipSeconds)
     let slots = set.slots
     if (req.clips !== undefined) {
       const wanted = [...new Set(req.clips)]
-      const missing = wanted.filter(n => !slots.some(s => s.name === n))
+      const missing = wanted.filter(n => picked(slots, [n]).length === 0)
       if (missing.length > 0) notes.push(`the build has no clip ${missing.join(', ')}`)
-      slots = wanted.flatMap(n => slots.filter(s => s.name === n))
+      slots = picked(slots, wanted)
     }
     const fresh = freshSet(slots, makeId)
     if (req.replace === true) {
@@ -197,8 +202,8 @@ function fromV2 (r: RecordV2, c: Character, only: string[] | undefined, notes: s
     }
     return t
   }
-  const picked = (r.slots as Array<Slot | V2Slot>).filter(s => only === undefined || only.includes(s.name))
-  const sources: Slot[] = r.schema === 3 ? structuredClone(picked as Slot[]) : (structuredClone(picked) as V2Slot[]).map((s, i) => {
+  const chosen = only === undefined ? r.slots as Array<Slot | V2Slot> : picked(r.slots as Array<Slot | V2Slot>, only)
+  const sources: Slot[] = r.schema === 3 ? structuredClone(chosen as Slot[]) : (structuredClone(chosen) as V2Slot[]).map((s, i) => {
     // (keys on gear by name, as the record has them, until the tokens below)
     const seconds = clipSeconds?.(s.clip.id)
     const blow = r.clips?.[s.name]?.blow
@@ -225,8 +230,33 @@ function fromV2 (r: RecordV2, c: Character, only: string[] | undefined, notes: s
   return { slots, hold: structuredClone(r.hands ?? {}), names: { gearNames, handleNames } }
 }
 
-/** A schema 1 record's clips and scripts as slots on this character's gear (by name) and hands. */
-function fromV1 (r: RecordV1, c: Character, notes: string[]): { slots: Slot[], hold: Partial<Record<Side, HandPoseRef>>, names: Record<string, never> } {
+/** The slots `wanted` names (the game's clip names), in its order: each clip's own slot, then its variants (`Attack 2`
+ * for Attack); a variant named as the game plays it (Attack_2) alone. */
+function picked<S extends { name: string }> (slots: S[], wanted: string[]): S[] {
+  // (the game's clips: those named, and the clip a name as the game plays a variant stands for, when the slots have
+  // that variant: the clip itself may not be among them)
+  const names = slots.map(s => s.name)
+  const games = [...new Set([...wanted, ...wanted.map(n => {
+    const m = /^(.+)_(\d+)$/.exec(n)
+    return m !== null && names.includes(variantName(m[1], Number(m[2]))) ? gameNameOf(n, [...names, m[1]]) : n
+  })])]
+  const out: S[] = []
+  for (const n of wanted) {
+    for (const s of slots) {
+      if (s.name !== n && exportName(s.name, games) !== n) continue
+      if (!out.includes(s)) out.push(s)
+    }
+    const variants = slots.map(s => ({ s, v: variantOf(s.name, games) })).filter(x => x.v?.base === n).sort((a, b) => a.v!.n - b.v!.n)
+    for (const { s } of variants) if (!out.includes(s)) out.push(s)
+  }
+  return out
+}
+
+/** A schema 1 record's clips and scripts as slots on this character's gear (by name) and hands, their keys moved into
+ * source time through the cut the record says (as a v1 file's are: src/model/migrate.ts): the blow it found (its clip's
+ * `blow`, else its blow script's `did.blow`) and the library clip's length (`clipSeconds`); without the length they keep
+ * their phases, said in `notes`. */
+function fromV1 (r: RecordV1, c: Character, notes: string[], clipSeconds?: (clipId: string) => number | undefined): { slots: Slot[], hold: Partial<Record<Side, HandPoseRef>>, names: Record<string, never> } {
   const animations: V1AnimationEntry[] = Object.entries(r.clips ?? {}).flatMap(([name, x]) => {
     if (typeof x?.clip !== 'string' || x.clip === '') {
       notes.push(`${name}: the build names no clip for it`)
@@ -245,7 +275,17 @@ function fromV1 (r: RecordV1, c: Character, notes: string[]): { slots: Slot[], h
   const gearIdByName: Record<string, string> = {}
   for (const g of c.gear) gearIdByName[g.name] ??= g.id
   const poses = new Set(c.hands.poses.map(p => p.id))
-  const slots = slotsFromV1(animations, scripts, gearIdByName, c.id, { poses, notes }).map((s, i) => slotFromV2(s, { characterId: c.id, index: i, notes, windowsInSource: true }))
+  const found: Record<string, number> = {}
+  for (const s of r.scripts ?? []) {
+    const did = s.did as { blow?: unknown } | undefined
+    if (s.kind === 'blow' && typeof did?.blow === 'number') found[s.clip] ??= did.blow
+  }
+  const slots = slotsFromV1(animations, scripts, gearIdByName, c.id, { poses, notes }).map((s, i) => {
+    const seconds = clipSeconds?.(s.clip.id)
+    const blow = r.clips?.[s.name]?.blow ?? found[s.name]
+    const times = seconds === undefined ? undefined : { seconds, ...(typeof blow === 'number' ? { blow } : {}) }
+    return slotFromV2(s, { characterId: c.id, index: i, times, notes, windowsInSource: true })
+  })
   return { slots, hold: holdsFromV1(scripts, { poses, notes }), names: {} }
 }
 

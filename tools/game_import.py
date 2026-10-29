@@ -397,11 +397,11 @@ def place_of(g):
 
 def v1_record(entries, scripts):
     """Clips in the shape of a schema 1 build record (what the restore route reads of one): by name, the library clip
-    and how it plays, its lift and keys; and the clip scripts."""
+    and how it plays, its lift, keys and the blow its cut found; and the clip scripts."""
     clips = {}
     for e in entries:
         x = {'clip': e['clipId'], 'loop': e['loop'], 'inPlace': e['inPlace'], 'speed': e['speed']}
-        for k, to in (('url', 'url'), ('lift', 'lift'), ('keys', 'keyData')):
+        for k, to in (('url', 'url'), ('lift', 'lift'), ('keys', 'keyData'), ('blow', 'blow')):
             if e.get(k):
                 x[to] = e[k]
         clips[e['name']] = x
@@ -518,6 +518,8 @@ def game_clips(lib, spec_clips, built, comp=False):
             e['lift'] = b['lift']
         if b.get('keyData'):
             e['keys'] = b['keyData']
+        if isinstance(b.get('blow'), (int, float)):
+            e['blow'] = b['blow']    # (where its blow cut found the blow: the restore route moves its keys through it)
         out.append(e)
     return out
 
