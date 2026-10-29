@@ -137,6 +137,25 @@ centimetre a frame) rather than bend its wrist far. The head keeps looking where
   gear keys (and, opened as it plays, the hand poses and holds of the clip it came from).
 - **Finish** closes the editor (asking first when there are unsaved edits).
 
+## 7. Pose tools (the timeline's toolbar)
+
+They work at the playhead (on its frame), on the bones whose Body tracks are selected, or on every bone with none
+selected. Each is one change in Activity (one Undo).
+
+| Tool | What it does |
+| --- | --- |
+| **Copy pose** (Ctrl+Shift+C, or Ctrl+Alt+C) | Takes the pose as the slot shows it at the playhead, and the Hips' height. It stays copied when you play another clip or character. |
+| **Paste** (Ctrl+Shift+V) | Keys the copied bones so the slot shows that pose at the playhead, whatever the clip does there. The Hips get the copied height, not where the body stood, so a walk isn't pulled back. A bone's first key also pins it at the clip's ends. |
+| **Paste mirrored** (Ctrl+Alt+V) | The same with left and right swapped and each turn reflected across the body's middle: a left-arm raise pasted mirrored is the same raise on the right arm, and a twist to the left becomes a twist to the right. |
+| **Tween / Push / Relax** slider | **Tween** keys the selected bones (or every keyed bone) between the keys either side of the playhead: left is the previous key, right the next. **Push** moves the pose away from the plain inbetween of those keys (more of it). **Relax** moves it toward that inbetween (smoother). The character shows it as you drag; letting go keys it, and Esc cancels. |
+| **Onion skins** (Alt+O) | Ghost skeletons before (orange) and after (blue) the playhead, every few frames or at the keys around it. Set the counts in its menu; the settings are remembered. |
+| **Ease** | For the selected keys, how the span to the next key tweens: Smooth (the default), Linear, Ease (stops at both keys), Step (holds, then jumps) or Hold (the clip's own motion stopped on the bone until the next key). |
+| **Range edit** | Box-select keys across a range and **Set range**. Then change the pose at a frame inside it (drag, paste, tween) and **Spread change**: what changed at the playhead since the range was set reaches the whole range, all of it at the playhead and none at the ends, with a **Smooth** or **Linear** falloff. Outside the range nothing changes. |
+| **Seam** (loops) | Shows how far the last frame jumps to the first, by the worst bone. **Match ends** keys the last frame to the first. **Blend** takes half the jump off each side of the seam over N frames, so the loop meets in the middle without stopping. |
+
+Keys are stored on the source clip's moments, so a later change of timing (speed, fit, markers) keeps them on the same
+part of the motion.
+
 ## Good to know
 
 - **The game holds the gear by its Gear placement, moved by the slot's gear keys.** Keys are relative to that

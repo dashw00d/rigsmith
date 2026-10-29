@@ -491,3 +491,31 @@ baked clip), `src/app/motion/pose/**`, the easing UI (per span menu writing `eas
   every slot of the six characters bakes to the same tracks (largest difference 0, `tests/equivalence/bake.test.ts`),
   riders ridden too, and the five units' GLBs export byte for byte the same as before the change (checked by hand
   against a build of b281970); the build records differ only in the last digit of a few converted keyData phases.
+- C3 (pose tools, branch motion-pose): built as §9 says. `src/model/posetools.ts` (pure: no three; poses, rest frames
+  and a key sampler handed in): `copyPose`, `mirrorName` (Left/Right with or without `mixamorig:`, `_l`/`.L`),
+  `mirrorPose` (a bone's turn from rest in the character's axes, its parent at rest, G = P·L·R⁻¹·P⁻¹, reflected
+  (x, -y, -z, w) and put on the other side's bone; mirrored down a chain, world turns are mirrored whatever the bones'
+  own axes), `pastePose` (key = unkeyed⁻¹ · pose at the moment; the Hips' height only by default; an unkeyed bone already
+  there gets no key; a first key pins the clip's ends, the editor's rule), `tween` / `pushRelax` (between the
+  neighbouring keys, round a loop), `spreadChange` + `falloff` / `rangeWeight` (range edit: key' = key · change^w over
+  the range, keyed at its ends, the moment, its keys and up to four frames a side; the spans out of it that join equal
+  keys eased, so a Catmull-Rom tangent doesn't leak the change past the ends), `seamJump` / `jumping` (SEAM_EPS 1e-4 rad)
+  / `matchEnds` / `blendSeam`, `setEase` / `easeOf`, `putKey` (a key put over one at its moment keeps its ease; between
+  keys it takes the span's ease, so it holds in a held span). `src/engine/onion.ts`: `poseAt` (a clip's local pose by
+  rest names, no mixer), `restFrames`, `keySampler`, `framePhase`, `onionTimes`, `OnionSkins` (`show(view, clip, at,
+  {before, after, step, keys?, loop})`, `hide`, `dispose`; one group under `stage.scene`, worked out only when the moment
+  or clip changes: 0.23 ms a playhead move for six ghosts). The toolbar: `src/app/motion/pose/{PoseToolbar.svelte,
+  tools.ts, pose.svelte.ts}`. Range edit is a button, not a live mode: the range keeps the Body track as it was when
+  set, and **Spread change** spreads what changed at the playhead since then. A spread done automatically after each
+  drag would come back after Undo.
+  - **Shortcuts taken (B: leave these):** Ctrl+Shift+C and Ctrl+Alt+C (copy pose), Ctrl+Shift+V (paste), Ctrl+Alt+V
+    (paste mirrored), Alt+O (onion skins), Esc while the tween slider drags (cancel). They are window keydown handlers
+    that skip text fields and events already `defaultPrevented`. Browsers may keep Ctrl+Shift+C for DevTools' inspector;
+    Ctrl+Alt+C is the fallback.
+  - **What the toolbar needs from B:** the TimelineView as lanes.ts has it, reactive (playhead, selection, baked and slot
+    read in `$derived`/`$effect`); `selection` items on `body:<bone>` / `gear:<id>` tracks with `u` the key's source
+    phase; `frames` the clip's frame count as `rules.ts framesOf` gives it; `snap` to frames. It also reads
+    `animator.view` (the rest skeleton, the bones it previews on), `animator.stage` (onion skins), `animator.time`,
+    `animator.seek`, `animator.setPlaying` and `animator.holding` (set while the slider drags, so the player doesn't
+    write over the preview); keep them, or hand them through the view. The toolbar needs about 520 px; it doesn't wrap.
+
