@@ -12,6 +12,7 @@ import type { Adjustment, AdjustmentKind, Character, ClipEvent, ClipKey, Gear, H
 import { eventsOf, gearById, heightOf, hitOf, isMuted, slotById, slotByName } from '../model/select.ts'
 import { eventToPlayed, keysToPlayed, phaseBeforeFit, resolveTime, windowsToPlayed, type TimeMap } from '../model/timemap.ts'
 import type { ClipSource } from './clips.ts'
+import { holdGear, holdsAgain, type GearHolds } from './geartracks.ts'
 import { firstSkinned, gearNode } from './geom.ts'
 import { groundFit } from './ground.ts'
 import { applyHands, handLayers, type HandLayer } from './hands.ts'
@@ -55,6 +56,9 @@ export interface BakedSlot {
   hands: Record<Side, HandLayer[]>
   /** The slot's events as played (phases of the final clip), sorted; the blow the fit measured among them as `hit`. */
   events: BakedEvent[]
+  /** Who holds each piece and when it shows, as played (src/engine/geartracks.ts), by gear id: the pieces whose gear
+   * track has held-by or shown entries (unset: none). */
+  gearHolds?: Record<string, GearHolds>
   /** What each stage did: 'fit', 'pace', 'keys', the ground adjustment's id, `hands` and `autoGround`. */
   report: Record<string, unknown>
 }
@@ -144,11 +148,15 @@ export async function bakeSlot (c: Character, slot: Slot, ctx: BakeContext, o: {
     const names = new Set(extra.map(t => t.name))
     clip = new THREE.AnimationClip(clip.name, clip.duration, [...clip.tracks.filter(t => !names.has(t.name)), ...extra])
   }
+  // who holds each piece and when it shows (geartracks.ts): resolved on the clip as keyed, played on the gear nodes
+  const held = skip.has('keys') ? null : holdGear(c, slot, map, clip, ctx, { keys: gearKeys, nodes: o.gearNodes !== false, report })
+  if (held !== null) clip = held.clip
 
   const events = skip.has('events') ? [] : playedEvents(slot, map, timed.cut)
   return {
     clip: named(clip, slot.name), raw, unkeyed: named(unkeyed, slot.name), cut: timed.cut, lift, time: map,
     boneKeys: keys.bones, gearKeys, pulls: pullPlans(c, played), hands, events, report,
+    ...(held !== null && Object.keys(held.holds).length > 0 ? { gearHolds: held.holds } : {}),
   }
 }
 
@@ -270,6 +278,7 @@ export async function bakeRide (rider: BakedSlot, horse: { c: Character, ctx: Ba
       gearKeys: cycles === 1 ? rider.gearKeys : Object.fromEntries(Object.entries(rider.gearKeys).map(([id, ks]) => [id, keysAgain(ks)])),
       boneKeys: cycles === 1 ? rider.boneKeys : Object.fromEntries(Object.entries(rider.boneKeys).map(([b, ks]) => [b, keysAgain(ks)])),
       events: cycles === 1 ? rider.events : eventsAgain(rider.events),
+      ...(rider.gearHolds !== undefined ? { gearHolds: holdsAgain(rider.gearHolds, cycles) } : {}),
     },
     horse: fit.horse,
     cycles,

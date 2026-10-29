@@ -344,13 +344,19 @@ export interface ClipKey {
 export interface GearTrack {
   /** Moves and turns from where it is placed, in its placed frame. */
   keys?: ClipKey[]
-  /** Who holds it from `u` on (sorted by u, distinct; before the first, its Gear attach bone). `place`: where it sits on
-   * that bone (the bone's rest frame); unset: wherever it was at `u`, so it changes hands without a pop. Played by the
-   * gear tracks stage (docs/motion-plan.md §9 C2). */
-  heldBy?: Array<{ u: SourceU, bone: string, place?: Placement }>
+  /** Who holds it from `u` on (sorted by u, distinct; before the first, its Gear attach bone at its Gear placement).
+   * Where it sits on that bone, the first given of: `place` (a placement in rest space, as Gear's: where it would sit
+   * at rest, carried by that bone); `handle`, one of its carry or grip handles (the hand on it as the handle says,
+   * held as Gear has the handle now); `placed`, its Gear placement (the bone is then its Gear attach bone: sheathed
+   * again); none: wherever it was at `u`, so it changes hands without a pop (Back -> Right hand at frame 12). Played by
+   * the gear tracks stage (src/engine/geartracks.ts). */
+  heldBy?: HeldBy[]
   /** Shown or hidden from `u` on (sorted, distinct; before the first, as Gear has it). */
   shown?: Array<{ u: SourceU, shown: boolean }>
 }
+
+/** One holder of a gear piece from `u` on (GearTrack.heldBy). */
+export interface HeldBy { u: SourceU, bone: string, place?: Placement, handle?: string, placed?: true }
 
 /** The built-in event names (any other is the user's own). The game reads them by name (docs/motion-plan.md §6). */
 export const EVENT_NAMES = ['hit', 'release', 'swing', 'step.L', 'step.R', 'draw'] as const
