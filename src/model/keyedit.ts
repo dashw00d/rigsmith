@@ -5,7 +5,7 @@
 // Each returns the tracks to send as one `slot.keys.set` (one undo) and the selection as it is after; null when
 // nothing changes. A key moved onto another key's moment on its track replaces it.
 import type { KeyTrack } from './command-types.ts'
-import type { ClipKey, Ease, RetimeMarker, Slot } from './types.ts'
+import type { ClipKey, Ease, RetimeMarker, Slot, TimeHold } from './types.ts'
 import { MAX_U } from './types.ts'
 
 /** One key: its track (`body:<bone>` or `gear:<id>`) and its source moment. */
@@ -86,8 +86,31 @@ function lay (keys: readonly ClipKey[], put: readonly ClipKey[]): ClipKey[] {
   return [...out, ...placed].sort((a, b) => a.u - b.u)
 }
 
+/** How far apart `apart` puts keys that land on one moment (over the reducer's SAME, after `round`). */
+export const APART = 2e-6
+
+/**
+ * Keys put down on one track together, in the order they are meant to play (`v`, their played phases), kept at
+ * distinct moments: the time map sends a hold's whole played span to the hold's one source moment, so keys put inside
+ * it (or snapped onto one frame) would land on one u and all but one be lost. Each that would is nudged just after
+ * the one before (APART: it plays as the hold ends). Null when that runs past MAX_U.
+ */
+function apart (put: ReadonlyArray<{ key: ClipKey, v: number }>): ClipKey[] | null {
+  const order = put.map((_, i) => i).sort((a, b) => put[a].v - put[b].v || put[a].key.u - put[b].key.u)
+  const out: ClipKey[] = put.map(p => p.key)
+  let before: number | null = null
+  for (const i of order) {
+    const key = put[i].key
+    const u: number = before !== null && key.u - before < SAME ? round(before + APART) : key.u
+    if (u > MAX_U) return null
+    if (u !== key.u) out[i] = { ...key, u }
+    before = u
+  }
+  return out
+}
+
 /** The selection's keys moved to new moments by `to` (a played phase -> the new played phase, null: stays): each
- * track's other keys kept, one at a new moment replaced. */
+ * track's other keys kept, one at a new moment replaced; the selection's own keys never merged (`apart`). */
 function remap (slot: Pick<Slot, 'bones' | 'gear'>, selection: readonly KeyRef[], f: TimeFrame, to: (v: number) => number): KeyEdit | null {
   const sel = picked(slot, selection)
   if (sel.size === 0) return null
@@ -95,13 +118,14 @@ function remap (slot: Pick<Slot, 'bones' | 'gear'>, selection: readonly KeyRef[]
   const after: KeyRef[] = []
   let changed = false
   for (const [track, ks] of sel) {
-    const moved = ks.map(k => {
+    const moved = apart(ks.map(k => {
       const v = f.toPlayed(k.u)
       const v2 = to(v)
       const u = Math.abs(v2 - v) < 1e-12 ? k.u : round(clampU(f.toSource(v2)))
-      if (!near(u, k.u)) changed = true
-      return { ...k, u }
-    })
+      return { key: { ...k, u }, v: v2 }
+    }))
+    if (moved === null) return null
+    if (moved.some((k, i) => !near(k.u, ks[i].u))) changed = true
     const rest = keysOf(slot, track).filter(k => !ks.includes(k))
     const next = lay(rest, moved)
     tracks.push(trackOf(track, next))
@@ -143,15 +167,36 @@ export function keysToFrame (slot: Pick<Slot, 'bones' | 'gear'>, selection: read
 /**
  * The selection stretched by one of its edges: `edge` 'end' moves its latest key to `to` (played), the earliest held;
  * 'start' the other way round. Every key between scales with it (each snapped to a frame unless `free`); the span
- * never goes under a frame or turns over.
+ * never goes under a frame or turns over, and snapped it is squeezed no further than a frame between two keys of a
+ * track (none can: null).
  */
 export function stretchKeys (slot: Pick<Slot, 'bones' | 'gear'>, selection: readonly KeyRef[], edge: 'start' | 'end', to: number, f: TimeFrame, o: { free?: boolean } = {}): KeyEdit | null {
   const span = spanOf(slot, selection, f)
   if (span === null || span[1] - span[0] < 1e-9) return null
-  const factor = stretchFactor(span, edge, to, f.frames)
+  let factor = stretchFactor(span, edge, to, f.frames)
   if (factor === null) return null
+  if (o.free !== true) {
+    // (snapped, a squeeze stops where two keys of a track would share a frame: one frame between each)
+    const least = leastFactor(slot, selection, f)
+    if (factor < 1 && factor < least) {
+      if (least > 1 - 1e-9) return null
+      factor = least
+    }
+  }
   const fixed = edge === 'end' ? span[0] : span[1]
-  return remap(slot, selection, f, v => snapPlayed(fixed + (v - fixed) * factor, f.frames, o.free))
+  const by = factor
+  return remap(slot, selection, f, v => snapPlayed(fixed + (v - fixed) * by, f.frames, o.free))
+}
+
+/** The least a snapped stretch may scale the selection by: its two closest keys on one track a frame apart (just
+ * over, so rounding to frames can't put them on one). 0 when no track has two. */
+function leastFactor (slot: Pick<Slot, 'bones' | 'gear'>, selection: readonly KeyRef[], f: TimeFrame): number {
+  let gap = Infinity
+  for (const ks of picked(slot, selection).values()) {
+    const vs = ks.map(k => f.toPlayed(k.u)).sort((a, b) => a - b)
+    for (let i = 1; i < vs.length; i++) if (vs[i] - vs[i - 1] > 1e-9) gap = Math.min(gap, vs[i] - vs[i - 1])
+  }
+  return Number.isFinite(gap) ? (1 + 1e-6) / Math.max(1, f.frames) / gap : 0
 }
 
 /** How much a stretch of `span` by its `edge` to `to` scales it (at least a frame long, within the clip), or null. */
@@ -200,19 +245,27 @@ export function copyKeys (slot: Pick<Slot, 'bones' | 'gear'>, selection: readonl
 }
 
 /** Copied keys put down with the earliest on frame `frame` (the playhead's): each replaces any key at its moment;
- * those past the clip's end are left out. The pasted keys are selected. */
+ * those past the clip's end are left out; copied keys that land on one moment (inside a hold) kept apart. The pasted
+ * keys are selected. */
 export function pasteKeys (slot: Pick<Slot, 'bones' | 'gear'>, clip: KeyClipboard, frame: number, f: TimeFrame, o: { tracks?: (track: string) => boolean } = {}): KeyEdit | null {
-  const byTrack = new Map<string, ClipKey[]>()
+  const byTrack = new Map<string, Array<{ key: ClipKey, v: number }>>()
   for (const it of clip.items) {
     if (o.tracks !== undefined && !o.tracks(it.track)) continue
     const at = frame + it.frames
     if (at < 0 || at > f.frames) continue
-    const u = round(clampU(f.toSource(at / Math.max(1, f.frames))))
-    byTrack.set(it.track, [...(byTrack.get(it.track) ?? []), { ...JSON.parse(JSON.stringify(it.key)) as Omit<ClipKey, 'u'>, u }])
+    const v = at / Math.max(1, f.frames)
+    const u = round(clampU(f.toSource(v)))
+    byTrack.set(it.track, [...(byTrack.get(it.track) ?? []), { key: { ...JSON.parse(JSON.stringify(it.key)) as Omit<ClipKey, 'u'>, u }, v }])
   }
   if (byTrack.size === 0) return null
-  const tracks = [...byTrack].map(([track, put]) => trackOf(track, lay(keysOf(slot, track), put)))
-  return { tracks, selection: [...byTrack].flatMap(([track, put]) => put.map(k => ({ track, u: k.u }))) }
+  const laid: Array<[string, ClipKey[]]> = []
+  for (const [track, put] of byTrack) {
+    const keys = apart(put)
+    if (keys === null) return null
+    laid.push([track, keys])
+  }
+  const tracks = laid.map(([track, put]) => trackOf(track, lay(keysOf(slot, track), put)))
+  return { tracks, selection: laid.flatMap(([track, put]) => put.map(k => ({ track, u: k.u }))) }
 }
 
 /** The span from each selected key to the next eased so (C3's menu sends this; 'smooth' is stored as unset). */
@@ -272,6 +325,22 @@ export function warpAt (markers: readonly RetimeMarker[] | undefined, u: number)
   while (i < s.length - 1 && s[i] < u) i++
   const f = (u - s[i - 1]) / Math.max(s[i] - s[i - 1], 1e-12)
   return w[i - 1] + f * (w[i] - w[i - 1])
+}
+
+/**
+ * The factor the warp (stretchMarkers) scales the source span [from, to] by so that its played length scales by
+ * `factor` (what the edge was dragged to): the seconds of the holds inside it (a hold at `from` plays inside the span,
+ * one at `to` after it) play whatever the warp does, so only the rest of the span stretches. Null when the span is all
+ * holds or the stretch would leave less than nothing of it.
+ */
+export function warpFactor (f: Pick<TimeFrame, 'toPlayed'>, holds: readonly TimeHold[] | undefined, from: number, to: number, factor: number): number | null {
+  const length = f.toPlayed(to) - f.toPlayed(from)
+  const held = (holds ?? []).filter(h => h.seconds > 0 && h.u >= from - 1e-9 && h.u < to - 1e-9)
+    .reduce((n, h) => n + f.toPlayed(h.u + 1e-9) - f.toPlayed(h.u), 0)
+  const warped = length - held
+  const target = length * factor - held
+  if (warped < 1e-9 || target < 1e-9) return null
+  return target / warped
 }
 
 /**

@@ -15,6 +15,7 @@
 import * as THREE from 'three'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { Command } from '../model/command-types.ts'
+import { SAME } from '../model/keyedit.ts'
 import { newId } from '../model/ids.ts'
 import { carryHandle, handSide, slotById, slotByName } from '../model/select.ts'
 import type { Character, ClipKey, Gear, Handle, HandPose, HandPoseRef, Placement, Quat, Side, Slot, SlotIk, Vec3 } from '../model/types.ts'
@@ -288,6 +289,13 @@ class Pose {
     return { c, slot, now, baked: now.baked, view, map: now.baked.time, frames: framesOf(animator.duration, now.cycles), loop: slot.loop }
   }
 
+  /** Whether the slot `h` was taken from still plays (the same character's other clip chosen during an await: the
+   * pose on stage is that one's, so what was being keyed is dropped). */
+  private stillOn (h: Here): boolean {
+    const now = animator.playing
+    return now !== null && now.kind === 'slot' && now.characterId === h.c.id && now.slotId === h.slot.id && animator.view === h.view
+  }
+
   /** The frame shown, as a played phase of one cycle on the nearest frame (a loop's last frame is its first). */
   private playedAt (h: Here): number {
     const v = Math.round(Math.min(1, Math.max(0, h.now.phase)) * h.frames) / h.frames
@@ -330,14 +338,17 @@ class Pose {
       if (bone === undefined || r === null) continue
       const key = keyFor(h.baked.unkeyed, bone, u, t, r, name === this.rig.hips)
       const had = tracks[name] ?? h.slot.bones?.[name] ?? []
-      const ks = had.filter(k => Math.abs(h.map.toPlayed(k.u) - v) > 0.5 / h.frames).map(k => ({ ...k }))
+      // (the key on this frame is replaced, and so is one at its source moment: inside a hold every frame is the hold's
+      // one moment, where a key shows at the hold's start)
+      const here = (k: ClipKey): boolean => Math.abs(h.map.toPlayed(k.u) - v) <= 0.5 / h.frames || Math.abs(k.u - u) < SAME
+      const ks = had.filter(k => !here(k)).map(k => ({ ...k }))
       if (ks.length === 0) {
         const start = sourceAt(h.map, 0); const end = sourceAt(h.map, 1)
-        if (!near(v, 0)) ks.push({ u: start, q: [...IDENTITY] })
-        if (!h.loop && !near(v, 1) && end - start > 1e-6) ks.push({ u: end, q: [...IDENTITY] })
+        if (!near(v, 0) && Math.abs(start - u) >= SAME) ks.push({ u: start, q: [...IDENTITY] })
+        if (!h.loop && !near(v, 1) && end - start > 1e-6 && Math.abs(end - u) >= SAME) ks.push({ u: end, q: [...IDENTITY] })
       }
       // (a key keeps its span's easing when it is keyed again)
-      const was = had.find(k => Math.abs(h.map.toPlayed(k.u) - v) <= 0.5 / h.frames)
+      const was = had.find(here)
       tracks[name] = [...ks, { ...key, ...(was?.ease !== undefined ? { ease: was.ease } : {}) }].sort((a, b) => a.u - b.u)
     }
   }
@@ -383,6 +394,8 @@ class Pose {
     if (snap !== null && this.fists[snap.hand] === undefined) {
       const fist = await this.fistOf(h, snap.hand, snap.gear)
       if (turn !== this.turn) return
+      // (another clip chosen meanwhile: the pose on stage is that one's, not this drag's)
+      if (!this.stillOn(h)) { this.release(); return }
       this.fists[snap.hand] ??= fist
       snap = this.snapTarget(h, moved)
     }
@@ -1012,7 +1025,7 @@ class Pose {
       await new Promise(resolve => setTimeout(resolve, 0))
       await this.loadModel()
       const collider = this.collider; const view = h.view
-      if (turn !== this.turn || collider === null || view.rest === null) return
+      if (turn !== this.turn || collider === null || view.rest === null || !this.stillOn(h)) return
       if (collider.body === null) { app.toast('error', `The body can't be solved: ${collider.problem ?? 'its mesh has no body to fit'}`); return }
       const v = this.playedAt(h)
       animator.setPlaying(false)
@@ -1029,7 +1042,8 @@ class Pose {
       const was = deep()
       let left = push()
       const rig = this.solver !== null && h.slot.ik !== undefined ? await this.rigOf(h, h.slot, true) : null
-      if (turn !== this.turn) return
+      // (another clip chosen meanwhile: the pose on stage is that one's)
+      if (turn !== this.turn || !this.stillOn(h)) { this.release(); return }
       if (this.solver !== null && rig !== null && rig.attachments.length > 0) {
         const pushed = this.poseOf(all)
         const rest = view.rest

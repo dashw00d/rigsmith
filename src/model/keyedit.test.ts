@@ -3,7 +3,7 @@ import type { ClipKey, Slot } from './types.ts'
 import { resolveTime } from './timemap.ts'
 import {
   copyKeys, deleteKeys, duplicateKeys, easeKeys, keysIn, keysOf, keysToFrame, momentsOf, moveKeys, pasteKeys, putKey, spanOf,
-  stretchKeys, stretchMarkers, warpAt, type TimeFrame,
+  stretchKeys, stretchMarkers, warpAt, warpFactor, type TimeFrame,
 } from './keyedit.ts'
 
 const q = (w = 1): ClipKey['q'] => [0, 0, Math.sqrt(1 - w * w), w]
@@ -59,8 +59,25 @@ describe('stretching, duplicating, deleting', () => {
     expect(stretchKeys(s, sel, 'end', 0.6, plain)!.tracks[0].keys.map(x => x.u)).toEqual([0.2, 0.4, 0.6])
     expect(stretchKeys(s, sel, 'start', 0, plain)!.tracks[0].keys.map(x => x.u)).toEqual([0, 0.2, 0.4])
     // (never under a frame long)
-    const squeezed = stretchKeys(s, sel, 'end', 0.2, plain)!
+    const two = [{ track: 'body:Arm', u: 0.2 }, { track: 'body:Arm', u: 0.4 }]
+    const squeezed = stretchKeys(slot({ Arm: [k(0.2), k(0.4)] }), two, 'end', 0.2, plain)!
     expect(spanOf(slot({ Arm: squeezed.tracks[0].keys }), squeezed.selection, plain)).toEqual([0.2, 0.3])
+    // (keys a frame apart can't be squeezed at all)
+    expect(stretchKeys(s, sel, 'end', 0.2, plain)).toBeNull()
+  })
+
+  it('squeezes no further than a frame between two keys of a track (none merged)', () => {
+    const f30: TimeFrame = { toPlayed: u => u, toSource: v => v, frames: 30 }
+    const four = slot({ Spine: [0, 1, 2, 3].map(i => k(i / 30)) })
+    const all = keysOf(four, 'body:Spine').map(x => ({ track: 'body:Spine', u: x.u }))
+    expect(stretchKeys(four, all, 'end', 1 / 30, f30)).toBeNull()
+    const spread = slot({ Spine: [0, 2, 4].map(i => k(i / 30)) })
+    const sel = keysOf(spread, 'body:Spine').map(x => ({ track: 'body:Spine', u: x.u }))
+    const e = stretchKeys(spread, sel, 'end', 1 / 30, f30)!
+    expect(e.tracks[0].keys.map(x => Math.round(x.u * 30))).toEqual([0, 1, 2])
+    expect(e.selection.length).toBe(3)
+    // (free, it goes down to a frame and keeps every key)
+    expect(stretchKeys(four, all, 'end', 1 / 30, f30, { free: true })!.tracks[0].keys.length).toBe(4)
   })
 
   it('duplicates just after itself, the copies selected; no room, nothing', () => {
@@ -76,6 +93,42 @@ describe('stretching, duplicating, deleting', () => {
     const s = slot({ Arm: [k(0.2), k(0.3)] }, { spear: [k(0.2)] })
     const e = deleteKeys(s, [{ track: 'body:Arm', u: 0.3 }, { track: 'gear:spear', u: 0.2 }])!
     expect(e.tracks).toEqual([{ bone: 'Arm', keys: [k(0.2)] }, { gear: 'spear', keys: [] }])
+  })
+})
+
+describe('keys put inside a hold (its whole played span is one source moment)', () => {
+  // (a second of source with half a second held at its middle: 45 frames played, the hold frames 15-30)
+  const map = resolveTime({ seconds: 1, speed: 1, time: { holds: [{ id: 'h', u: 0.5, seconds: 0.5 }] } })
+  const held: TimeFrame = { toPlayed: map.toPlayed, toSource: map.toSource, frames: 45 }
+  const distinct = (keys: ClipKey[]): boolean => keys.every((x, i) => i === 0 || x.u - keys[i - 1].u >= 1e-6)
+
+  it('moves two keys into it without merging them', () => {
+    const s = slot({ Spine: [k(0.3), k(0.4), k(0.8)] })
+    const sel = [{ track: 'body:Spine', u: 0.3 }, { track: 'body:Spine', u: 0.4 }]
+    const e = moveKeys(s, sel, 0.2, held, { free: true })!
+    const keys = e.tracks[0].keys
+    expect(keys.length).toBe(3)
+    expect(distinct(keys)).toBe(true)
+    expect(keys[0].u).toBe(0.5)
+    expect(keys[1].u).toBeCloseTo(0.5, 5)
+    expect(e.selection.length).toBe(2)
+  })
+
+  it('pastes, duplicates and types a frame into it, every key kept', () => {
+    const s = slot({ Spine: [k(0.1), k(0.2)] })
+    const sel = [{ track: 'body:Spine', u: 0.1 }, { track: 'body:Spine', u: 0.2 }]
+    const clip = copyKeys(s, sel, held)
+    const pasted = pasteKeys(slot({}), clip, 18, held)!
+    expect(pasted.tracks[0].keys.length).toBe(2)
+    expect(distinct(pasted.tracks[0].keys)).toBe(true)
+    expect(pasted.selection.length).toBe(2)
+    const typed = keysToFrame(s, sel, 17, held)!
+    expect(typed.tracks[0].keys.length).toBe(2)
+    expect(distinct(typed.tracks[0].keys)).toBe(true)
+    const close = slot({ Spine: [k(0.4), k(0.45)] })
+    const dup = duplicateKeys(close, [{ track: 'body:Spine', u: 0.4 }, { track: 'body:Spine', u: 0.45 }], held)!
+    expect(dup.tracks[0].keys.length).toBe(4)
+    expect(distinct(dup.tracks[0].keys)).toBe(true)
   })
 })
 
@@ -118,6 +171,22 @@ describe('retime markers from a stretch', () => {
     // (again on those markers: their ids kept, the inside scaled)
     const again = stretchMarkers(ms, 0.2, 0.4, 'end', 0.5, id)!
     expect(again.map(m => [m.id, m.u, m.to])).toEqual([[ms[0].id, 0.2, 0.2], [ms[1].id, 0.4, 0.35]])
+  })
+
+  it('lands the dragged edge where it was dragged with a hold inside the span (warpFactor)', () => {
+    const time = { holds: [{ id: 'h', u: 0.3, seconds: 0.5 }] }
+    const map = resolveTime({ seconds: 1, speed: 1, time })
+    const from = 0.2; const to = 0.4
+    const span: [number, number] = [map.toPlayed(from), map.toPlayed(to)]
+    const target = 0.8
+    const factor = (target - span[0]) / (span[1] - span[0])
+    const warp = warpFactor(map, time.holds, from, to, factor)!
+    const ms = stretchMarkers(undefined, from, to, 'end', warp, id)!
+    const after = resolveTime({ seconds: 1, speed: 1, time: { ...time, markers: ms } })
+    expect(after.toPlayed(to)).toBeCloseTo(target, 6)
+    expect(after.toPlayed(from)).toBeCloseTo(span[0], 9)
+    // (squeezed below the hold's own length: refused)
+    expect(warpFactor(map, time.holds, from, to, 0.1)).toBeNull()
   })
 
   it('refuses a moving edge at the clip ends or running past the end', () => {
