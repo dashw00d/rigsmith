@@ -88,8 +88,10 @@
             {@render arm(s, name)}
             {#if s !== undefined}<IconButton label="Empty {name}" size="sm" variant="danger" onclick={() => slots.remove(character, s.id)}><X size={13} /></IconButton>{/if}
           </div>
-          <span class="clip" use:tooltip={s?.note ?? s?.clip.id ?? 'No clip yet'}>{s !== undefined ? clipLabel(s.clip) : 'empty'}</span>
-          {#if s !== undefined}<AddVariant {character} {name} {names} />{/if}
+          <div class="sub">
+            <span class="clip" use:tooltip={s?.note ?? s?.clip.id ?? 'No clip yet'}>{s !== undefined ? clipLabel(s.clip) : 'empty'}</span>
+            {#if s !== undefined}<AddVariant {character} {name} {names} />{/if}
+          </div>
         </li>
         {#each variants(name) as v (v.id)}
           <li class="slot-row variant" class:playing={playingId === v.id} class:selected={slots.selectedId === v.id}>
@@ -156,6 +158,8 @@
   li.armed { border-color: var(--accent); }
   li.dragging { opacity: 0.4; }
   .line { display: flex; align-items: center; gap: 2px; min-width: 0; }
+  .sub { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+  .sub .clip { min-width: 0; }
   .grip { color: var(--text-4); cursor: grab; display: grid; }
   .slot { flex: 1; min-width: 0; text-align: left; border: 0; background: transparent; padding: 0 4px; font-weight: 600; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .slot:disabled { color: var(--text-2); cursor: default; }

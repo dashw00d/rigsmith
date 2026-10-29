@@ -171,8 +171,9 @@
 <style>
   .lanes { display: flex; flex-direction: column; gap: 2px; outline: none; }
   .lanes.muted { opacity: 0.45; }
-  .lane { display: flex; align-items: center; height: 16px; }
-  .label { width: 72px; flex: none; display: flex; align-items: center; justify-content: space-between; gap: 2px; padding-right: 5px; font-size: 10px; color: var(--text-3); white-space: nowrap; }
+  .lane { position: relative; display: flex; align-items: center; height: 16px; }
+  /* (in the timeline's label column, left of the lane: the strip's x is the lane's, as the ruler's) */
+  .label { position: absolute; right: calc(100% + 6px); width: 72px; display: flex; align-items: center; justify-content: space-between; gap: 2px; padding-right: 5px; font-size: 10px; color: var(--text-3); white-space: nowrap; }
   .tool { width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-3); display: grid; place-items: center; }
   .tool:hover:not(:disabled) { color: var(--text-1); background: var(--bg-3); }
   .tool:disabled { opacity: 0.35; }

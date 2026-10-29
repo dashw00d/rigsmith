@@ -641,7 +641,7 @@
                 <span class="text">{row.label}</span>
               {/if}
             </div>
-            <div class="lane" role="presentation" onpointerdown={downLane} onpointermove={move} onpointerup={up} onpointercancel={() => { drag = null }}>
+            <div class="lane" class:free={row.kind === 'events'} role="presentation" onpointerdown={downLane} onpointermove={move} onpointerup={up} onpointercancel={() => { drag = null }}>
               {#if region !== null}<div class="region-band" style:left={pct(region[0])} style:width={`${toX(region[1]) - toX(region[0])}px`}></div>{/if}
               {#if row.kind === 'summary' || row.kind === 'section' || row.kind === 'group'}
                 {@render keyLane(row.tracks, false, row.kind === 'section' && row.mute !== undefined && muted(row.mute))}
@@ -722,8 +722,9 @@
   .mini { font-size: 10px; font-weight: 600; }
   button:disabled { opacity: 0.35; cursor: default; }
   select { width: 58px; height: 24px; margin-left: 3px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--bg-2); font-size: 11px; }
-  .tools { display: flex; overflow-x: auto; min-height: 0; }
-  .ruler-row { display: grid; grid-template-columns: var(--label) 1fr; align-items: stretch; }
+  .tools { position: relative; z-index: 5; display: flex; min-height: 0; }
+  /* (the ruler keeps the room of the tracks' scrollbar, so a frame on the ruler is the same frame in every lane) */
+  .ruler-row { display: grid; grid-template-columns: var(--label) 1fr; align-items: stretch; overflow-y: hidden; scrollbar-gutter: stable; }
   .corner { display: flex; align-items: center; padding-left: 4px; }
   .ruler { position: relative; height: 22px; border-radius: 4px; background: var(--bg-2); cursor: ew-resize; overflow: hidden; touch-action: none; }
   .tick { position: absolute; bottom: 0; width: 1px; height: 4px; background: var(--line-strong); pointer-events: none; }
@@ -737,7 +738,7 @@
   .selspan .edge.end { right: -5px; }
   .selspan .edge:hover { filter: brightness(1.25); transform: scaleY(1.15); }
   .head { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text-1); pointer-events: none; box-shadow: 0 0 4px rgb(0 0 0 / 60%); }
-  .tracks { position: relative; overflow-y: auto; overflow-x: hidden; min-height: 40px; border-top: 1px solid var(--line); }
+  .tracks { position: relative; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; min-height: 40px; border-top: 1px solid var(--line); }
   .row { display: grid; grid-template-columns: var(--label) 1fr; height: 19px; align-items: center; }
   .row:hover { background: rgb(255 255 255 / 2.5%); }
   .row.selected { background: var(--accent-soft); }
@@ -746,6 +747,8 @@
   .row.k-section .label { font-weight: 600; color: var(--text-2); }
   .row.k-summary .label { font-weight: 600; color: var(--text-1); }
   .row.strips { height: auto; min-height: 0; }
+  .row.k-events { height: auto; min-height: 19px; align-items: start; }
+  .row.k-events .label { height: 24px; }
   .label { display: flex; align-items: center; gap: 2px; min-width: 0; padding-right: 6px; font-size: 11px; color: var(--text-3); }
   .label.indent1 { padding-left: 12px; }
   .label.indent2 { padding-left: 24px; }

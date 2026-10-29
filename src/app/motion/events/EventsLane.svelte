@@ -22,6 +22,26 @@
   let menu = $state(false)
   let typed = $state('')
   let footBusy = $state(false)
+  let anchor = $state<HTMLSpanElement | null>(null)
+  let menuEl = $state<HTMLDivElement | null>(null)
+
+  // (the menu is fixed over the page, above the Add button, or under it with no room above: the timeline's tracks
+  // scroll and would cut it off)
+  $effect(() => {
+    if (menuEl === null || anchor === null) return
+    menuEl.style.left = '0px'; menuEl.style.top = '0px'
+    const origin = menuEl.getBoundingClientRect(); const a = anchor.getBoundingClientRect()
+    const above = a.top - origin.height - 6
+    menuEl.style.left = `${a.left - origin.left}px`
+    menuEl.style.top = `${(above >= 4 ? above : a.bottom + 6) - origin.top}px`
+  })
+  $effect(() => {
+    if (!menu) return
+    const away = (e: PointerEvent): void => { if (anchor !== null && !anchor.contains(e.target as Node)) menu = false }
+    const esc = (e: KeyboardEvent): void => { if (e.key === 'Escape') menu = false }
+    window.addEventListener('pointerdown', away); window.addEventListener('keydown', esc)
+    return () => { window.removeEventListener('pointerdown', away); window.removeEventListener('keydown', esc) }
+  })
 
   const c = $derived(view.character)
   const slot = $derived(view.slot)
@@ -156,13 +176,13 @@
 <div class="events-lane" class:off bind:this={lane} tabindex="0" role="group" aria-label="Events" onkeydown={keydown}
   onpointermove={move} onpointerup={e => { void drop(e) }} onpointercancel={() => { drag = null }}>
   <div class="head" style:width="{view.width}px">
-    <span class="title">Events{#if off}<span class="faint"> · off</span>{/if}</span>
-    <span class="menu-anchor">
+    {#if off}<span class="faint">Off: the game gets none of them</span>{/if}
+    <span class="menu-anchor" bind:this={anchor}>
       <button type="button" class="chip" aria-haspopup="menu" aria-expanded={menu} onclick={() => { menu = !menu }} use:tooltip={'Add an event at the playhead'}>
         <Plus size={13} /> Add
       </button>
       {#if menu}
-        <div class="menu" role="menu">
+        <div class="menu" role="menu" bind:this={menuEl}>
           {#each words as w (w.name)}
             <button type="button" role="menuitem" class="item" disabled={w.name === 'hit' && hasHit} onclick={() => { void pick(w.name) }}
               use:tooltip={w.builtIn ? BUILT_INS[w.name as keyof typeof BUILT_INS].hint : `Used ${w.uses} time${w.uses === 1 ? '' : 's'} on ${c.name}`}>
@@ -237,7 +257,6 @@
     gap: 6px;
     height: 24px;
   }
-  .title { color: var(--text-2); font-weight: 600; margin-right: 4px; }
   .faint { color: var(--text-3); }
   .mono { font-family: var(--mono); font-size: 10.5px; }
   .chip {
@@ -257,9 +276,7 @@
   .chip:disabled { opacity: 0.5; cursor: default; }
   .menu-anchor { position: relative; }
   .menu {
-    position: absolute;
-    bottom: calc(100% + 6px);
-    left: 0;
+    position: fixed;
     z-index: 50;
     display: flex;
     flex-direction: column;
@@ -272,7 +289,7 @@
     box-shadow: var(--shadow-pop);
     animation: pop var(--med) var(--ease);
   }
-  @keyframes pop { from { opacity: 0; transform: translateY(4px); } }
+  @keyframes pop { from { opacity: 0; } }
   .item {
     display: flex;
     justify-content: space-between;
