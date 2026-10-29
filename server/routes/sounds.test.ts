@@ -3,7 +3,7 @@
 // the game picks from (takes, folders, families), its files served for a preview; a file dropped on an event kept under
 // the character's sounds/ by a clean name (the same bytes once, another file of the name numbered), listed and served;
 // what isn't a sound refused.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -116,5 +116,27 @@ describe("a character's own sounds", () => {
   it('names a file plainly', () => {
     expect(sounds.soundName('Héllo World.MP3')).toBe('h_llo_world.mp3')
     expect(sounds.soundName('---.ogg')).toBe('sound.ogg')
+    // (a file named only its extension: path.extname reads `.wav` as a dot file with none)
+    expect(sounds.soundName('.wav')).toBe('sound.wav')
+    expect(sounds.soundName('.WAV')).toBe('sound.wav')
+  })
+
+  it('keeps a file named `.wav` as sound.wav, listed', async () => {
+    const r = await call('POST', `${of}?name=.wav`, Buffer.from('dot file'))
+    expect(r.body.file).toBe('sound.wav')
+    expect((await call('GET', of)).body.map((x: { file: string }) => x.file)).toContain('sound.wav')
+  })
+
+  it('keeps two uploads of one name at once apart, each whole, and the same bytes at once as one', async () => {
+    const a = Buffer.alloc(200_000, 1); const b = Buffer.alloc(200_000, 2)
+    const both = await Promise.all([call('POST', `${of}?name=race.wav`, a), call('POST', `${of}?name=race.wav`, b)])
+    const files = both.map(r => r.body.file as string)
+    expect(new Set(files)).toEqual(new Set(['race.wav', 'race_2.wav']))
+    expect(readFileSync(path.join(folder, 'sounds', files[0]))).toEqual(a)
+    expect(readFileSync(path.join(folder, 'sounds', files[1]))).toEqual(b)
+    const same = await Promise.all([1, 2, 3].map(() => call('POST', `${of}?name=same.wav`, a)))
+    expect(same.map(r => r.body.file)).toEqual(['same.wav', 'same.wav', 'same.wav'])
+    // (nothing half written or left over beside them)
+    expect(readdirSync(path.join(folder, 'sounds')).filter(f => !/\.(wav|ogg|mp3)$/.test(f))).toEqual([])
   })
 })

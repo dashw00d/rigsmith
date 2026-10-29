@@ -4,9 +4,9 @@
 // for a preview. A file dropped on an event is the character's own: kept under characters/<id>/sounds/ and named on the
 // event 'file:sounds/<file>'; the game export copies the ones its events play (tools/lib/unit_export.ts copySounds) and
 // the game's build installs them into its mix.
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { link, mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { HttpError, readBody, route, send } from '../http.ts'
 import { characterDir, getCharacter, getSettings } from '../store.ts'
@@ -67,10 +67,13 @@ export function gameSounds (mix: unknown, files: string[]): GameSound[] {
   return out.sort((a, b) => a.id.localeCompare(b.id))
 }
 
-/** A dropped file's name as kept: lower case, letters, digits, '_' and '-', its extension kept. */
+/** A dropped file's name as kept: lower case, letters, digits, '_' and '-' ('sound' when nothing is left of it: a file
+ * named `.wav`), its extension kept. */
 export function soundName (file: string): string {
-  const ext = path.extname(file).toLowerCase()
-  const base = path.basename(file, path.extname(file)).toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^[_-]+|[_-]+$/g, '').slice(0, 48)
+  const name = path.basename(file.replace(/\\/g, '/'))
+  // (the extension as AUDIO reads it: path.extname takes `.wav` for a dot file without one)
+  const ext = (AUDIO.exec(name)?.[0] ?? path.extname(name)).toLowerCase()
+  const base = name.slice(0, name.length - ext.length).toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^[_-]+|[_-]+$/g, '').slice(0, 48)
   return `${base === '' ? 'sound' : base}${ext}`
 }
 
@@ -148,21 +151,39 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/sounds$/, async (req, res, [id]
   if (bytes.length === 0) throw new HttpError(400, 'The file is empty')
   const dir = soundsDir(id)
   await mkdir(dir, { recursive: true })
-  const hash = (b: Buffer): string => createHash('sha256').update(b).digest('hex')
-  const want = soundName(given)
-  const ext = path.extname(want)
-  const stem = want.slice(0, -ext.length)
-  let file = want
-  for (let n = 2; existsSync(path.join(dir, file)); n++) {
-    if (hash(await readFile(path.join(dir, file))) === hash(bytes)) break
-    file = `${stem}_${n}${ext}`
-  }
-  const at = path.join(dir, file)
-  if (!existsSync(at)) {
-    const tmp = `${at}.${process.pid}.tmp`
-    await writeFile(tmp, bytes)
-    await rename(tmp, at)
-  }
+  const file = await keepSound(dir, soundName(given), bytes)
   const out: CharacterSound = { file, sound: `file:sounds/${file}`, bytes: bytes.length }
   send(res, 201, out)
 })
+
+/** `bytes` kept in `dir` as `want` (a clean name), or `<stem>_2<ext>`... when another file has the name; the file of the
+ * same bytes when one is there already. Written whole under a name of its own first and linked to the name (which
+ * fails if it is taken), so two uploads at once never overwrite each other or leave half a file under the name.
+ * Returns the name kept. */
+export async function keepSound (dir: string, want: string, bytes: Buffer): Promise<string> {
+  const hash = (b: Buffer): string => createHash('sha256').update(b).digest('hex')
+  const mine = hash(bytes)
+  const ext = path.extname(want)
+  const stem = want.slice(0, want.length - ext.length)
+  const tmp = path.join(dir, `.${want}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`)
+  await writeFile(tmp, bytes, { flag: 'wx' })
+  try {
+    for (let n = 1; n < 10000; n++) {
+      const file = n === 1 ? want : `${stem}_${n}${ext}`
+      const at = path.join(dir, file)
+      try {
+        await link(tmp, at)
+        return file
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      }
+      // (taken: by the same bytes, that file; else the next number)
+      let there: Buffer | null = null
+      try { there = await readFile(at) } catch { /* (gone meanwhile: the next number) */ }
+      if (there !== null && hash(there) === mine) return file
+    }
+    throw new HttpError(409, `Too many sounds named ${want}`)
+  } finally {
+    await unlink(tmp).catch(() => {})
+  }
+}
