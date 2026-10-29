@@ -3,7 +3,7 @@
 python3 tools/verify_autorig.py --out workspace/audits/rigging/generated [--joints skeleton|rig]
 Each Blender job is bounded; failures are retained in results.json and the per-character log.
 
-Characters are read as schema 3 (run `node tools/migrate.ts` on a workspace of older files). The joints given to
+Characters are read as schema 3 or 4 (their joints are the same in both; run `node tools/migrate.ts` on a workspace of older files). The joints given to
 Blender are the character's effective skeleton, as src/model/select.ts jointsOf computes it (the detected joints with
 the user's placements on top, only the joints its skeleton has), or with --joints rig the joints its last rig was
 built from (characters/<id>/joints.json, written by the rig job).
@@ -63,9 +63,9 @@ def main():
 
     files = [f for f in sorted((args.workspace / 'characters').glob('*/character.json'))
              if not args.only or f.parent.name in args.only]
-    old = [f.parent.name for f in files if json.loads(f.read_text()).get('schema') != 3]
+    old = [f.parent.name for f in files if json.loads(f.read_text()).get('schema') not in (3, 4)]
     if old:
-        raise SystemExit(f"{', '.join(old)}: not schema 3. Run node tools/migrate.ts first")
+        raise SystemExit(f"{', '.join(old)}: not schema 3 or 4. Run node tools/migrate.ts first")
     args.out.mkdir(parents=True, exist_ok=True)
 
     def run(file):

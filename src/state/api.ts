@@ -1,6 +1,6 @@
 // Typed client for the local server (server/routes/*, DESIGN.md §4.2). Every request from src/ that changes something
 // goes through here. Each sends `x-rigsmith: 1` (the server refuses writes without it, so another web page can't make
-// them) and `x-rigsmith-schema: 3` (the server answers the document, schema 3, not the v1 view old tools still read).
+// them) and `x-rigsmith-schema: 4` (the server answers the document, schema 4, not the v1 view old tools still read).
 import type { Character, ClipKey, FingerLevel, Job, JournalEntry, Joints, Settings } from '../model/types.ts'
 import type { Command } from '../model/command-types.ts'
 import type { UnitSpec } from '../model/unit.ts'
@@ -91,7 +91,7 @@ export async function call<T> (method: string, url: string, body?: Raw | object 
     method,
     headers: {
       'x-rigsmith': '1',
-      'x-rigsmith-schema': '3',
+      'x-rigsmith-schema': '4',
       ...(body === undefined || raw ? {} : { 'content-type': 'application/json' }),
       ...headers,
     },

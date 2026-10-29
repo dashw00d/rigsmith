@@ -1,4 +1,4 @@
-// A schema 1 or 2 character's clips measured for the move to schema 3 (src/engine/measure.ts, through
+// A schema 1 to 3 character's clips measured for the move to schema 4 (src/engine/measure.ts, through
 // tools/lib/node3d.ts measureCharacter): what server/store.ts runs (as a child, so three's headless shims stay out of
 // the server) before migrating a character whose slots need it. Prints {"times": {<slot id>: {"seconds", "blow"?}},
 // "problems": [...]} on stdout.

@@ -36,6 +36,7 @@ import path from 'node:path'
 import type { Command } from '../src/model/command-types.ts'
 import { pct, r3, refText, windowsText } from '../src/model/commands/common.ts'
 import { newId } from '../src/model/ids.ts'
+import { pieceText } from '../src/model/pieces.ts'
 import { gearById, heightOf, phaseOf, slotById } from '../src/model/select.ts'
 import type { Character, Gear, Handle, HandPose, HandPoseRef, Job, JournalEntry, Mount, Side, Slot } from '../src/model/types.ts'
 import type { V2Adjustment } from '../src/model/v2.ts'
@@ -97,7 +98,7 @@ async function call<T> (method: string, url: string, body?: unknown): Promise<T>
   try {
     r = await fetch(SERVER + url, {
       method,
-      headers: { 'content-type': 'application/json', 'x-rigsmith': '1', 'x-rigsmith-schema': '3', 'x-rigsmith-by': BY },
+      headers: { 'content-type': 'application/json', 'x-rigsmith': '1', 'x-rigsmith-schema': '4', 'x-rigsmith-by': BY },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch {
@@ -181,7 +182,7 @@ function slotLines (c: Character, s: Slot, game: number | null, pad: number): st
   if (s.note !== undefined) out.push(`${indent}why: ${s.note}`)
   for (const a of slotToV2(s).adjustments) out.push(`${indent}[${a.enabled ? 'on ' : 'off'}] ${adjustmentText(c, a, game)}${a.note !== undefined ? ` · ${a.note}` : ''}`)
   for (const m of s.time?.markers ?? []) out.push(`${indent}retimed: ${pct(m.u)} of the source plays at ${pct(m.to)}`)
-  for (const h of s.time?.holds ?? []) out.push(`${indent}held ${r3(h.seconds)} s at ${pct(h.u)}`)
+  if (s.pieces !== undefined) out.push(`${indent}pieces: ${s.pieces.map(p => `${pieceText(p, id => c.clips.find(x => x.id === id)?.name)}${p.kind !== 'hold' ? ` ${r3(p.from)}-${r3(p.to)} s` : ''}${(p.blend ?? 0) > 0 ? ` (blend ${r3(p.blend!)} s)` : ''}`).join(', then ')}`)
   for (const e of s.events ?? []) out.push(`${indent}event ${e.name} at ${pct(e.u)}${e.to !== undefined ? `-${pct(e.to)}` : ''}${e.sound !== undefined ? ` (${e.sound})` : ''}${e.bone !== undefined ? ` on ${e.bone}` : ''}`)
   if (s.muted !== undefined) out.push(`${indent}switched off: ${s.muted.join(', ')}`)
   return out

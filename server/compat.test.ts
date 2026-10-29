@@ -97,15 +97,17 @@ describe('reads', () => {
     expect(mine.schema).toBeUndefined()
   })
 
-  it('answers the document (schema 3) with x-rigsmith-schema: 2 or 3', async () => {
+  it('answers the document (schema 4) with x-rigsmith-schema: 2, 3 or 4', async () => {
     const id = await make('Lancer')
     const one = await call('GET', `/api/characters/${id}`, V2)
-    expect(one.body).toMatchObject({ id, schema: 3, status: 'rigged', clips: [], gear: [] })
+    expect(one.body).toMatchObject({ id, schema: 4, status: 'rigged', clips: [], gear: [] })
     expect(one.body.animations).toBeUndefined()
     const list = await call('GET', '/api/characters', V2)
-    expect((list.body as unknown as Array<Record<string, unknown>>).find(c => c.id === id)).toMatchObject({ schema: 3 })
+    expect((list.body as unknown as Array<Record<string, unknown>>).find(c => c.id === id)).toMatchObject({ schema: 4 })
     const three = await call('GET', `/api/characters/${id}`, { ...V2, 'x-rigsmith-schema': '3' })
-    expect(three.body).toMatchObject({ id, schema: 3 })
+    expect(three.body).toMatchObject({ id, schema: 4 })
+    const four = await call('GET', `/api/characters/${id}`, { ...V2, 'x-rigsmith-schema': '4' })
+    expect(four.body).toMatchObject({ id, schema: 4 })
   })
 })
 

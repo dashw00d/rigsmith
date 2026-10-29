@@ -1,6 +1,6 @@
 // The deprecated v1 HTTP layer (DESIGN.md §4.2), kept for clients that can't be changed yet: the game repo's scripts
 // (tools/rigsmith/import_new_units.py, import_gear.py, replace_body.py) and tools/game_import.py. Reads of characters
-// answer the v1 view (src/model/legacy.ts toV1) unless the request carries `x-rigsmith-schema: 2` or `3` (the app and the
+// answer the v1 view (src/model/legacy.ts toV1) unless the request carries `x-rigsmith-schema: 2`, `3` or `4` (the app and the
 // ported tools always do). PATCH takes only the whole-array fields those scripts write (animations, scripts, garments,
 // props), turned into one batch of commands; anything else is gone (410): send commands instead. Remove once they are
 // ported.
@@ -22,7 +22,7 @@ import { type Character, events, readJson, UNITS_FILE } from './store.ts'
 const V1_KEYS = new Set(['animations', 'scripts', 'garments', 'props'])
 
 /** Clients that don't say they speak schema 2 get the v1 view. */
-export const wantsV1 = (req: IncomingMessage): boolean => !['2', '3'].includes(header(req, 'x-rigsmith-schema') ?? '')
+export const wantsV1 = (req: IncomingMessage): boolean => !['2', '3', '4'].includes(header(req, 'x-rigsmith-schema') ?? '')
 
 /** The jobs that change what v1 called the status: an import or re-import ('importing') and a rig ('rigging'). */
 const LIFECYCLE = new Set(['inspect', 'reimport', 'rig'])

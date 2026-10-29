@@ -12,9 +12,10 @@ import { clipUrl, isMixamoJoint, refUrl, type ClipSource, type SourceClip } from
 import { loadGlbFile } from '../../src/engine/headless.ts'
 import type { Rom } from '../../src/engine/limits.ts'
 import { captureRest, retarget, type RestSkeleton } from '../../src/engine/retarget.ts'
-import { measureClipTimes, noClip } from '../../src/engine/measure.ts'
+import { measureClipTimes, measureHeld, noClip } from '../../src/engine/measure.ts'
 import { migrateSettings, migrateV1, readCharacter, type MeasuredTimes } from '../../src/model/migrate.ts'
 import type { Character, Settings } from '../../src/model/types.ts'
+import type { V3Character } from '../../src/model/v3.ts'
 
 export const ROOT = path.resolve(import.meta.dirname, '..', '..')
 // (RIGSMITH_WORKSPACE: another workspace, as the server and the library tools take it)
@@ -111,8 +112,8 @@ export async function nodeRom (rig: string): Promise<Rom | null> {
   return /^[\w-]+$/.test(rig) && existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as Rom : null
 }
 
-/** A character's record (workspace/characters/<id>/character.json), as schema 3 whatever schema the file is (an old
- * file whose slots need their clips measured to move to schema 3 throws: run node tools/migrate.ts). */
+/** A character's record (workspace/characters/<id>/character.json), as schema 4 whatever schema the file is (an old
+ * file whose slots need their clips measured to move to schema 4 throws: run node tools/migrate.ts). */
 export function character (id: string, workspace = WORKSPACE): Character {
   const file = path.join(workspace, 'characters', id, 'character.json')
   if (!existsSync(file)) throw new Error(`no character ${id}`)
@@ -133,13 +134,16 @@ export async function body (id: string, workspace = WORKSPACE): Promise<Characte
   return new CharacterView(scene)
 }
 
-/** An old (schema 1 or 2) character's clips measured for its move to schema 3 (src/engine/measure.ts), on its rig as
+/** An old (schema 1 to 3) character's clips measured for its move to schema 4 (src/engine/measure.ts), on its rig as
  * the bake measures them: `file` the record to read (default its character.json; tools/migrate.ts --check reads the
- * character.v2.json kept). */
+ * character.v2.json or character.v3.json kept). A schema 3 one: the lengths of its slots' clips with holds (`all`:
+ * every slot's). */
 export async function measureCharacter (id: string, o: { workspace?: string, file?: string, all?: boolean } = {}): Promise<MeasuredTimes> {
   const workspace = o.workspace ?? WORKSPACE
   const dir = path.join(workspace, 'characters', id)
-  const c = migrateV1(JSON.parse(readFileSync(o.file ?? path.join(dir, 'character.json'), 'utf8'))).character
+  const raw = JSON.parse(readFileSync(o.file ?? path.join(dir, 'character.json'), 'utf8')) as { schema?: unknown }
+  const v3 = raw.schema === 3 || raw.schema === 4
+  const c = v3 ? raw as unknown as V3Character : migrateV1(raw).character
   const rigged = c.files.rigged
   // (no rig, or one without a skeleton: none of its clips can play, so none is there to measure)
   const all = c.clips.map(s => s.id)
@@ -147,5 +151,5 @@ export async function measureCharacter (id: string, o: { workspace?: string, fil
   const view = new CharacterView((await load(path.join(dir, rigged))).scene)
   if (view.rest === null) return { times: {}, problems: [`${c.name}'s ${rigged} has no skeleton`], missing: all }
   const ctx = { rest: view.rest, posable: view.root, clips: nodeClipSource(view.rest, workspace), fps: 30, sharedPoses: settings(workspace).handPoses, rom: nodeRom }
-  return await measureClipTimes(c, ctx, { all: o.all })
+  return v3 ? await measureHeld(c as V3Character, ctx, { all: o.all }) : await measureClipTimes(c as Parameters<typeof measureClipTimes>[0], ctx, { all: o.all })
 }

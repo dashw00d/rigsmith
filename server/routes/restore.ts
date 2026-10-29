@@ -4,7 +4,7 @@
 // tools/game_import.py is its client: it brings the parts the build carries in through the gear upload route first,
 // then names them here (where each sits, whether it shows, a re-pivoted mesh).
 //
-//   record   schema 3: its slots (gear named by name), hands (hands.hold) and gearIds (to map handle ids by name);
+//   record   schema 4 (or 3, its holds made pieces): its slots (gear named by name), hands (hands.hold) and gearIds (to map handle ids by name);
 //            schema 2: the same, its slots moved into source time through the blow cut the record says (its clips'
 //            `blow`, the library clip's length: src/model/migrate.ts slotFromV2); schema 1: its clips (clip, url, loop, inPlace, speed, lift, keyData,
 //            blow) and scripts, read with the v1 converters (src/model/migrate.ts slotsFromV1 / holdsFromV1), its keys
@@ -25,12 +25,13 @@ import path from 'node:path'
 import type { Command } from '../../src/model/command-types.ts'
 import { applyCommands, CommandError } from '../../src/model/commands.ts'
 import { newId } from '../../src/model/ids.ts'
-import { holdsFromV1, slotFromV2, slotsFromV1 } from '../../src/model/migrate.ts'
+import { holdsFromV1, piecesFromHolds, slotFromV2, slotsFromV1 } from '../../src/model/migrate.ts'
 import { freshSet, gearById } from '../../src/model/select.ts'
 import { exportName, gameNameOf, variantName, variantOf } from '../../src/model/variants.ts'
 import type { Character, Gear, GearTrack, HandPoseRef, Placement, Side, Slot } from '../../src/model/types.ts'
 import type { V1AnimationEntry, V1ClipScript } from '../../src/model/v1.ts'
 import type { V2Slot } from '../../src/model/v2.ts'
+import type { V3Slot } from '../../src/model/v3.ts'
 import { runCommands } from '../commands.ts'
 import { by, HttpError, readBody, route, send } from '../http.ts'
 import { type Change, getCharacter, LIBRARY, paths, readJson, withFiles } from '../store.ts'
@@ -66,11 +67,11 @@ const SIDES: Side[] = ['Left', 'Right']
 const fromGame = (g: Gear): boolean => g.from?.startsWith('emberhold:') === true
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
-/** v2 and v3 build record fields restore reads (src/model/unit.ts BuildRecord). */
+/** v2, v3 and v4 build record fields restore reads (src/model/unit.ts BuildRecord). */
 interface RecordV2 {
-  schema: 2 | 3
-  /** Schema 3: as stored; schema 2: schema 2's slots. */
-  slots: Slot[] | V2Slot[]
+  schema: 2 | 3 | 4
+  /** Schema 4: as stored; schema 3: schema 3's (with holds); schema 2: schema 2's slots. */
+  slots: Slot[] | V3Slot[] | V2Slot[]
   clips?: Record<string, { blow?: number }>
   hands?: Partial<Record<Side, HandPoseRef>>
   gearIds?: Record<string, { name: string, from?: string, handles?: Record<string, string> }>
@@ -131,7 +132,7 @@ export function restoreCommands (c: Character, req: RestoreRequest, makeId: () =
   // Its clips and hands.
   const record = req.record
   if (isObj(record)) {
-    const v2 = (record.schema === 2 || record.schema === 3) && Array.isArray(record.slots)
+    const v2 = (record.schema === 2 || record.schema === 3 || record.schema === 4) && Array.isArray(record.slots)
     const set = v2 ? fromV2(record as unknown as RecordV2, work, req.clips, notes, o.clipSeconds) : fromV1(record as RecordV1, work, notes, o.clipSeconds)
     let slots = set.slots
     if (req.clips !== undefined) {
@@ -180,7 +181,7 @@ export function restoreCommands (c: Character, req: RestoreRequest, makeId: () =
   return { commands, notes }
 }
 
-/** A schema 3 (or 2) record's slots, their gear references (by name in the record) made into ids clips.replace maps by
+/** A schema 4 (3 or 2) record's slots, their gear references (by name in the record) made into ids clips.replace maps by
  * name: gearNames for every name (and this character's own gear ids, for the slots kept beside them), handleNames for
  * the handles by the names the record gives their ids. Only the slots named `only` (all when unset). A schema 2 record's
  * slots are moved into source time (slotFromV2) through the cut it records: the blow it found, the length of the
@@ -203,7 +204,16 @@ function fromV2 (r: RecordV2, c: Character, only: string[] | undefined, notes: s
     return t
   }
   const chosen = only === undefined ? r.slots as Array<Slot | V2Slot> : picked(r.slots as Array<Slot | V2Slot>, only)
-  const sources: Slot[] = r.schema === 3 ? structuredClone(chosen as Slot[]) : (structuredClone(chosen) as V2Slot[]).map((s, i) => {
+  // (a schema 3 record's holds become pieces as a schema 3 file's do: through the library clip's length; without it,
+  // dropped and said)
+  const fromV3 = (s: V3Slot, i: number): Slot => {
+    if (!(s.time?.holds ?? []).some(h => h.seconds > 0)) return piecesFromHolds(s, 1, '')
+    const seconds = clipSeconds?.(s.clip.id)
+    if (seconds !== undefined) return piecesFromHolds(s, seconds, `${c.id}:restored:${i}`)
+    notes.push(`clip ${s.name}: its holds dropped (the length of ${s.clip.id} isn't known)`)
+    return piecesFromHolds({ ...s, time: { ...s.time, holds: [] } }, 1, '')
+  }
+  const sources: Slot[] = r.schema === 4 ? structuredClone(chosen as Slot[]) : r.schema === 3 ? (structuredClone(chosen) as V3Slot[]).map(fromV3) : (structuredClone(chosen) as V2Slot[]).map((s, i) => {
     // (keys on gear by name, as the record has them, until the tokens below)
     const seconds = clipSeconds?.(s.clip.id)
     const blow = r.clips?.[s.name]?.blow

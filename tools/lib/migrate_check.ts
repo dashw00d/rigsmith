@@ -11,6 +11,10 @@ import { DEFAULT_FIST, hierarchyOf, hitOf, jointsOf } from '../../src/model/sele
 import type { Character, HandPoseRef, Side, Vec3, Window } from '../../src/model/types.ts'
 import type { V1Character, V1GripScript } from '../../src/model/v1.ts'
 import type { V2Adjustment, V2Character, V2Window } from '../../src/model/v2.ts'
+import type { V3Character } from '../../src/model/v3.ts'
+import { layoutOf } from '../../src/model/pieces.ts'
+import { stableJson } from '../../src/model/entities.ts'
+import { warpAt } from '../../src/model/keyedit.ts'
 
 const SIDES: Side[] = ['Left', 'Right']
 /** The migration keeps a joint as placed by hand when it moved more than this (src/model/migrate.ts). */
@@ -196,6 +200,54 @@ export function phaseProblems (v: V2Character, c: Character, times: Record<strin
 }
 
 // ---- hash lists ---------------------------------------------------------------------------------------------------
+
+// ---- schema 3 -> 4 -------------------------------------------------------------------------------------------------
+
+/** The checks of a schema 3 character moved to schema 4: per slot with holds, every key (bones and gear), event, holder,
+ * shown switch and hand window plays at the same second of its clip before speed (schema 3: W(u)·D and the seconds of
+ * the holds before it; schema 4: W'(u')·D' of its pieces' composite, W' its markers' warp), within a microsecond; every
+ * other slot is as it was. What is wrong, in plain words (none: it passed). */
+export function heldProblems (v: V3Character, c: Character, times: Record<string, ClipTimes>): string[] {
+  const problems: string[] = []
+  for (const was of v.clips) {
+    const now = c.clips.find(s => s.id === was.id)
+    if (now === undefined) { problems.push(`clip ${was.name}: gone`); continue }
+    const holds = (was.time?.holds ?? []).filter(h => h.seconds > 0)
+    if (holds.length === 0) {
+      const time = Object.fromEntries(Object.entries(was.time ?? {}).filter(([k]) => k !== 'holds'))
+      const plain = { ...was, time: Object.keys(time).length > 0 ? time : undefined }
+      if (stableJson(plain) !== stableJson(now)) problems.push(`clip ${was.name}: changed, though it had no holds`)
+      continue
+    }
+    const D = times[was.id]?.seconds
+    if (D === undefined) { problems.push(`clip ${was.name}: its clip couldn't be measured`); continue }
+    if (now.pieces === undefined) { problems.push(`clip ${was.name}: its holds aren't pieces`); continue }
+    const D2 = layoutOf(now.pieces).seconds
+    const before = (u: number): number => holds.reduce((n, h) => n + (h.u < u ? h.seconds : 0), 0)
+    const old = (u: number): number => warpAt(was.time?.markers, u) * D + before(u)
+    const neu = (u: number): number => warpAt(now.time?.markers, u) * D2
+    const pairs: Array<[string, number, number]> = []
+    for (const [b, ks] of Object.entries(was.bones ?? {})) ks.forEach((k, i) => pairs.push([`${b} key ${i}`, k.u, now.bones?.[b]?.[i]?.u ?? NaN]))
+    for (const [g, t] of Object.entries(was.gear ?? {})) {
+      ;(t.keys ?? []).forEach((k, i) => pairs.push([`gear ${g} key ${i}`, k.u, now.gear?.[g]?.keys?.[i]?.u ?? NaN]))
+      ;(t.heldBy ?? []).forEach((x, i) => pairs.push([`gear ${g} holder ${i}`, x.u, now.gear?.[g]?.heldBy?.[i]?.u ?? NaN]))
+      ;(t.shown ?? []).forEach((x, i) => pairs.push([`gear ${g} shown ${i}`, x.u, now.gear?.[g]?.shown?.[i]?.u ?? NaN]))
+    }
+    ;(was.events ?? []).forEach((e, i) => {
+      const n = now.events?.[i]
+      pairs.push([`event ${e.name}`, e.u, n?.u ?? NaN])
+      if (e.to !== undefined) pairs.push([`event ${e.name}'s end`, e.to, n?.to ?? NaN])
+    })
+    was.adjustments.forEach((a, i) => {
+      const n = now.adjustments[i]
+      if (a.kind === 'ground' || n === undefined || n.kind === 'ground') return
+      ;(a.windows ?? []).forEach((w, j) => { pairs.push([`${a.kind} window ${j}`, w[0], n.windows?.[j]?.[0] ?? NaN]); pairs.push([`${a.kind} window ${j}`, w[1], n.windows?.[j]?.[1] ?? NaN]) })
+    })
+    const off = pairs.filter(([, a, b]) => !(Math.abs(old(a) - neu(b)) <= 1e-6))
+    if (off.length > 0) problems.push(`clip ${was.name}: ${off.length} times play elsewhere (${off.slice(0, 3).map(x => x[0]).join(', ')})`)
+  }
+  return problems
+}
 
 /** A hash list as sha256sum writes it ('<hex>  <path>', '*' before the path in binary mode; # comments): file -> hash.
  * Relative paths are inside the workspace (what `cd workspace && sha256sum characters/x/rigged.glb` gives); absolute

@@ -330,10 +330,10 @@ class Library:
 
 
 def api(method, path, body=None, raw=None, ctype='application/json', timeout=60):
-    """A call to Rigsmith's server as schema 3, signed as this tool (the journal names it)."""
+    """A call to Rigsmith's server as schema 4, signed as this tool (the journal names it)."""
     data = raw if raw is not None else None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(API + path, method=method, data=data, headers={
-        'content-type': ctype, 'x-rigsmith': '1', 'x-rigsmith-schema': '3', 'x-rigsmith-by': BY})
+        'content-type': ctype, 'x-rigsmith': '1', 'x-rigsmith-schema': '4', 'x-rigsmith-by': BY})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             text = r.read()
@@ -354,14 +354,15 @@ def api_up():
 
 
 def character(cid, live):
-    """A character as schema 3: from the server when it runs, else its file (which must be schema 3 already)."""
+    """A character as schema 4: from the server when it runs, else its file (schema 3 or 4: what is read of it here, its
+    gear and hands, is the same in both)."""
     if live:
         return api('GET', f'/api/characters/{cid}')
     path = os.path.join(CHARACTERS, cid, 'character.json')
     if not os.path.exists(path):
         raise SystemExit(f'{cid}: no such character in {CHARACTERS}')
     c = json.load(open(path))
-    if c.get('schema') != 3:
+    if c.get('schema') not in (3, 4):
         raise SystemExit(f'{cid}: its character.json is from before schema 3: start the app once (it migrates each '
                          f'character as it reads it) or run node tools/migrate.ts')
     return c
@@ -665,8 +666,8 @@ def main():
         for cid, role in todo:
             c = character(cid, live)
             names = None
-            if role == 'unit' and report.get('schema') in (2, 3) and isinstance(report.get('slots'), list):
-                # (a schema 2 or 3 build keeps the slots: sent as they are (the restore route reads either), the game's
+            if role == 'unit' and report.get('schema') in (2, 3, 4) and isinstance(report.get('slots'), list):
+                # (a schema 2, 3 or 4 build keeps the slots: sent as they are (the restore route reads each), the game's
                 # names picked from them)
                 record = report
                 names = list(spec['clips']) if isinstance(spec['clips'], list) else None

@@ -208,7 +208,7 @@ describe('the unit export keeps the game\'s contract', () => {
 
   it('writes the build record: the run, the strides, the clips as baked, the slots and the gear by name', () => {
     expect(JSON.parse(readFileSync(path.join(fx.workDir, UNIT, 'rigsmith.json'), 'utf8'))).toEqual(record)
-    expect(record).toMatchObject({ schema: 3, unit: UNIT, run: 'test-run', rigsmith: { character: CHARACTER, name: 'Tester' } })
+    expect(record).toMatchObject({ schema: 4, unit: UNIT, run: 'test-run', rigsmith: { character: CHARACTER, name: 'Tester' } })
     expect(record.rigged.file).toBe(path.join('characters', CHARACTER, 'rigged.glb'))
     expect(record.texture).toBeNull()
     expect(record.hands).toEqual({})

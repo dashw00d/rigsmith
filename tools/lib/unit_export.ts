@@ -572,7 +572,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   copySounds(events, { unit: me.dir, companion: comp?.dir }, path.join(srcDir, 'sounds'), warn)
   writeFileSync(path.join(o.modelsDir, `${unit}.events.json`), JSON.stringify(events, null, 1) + '\n')
   const record: BuildRecord = {
-    schema: 3,
+    schema: 4,
     unit,
     generator: 'rigsmith tools/game_export.ts',
     run: o.runToken ?? null,
