@@ -6,8 +6,10 @@
 // handle, a bone keyed) resolves.
 import type { Command, KeyTrack } from '../command-types.ts'
 import { carryHandle, gearById, gearByName, slotById, slotByName } from '../select.ts'
+import { hierarchyOf } from '../skeletons.ts'
+import { playedAs, playsAs } from '../variants.ts'
 import type {
-  Adjustment, AdjustmentKind, BlowFit, Character, ClipEvent, ClipKey, Gear, GearTrack, Handle, RetimeMarker, Slot, SlotIk, SlotTime, TimeHold, Window,
+  Adjustment, AdjustmentKind, BlowFit, Character, ClipEvent, ClipKey, Gear, GearTrack, Handle, HeldBy, RetimeMarker, Slot, SlotIk, SlotTime, TimeHold, Window,
 } from '../types.ts'
 import {
   bad, bool, clipKeys, clipRef, conflict, handPoseRef, id, joint, list, missing, name, names, note, num, obj, oneOf, opt, overlaps,
@@ -154,6 +156,11 @@ const heldByOf = (v: unknown, what: string): NonNullable<GearTrack['heldBy']> =>
     return { bone: str(o.bone, `${at}.bone`), ...(place !== undefined ? { place } : {}), ...(handle !== undefined ? { handle } : {}), ...(placed === true ? { placed: true as const } : {}) }
   })
 
+/** The bone a holder by this handle must be: a carry handle's the piece's Gear attach bone, a grip's its hand's
+ * (undefined: a grip for either hand, or a carry handle of a piece off a bone). */
+const holderBone = (g: Gear, h: Handle): string | undefined =>
+  h.kind === 'carry' ? (g.attach.kind === 'bone' ? g.attach.bone : undefined) : h.hand !== undefined ? `${h.hand}Hand` : undefined
+
 /** A piece's holders checked against it: a handle one of its carry or grip handles, on the hand it is for; placed on
  * its Gear attach bone. */
 function checkHolders (g: Gear, held: NonNullable<GearTrack['heldBy']>): void {
@@ -162,9 +169,48 @@ function checkHolders (g: Gear, held: NonNullable<GearTrack['heldBy']>): void {
     if (x.handle === undefined) continue
     const h = g.handles.find(y => y.id === x.handle) ?? missing(`${g.name} has no handle ${x.handle}`)
     if (h.kind === 'pull') bad(`${g.name}'s ${h.name} is a pull: a hand holds it by a carry or grip handle`)
-    const bone = h.kind === 'carry' ? (g.attach.kind === 'bone' ? g.attach.bone : undefined) : h.hand !== undefined ? `${h.hand}Hand` : undefined
+    const bone = holderBone(g, h)
     if (bone !== undefined ? bone !== x.bone : !/^(Left|Right)Hand$/.test(x.bone)) bad(`${g.name}'s ${h.name} is held by ${bone ?? 'a hand'}, not ${x.bone}`)
   }
+}
+
+/** A piece's holders made to fit it as it is now (its handles or Gear attach bone changed under them), so checkHolders
+ * passes: one placed follows its attach bone (off a bone: held where it is); one by a handle that went (or is a pull)
+ * is held where it is; one by a handle for another bone now is that bone's. What changed is said (`where`: the clip). */
+export function mendHolders (g: Gear, held: HeldBy[], where: string): { held: HeldBy[], said: string[] } {
+  const said: string[] = []
+  const out = held.map(x => {
+    if (x.placed === true) {
+      if (g.attach.kind !== 'bone') {
+        said.push(`${where}: ${g.name} held by ${x.bone} where it is from ${pct(x.u)} (it isn't placed on a bone)`)
+        const rest = { ...x }
+        delete rest.placed
+        return rest
+      }
+      if (g.attach.bone === x.bone) return x
+      said.push(`${where}: ${g.name} placed on ${g.attach.bone} from ${pct(x.u)} (was ${x.bone})`)
+      return { ...x, bone: g.attach.bone }
+    }
+    if (x.handle === undefined) return x
+    const h = g.handles.find(y => y.id === x.handle)
+    if (h === undefined || h.kind === 'pull') {
+      said.push(`${where}: ${g.name} held by ${x.bone} where it is from ${pct(x.u)} (its handle ${x.handle} went)`)
+      const rest = { ...x }
+      delete rest.handle
+      return rest
+    }
+    const bone = holderBone(g, h)
+    if (bone !== undefined ? bone === x.bone : /^(Left|Right)Hand$/.test(x.bone)) return x
+    if (bone !== undefined) {
+      said.push(`${where}: ${g.name} · ${h.name} held by ${bone} from ${pct(x.u)} (was ${x.bone})`)
+      return { ...x, bone }
+    }
+    said.push(`${where}: ${g.name} held by ${x.bone} where it is from ${pct(x.u)} (${h.name} is for a hand)`)
+    const rest = { ...x }
+    delete rest.handle
+    return rest
+  })
+  return { held: out, said }
 }
 const shownOf = (v: unknown, what: string): NonNullable<GearTrack['shown']> => segments(v, what, (o, at) => ({ shown: bool(o.shown, `${at}.shown`) }))
 
@@ -276,6 +322,25 @@ function slotRefs (c: Character, slot: Slot, slotIds: Set<string>): void {
   if (slot.ik !== undefined) ikRefs(c, slot.ik)
 }
 
+/** The tracks' bones are the skeleton's and each piece's holders fit it (what slot.gear.update and slot.keys.set check
+ * of a track, for tracks laid by slot.add and slot.fill). */
+function trackRefs (c: Character, t: Pick<Slot, 'bones' | 'gear'>, what: string): void {
+  for (const b of Object.keys(t.bones ?? {})) joint(c, b, `${what}.bones`)
+  for (const [gid, track] of Object.entries(t.gear ?? {})) {
+    const g = gearById(c, gid) ?? missing(`No gear ${gid}`)
+    if (track.heldBy === undefined) continue
+    for (const x of track.heldBy) joint(c, x.bone, `${what}.gear.${gid}.heldBy bone`)
+    checkHolders(g, track.heldBy)
+  }
+}
+
+/** No other slot plays under the same name in the game as `name` (src/model/variants.ts playedAs: `Attack 2` and
+ * `Attack_2` both export as Attack_2). */
+function playsFree (c: Pick<Character, 'clips'>, name: string, except?: Slot): void {
+  const other = playsAs(c, name, except)
+  if (other !== undefined) conflict(`A clip named ${name} would play as ${playedAs(name)} in the game, as clip ${other.name} does; name it otherwise`)
+}
+
 /** A build's references resolve: bone gear, a handle on it a hand can hold (not a pull). */
 function ikRefs (c: Character, ik: SlotIk): void {
   const boneGear = (gid: string): Gear => {
@@ -384,6 +449,7 @@ function clearSetup (c: Character, s: Slot): string[] {
 }
 
 const slotIdsOf = (c: Character): Set<string> => new Set(c.clips.map(s => s.id))
+const isJoint = (c: Character, bone: string): boolean => hierarchyOf(c).some(([n]) => n === bone)
 
 export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
   const find = (slotId: string): Slot => slotById(c, slotId) ?? missing(`No clip slot ${slotId}`)
@@ -392,11 +458,13 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
       const s = slotOf(cmd.slot, 'slot')
       if (slotById(c, s.id) !== undefined) conflict(`A clip slot ${s.id} exists already`)
       if (slotByName(c, s.name) !== undefined) conflict(`A clip named ${s.name} exists already`)
+      playsFree(c, s.name)
       const index = cmd.index === undefined ? c.clips.length : num(cmd.index, 'index', { min: 0, max: c.clips.length })
       if (!Number.isInteger(index)) bad('index must be a whole number')
       c.clips.splice(index, 0, s)
       settle(c, s, s.adjustments)
       slotRefs(c, s, slotIdsOf(c))
+      trackRefs(c, s, 'slot')
       return [`clip ${s.name}: added (${s.clip.id})`]
     }
     case 'slot.update': {
@@ -408,6 +476,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
         const next = name(p.name, 'name')
         if (next !== s.name) {
           if (slotByName(c, next) !== undefined) conflict(`A clip named ${next} exists already`)
+          playsFree(c, next, s)
           out.push(`clip ${s.name}: renamed ${next}`)
           s.name = next
         }
@@ -444,6 +513,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
       const added = list(cmd.adjustments ?? [], 'adjustments', adjustment)
       const given: Slot = { id: 'given', name: 'given', clip, speed, loop: false, inPlace: false, adjustments: [] }
       setup(given, cmd as unknown as Obj, 'fill')
+      trackRefs(c, given, 'fill')
       const out: string[] = []
       let s: Slot
       if (cmd.id !== undefined) {
@@ -461,6 +531,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
         const slotName = name(cmd.name, 'name')
         const slotId = id(cmd.newId, 'newId')
         if (slotByName(c, slotName) !== undefined) conflict(`A clip named ${slotName} exists already; fill it by its id`)
+        playsFree(c, slotName)
         if (slotById(c, slotId) !== undefined) conflict(`A clip slot ${slotId} exists already`)
         s = { id: slotId, name: slotName, clip, speed, loop: loop ?? false, inPlace: inPlace ?? false, adjustments: [] }
         c.clips.push(s)
@@ -489,6 +560,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
         const slotName = name(cmd.name, 'name')
         const slotId = id(cmd.newId, 'newId')
         if (slotByName(c, slotName) !== undefined) conflict(`A clip named ${slotName} exists already; copy over it by its id`)
+        playsFree(c, slotName)
         if (slotById(c, slotId) !== undefined) conflict(`A clip slot ${slotId} exists already`)
         s = { ...copy, id: slotId, name: slotName }
         c.clips.push(s)
@@ -759,6 +831,7 @@ function replace (c: Character, cmd: Extract<ClipsCommand, { type: 'clips.replac
   const slots = list(cmd.slots, 'slots', slotOf)
   if (new Set(slots.map(s => s.id)).size !== slots.length) bad('Clip slot ids repeat')
   for (const [i, s] of slots.entries()) if (slots.findIndex(o => o.name === s.name) !== i) bad(`Two clips are named ${s.name}`)
+  for (const s of slots) playsFree({ clips: slots }, s.name, s)
   const gearNames = cmd.gearNames === undefined ? null : record(cmd.gearNames, 'gearNames', str)
   const handleNames = cmd.handleNames === undefined ? {} : record(cmd.handleNames, 'handleNames', str)
   const sourceName = (gid: string): string => gearNames?.[gid] ?? gid
@@ -800,24 +873,41 @@ function replace (c: Character, cmd: Extract<ClipsCommand, { type: 'clips.replac
       kept.push(a)
     }
     s.adjustments = kept
+    if (s.bones !== undefined) {
+      for (const b of Object.keys(s.bones)) {
+        if (isJoint(c, b)) continue
+        out.push(`clip ${s.name}: keys on ${b} dropped (no such bone here)`)
+        delete s.bones[b]
+      }
+      if (Object.keys(s.bones).length === 0) delete s.bones
+    }
     if (s.gear !== undefined) {
       const mapped: Record<string, GearTrack> = {}
       for (const [gid, track] of Object.entries(s.gear)) {
         const g = gearFor(gid)
         if (g !== undefined) {
-          // (a holder by a handle: the handle of that name here, else where it is)
+          // (a holder by a handle: the handle of that name here, else where it is; a holder this skeleton lacks
+          // dropped; then each made to fit the piece here)
           if (track.heldBy !== undefined) {
-            track.heldBy = track.heldBy.map(x => {
-              if (x.handle === undefined) return x
+            const held = track.heldBy.flatMap(x => {
+              if (!isJoint(c, x.bone)) {
+                out.push(`clip ${s.name}: ${g.name} held by ${x.bone} from ${pct(x.u)} dropped (no such bone here)`)
+                return []
+              }
+              if (x.handle === undefined) return [x]
               const h = handleFor(gid, g, x.handle)
-              if (h !== undefined && h.kind !== 'pull') return { ...x, handle: h.id }
+              if (h !== undefined && h.kind !== 'pull') return [{ ...x, handle: h.id }]
               out.push(`clip ${s.name}: ${g.name} held by ${x.bone} where it is (no such handle here)`)
               const rest = { ...x }
               delete rest.handle
-              return rest
+              return [rest]
             })
+            const mended = mendHolders(g, held, `clip ${s.name}`)
+            out.push(...mended.said)
+            if (mended.held.length > 0) track.heldBy = mended.held
+            else delete track.heldBy
           }
-          mapped[g.id] = track
+          if (!empty(track)) mapped[g.id] = track
         } else out.push(`clip ${s.name}: the track of ${sourceName(gid)} dropped (no such gear here)`)
       }
       if (Object.keys(mapped).length > 0) s.gear = mapped
@@ -856,6 +946,6 @@ function replace (c: Character, cmd: Extract<ClipsCommand, { type: 'clips.replac
     }
   }
   c.clips = slots
-  for (const s of slots) { settle(c, s, s.adjustments); slotRefs(c, s, ids) }
+  for (const s of slots) { settle(c, s, s.adjustments); slotRefs(c, s, ids); trackRefs(c, s, `clip ${s.name}`) }
   return [`clips replaced: ${slots.length > 0 ? names(slots.map(s => s.name)) : 'none'}`, ...out]
 }

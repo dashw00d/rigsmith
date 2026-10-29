@@ -9,6 +9,7 @@ import {
   bad, bool, conflict, handPoseRef, id, joint, list, missing, name, num, obj, oneOf, opt, overlaps, patchOf, placeText,
   placement, quat, refText, same, side, str, under, uniqueName, unknown, vec3, vecText,
 } from './common.ts'
+import { mendHolders } from './clips.ts'
 
 export type GearCommand = Extract<Command, { type: `gear.${string}` }>
 
@@ -217,6 +218,22 @@ function pruneIk (c: Character): string[] {
   return out
 }
 
+/** Each slot's holders of a piece (GearTrack.heldBy) made to fit it as it is now (clips.ts mendHolders: one by a
+ * handle that went held where it is, one by a handle now for another bone that bone's, one placed on its attach bone
+ * as it is), so a later slot.gear.update of the track passes; what changed is said. */
+function pruneHolders (c: Character, g: Gear): string[] {
+  const out: string[] = []
+  for (const s of c.clips) {
+    const track = s.gear?.[g.id]
+    if (track?.heldBy === undefined) continue
+    const { held, said } = mendHolders(g, track.heldBy, `clip ${s.name}`)
+    if (said.length === 0) continue
+    s.gear = { ...s.gear, [g.id]: { ...track, heldBy: held } }
+    out.push(...said)
+  }
+  return out
+}
+
 /** Shown in a swap set, the others of the set are hidden. */
 function showOnly (c: Character, g: Gear): string[] {
   if (g.hidden === true || g.swapSet === undefined) return []
@@ -296,7 +313,7 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
       const out: string[] = []
       if (!same({ ...was, place: null }, { ...next, place: null })) out.push(`gear ${g.name}: ${attachText(next)}`)
       if (!same(was.place, next.place)) out.push(`gear ${g.name}: ${placeText(next.place)}`)
-      return [...out, ...syncCarry(c, g), ...syncOffBone(c, g), ...pruneIk(c)]
+      return [...out, ...syncCarry(c, g), ...syncOffBone(c, g), ...pruneIk(c), ...pruneHolders(c, g)]
     }
     case 'gear.place': {
       const g = gearById(c, cmd.id) ?? missing(`No gear ${cmd.id}`)
@@ -400,7 +417,7 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
           out.push(`gear ${g.name}: ${h.name} ${what}`)
         }
       }
-      return out
+      return [...out, ...pruneHolders(c, g)]
     }
     case 'gear.handle.remove': {
       const g = gearById(c, cmd.gear) ?? missing(`No gear ${cmd.gear}`)
@@ -414,7 +431,7 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
         s.adjustments = s.adjustments.filter(a => !gone.includes(a))
         out.push(`clip ${s.name}: hold of ${g.name} · ${h.name} removed`)
       }
-      return [...out, ...pruneIk(c)]
+      return [...out, ...pruneIk(c), ...pruneHolders(c, g)]
     }
   }
   return unknown(cmd)

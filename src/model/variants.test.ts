@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { makeCharacter, makeSlot } from './fixtures.ts'
-import { exportName, gameNameOf, nextVariantName, variantOf, variantsField, variantsOf, withVariants } from './variants.ts'
+import { exportClash, exportName, gameNameOf, nextVariantName, playedAs, playsAs, variantOf, variantsField, variantsOf, withVariants } from './variants.ts'
 
 const GAME = ['Idle', 'Walk', 'Attack', 'Die']
 const set = (...names: string[]): ReturnType<typeof makeCharacter> => makeCharacter({ clips: names.map((name, i) => makeSlot({ id: `s${i}`, name })) })
@@ -31,5 +31,18 @@ describe('variants', () => {
   it('gives the events file its variants field only when some clip has one', () => {
     expect(variantsField(set('Idle', 'Attack', 'Attack 2', 'Die', 'Die 2', 'Die 3'), GAME)).toEqual({ Attack: ['Attack', 'Attack_2'], Die: ['Die', 'Die_2', 'Die_3'] })
     expect(variantsField(set('Idle', 'Attack'), GAME)).toBeUndefined()
+  })
+
+  it('finds two slots that would play under one name in the game', () => {
+    const both = set('Attack', 'Attack 2', 'Attack_2')
+    expect(exportClash(withVariants(both, [...GAME, 'Attack_2']), [...GAME, 'Attack_2'])).toEqual(['Attack 2', 'Attack_2'])
+    // (the game playing no Attack_2 of its own, that slot is a trial the export leaves out)
+    expect(exportClash(withVariants(both, GAME), GAME)).toBeNull()
+    expect(playedAs('Attack 2')).toBe('Attack_2')
+    expect(playedAs('Attack 1')).toBe('Attack 1')
+    const c = set('Attack', 'Attack 2')
+    expect(playsAs(c, 'Attack_2')?.name).toBe('Attack 2')
+    expect(playsAs(c, 'Attack_2', c.clips[1])).toBeUndefined()
+    expect(playsAs(c, 'Attack_3')).toBeUndefined()
   })
 })

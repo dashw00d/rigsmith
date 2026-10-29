@@ -15,6 +15,7 @@
   import { tooltip } from '../../ui/tooltip.ts'
   import { clipLabel, isTrial, speedOptions, variantOf, type Target } from './rules.ts'
   import AddVariant from './variants/AddVariant.svelte'
+  import { VARIED } from '../../model/variants.ts'
 
   let { character }: { character: Character } = $props()
 
@@ -90,7 +91,7 @@
           </div>
           <div class="sub">
             <span class="clip" use:tooltip={s?.note ?? s?.clip.id ?? 'No clip yet'}>{s !== undefined ? clipLabel(s.clip) : 'empty'}</span>
-            {#if s !== undefined}<AddVariant {character} {name} {names} />{/if}
+            {#if s !== undefined && VARIED.includes(name)}<AddVariant {character} {name} {names} />{/if}
           </div>
         </li>
         {#each variants(name) as v (v.id)}

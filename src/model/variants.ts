@@ -8,6 +8,10 @@ import type { Character, Slot } from './types.ts'
 
 const NUMBERED = /^(.+) ([2-9]|[1-9]\d)$/
 
+/** The game clips the game picks a variant of (Emberhold's UnitView: each attack, each death): "+ variant" is offered
+ * on these. */
+export const VARIED: readonly string[] = ['Attack', 'Die']
+
 /** The game clip a slot name is a variant of, and its number (2 on), or null: `name` is `<clip> <n>` for one of the
  * game's clip names. */
 export function variantOf (name: string, gameNames: readonly string[]): { base: string, n: number } | null {
@@ -22,6 +26,30 @@ export const variantName = (base: string, n: number): string => `${base} ${n}`
 export function exportName (name: string, gameNames: readonly string[]): string {
   const v = variantOf(name, gameNames)
   return v === null ? name : `${v.base}_${v.n}`
+}
+
+/** Two of these slots that would play under one name in the game (`Attack 2` and a slot named `Attack_2`, when
+ * `Attack_2` is one of the game's names), or null. The export refuses them. */
+export function exportClash (slots: ReadonlyArray<Pick<Slot, 'name'>>, gameNames: readonly string[]): [string, string] | null {
+  const seen = new Map<string, string>()
+  for (const s of slots) {
+    const as = exportName(s.name, gameNames)
+    const other = seen.get(as)
+    if (other !== undefined && other !== s.name) return [other, s.name]
+    seen.set(as, s.name)
+  }
+  return null
+}
+
+/** The name a slot could play under in the game whatever the game's clip names are (`Attack 2`: `Attack_2`), for the
+ * app's rule that no two slots may (it doesn't know which names the game plays, so it treats every `<name> <n>` as a
+ * variant). */
+export const playedAs = (name: string): string => name.replace(/ ([2-9]|[1-9]\d)$/, '_$1')
+
+/** A slot of the set (not `except`) that could play under the same name in the game as `name`, or undefined. */
+export function playsAs (c: Pick<Character, 'clips'>, name: string, except?: Pick<Slot, 'id'>): Slot | undefined {
+  const as = playedAs(name)
+  return c.clips.find(s => s.id !== except?.id && s.name !== name && playedAs(s.name) === as)
 }
 
 /** The game clip an exported clip name stands for: `Attack_2`'s is Attack; any other name its own. */
