@@ -2,14 +2,15 @@
 // time map and its tracks (docs/motion-plan.md §2, §4). Every time a command carries is source time. Rules kept here:
 // slot names unique; one ground per slot; one hold per (gear, handle); a hand's hand pose windows never overlap; within a
 // track keys are sorted and no two share a moment; a slot's event ids are unique and it has at most one point `hit`;
-// retime markers run forward in both times, holds sit at distinct moments; every reference (a paced-like slot, gear, a
-// handle, a bone keyed) resolves.
+// retime markers run forward in both times; a slot's pieces follow src/model/pieces.ts piecesProblem and never play the
+// slot itself; every reference (a paced-like slot, a slot played as a piece, gear, a handle, a bone keyed) resolves.
 import type { Command, KeyTrack } from '../command-types.ts'
+import { isWhole, layoutOf, lengthOf, pieceText, piecesProblem, playsItself, remapSlot, wholeClip } from '../pieces.ts'
 import { carryHandle, gearById, gearByName, slotById, slotByName } from '../select.ts'
 import { hierarchyOf } from '../skeletons.ts'
 import { playedAs, playsAs } from '../variants.ts'
 import type {
-  Adjustment, AdjustmentKind, BlowFit, Character, ClipEvent, ClipKey, Gear, GearTrack, Handle, HeldBy, RetimeMarker, Slot, SlotIk, SlotTime, TimeHold, Window,
+  Adjustment, AdjustmentKind, BlowFit, Character, ClipEvent, ClipKey, Gear, GearTrack, Handle, HeldBy, Piece, RetimeMarker, Slot, SlotIk, SlotTime, Window,
 } from '../types.ts'
 import {
   bad, bool, clipKeys, clipRef, conflict, handPoseRef, id, joint, list, missing, name, names, note, num, obj, oneOf, opt, overlaps,
@@ -85,25 +86,37 @@ function markersOf (v: unknown, what: string): RetimeMarker[] {
   return ms
 }
 
-function holdsOf (v: unknown, what: string): TimeHold[] {
-  const hs = list(v, what, (h, at) => {
-    const o = obj(h, at)
-    return { id: id(o.id, `${at}.id`), u: num(o.u, `${at}.u`, { min: 0, max: 1 }), seconds: num(o.seconds, `${at}.seconds`, { above: 0 }) }
-  }).sort((a, b) => a.u - b.u)
-  for (let i = 1; i < hs.length; i++) if (hs[i].u - hs[i - 1].u < 1e-6) bad(`${what}: two holds at the same moment`)
-  if (new Set(hs.map(h => h.id)).size !== hs.length) bad(`${what}: hold ids repeat`)
-  return hs
-}
+/** Schema 3's holds are hold pieces now (docs/motion-plan.md §11). */
+const HOLDS = "holds are pieces of the clip now: insert time with slot.pieces.set (the timeline's Insert time)"
 
 function timeOf (v: unknown, what: string): SlotTime | undefined {
   const t = obj(v, what)
-  for (const k of Object.keys(t)) if (!['fit', 'pace', 'markers', 'holds'].includes(k)) bad(`${what} has no ${k}`)
+  if (t.holds !== undefined) bad(`${what}: ${HOLDS}`)
+  for (const k of Object.keys(t)) if (!['fit', 'pace', 'markers'].includes(k)) bad(`${what} has no ${k}`)
   const out: SlotTime = {}
   const fit = opt(t.fit, x => fitOf(x, `${what}.fit`)); if (fit !== undefined) out.fit = fit
   const pace = opt(t.pace, x => paceOf(x, `${what}.pace`)); if (pace !== undefined) out.pace = pace
   const markers = opt(t.markers, x => markersOf(x, `${what}.markers`)); if (markers !== undefined && markers.length > 0) out.markers = markers
-  const holds = opt(t.holds, x => holdsOf(x, `${what}.holds`)); if (holds !== undefined && holds.length > 0) out.holds = holds
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+/** A slot's pieces as given (src/model/pieces.ts piecesProblem's rules; their slots are checked by slotRefs). */
+function piecesIn (v: unknown, what: string): Piece[] {
+  const ps = list(v, what, (x, at): Piece => {
+    const o = obj(x, at)
+    const kind = oneOf(o.kind, ['clip', 'slot', 'hold'] as const, `${at}.kind`)
+    const own = kind === 'clip' ? ['clip'] : kind === 'slot' ? ['slot'] : []
+    for (const k of Object.keys(o)) if (!['id', 'kind', 'from', 'to', 'blend', ...own].includes(k)) bad(`${at} has no ${k}`)
+    const base = { id: id(o.id, `${at}.id`), from: num(o.from, `${at}.from`, { min: kind === 'hold' ? -1e6 : 0 }), to: num(o.to, `${at}.to`, { max: 1e6 }) }
+    const blend = opt(o.blend, b => num(b, `${at}.blend`, { min: 0 }))
+    const more = blend !== undefined && blend > 0 ? { blend } : {}
+    if (kind === 'clip') return { ...base, ...more, kind, clip: clipRef(o.clip, `${at}.clip`) }
+    if (kind === 'slot') return { ...base, ...more, kind, slot: id(o.slot, `${at}.slot`) }
+    return { ...base, ...more, kind }
+  })
+  const problem = piecesProblem(ps)
+  if (problem !== null) bad(`${what}: ${problem}`)
+  return ps
 }
 
 function eventOf (v: unknown, what: string): ClipEvent {
@@ -289,6 +302,7 @@ function setup (out: Slot, s: Obj, what: string): void {
   const events = opt(s.events, x => eventsOf(x, `${what}.events`)); if (events !== undefined && events.length > 0) out.events = events
   const muted = opt(s.muted, x => mutedOf(x, `${what}.muted`)); if (muted !== undefined && muted.length > 0) out.muted = muted
   const ik = opt(s.ik, x => ikOf(x, `${what}.ik`)); if (ik !== undefined) out.ik = ik
+  const pieces = opt(s.pieces, x => piecesIn(x, `${what}.pieces`)); if (pieces !== undefined) out.pieces = pieces
 }
 
 // ---- the character's rules -------------------------------------------------------------------------------------------
@@ -311,13 +325,15 @@ function refs (c: Character, a: Adjustment): void {
   }
 }
 
-/** The slot's time and tracks resolve: the slot it paces like (one of `slotIds`, not its own), the gear it tracks. */
+/** The slot's time and tracks resolve: the slot it paces like (one of `slotIds`, not its own), the slots it plays as
+ * pieces (never itself, down any chain of them), the gear it tracks. */
 function slotRefs (c: Character, slot: Slot, slotIds: Set<string>): void {
   const pace = slot.time?.pace
   if (pace !== undefined) {
     if (pace.like === slot.id) bad(`clip ${slot.name} can't pace like itself`)
     if (!slotIds.has(pace.like)) missing(`No clip ${pace.like} to pace like`)
   }
+  if (slot.pieces !== undefined) pieceRefs(c, slot, slot.pieces, slotIds)
   for (const gid of Object.keys(slot.gear ?? {})) if (gearById(c, gid) === undefined) missing(`No gear ${gid}`)
   if (slot.ik !== undefined) ikRefs(c, slot.ik)
 }
@@ -332,6 +348,16 @@ function trackRefs (c: Character, t: Pick<Slot, 'bones' | 'gear'>, what: string)
     for (const x of track.heldBy) joint(c, x.bone, `${what}.gear.${gid}.heldBy bone`)
     checkHolders(g, track.heldBy)
   }
+}
+
+/** A slot's pieces resolve: each slot piece another slot of `slotIds`, and none leading back to the slot. */
+function pieceRefs (c: Character, slot: Slot, pieces: readonly Piece[], slotIds: Set<string>): void {
+  for (const p of pieces) {
+    if (p.kind !== 'slot') continue
+    if (p.slot === slot.id) bad(`clip ${slot.name} can't play itself as a piece`)
+    if (!slotIds.has(p.slot)) missing(`No clip ${p.slot} to play as a piece`)
+  }
+  if (playsItself(c, slot.id, pieces)) bad(`clip ${slot.name} would play itself: a clip it plays as a piece plays it`)
 }
 
 /** No other slot plays under the same name in the game as `name` (src/model/variants.ts playedAs: `Attack 2` and
@@ -438,13 +464,12 @@ function clearSetup (c: Character, s: Slot): string[] {
     ...s.adjustments.map(a => adjText(c, a)),
     ...(s.time?.fit !== undefined ? [fitText(s.time.fit)] : []), ...(s.time?.pace !== undefined ? ['pace'] : []),
     ...(s.time?.markers !== undefined ? [plural(s.time.markers.length, 'retime marker')] : []),
-    ...(s.time?.holds !== undefined ? [plural(s.time.holds.length, 'hold')] : []),
     ...(s.bones !== undefined || s.gear !== undefined ? ['keys and gear tracks'] : []),
     ...(s.events !== undefined ? [plural(s.events.length, 'event')] : []),
     ...(s.ik !== undefined ? ['hands on gear'] : []),
   ]
   s.adjustments = []
-  delete s.time; delete s.bones; delete s.gear; delete s.events; delete s.muted; delete s.ik
+  delete s.time; delete s.bones; delete s.gear; delete s.events; delete s.muted; delete s.ik; delete s.pieces
   return gone.length > 0 ? [`clip ${s.name}: ${names(gone)} dropped (made for the clip it had)`] : []
 }
 
@@ -538,6 +563,8 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
         out.push(`clip ${slotName}: added (${clip.id})`)
       }
       if (cmd.note !== undefined) out.push(...setNote(s, cmd.note))
+      // (another clip: the pieces it was built from go, whatever else is kept)
+      if (s.pieces !== undefined) { out.push(`clip ${s.name}: its ${plural(s.pieces.length, 'piece')} dropped (it plays ${clip.id} now)`); delete s.pieces }
       if (!keep) out.push(...clearSetup(c, s))
       for (const a of added) { refs(c, a); out.push(...add(c, s, a)) }
       out.push(...lay(c, s, given))
@@ -571,10 +598,13 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
         if (Object.keys(s.time).length === 0) delete s.time
         out.push(`clip ${s.name}: pace dropped (it would follow itself)`)
       }
+      if (s.pieces !== undefined) pieceRefs(c, s, s.pieces, slotIdsOf(c))
       return out
     }
     case 'slot.remove': {
       const s = find(cmd.id)
+      const user = c.clips.find(o => o.pieces?.some(p => p.kind === 'slot' && p.slot === s.id))
+      if (user !== undefined) conflict(`clip ${user.name} plays ${s.name} as a piece: remove that piece first`)
       c.clips = c.clips.filter(x => x !== s)
       const out = [`clip ${s.name}: removed`]
       for (const o of c.clips) {
@@ -639,6 +669,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
       return [s.adjustments.length > 0 ? `clip ${s.name}: adjustments now ${names(s.adjustments.map(a => adjText(c, a)))}` : `clip ${s.name}: adjustments cleared`]
     }
     case 'slot.time': return timeCommand(c, find(cmd.slot), cmd.patch)
+    case 'slot.pieces.set': return piecesCommand(c, find(cmd.slot), cmd)
     case 'slot.keys.set': return keysCommand(c, find(cmd.slot), cmd.tracks)
     case 'slot.event.add': {
       const s = find(cmd.slot)
@@ -737,7 +768,8 @@ function ikCommand (c: Character, s: Slot, v: unknown): string[] {
 
 function timeCommand (c: Character, s: Slot, v: unknown): string[] {
   const p = obj(v, 'patch')
-  for (const k of Object.keys(p)) if (!['fit', 'pace', 'markers', 'holds'].includes(k)) bad(`A slot's time has no ${k}`)
+  if (p.holds !== undefined) bad(HOLDS)
+  for (const k of Object.keys(p)) if (!['fit', 'pace', 'markers'].includes(k)) bad(`A slot's time has no ${k}`)
   const t: SlotTime = { ...s.time }
   const out: string[] = []
   if (p.fit !== undefined) {
@@ -764,15 +796,58 @@ function timeCommand (c: Character, s: Slot, v: unknown): string[] {
     if (next.length > 0) t.markers = next
     else delete t.markers
   }
-  if (p.holds !== undefined) {
-    const next = p.holds === null ? [] : holdsOf(p.holds, 'holds')
-    if (!same(next, t.holds ?? [])) out.push(`clip ${s.name}: ${next.length > 0 ? names(next.map(h => `held ${r3(h.seconds)} s at ${pct(h.u)}`)) : 'holds removed'}`)
-    if (next.length > 0) t.holds = next
-    else delete t.holds
-  }
   if (Object.keys(t).length > 0) s.time = t
   else delete s.time
   return out
+}
+
+/** The slot's pieces replaced, everything it stores moved with its piece (docs/motion-plan.md §11.3). `seconds`, the
+ * length of the slot's clip, is the layout of a slot playing its clip whole (before, after, or both). */
+function piecesCommand (c: Character, s: Slot, cmd: Extract<ClipsCommand, { type: 'slot.pieces.set' }>): string[] {
+  const seconds = opt(cmd.seconds, x => num(x, 'seconds', { above: 0 }))
+  const need = (): number => seconds ?? bad(`seconds (the length of ${s.clip.id}) is needed: clip ${s.name} plays it whole${s.pieces !== undefined ? ' after this' : ''}`)
+  const old = s.pieces ?? wholeClip(s.clip, need())
+  let next = cmd.pieces === null ? wholeClip(s.clip, need()) : piecesIn(cmd.pieces, 'pieces')
+  const split = cmd.split === undefined ? {} : record(cmd.split, 'split', (x, at) => id(x, at))
+  for (const [to, from] of Object.entries(split)) {
+    if (!next.some(p => p.id === to)) bad(`split: no new piece ${to}`)
+    if (!old.some(p => p.id === from)) bad(`split: no piece ${from} to split`)
+    if (old.some(p => p.id === to)) bad(`split: ${to} is a piece already`)
+  }
+  pieceRefs(c, s, next, slotIdsOf(c))
+  const whole = isWhole(next, s.clip, seconds)
+  if (whole) next = wholeClip(s.clip, seconds!)
+  if (same(next, old)) return []
+  const slotName = (sid: string): string | undefined => slotById(c, sid)?.name
+  const { slot: moved, dropped } = remapSlot(s, old, next, split)
+  // (the hands' poses must still keep apart, a hold a handle once: a remap can't merge two windows of different settings)
+  settle(c, moved, moved.adjustments)
+  for (const k of Object.keys(s) as Array<keyof Slot>) if (!(k in moved)) delete s[k]
+  Object.assign(s, moved)
+  if (whole) delete s.pieces
+  else s.pieces = next
+  const out = [`clip ${s.name}: ${piecesChange(old, next, slotName)}`]
+  if (dropped > 0) out.push(`clip ${s.name}: ${plural(dropped, 'key, event or window')} on what went, gone with it`)
+  return out
+}
+
+/** What changed between two lists of pieces, in words. */
+function piecesChange (old: Piece[], next: Piece[], slotName: (id: string) => string | undefined): string {
+  const text = (p: Piece): string => pieceText(p, slotName)
+  const was = new Map(old.map(p => [p.id, p]))
+  const now = new Set(next.map(p => p.id))
+  const said: string[] = []
+  for (const p of next) {
+    const before = was.get(p.id)
+    if (before === undefined) { said.push(`${text(p)} ${p === next[next.length - 1] ? 'at the end' : p === next[0] ? 'at the start' : 'put in'}${(p.blend ?? 0) > 0 ? `, blend ${r3(p.blend!)} s` : ''}`); continue }
+    if (before.from !== p.from || before.to !== p.to) said.push(p.kind === 'hold' ? `${text(p)} (was ${lengthOf(before).toFixed(2)} s)` : `${text(p)} ${r3(p.from)}-${r3(p.to)} s`)
+    if ((before.blend ?? 0) !== (p.blend ?? 0)) said.push(`blend into ${text(p)} ${r3(p.blend ?? 0)} s`)
+  }
+  for (const p of old) if (!now.has(p.id)) said.push(`${text(p)} removed`)
+  const order = next.filter(p => was.has(p.id)).map(p => p.id)
+  if (order.join() !== old.filter(p => now.has(p.id)).map(p => p.id).join()) said.push('pieces reordered')
+  const total = layoutOf(next).seconds
+  return `${said.length > 0 ? names(said) : 'pieces changed'} (${next.length === 1 && next[0].kind === 'clip' && next[0].from === 0 ? 'its clip' : plural(next.length, 'piece')}, ${total.toFixed(2)} s)`
 }
 
 function keysCommand (c: Character, s: Slot, v: unknown): string[] {
@@ -843,6 +918,20 @@ function replace (c: Character, cmd: Extract<ClipsCommand, { type: 'clips.replac
   const ids = new Set(slots.map(s => s.id))
   const out: string[] = []
   for (const s of slots) {
+    // (a piece playing a clip not in the set (or itself) goes, with what was keyed on it)
+    const lost = (s.pieces ?? []).filter(p => p.kind === 'slot' && (!ids.has(p.slot) || p.slot === s.id))
+    if (s.pieces !== undefined && lost.length > 0) {
+      const left = s.pieces.filter(p => !lost.includes(p))
+      if (left.some(p => p.kind !== 'hold')) {
+        delete left[0].blend
+        Object.assign(s, remapSlot(s, s.pieces, left).slot)
+        s.pieces = left
+        out.push(`clip ${s.name}: ${names(lost.map(p => pieceText(p)))} dropped (that clip isn't in the set)`)
+      } else {
+        delete s.pieces
+        out.push(`clip ${s.name}: its pieces dropped (the clips they played aren't in the set); it plays ${s.clip.id} whole: check its keys`)
+      }
+    }
     if (s.time?.pace !== undefined && (!ids.has(s.time.pace.like) || s.time.pace.like === s.id)) {
       out.push(`clip ${s.name}: pace dropped (the clip it followed isn't in the set)`)
       delete s.time.pace

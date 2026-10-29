@@ -1,8 +1,8 @@
 // The time map (src/model/timemap.ts): a slot's source moments to phases of the clip as it plays and back, through
-// markers, holds, the speed, the blow fit and pace, and the blow fit's arithmetic that timing.ts blowCut shares.
+// markers, the speed, the blow fit and pace, and the blow fit's arithmetic that timing.ts blowCut shares.
 import { describe, expect, it } from 'vitest'
 import {
-  eventToPlayed, fitBlow, fitRange, heldSeconds, IDENTITY, keysToPlayed, phaseBeforeFit, resolveTime, sourceAt, sourceOfTime, warps, windowsToPlayed, windowsToSource,
+  eventToPlayed, fitBlow, fitRange, IDENTITY, keysToPlayed, phaseBeforeFit, resolveTime, sourceAt, sourceOfTime, warps, windowsToPlayed, windowsToSource,
 } from './timemap.ts'
 
 const near = (a: number, b: number): void => { expect(Math.abs(a - b)).toBeLessThan(1e-12) }
@@ -32,17 +32,9 @@ describe('resolveTime', () => {
     expect(warps({ markers: [{ id: 'm', u: 0.5, to: 0.5 }] })).toBe(false)
   })
 
-  it('holds the pose at a hold\'s moment for its seconds, what sits at it at its start', () => {
-    // (a 1 s source with 0.5 s held at 0.4: 1.5 s played)
-    const map = resolveTime({ seconds: 1, speed: 1, time: { holds: [{ id: 'h', u: 0.4, seconds: 0.5 }] } })
-    near(map.duration, 1.5)
-    near(map.toPlayed(0.4), 0.4 / 1.5); near(map.toPlayed(0.6), 1.1 / 1.5)
-    near(map.toSource(0.5), 0.4)
-    near(map.toSource(1), 1)
-    expect(heldSeconds({ holds: [{ id: 'h', u: 0.4, seconds: 0.5 }, { id: 'i', u: 0.9, seconds: 0.25 }] })).toBe(0.75)
-    near(sourceOfTime(0.6, { seconds: 1, time: { holds: [{ id: 'h', u: 0.4, seconds: 0.5 }] } }), 0.4)
-    near(phaseBeforeFit(0.6, { seconds: 1, speed: 1, time: { holds: [{ id: 'h', u: 0.4, seconds: 0.5 }] } }), 1.1 / 1.5)
+  it('has no holds (they are hold pieces of the source now): a picked blow is its own phase without markers', () => {
     expect(phaseBeforeFit(0.6, { seconds: 1, speed: 3 })).toBe(0.6)
+    near(sourceOfTime(0.6, { seconds: 1 }), 0.6)
   })
 })
 

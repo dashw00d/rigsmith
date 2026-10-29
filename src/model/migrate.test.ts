@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest'
 import { cleanImageName } from '../../server/glbimages.ts'
 import { applyCommands } from './commands.ts'
 import { stableId } from './ids.ts'
-import { gearFromProp, gearFromV1, holdsFromV1, migrate, migrateSettings, migrateV1, readCharacter, slotFromV2, slotsFromV1, slotToV2, unmeasured, v2TimeMap } from './migrate.ts'
+import { gearFromProp, gearFromV1, holdsFromV1, migrate, migrateSettings, migrateV1, needsClipTimes, piecesFromHolds, readCharacter, slotFromV2, slotsFromV1, slotToV2, unmeasured, v2TimeMap } from './migrate.ts'
+import type { V3Character, V3Slot } from './v3.ts'
 import { DEFAULT_FIST, jointsOf } from './select.ts'
 import { hierarchyOf, humanHierarchy } from './skeletons.ts'
 import type { Adjustment, Character, FingerLevel, Joints, Vec3 } from './types.ts'
@@ -115,7 +116,7 @@ describe('migrate: source and skin', () => {
 
   it('stamps the schema, a first version and the revision', () => {
     const c = migrate(v1({ revision: undefined, thumbVersion: 5 })).character
-    expect(c).toMatchObject({ schema: 3, version: 1, revision: 0, thumbVersion: 5, id: ID, name: 'Hero', status: 'rigged' })
+    expect(c).toMatchObject({ schema: 4, version: 1, revision: 0, thumbVersion: 5, id: ID, name: 'Hero', status: 'rigged' })
     expect(migrate(v1()).character.revision).toBe(3)
   })
 })
@@ -529,9 +530,9 @@ describe('migrate: schema 2 -> 3', () => {
     expect(() => readCharacter(v2char([v2slot({ adjustments: [blow()] })]))).not.toThrow()
   })
 
-  it('says it came from schema 2 (kept as character.v2.json) and is schema 3 after', () => {
+  it('says it came from schema 2 (kept as character.v2.json) and is schema 4 after', () => {
     const m = migrate(v2char([v2slot()]))
-    expect([m.migrated, m.from, m.character.schema]).toEqual([true, 2, 3])
+    expect([m.migrated, m.from, m.character.schema]).toEqual([true, 2, 4])
     expect(migrate(m.character).migrated).toBe(false)
   })
 
@@ -557,11 +558,11 @@ describe('migrate: as a whole', () => {
     texture: { filled: true, images: [{ image: 'Tex', coverage: 0.1, file: 'Tex.png' }], at: 9 },
   })
 
-  it('is idempotent: schema 3 comes back as it is', () => {
+  it('is idempotent: schema 4 comes back as it is', () => {
     const once = migrate(full, { textureFiles: ['Tex.png'] })
     expect([once.migrated, once.from]).toEqual([true, 1])
     const twice = migrate(once.character, { textureFiles: ['Tex.png'] })
-    expect(twice).toEqual({ character: once.character, migrated: false, from: 3, notes: [], fileOps: [] })
+    expect(twice).toEqual({ character: once.character, migrated: false, from: 4, notes: [], fileOps: [] })
     expect(migrate(JSON.parse(JSON.stringify(once.character))).character).toEqual(once.character)
     expect(readCharacter(full)).toEqual(migrate(full).character)
   })
@@ -581,7 +582,7 @@ describe('migrate: as a whole', () => {
   it('refuses what is not a character, or a schema it doesn\'t know', () => {
     expect(() => migrate(null)).toThrow()
     expect(() => migrate({ name: 'x' })).toThrow()
-    expect(() => migrate({ ...full, schema: 4 })).toThrow()
+    expect(() => migrate({ ...full, schema: 5 })).toThrow()
   })
 })
 
@@ -627,5 +628,61 @@ describe.skipIf(real.length === 0)('migrate: the workspace\'s characters', () =>
     expect(c.gear.length).toBe((raw.garments ?? []).length + (raw.props ?? []).length)
     expect(c.skin.locked).toBe(raw.status === 'rigged' && !/^(scout|villager)-/.test(id))
     accepted(c)
+  })
+})
+
+describe('migrate: schema 3 -> 4 (holds become pieces)', () => {
+  const v3slot = (o: Partial<V3Slot> = {}): V3Slot => ({ id: 'atk', name: 'Attack', clip: { id: 'mixamo-Slash' }, speed: 1, loop: false, inPlace: false, adjustments: [], ...o })
+  const v3char = (clips: V3Slot[]): V3Character => ({ ...(migrate(v1({ animations: [], scripts: [] })).character as unknown as V3Character), schema: 3, clips })
+  const held = (): V3Slot => v3slot({
+    time: { fit: { enabled: true, at: 0.45 }, holds: [{ id: 'h1', u: 0.5, seconds: 0.5 }, { id: 'h0', u: 0, seconds: 0.25 }] },
+    bones: { Spine: [{ u: 0.25, q: [0, 0, 0, 1] }, { u: 0.5, q: [0, 0, 0, 1] }, { u: 0.75, q: [0, 0, 0, 1] }] },
+    events: [{ id: 'e', name: 'hit', u: 0.6 }],
+    adjustments: [{ id: 'p', enabled: true, kind: 'handPose', hand: 'Left', pose: 'clip', windows: [[0.4, 0.8]] }],
+  })
+
+  it('makes each hold a held piece between parts of the clip, every time where it played', () => {
+    const m = migrate(v3char([held(), v3slot({ id: 'idle', name: 'Idle' })]), { clipTimes: { atk: { seconds: 2 } } })
+    expect([m.migrated, m.from, m.character.schema]).toEqual([true, 3, 4])
+    const s = m.character.clips[0]
+    expect(s.pieces!.map(p => [p.id, p.kind, p.from, p.to])).toEqual([['h0', 'hold', 0, 0.25], [expect.any(String), 'clip', 0, 1], ['h1', 'hold', 0, 0.5], [expect.any(String), 'clip', 1, 2]])
+    expect(s.time).toEqual({ fit: { enabled: true, at: 0.45 } })
+    // (2 s of clip and 0.75 s of holds: a key at u plays at u·2 plus the holds before it; at a hold's u, at its start)
+    const at = (u: number): number => u * 2.75
+    expect(s.bones!.Spine.map(k => at(k.u))).toEqual([0.75, 1.25, 2.25].map(x => expect.closeTo(x, 9)))
+    expect(at(s.events![0].u)).toBeCloseTo(1.2 + 0.75, 9)
+    expect((s.adjustments[0] as { windows: number[][] }).windows[0].map(at)).toEqual([expect.closeTo(1.05, 9), expect.closeTo(2.35, 9)])
+    // (a slot without holds as it was)
+    expect(m.character.clips[1]).toEqual(v3slot({ id: 'idle', name: 'Idle' }))
+    expect(m.notes.some(n => /held pieces/.test(n))).toBe(true)
+    expect(migrate(m.character).migrated).toBe(false)
+  })
+
+  it('moves retime markers so the warp plays the same seconds', () => {
+    const s = migrate(v3char([v3slot({ time: { markers: [{ id: 'm', u: 0.75, to: 0.5 }], holds: [{ id: 'h', u: 0.5, seconds: 1 }] } })]), { clipTimes: { atk: { seconds: 2 } } }).character.clips[0]
+    // (old: seconds of u = W(u)·2 + the hold's second past 0.5; new: W'(u')·3)
+    const W = (ms: Array<{ u: number, to: number }>, u: number): number => {
+      const xs = [0, ...ms.map(m => m.u), 1]; const ys = [0, ...ms.map(m => m.to), 1]
+      let i = 1; while (i < xs.length - 1 && xs[i] < u) i++
+      return ys[i - 1] + (u - xs[i - 1]) / (xs[i] - xs[i - 1]) * (ys[i] - ys[i - 1])
+    }
+    const old = (u: number): number => W([{ u: 0.75, to: 0.5 }], u) * 2 + (u > 0.5 ? 1 : 0)
+    const move = (u: number): number => (u * 2 + (u > 0.5 ? 1 : 0)) / 3
+    for (const u of [0.1, 0.3, 0.5, 0.6, 0.75, 0.9]) expect(W(s.time!.markers!, move(u)) * 3).toBeCloseTo(old(u), 9)
+  })
+
+  it('needs the clip\'s length: measured, else strict readers throw and the holds go with a note', () => {
+    const raw = v3char([held()])
+    expect(needsClipTimes(raw)).toBe(true)
+    expect(needsClipTimes(v3char([v3slot()]))).toBe(false)
+    expect(unmeasured(raw, {})).toEqual(['Attack'])
+    expect(unmeasured(raw, {}, ['atk'])).toEqual([])
+    expect(() => readCharacter(raw)).toThrow(/measured/)
+    const loose = migrate(raw)
+    expect(loose.character.clips[0].pieces).toBeUndefined()
+    expect(loose.character.clips[0].time).toEqual({ fit: { enabled: true, at: 0.45 } })
+    expect(loose.notes.some(n => /dropped/.test(n))).toBe(true)
+    const p = piecesFromHolds(held(), 2, 'x')
+    expect(p.pieces).toHaveLength(4)
   })
 })

@@ -43,7 +43,7 @@ export function makeCharacter (over: CharacterPatch = {}): Character {
   const detected = template === 'human' ? humanJoints(fingerLevel)
     : Object.fromEntries(hierarchyOf({ skeleton: { template, fingerLevel, overrides: {} } }).map(([j], i): [string, Vec3] => [j, [0, i * 0.01, 0]]))
   return {
-    schema: 3, id: 'tester-000001', name: 'Tester', createdAt: 0, updatedAt: 0, version: 1, revision: 0,
+    schema: 4, id: 'tester-000001', name: 'Tester', createdAt: 0, updatedAt: 0, version: 1, revision: 0,
     files: { model: 'model.glb' }, status: 'ready',
     gear: [], clips: [],
     ...rest,

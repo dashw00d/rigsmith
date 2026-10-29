@@ -1,6 +1,6 @@
 // The one bake: a slot's clip as the game plays it, the same in the viewer, the timeline and the unit export
 // (tools/lib/unit_export.ts), so what plays here is what the game gets (docs/motion-plan.md §3). In a fixed order:
-//   source -> time (markers and holds, speed, blow fit, pace) -> hands (src/engine/hands.ts) -> ground -> keys on
+//   source (its clip, or its pieces composed: src/engine/pieces.ts) -> time (markers, speed, blow fit, pace) -> hands (src/engine/hands.ts) -> ground -> keys on
 //   bones -> gear tracks -> events
 // A slot stores every time against its source clip; once its time map is resolved (src/model/timemap.ts: the blow
 // measured, the pace found), everything it stores is mapped to phases of the clip as it finally plays, and the stages
@@ -21,6 +21,7 @@ import type { Rom } from './limits.ts'
 import { applyBoneKeys, applyLift, propTracks } from './keys.ts'
 import { fitRide, freezeClip } from './mount.ts'
 import { garmentMatrix } from './placement.ts'
+import { sourceClip } from './pieces.ts'
 import { pelvisName, restUpOf, type RestSkeleton } from './retarget.ts'
 import { blowCut, paceTo, retime, warpClip } from './timing.ts'
 
@@ -42,11 +43,12 @@ export interface BakeContext {
 export interface BakedSlot {
   /** Everything. */
   clip: THREE.AnimationClip
-  /** Retargeted with slot.inPlace: speed 1, no hands, no adjustments (the clip source's own copy: read only). */
+  /** Retargeted with slot.inPlace: speed 1, no hands, no adjustments (the clip source's own copy: read only); a slot
+   * built from pieces: their composite (the source its times are moments of). */
   raw: THREE.AnimationClip
   /** Before keys. */
   unkeyed: THREE.AnimationClip
-  /** How its blow fit cut it: seconds of the clip at its speed (and markers and holds), before the cut. */
+  /** How its blow fit cut it: seconds of the clip at its speed (and markers), before the cut. */
   cut?: { start: number, end: number, uncut: number, blow: number }
   /** The total ground lift applied (the ground adjustment, plus autoGround's fit). */
   lift: number
@@ -85,20 +87,21 @@ export interface GearTrackTarget {
   moveScale: number
 }
 
-/** What a bake may leave out: adjustment kinds, 'speed', 'time' (fit, pace, markers, holds), 'fit', 'pace', 'hands'
+/** What a bake may leave out: adjustment kinds, 'speed', 'time' (fit, pace, markers), 'fit', 'pace', 'hands'
  * (every hand layer), 'keys' (bones' and gear's), 'events'; or 'all' (the clip alone: speed 1, no time, no hands, no
  * adjustments, no tracks). */
 export type BakeSkip = Array<AdjustmentKind | 'speed' | 'time' | 'fit' | 'pace' | 'hands' | 'keys' | 'events'> | 'all'
 
 /** A slot's clip baked as the game plays it. `autoGround`: a ground fit by the feet added on top (library previews).
- * `gearNodes: false`: no gear tracks (the export keys its own gear bones). */
-export async function bakeSlot (c: Character, slot: Slot, ctx: BakeContext, o: { mirror?: boolean, skip?: BakeSkip, autoGround?: boolean, gearNodes?: boolean } = {}): Promise<BakedSlot> {
+ * `gearNodes: false`: no gear tracks (the export keys its own gear bones). `via`: the slots whose pieces play this one
+ * (src/engine/pieces.ts: one of them again is a slot playing itself, refused). */
+export async function bakeSlot (c: Character, slot: Slot, ctx: BakeContext, o: { mirror?: boolean, skip?: BakeSkip, autoGround?: boolean, gearNodes?: boolean, via?: readonly string[] } = {}): Promise<BakedSlot> {
   const all = o.skip === 'all'
   const skip = new Set<string>(all ? ['speed', 'time', 'hands', 'keys', 'events'] : o.skip ?? [])
   const report: Record<string, unknown> = {}
 
-  const raw = await ctx.clips.get(slot.clip, { inPlace: slot.inPlace, mirror: o.mirror, fps: ctx.fps })
-  const timed = await timeSlot(c, slot, raw, ctx, { mirror: o.mirror, skip, report })
+  const raw = await sourceOf(c, slot, ctx, { mirror: o.mirror, via: o.via })
+  const timed = await timeSlot(c, slot, raw, ctx, { mirror: o.mirror, skip, report, via: o.via })
   let clip = timed.clip
   const map = timed.map
 
@@ -178,7 +181,7 @@ export async function bakeSlot (c: Character, slot: Slot, ctx: BakeContext, o: {
 /** A slot's clip through its time map (markers and holds, speed, the blow fit, pace), and the map as resolved. `skip`
  * as bakeSlot's; `noPace`: the clip another slot's pace measures (its own pace left out, as it always was). */
 export async function timeSlot (c: Character, slot: Slot, raw: THREE.AnimationClip, ctx: BakeContext,
-  o: { mirror?: boolean, skip?: Set<string>, noPace?: boolean, report?: Record<string, unknown> } = {}): Promise<{ clip: THREE.AnimationClip, cut?: BakedSlot['cut'], map: TimeMap }> {
+  o: { mirror?: boolean, skip?: Set<string>, noPace?: boolean, report?: Record<string, unknown>, via?: readonly string[] } = {}): Promise<{ clip: THREE.AnimationClip, cut?: BakedSlot['cut'], map: TimeMap }> {
   const skip = o.skip ?? new Set<string>()
   const report = o.report ?? {}
   const speed = skip.has('speed') ? 1 : slot.speed
@@ -203,8 +206,8 @@ export async function timeSlot (c: Character, slot: Slot, raw: THREE.AnimationCl
     const like = slotById(c, pace.like)
     if (like === undefined || like.id === slot.id) report.pace = { kind: 'pace', clip: slot.name, like: pace.like, missing: true }
     else {
-      const likeRaw = await ctx.clips.get(like.clip, { inPlace: like.inPlace, mirror: o.mirror, fps: ctx.fps })
-      const r = paceTo(ctx.posable, clip, (await timeSlot(c, like, likeRaw, ctx, { mirror: o.mirror, noPace: true })).clip)
+      const likeRaw = await sourceOf(c, like, ctx, { mirror: o.mirror, via: o.via })
+      const r = paceTo(ctx.posable, clip, (await timeSlot(c, like, likeRaw, ctx, { mirror: o.mirror, noPace: true, via: o.via })).clip)
       clip = r.clip
       factor = r.factor
       report.pace = { kind: 'pace', clip: slot.name, like: like.name, retimed: +r.factor.toFixed(3) }
@@ -212,6 +215,16 @@ export async function timeSlot (c: Character, slot: Slot, raw: THREE.AnimationCl
   }
   const map = resolveTime({ seconds: raw.duration, speed, time, kept: cut === undefined ? undefined : [cut.start, cut.end], pace: factor })
   return { clip, cut, map }
+}
+
+/** A slot's source clip (src/engine/pieces.ts): its clip from the clip source, or its pieces composed, a slot piece
+ * being that slot as it plays (baked here, its bone tracks only). */
+export async function sourceOf (c: Character, slot: Slot, ctx: BakeContext, o: { mirror?: boolean, via?: readonly string[] } = {}): Promise<THREE.AnimationClip> {
+  const via = [...(o.via ?? []), slot.id]
+  return await sourceClip(c, slot, ctx, {
+    mirror: o.mirror, via: o.via,
+    bakeSlot: async other => (await bakeSlot(c, other, ctx, { mirror: o.mirror, gearNodes: false, via })).clip,
+  })
 }
 
 /** An adjustment with its windows as played. */

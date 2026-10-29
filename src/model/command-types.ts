@@ -10,7 +10,7 @@
 // document through the same journal (server/store.ts updateCharacter) without being commands.
 import type {
   Adjustment, BlowFit, ClipEvent, ClipKey, ClipRef, Gear, GearAttach, GearTrack, Handle, HandPose, HandPoseRef, Joints,
-  MarkerBoardState, Mount, Placement, RetimeMarker, Side, Slot, SlotIk, SlotTime, TimeHold, Vec3,
+  MarkerBoardState, Mount, Piece, Placement, RetimeMarker, Side, Slot, SlotIk, SlotTime, Vec3,
 } from './types.ts'
 
 export type Command =
@@ -80,7 +80,11 @@ export type Command =
   /** The slot's adjustments replaced. */
   | { type: 'slot.adjust.set', slot: string, adjustments: Adjustment[] }
   /** The slot's time map: each part given replaced whole, null removes it. */
-  | { type: 'slot.time', slot: string, patch: { fit?: BlowFit | null, pace?: { enabled: boolean, like: string } | null, markers?: RetimeMarker[] | null, holds?: TimeHold[] | null } }
+  | { type: 'slot.time', slot: string, patch: { fit?: BlowFit | null, pace?: { enabled: boolean, like: string } | null, markers?: RetimeMarker[] | null } }
+  /** The pieces the slot's source is built from replaced (null: its clip whole), every time it stores moved with its
+   * piece (docs/motion-plan.md §11). `seconds`: the length of the slot's clip (needed while it plays it whole, before or
+   * after); `split`: a new piece id -> the old piece it continues (time inserted inside a piece splits it). */
+  | { type: 'slot.pieces.set', slot: string, pieces: Piece[] | null, seconds?: number, split?: Record<string, string> }
   /** Keys: each track named (a bone, or a gear piece by id) replaced by these keys (none: the track goes). Every key
    * operation of the timeline (insert, delete, drag, stretch, duplicate, paste, mirror, tween, easing) is one of these. */
   | { type: 'slot.keys.set', slot: string, tracks: KeyTrack[] }

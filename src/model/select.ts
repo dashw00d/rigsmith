@@ -87,8 +87,8 @@ export function carriedBy (c: Pick<Character, 'gear'>, side: Side): Gear | undef
 /** Its height as measured (at import, kept by every resize): the one size of the character itself. */
 export const heightOf = (c: Pick<Character, 'source'>): number => c.source.stats?.height ?? 1
 
-/** A copy of a set of slots with fresh ids for the slots and what they hold by id (adjustments, events, markers,
- * holds), a pace following a slot of the set following its copy (for clips.replace). JSON-copied, so live (proxied) app
+/** A copy of a set of slots with fresh ids for the slots and what they hold by id (adjustments, events, markers), a
+ * pace following a slot of the set and a piece playing one following its copy (for clips.replace). JSON-copied, so live (proxied) app
  * state can be passed. */
 export function freshSet (slots: Slot[], newId: () => string): Slot[] {
   const copy = JSON.parse(JSON.stringify(slots)) as Slot[]
@@ -98,8 +98,8 @@ export function freshSet (slots: Slot[], newId: () => string): Slot[] {
     for (const a of s.adjustments) a.id = newId()
     for (const e of s.events ?? []) e.id = newId()
     for (const m of s.time?.markers ?? []) m.id = newId()
-    for (const h of s.time?.holds ?? []) h.id = newId()
     if (s.time?.pace !== undefined) s.time.pace.like = ids.get(s.time.pace.like) ?? s.time.pace.like
+    for (const p of s.pieces ?? []) if (p.kind === 'slot') p.slot = ids.get(p.slot) ?? p.slot
   }
   return copy
 }

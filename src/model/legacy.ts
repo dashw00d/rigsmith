@@ -5,7 +5,7 @@
 //
 // Slots go through schema 2's shape (src/model/migrate.ts slotToV2 / slotFromV2), their times left as they are: v1
 // clients never read a slot's phases closely. A slot a PATCH says of as the view did stays exactly as it was; one it
-// changes keeps what schema 3 has that v1 had no place for (retime markers, holds, events, the hit's sound, who holds
+// changes keeps what schema 3 has that v1 had no place for (retime markers, pieces, events, the hit's sound, who holds
 // gear, the build, eases, mutes) while its clip stays the same.
 import type { Command } from './command-types.ts'
 import { applyCommands } from './commands.ts'
@@ -388,7 +388,7 @@ function shapes (slots: V2Slot[]): Map<string, unknown> {
 }
 
 /** A slot back from v1 with what v1 has no place for, from the slot it stands for while that one plays the same clip:
- * retime markers, holds, events but the hit, who holds gear and when it shows, the build (ik), every key's ease (the
+ * retime markers, pieces, events but the hit, who holds gear and when it shows, the build (ik), every key's ease (the
  * key at the same moment of the same track), the hit's id, sound, bone, volume and pitch (v1 says only where it is;
  * the whole hit when the slot has no fit, v1 having no place for it then), the tracks switched off but the pair v1
  * says as its keys switched off. */
@@ -396,8 +396,9 @@ function carried (c: Character, s: Slot): Slot {
   const old = c.clips.find(x => x.id === s.id)
   if (old === undefined || old.clip.id !== s.clip.id || old.clip.url !== s.clip.url) return s
   const out: Slot = { ...s }
-  const markers = old.time?.markers; const holds = old.time?.holds
-  if (markers !== undefined || holds !== undefined) out.time = { ...out.time, ...(markers !== undefined ? { markers: structuredClone(markers) } : {}), ...(holds !== undefined ? { holds: structuredClone(holds) } : {}) }
+  const markers = old.time?.markers
+  if (markers !== undefined) out.time = { ...out.time, markers: structuredClone(markers) }
+  if (old.pieces !== undefined) out.pieces = structuredClone(old.pieces)
   if (old.ik !== undefined) out.ik = structuredClone(old.ik)
 
   const eased = (ks: ClipKey[] | undefined, was: ClipKey[] | undefined): ClipKey[] | undefined => ks?.map(k => {

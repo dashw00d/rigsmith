@@ -84,7 +84,7 @@ const bow: Gear = {
 
 function character (clips: Slot[] = [], patch: Partial<Character> = {}): Character {
   return {
-    schema: 3, id: 'c1', name: 'Test', createdAt: 0, updatedAt: 0, version: 1, revision: 0, files: { rigged: 'rigged.glb' }, status: 'rigged',
+    schema: 4, id: 'c1', name: 'Test', createdAt: 0, updatedAt: 0, version: 1, revision: 0, files: { rigged: 'rigged.glb' }, status: 'rigged',
     source: { file: 'source/original.glb', originalName: 'test.glb', bytes: 1, kind: 'mesh', scale: 1, warnings: [], stats: { vertices: 30, triangles: 0, height: 1.8, meshes: 1, bones: 16 } },
     skeleton: { template: 'human', fingerLevel: 'full', overrides: {} },
     skin: { locked: false },
@@ -176,11 +176,15 @@ describe('bakeSlot', () => {
     expect(baked.events.map(e => e.t)).toEqual([0.55, 0.75])
   })
 
-  it('lays in holds and retime markers before the speed, keys staying on their moments', async () => {
-    // (a 1 s source held 0.5 s at 0.25, at speed 2: 0.75 s played)
-    const held = slot([], { time: { holds: [{ id: 'h', u: 0.25, seconds: 0.5 }] }, gear: { spear: { keys: [{ u: 0.5, q: [0, 0, 0, 1] }] } } })
+  it('plays a source built from pieces (a held pose in it) and retime markers before the speed, keys staying on their moments', async () => {
+    // (a 1 s source held 0.5 s at 0.25 (schema 3's hold, a hold piece now), at speed 2: 0.75 s played)
+    const pieces: Slot['pieces'] = [
+      { id: 'a', kind: 'clip', clip: { id: 'raw' }, from: 0, to: 0.25 }, { id: 'h', kind: 'hold', from: 0, to: 0.5 }, { id: 'b', kind: 'clip', clip: { id: 'raw' }, from: 0.25, to: 1 },
+    ]
+    const held = slot([], { pieces, gear: { spear: { keys: [{ u: 2 / 3, q: [0, 0, 0, 1] }] } } })
     const a = await bakeSlot(character([held]), held, context(), { skip: ['hands'] })
     expect(a.clip.duration).toBeCloseTo(0.75)
+    expect(a.raw.duration).toBeCloseTo(1.5)
     expect(a.gearKeys.spear[0].u).toBeCloseTo(1 / 1.5, 9)
     // (the source's pose at 0.25 all through the hold: 0.125 s to 0.375 s at speed 2)
     const still = turn(LIBRARY.raw, 'RightHandIndex2.quaternion', 0.25)

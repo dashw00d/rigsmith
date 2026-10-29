@@ -1,4 +1,4 @@
-// The character document, schema 3: one record per character (workspace/characters/<id>/character.json), split into
+// The character document, schema 4: one record per character (workspace/characters/<id>/character.json), split into
 // sections that each have exactly one owning module. The server, the app and the tools all read and write it through
 // this file's types and src/model/commands.ts. See docs/rebuild/DESIGN.md.
 //
@@ -22,7 +22,7 @@ export type Quat = [number, number, number, number]
 /** Joint positions in glTF space (Y up, +Z forward, metres of the model as imported and sized). */
 export type Joints = Record<string, Vec3>
 /** A moment of a slot's SOURCE clip (docs/motion-plan.md §1): 0 its first frame, 1 its last, as the clip source
- * retargets it (in place or not, mirrored or not), before any timing. Past 1 is the source's last pose held, running on
+ * retargets it (in place or not, mirrored or not; a slot built from pieces: their composite, §11), before any timing. Past 1 is the source's last pose held, running on
  * at the rate the clip played (a late blow held: SlotTime fit.late 'hold'). At most MAX_U. Every time a slot stores is
  * one of these, so changing the slot's timing never moves a key, a window or an event; what the timeline shows is the
  * played clip's phase, converted by the baked slot's time map (src/model/timemap.ts). */
@@ -33,10 +33,10 @@ export type Window = [SourceU, SourceU]
 export type Side = 'Left' | 'Right'
 export type FingerLevel = 'none' | 'one' | 'two' | 'full'
 
-export const SCHEMA = 3
+export const SCHEMA = 4
 
 export interface Character {
-  schema: 3
+  schema: 4
   id: string
   name: string
   createdAt: number
@@ -255,14 +255,21 @@ export interface ClipRef { id: string, url?: string }
 /** One clip of the character's set. A slot whose name is one of its unit's clip names is what the game plays under
  * that name; any other is a trial, kept here. Names are unique (commands enforce it), ids are stable.
  *
- * Non-destructive: its source clip, its time map (speed, then `time`) and its tracks (adjustments, bones, gear,
- * events), every time in them source time (SourceU). The one bake (src/engine/bake.ts) plays it, the same in the
- * viewer, the timeline and the game export (docs/motion-plan.md §3):
- *   source -> time (markers, holds, speed, blow fit, pace) -> hands -> ground -> keys on bones -> gear tracks -> events */
+ * Non-destructive: its source (its clip, or the pieces it is built from), its time map (speed, then `time`) and its
+ * tracks (adjustments, bones, gear, events), every time in them source time (SourceU). The one bake
+ * (src/engine/bake.ts) plays it, the same in the viewer, the timeline and the game export (docs/motion-plan.md §3):
+ *   source (pieces composed) -> time (markers, speed, blow fit, pace) -> hands -> ground -> keys on bones -> gear
+ *   tracks -> events */
 export interface Slot {
   id: string
   name: string
+  /** The clip it was filled with (its name in the lists). With `pieces` set, those are what plays. */
   clip: ClipRef
+  /** The source built from pieces played one after another (docs/motion-plan.md §11): ranges of library clips or of
+   * the character's other slots as they play, and held poses, cross-faded into each other, each one's root motion
+   * carrying on from the one before. Unset: `clip` whole (every slot made before schema 4, and most since). Source
+   * time is then the composite's: piece i starts at the sum of the lengths (to - from) before it less their blends. */
+  pieces?: Piece[]
   /** The time map's first stage: the source played `speed` times as fast. */
   speed: number
   loop: boolean
@@ -300,6 +307,22 @@ export interface SlotIk {
   floor?: boolean
 }
 
+/** A piece of a slot's source (Slot.pieces): `from` to `to` seconds of its content, cross-faded in over `blend`
+ * seconds (unset 0; the first piece has none) with the end of the piece before. A piece lasts `to - from` whatever its
+ * content does later (a content shorter than that holds its last pose), so the layout depends on the slot alone. */
+export type Piece = PieceBase & (
+  /** A library clip, seconds of it at speed 1 as the clip source retargets it (the slot's in place, mirror). */
+  | { kind: 'clip', clip: ClipRef }
+  /** Another slot of the character as it plays (its bake: its time, keys and hands), seconds of its played clip. */
+  | { kind: 'slot', slot: string }
+  /** The pose where the piece before ends (the first piece: where the next one starts), held: real time to key. Its
+   * seconds are its own clock (any numbers, from < to): lengthening it at its start lowers `from`, so what is keyed
+   * in it stays where it is. */
+  | { kind: 'hold' }
+)
+export interface PieceBase { id: string, from: number, to: number, blend?: number }
+export type PieceKind = Piece['kind']
+
 /** How the source's time becomes the played clip's, after the slot's speed (src/model/timemap.ts has the stages). */
 export interface SlotTime {
   /** The blow fit: an attack cut so its blow (the slot's `hit` event; none: the `hand`'s fastest moment, measured)
@@ -309,16 +332,12 @@ export interface SlotTime {
   /** Retimed (uniformly) so its planted foot covers ground as fast as another slot's (by its id). */
   pace?: { enabled: boolean, like: string }
   /** Retime markers: source `u` plays at `to` (a phase of the source's length); piecewise linear between them, 0 -> 0
-   * and 1 -> 1 implied. Strictly increasing in both, inside (0, 1). */
+   * and 1 -> 1 implied. Strictly increasing in both, inside (0, 1). (Schema 3's holds are hold pieces now.) */
   markers?: RetimeMarker[]
-  /** The pose at source `u` (0..1) held `seconds` (source seconds: they play faster with the speed, as the clip does).
-   * A hold has no time of its own: what sits at its `u` is at its start. */
-  holds?: TimeHold[]
 }
 
 export interface BlowFit { enabled: boolean, at: number, late?: 'cut' | 'hold', window?: number, hand?: string }
 export interface RetimeMarker { id: string, u: SourceU, to: number }
-export interface TimeHold { id: string, u: SourceU, seconds: number }
 
 interface AdjustmentBase { id: string, enabled: boolean, note?: string }
 

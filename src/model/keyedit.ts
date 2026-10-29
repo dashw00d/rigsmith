@@ -5,7 +5,7 @@
 // Each returns the tracks to send as one `slot.keys.set` (one undo) and the selection as it is after; null when
 // nothing changes. A key moved onto another key's moment on its track replaces it.
 import type { KeyTrack } from './command-types.ts'
-import type { ClipKey, Ease, RetimeMarker, Slot, TimeHold } from './types.ts'
+import type { ClipKey, Ease, RetimeMarker, Slot } from './types.ts'
 import { MAX_U } from './types.ts'
 
 /** One key: its track (`body:<bone>` or `gear:<id>`) and its source moment. */
@@ -325,22 +325,6 @@ export function warpAt (markers: readonly RetimeMarker[] | undefined, u: number)
   while (i < s.length - 1 && s[i] < u) i++
   const f = (u - s[i - 1]) / Math.max(s[i] - s[i - 1], 1e-12)
   return w[i - 1] + f * (w[i] - w[i - 1])
-}
-
-/**
- * The factor the warp (stretchMarkers) scales the source span [from, to] by so that its played length scales by
- * `factor` (what the edge was dragged to): the seconds of the holds inside it (a hold at `from` plays inside the span,
- * one at `to` after it) play whatever the warp does, so only the rest of the span stretches. Null when the span is all
- * holds or the stretch would leave less than nothing of it.
- */
-export function warpFactor (f: Pick<TimeFrame, 'toPlayed'>, holds: readonly TimeHold[] | undefined, from: number, to: number, factor: number): number | null {
-  const length = f.toPlayed(to) - f.toPlayed(from)
-  const held = (holds ?? []).filter(h => h.seconds > 0 && h.u >= from - 1e-9 && h.u < to - 1e-9)
-    .reduce((n, h) => n + f.toPlayed(h.u + 1e-9) - f.toPlayed(h.u), 0)
-  const warped = length - held
-  const target = length * factor - held
-  if (warped < 1e-9 || target < 1e-9) return null
-  return target / warped
 }
 
 /**

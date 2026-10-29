@@ -50,8 +50,8 @@ export interface GameSpec { units: Record<string, UnitSpec>, defaults?: Partial<
  * (emb_rigsmith.py: texture, the clip names, companion), by tools/game_import.py and by the Ship step. Every key a
  * schema 1 build wrote is kept except `scripts` (the slots and hands say it now). */
 export interface BuildRecord {
-  /** 3: `slots` are schema 3's (source time); 2: schema 2's. */
-  schema: 3
+  /** 4: `slots` are schema 4's (source time, pieces); 3: schema 3's (holds); 2: schema 2's. */
+  schema: 4
   unit: string
   generator: string
   /** The run token the build was started with (RIGSMITH_RUN): the Ship job trusts a record only with its own. */
@@ -73,7 +73,7 @@ export interface BuildRecord {
   mount?: Mount
   texture: { file: string, sha256: string } | null
   rigged: { file: string, sha256: string }
-  /** The slots exported, as stored (schema 3: source time): everything, switched off or not, gear referred to by its
+  /** The slots exported, as stored (schema 4: source time): everything, switched off or not, gear referred to by its
    * name. */
   slots: Slot[]
   /** The events file written beside the unit's GLB (<unit>.events.json; docs/motion-plan.md §6). */

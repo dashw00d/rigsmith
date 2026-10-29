@@ -1,10 +1,12 @@
 // What moving a schema 2 slot into source time needs to know of its clip (docs/motion-plan.md §5): the source's length
 // and, where its blow timing measured the blow (the hand's fastest moment), that blow, measured exactly as the bake
-// measures it (src/engine/timing.ts blowCut: on the clip at the slot's speed, on the character's posable copy). The
+// measures it (src/engine/timing.ts blowCut: on the clip at the slot's speed, on the character's posable copy); and
+// what making a schema 3 slot's holds pieces needs (§11.5): its source's length. The
 // migration (src/model/migrate.ts) is pure; tools/migrate.ts calls this in its own process and the server through
 // tools/measure_clips.ts.
 import { cutMoves, type ClipTimes, type MeasuredTimes } from '../model/migrate.ts'
 import type { V2Adjustment, V2Character, V2Slot } from '../model/v2.ts'
+import type { V3Character } from '../model/v3.ts'
 import type { BakeContext } from './bake.ts'
 import { blowTime, retime, saveBones } from './timing.ts'
 
@@ -31,6 +33,24 @@ export async function measureClipTimes (c: Pick<V2Character, 'clips'>, ctx: Bake
         restore()
       }
       times[s.id] = t
+    } catch (error) {
+      problems.push(`clip ${s.name}: ${(error as Error).message}`)
+      if (isNoClip(error)) missing.push(s.id)
+    }
+  }
+  return { times, problems, missing }
+}
+
+/** Per schema 3 slot id with holds (every slot: `all`), its clip's length; as measureClipTimes for those that won't
+ * load. */
+export async function measureHeld (c: Pick<V3Character, 'clips'>, ctx: BakeContext, o: { all?: boolean } = {}): Promise<Required<MeasuredTimes>> {
+  const times: Record<string, ClipTimes> = {}
+  const problems: string[] = []
+  const missing: string[] = []
+  for (const s of c.clips) {
+    if (o.all !== true && !(s.time?.holds ?? []).some(h => h.seconds > 0)) continue
+    try {
+      times[s.id] = { seconds: (await ctx.clips.get(s.clip, { inPlace: s.inPlace, fps: ctx.fps })).duration }
     } catch (error) {
       problems.push(`clip ${s.name}: ${(error as Error).message}`)
       if (isNoClip(error)) missing.push(s.id)

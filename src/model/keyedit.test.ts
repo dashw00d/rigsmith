@@ -3,7 +3,7 @@ import type { ClipKey, Slot } from './types.ts'
 import { resolveTime } from './timemap.ts'
 import {
   copyKeys, deleteKeys, duplicateKeys, easeKeys, keysIn, keysOf, keysToFrame, momentsOf, moveKeys, pasteKeys, putKey, spanOf,
-  stretchKeys, stretchMarkers, warpAt, warpFactor, type TimeFrame,
+  stretchKeys, stretchMarkers, warpAt, type TimeFrame,
 } from './keyedit.ts'
 
 const q = (w = 1): ClipKey['q'] => [0, 0, Math.sqrt(1 - w * w), w]
@@ -97,9 +97,13 @@ describe('stretching, duplicating, deleting', () => {
 })
 
 describe('keys put inside a hold (its whole played span is one source moment)', () => {
-  // (a second of source with half a second held at its middle: 45 frames played, the hold frames 15-30)
-  const map = resolveTime({ seconds: 1, speed: 1, time: { holds: [{ id: 'h', u: 0.5, seconds: 0.5 }] } })
-  const held: TimeFrame = { toPlayed: map.toPlayed, toSource: map.toSource, frames: 45 }
+  // (a second of source with half a second held at its middle: 45 frames played, the hold frames 15-30; a time map
+  // that plays one moment over a span, as schema 3's holds did: keyedit keeps keys apart in any such)
+  const held: TimeFrame = {
+    toPlayed: u => (u <= 0.5 ? u : u + 0.5) / 1.5,
+    toSource: v => { const t = v * 1.5; return t < 0.5 ? t : t <= 1 ? 0.5 : t - 0.5 },
+    frames: 45,
+  }
   const distinct = (keys: ClipKey[]): boolean => keys.every((x, i) => i === 0 || x.u - keys[i - 1].u >= 1e-6)
 
   it('moves two keys into it without merging them', () => {
@@ -171,22 +175,6 @@ describe('retime markers from a stretch', () => {
     // (again on those markers: their ids kept, the inside scaled)
     const again = stretchMarkers(ms, 0.2, 0.4, 'end', 0.5, id)!
     expect(again.map(m => [m.id, m.u, m.to])).toEqual([[ms[0].id, 0.2, 0.2], [ms[1].id, 0.4, 0.35]])
-  })
-
-  it('lands the dragged edge where it was dragged with a hold inside the span (warpFactor)', () => {
-    const time = { holds: [{ id: 'h', u: 0.3, seconds: 0.5 }] }
-    const map = resolveTime({ seconds: 1, speed: 1, time })
-    const from = 0.2; const to = 0.4
-    const span: [number, number] = [map.toPlayed(from), map.toPlayed(to)]
-    const target = 0.8
-    const factor = (target - span[0]) / (span[1] - span[0])
-    const warp = warpFactor(map, time.holds, from, to, factor)!
-    const ms = stretchMarkers(undefined, from, to, 'end', warp, id)!
-    const after = resolveTime({ seconds: 1, speed: 1, time: { ...time, markers: ms } })
-    expect(after.toPlayed(to)).toBeCloseTo(target, 6)
-    expect(after.toPlayed(from)).toBeCloseTo(span[0], 9)
-    // (squeezed below the hold's own length: refused)
-    expect(warpFactor(map, time.holds, from, to, 0.1)).toBeNull()
   })
 
   it('refuses a moving edge at the clip ends or running past the end', () => {

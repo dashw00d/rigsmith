@@ -467,15 +467,16 @@ describe('slot time, keys, events and gear tracks (schema 3)', () => {
   const q = (z: number): [number, number, number, number] => [0, 0, z, Math.sqrt(1 - z * z)]
   const base = (): Character => makeCharacter({ gear: [makeGear({ id: 'bow', name: 'Bow' })], clips: [walk, atk] })
 
-  it('sets the blow fit, pace, markers and holds, each part whole, null taking it out', () => {
+  it('sets the blow fit, pace and markers, each part whole, null taking it out (holds are pieces now)', () => {
     const r = applyCommand(base(), { type: 'slot.time', slot: 'atk', patch: { fit: { enabled: true, at: 0.45, late: 'hold' }, pace: { enabled: true, like: 'walk' } } })
     expect(r.character.clips[1].time).toEqual({ fit: { enabled: true, at: 0.45, late: 'hold' }, pace: { enabled: true, like: 'walk' } })
     expect(r.changes).toEqual(['clip Attack: blow at 45%, a late one held added', 'clip Attack: pace of Walk'])
-    const m = applyCommand(r.character, { type: 'slot.time', slot: 'atk', patch: { markers: [{ id: 'm', u: 0.4, to: 0.3 }], holds: [{ id: 'h', u: 0.5, seconds: 0.2 }], pace: null } })
-    expect(m.character.clips[1].time).toEqual({ fit: { enabled: true, at: 0.45, late: 'hold' }, markers: [{ id: 'm', u: 0.4, to: 0.3 }], holds: [{ id: 'h', u: 0.5, seconds: 0.2 }] })
-    expect(m.changes).toEqual(['clip Attack: pace removed', 'clip Attack: retimed by 1 marker', 'clip Attack: held 0.2 s at 50%'])
-    const off = applyCommand(m.character, { type: 'slot.time', slot: 'atk', patch: { fit: null, markers: null, holds: [] } })
+    const m = applyCommand(r.character, { type: 'slot.time', slot: 'atk', patch: { markers: [{ id: 'm', u: 0.4, to: 0.3 }], pace: null } })
+    expect(m.character.clips[1].time).toEqual({ fit: { enabled: true, at: 0.45, late: 'hold' }, markers: [{ id: 'm', u: 0.4, to: 0.3 }] })
+    expect(m.changes).toEqual(['clip Attack: pace removed', 'clip Attack: retimed by 1 marker'])
+    const off = applyCommand(m.character, { type: 'slot.time', slot: 'atk', patch: { fit: null, markers: null } })
     expect(off.character.clips[1].time).toBeUndefined()
+    expect(failure(() => applyCommand(m.character, { type: 'slot.time', slot: 'atk', patch: { holds: [{ id: 'h', u: 0.5, seconds: 0.2 }] } } as unknown as Command)).message).toMatch(/pieces/)
   })
 
   it('keeps a slot\'s time valid', () => {
@@ -486,8 +487,7 @@ describe('slot time, keys, events and gear tracks (schema 3)', () => {
     expect(failure(() => applyCommand(c, time({ fit: { enabled: true, at: 1.2 } }))).status).toBe(400)
     expect(failure(() => applyCommand(c, time({ markers: [{ id: 'a', u: 0.3, to: 0.5 }, { id: 'b', u: 0.6, to: 0.4 }] }))).status).toBe(400)
     expect(failure(() => applyCommand(c, time({ markers: [{ id: 'a', u: 1, to: 0.5 }] }))).status).toBe(400)
-    expect(failure(() => applyCommand(c, time({ holds: [{ id: 'a', u: 0.3, seconds: 0 }] }))).status).toBe(400)
-    expect(failure(() => applyCommand(c, time({ holds: [{ id: 'a', u: 0.3, seconds: 1 }, { id: 'b', u: 0.3, seconds: 1 }] }))).status).toBe(400)
+    expect(failure(() => applyCommand(c, time({ holds: [{ id: 'a', u: 0.3, seconds: 1 }] }))).status).toBe(400)
     expect(failure(() => applyCommand(c, time({ speed: 2 }))).status).toBe(400)
   })
 

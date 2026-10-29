@@ -3,26 +3,26 @@
 // it measured and the pace factor it found) and hands it to whoever shows or writes source time (the timeline, the
 // window editors); the migration resolves one per schema 2 slot to move its phases into source time.
 //
-// The stages, in order (D the source's seconds, T seconds):
-//   warp   S -> W, piecewise linear through the retime markers (0 -> 0 and 1 -> 1; past 1, W = S)
-//   holds  W -> tau = W * D + the seconds of every hold before S (a hold at u: the pose at u held there)
+// The stages, in order (D the source's seconds: a slot built from pieces, their composite's, docs/motion-plan.md §11;
+// T seconds):
+//   warp   S -> W, piecewise linear through the retime markers (0 -> 0 and 1 -> 1; past 1, W = S); tau = W * D
 //   speed  T1 = tau / speed
 //   fit    the kept range [start, end] of T1 (the blow landed where the game times hits; end past the clip: its last
 //          pose held); T2 = T1 - start
 //   pace   T3 = T2 / factor
-// so the played phase is v = (T1 - start) / (end - start): speed and pace are uniform, only the warp, the holds and the
-// fit move phases. A slot with neither markers nor holds maps exactly as schema 2 played it (and, with no fit either,
-// v = S to the last bit, so a migrated slot's windows and keys come back unchanged).
-import type { BlowFit, ClipEvent, ClipKey, RetimeMarker, SlotTime, SourceU, TimeHold, Window } from './types.ts'
+// so the played phase is v = (T1 - start) / (end - start): speed and pace are uniform, only the warp and the fit move
+// phases. A slot without markers maps exactly as schema 2 played it (and, with no fit either, v = S to the last bit, so
+// a migrated slot's windows and keys come back unchanged). (Schema 3's holds are hold pieces of the source now.)
+import type { BlowFit, ClipEvent, ClipKey, RetimeMarker, SlotTime, SourceU, Window } from './types.ts'
 import { MAX_U } from './types.ts'
 
 export interface TimeInput {
   /** The source's length, seconds (at speed 1). */
   seconds: number
   speed: number
-  /** Markers and holds are read from it; its fit and pace only through `kept` and `pace`. */
+  /** Markers are read from it; its fit and pace only through `kept` and `pace`. */
   time?: SlotTime
-  /** The fit's kept range, seconds of the clip after speed (and markers and holds): blowCut's `kept`. Unset: no fit. */
+  /** The fit's kept range, seconds of the clip after speed (and markers): blowCut's `kept`. Unset: no fit. */
   kept?: [number, number]
   /** The pace's factor (the played clip is the kept range retimed by it). Unset: 1. */
   pace?: number
@@ -31,13 +31,13 @@ export interface TimeInput {
 export interface TimeMap {
   /** Seconds of the played clip. */
   duration: number
-  /** Seconds of the clip after speed (and markers and holds), before the fit: `kept` is in these. */
+  /** Seconds of the clip after speed (and markers), before the fit: `kept` is in these. */
   uncut: number
   /** The kept range in those seconds ([0, uncut] without a fit). */
   kept: [number, number]
   /** Played phase (0..1 over the played clip; outside it, the source played before or after) of a source moment. */
   toPlayed: (u: SourceU) => number
-  /** The source moment played at phase `v` (inside a hold: its u; in the held end: past 1). */
+  /** The source moment played at phase `v` (in the held end: past 1). */
   toSource: (v: number) => SourceU
   /** The source moments the played clip starts and ends on. */
   range: [SourceU, SourceU]
@@ -48,17 +48,15 @@ export function resolveTime (s: TimeInput): TimeMap {
   const D = s.seconds > 0 ? s.seconds : 1e-9
   const speed = s.speed > 0 ? s.speed : 1
   const warp = warpOf(s.time?.markers)
-  const holds = sortedHolds(s.time?.holds)
-  const plain = warp === null && holds.length === 0
-  const held = holds.reduce((n, h) => n + h.seconds, 0)
-  const uncut = (D + held) / speed
+  const plain = warp === null
+  const uncut = D / speed
   const kept: [number, number] = s.kept === undefined ? [0, uncut] : [s.kept[0], s.kept[1]]
   const span = Math.max(kept[1] - kept[0], 1e-12)
   const factor = s.pace !== undefined && s.pace > 0 ? s.pace : 1
   // (the plain map in schema 2's own arithmetic: no fit is S itself, a fit is a straight line through the kept range)
   const exact = plain && s.kept === undefined
-  const t1 = (u: SourceU): number => (plain ? u * (D / speed) : tauOf(u, D, warp, holds) / speed)
-  const u1 = (t: number): SourceU => (plain ? t / (D / speed) : sourceOfTau(t * speed, D, warp, holds))
+  const t1 = (u: SourceU): number => (plain ? u * (D / speed) : tauOf(u, D, warp) / speed)
+  const u1 = (t: number): SourceU => (plain ? t / (D / speed) : sourceOfTau(t * speed, D, warp))
   const toPlayed = (u: SourceU): number => (exact ? u : (t1(u) - kept[0]) / span)
   const toSource = (v: number): SourceU => (exact ? v : u1(kept[0] + v * span))
   return { duration: span / factor, uncut, kept, toPlayed, toSource, range: [toSource(0), toSource(1)] }
@@ -91,30 +89,24 @@ export function fitRange (blow: number, duration: number, fit: Pick<BlowFit, 'at
 }
 
 /** The phase (of the clip before the fit) a source moment is at, for a picked blow: the moment itself when the slot
- * has neither markers nor holds (schema 2's blowU, to the last bit). */
+ * has no markers (schema 2's blowU, to the last bit). */
 export function phaseBeforeFit (u: SourceU, s: Pick<TimeInput, 'seconds' | 'speed' | 'time'>): number {
   const warp = warpOf(s.time?.markers)
-  const holds = sortedHolds(s.time?.holds)
-  if (warp === null && holds.length === 0) return u
+  if (warp === null) return u
   const D = s.seconds > 0 ? s.seconds : 1e-9
-  return tauOf(u, D, warp, holds) / (D + holds.reduce((n, h) => n + h.seconds, 0))
+  return tauOf(u, D, warp) / D
 }
 
 // ---- converting what a slot stores -----------------------------------------------------------------------------------
 
-/** The source moment at `tau` seconds of the clip after markers and holds, before speed (what warpClip samples). */
+/** The source moment at `tau` seconds of the clip after markers, before speed (what warpClip samples). */
 export function sourceOfTime (tau: number, s: Pick<TimeInput, 'seconds' | 'time'>): SourceU {
-  return sourceOfTau(tau, s.seconds > 0 ? s.seconds : 1e-9, warpOf(s.time?.markers), sortedHolds(s.time?.holds))
+  return sourceOfTau(tau, s.seconds > 0 ? s.seconds : 1e-9, warpOf(s.time?.markers))
 }
 
-/** Whether the slot's time has markers or holds that change anything (else the clip is the source, retimed). */
+/** Whether the slot's time has markers that change anything (else the clip is the source, retimed). */
 export function warps (time: SlotTime | undefined): boolean {
-  return warpOf(time?.markers) !== null || sortedHolds(time?.holds).length > 0
-}
-
-/** Seconds the holds add (before speed). */
-export function heldSeconds (time: SlotTime | undefined): number {
-  return sortedHolds(time?.holds).reduce((n, h) => n + h.seconds, 0)
+  return warpOf(time?.markers) !== null
 }
 
 /** Source windows as played phases, clipped to the played clip (a part it doesn't play is left out). */
@@ -149,7 +141,7 @@ export function eventToPlayed (map: TimeMap, e: Pick<ClipEvent, 'u' | 'to'>): { 
 
 const clampU = (u: number): number => Math.min(MAX_U, Math.max(0, u))
 
-// ---- inside: the warp and the holds -----------------------------------------------------------------------------------
+// ---- inside: the warp -------------------------------------------------------------------------------------------------
 
 interface Warp { s: number[], w: number[] }
 
@@ -169,27 +161,13 @@ function lerpKnots (x: number, xs: number[], ys: number[]): number {
   return ys[i - 1] + f * (ys[i] - ys[i - 1])
 }
 
-function sortedHolds (holds: readonly TimeHold[] | undefined): TimeHold[] {
-  return [...(holds ?? [])].filter(h => h.seconds > 0).sort((a, b) => a.u - b.u)
-}
-
-/** Seconds of the clip before speed at which source `u` starts. */
-function tauOf (u: SourceU, D: number, warp: Warp | null, holds: TimeHold[]): number {
-  const w = warp === null ? u : lerpKnots(u, warp.s, warp.w)
-  let held = 0
-  for (const h of holds) if (h.u < u) held += h.seconds
-  return w * D + held
+/** Seconds of the clip before speed at which source `u` plays. */
+function tauOf (u: SourceU, D: number, warp: Warp | null): number {
+  return (warp === null ? u : lerpKnots(u, warp.s, warp.w)) * D
 }
 
 /** The source moment at `tau` seconds of the clip before speed. */
-function sourceOfTau (tau: number, D: number, warp: Warp | null, holds: TimeHold[]): SourceU {
-  let held = 0
-  for (const h of holds) {
-    const at = tauOf(h.u, D, warp, holds)
-    if (tau < at) break
-    if (tau <= at + h.seconds) return h.u
-    held += h.seconds
-  }
-  const w = (tau - held) / D
+function sourceOfTau (tau: number, D: number, warp: Warp | null): SourceU {
+  const w = tau / D
   return warp === null ? w : lerpKnots(w, warp.w, warp.s)
 }

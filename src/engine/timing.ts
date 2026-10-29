@@ -2,7 +2,7 @@
 // times its hits, a walk retimed to another's pace, a hand's fist taken from a clip's most closed moment. The one bake
 // (src/engine/bake.ts) runs these in its fixed order; every measurement leaves the bones as they were.
 import * as THREE from 'three'
-import { fitBlow, fitRange, heldSeconds, sourceOfTime, warps } from '../model/timemap.ts'
+import { fitBlow, fitRange, sourceOfTime, warps } from '../model/timemap.ts'
 import type { BlowFit, Side, SlotTime } from '../model/types.ts'
 import { frameTimes } from './keys.ts'
 import { holdFactor } from './pulls.ts'
@@ -101,12 +101,12 @@ export function cut (clip: THREE.AnimationClip, start: number, end: number, name
   return new THREE.AnimationClip(name, end - start, tracks)
 }
 
-/** The source with a slot's retime markers and holds laid in (src/model/timemap.ts: the warp, then each hold's pose
- * held), on KEY_FPS frames; the source itself when it has neither. Before the speed. */
+/** The source with a slot's retime markers laid in (src/model/timemap.ts: the warp), on KEY_FPS frames; the source
+ * itself without them. Before the speed. */
 export function warpClip (clip: THREE.AnimationClip, time: SlotTime | undefined): THREE.AnimationClip {
   if (!warps(time)) return clip
   const D = clip.duration
-  const duration = D + heldSeconds(time)
+  const duration = D
   const times = frameTimes(duration)
   // (the source second each frame shows: past the source's end its last pose)
   const at = times.map(t => Math.min(1, Math.max(0, sourceOfTime(t, { seconds: D, time }))) * D)

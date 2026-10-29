@@ -7,7 +7,7 @@ import { applyHands, DEFAULT_FIST, EASE, handAt, handLayers, handleRef, poseOfRe
 
 function character (patch: Partial<Character> = {}): Character {
   return {
-    schema: 3, id: 'c1', name: 'Test', createdAt: 0, updatedAt: 0, version: 1, revision: 0, files: { rigged: 'rigged.glb' }, status: 'rigged',
+    schema: 4, id: 'c1', name: 'Test', createdAt: 0, updatedAt: 0, version: 1, revision: 0, files: { rigged: 'rigged.glb' }, status: 'rigged',
     source: { file: 'source/original.glb', originalName: 'test.glb', bytes: 1, kind: 'mesh', scale: 1, warnings: [] },
     skeleton: { template: 'human', fingerLevel: 'full', overrides: {} },
     skin: { locked: false },
