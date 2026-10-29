@@ -31,7 +31,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { bakeRide, bakeSlot, eventsInClip, gearTracks, type BakeContext, type BakedEvent, type BakedSlot, type GearTrackTarget, type PullPlan } from '../../src/engine/bake.ts'
 import { CharacterView } from '../../src/engine/CharacterView.ts'
 import { budgetOf, budgetRatio, clipProblem, DEFAULT_LODS, gearLeftOut, HIT_AT, meshNameOf, NO_LOD_BELOW } from '../../src/engine/contract.ts'
-import type { GarmentEdit } from '../../src/engine/garments.ts'
+import { originMatrix, type GarmentEdit } from '../../src/engine/garments.ts'
 import { safeName } from '../../src/engine/geom.ts'
 import { baseColorImage, imageBytes, readGlb } from '../../src/engine/glb.ts'
 import { frameTimes } from '../../src/engine/keys.ts'
@@ -210,11 +210,11 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
       continue
     }
     const file = path.join(me.dir, g.model!)
-    const shown = { position: a.place.position, rotation: a.place.rotation, scale: a.place.scale, hidden: g.hidden === true, from: g.from }
+    const shown = { position: a.place.position, rotation: a.place.rotation, scale: a.place.scale, origin: g.origin, hidden: g.hidden === true, from: g.from }
     if (a.kind !== 'bone') {
       // Skin and spot gear: weighted in the character's rest space as the viewer weights it, bones by name onto this
       // skeleton, then into game space.
-      const model = await gearModel(file, garmentMatrix(a.place), material)
+      const model = await gearModel(file, g, garmentMatrix(a.place), material)
       if (model.geos.length === 0) throw new Error(`${unit}: ${g.name}: no mesh in ${g.model}`)
       const skin = gearSkin(me.view, g, model.geos, a.kind === 'skin' ? editsOf(g) : [], model.animations, bones.map(b => b.name))
       model.geos.forEach((geo, i) => setSkin(geo.applyMatrix4(toGame), skin.skins[i].indices, skin.skins[i].weights))
@@ -252,7 +252,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     let mats: THREE.Material[]
     let painted: number | undefined
     if (pulls.length === 0) {
-      const model = await gearModel(file, placed, material)
+      const model = await gearModel(file, g, placed, material)
       if (model.geos.length === 0) throw new Error(`${unit}: ${g.name}: no mesh in ${g.model}`)
       mats = model.mats
       geo = merged(model.geos, unit, g)
@@ -277,7 +277,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
         joints.push(bones.length - 1)
         pullBones.push({ bone: pb, parent, hand, gear: g, handle: h, rest: pb.position.clone() })
       }
-      const model = await gearModel(file, new THREE.Matrix4(), material)
+      const model = await gearModel(file, g, new THREE.Matrix4(), material)
       if (model.geos.length === 0) throw new Error(`${unit}: ${g.name}: no mesh in ${g.model}`)
       mats = model.mats
       const skin = pullSkin(g, model.geos, editsOf(g), joints)
@@ -399,6 +399,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
         const { scene: gs } = await load(file)
         gs.updateMatrixWorld(true)
         const at = new THREE.Matrix4().multiplyMatrices(place, garmentMatrix(g.attach.place))
+        if (g.origin !== undefined) at.multiply(originMatrix(g))
         const geos: THREE.BufferGeometry[] = []; const mats: THREE.Material[] = []
         gs.traverse(o => {
           const m = o as THREE.Mesh
@@ -423,7 +424,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
           out.add(skinnedMesh(name, geo, mats, meshes))
           partReport[name] = [triangles(geo)]
         }
-        worn[g.name] = { bone, place: g.attach.place, mesh: createHash('sha256').update(readFileSync(file)).digest('hex') }
+        worn[g.name] = { bone, place: g.attach.place, origin: g.origin, mesh: createHash('sha256').update(readFileSync(file)).digest('hex') }
       }
       compReport.gear = worn
     }
@@ -935,14 +936,16 @@ function clipStats (root: THREE.Object3D, clip: THREE.AnimationClip, height: num
 /** A gear model's meshes placed by `placement` over their own nodes (position, normal and uv kept), each with its
  * surface: the body's Main, or its own by name (the game binds a surface's maps by its material's name: Main,
  * Atlas_<set>, Trim_<sheet>). */
-async function gearModel (file: string, placement: THREE.Matrix4, main: THREE.Material): Promise<{ geos: THREE.BufferGeometry[], mats: THREE.Material[], animations: string[] }> {
+async function gearModel (file: string, g: Pick<Gear, 'origin'>, placement: THREE.Matrix4, main: THREE.Material): Promise<{ geos: THREE.BufferGeometry[], mats: THREE.Material[], animations: string[] }> {
   const { scene, animations } = await load(file)
   scene.updateMatrixWorld(true)
   const geos: THREE.BufferGeometry[] = []; const mats: THREE.Material[] = []
+  // (its origin at zero first, as the viewer loads it: garments.ts originMatrix)
+  const own = g.origin === undefined ? placement : placement.clone().multiply(originMatrix(g))
   scene.traverse(o => {
     const m = o as THREE.Mesh
     if (m.isMesh !== true) return
-    const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(placement, m.matrixWorld))
+    const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(own, m.matrixWorld))
     for (const name of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv'].includes(name)) geo.deleteAttribute(name)
     geos.push(geo)
     const loaded = Array.isArray(m.material) ? m.material[0] : m.material

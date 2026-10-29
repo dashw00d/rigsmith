@@ -213,6 +213,36 @@ export function gearEvents (c: Pick<Character, 'gear'>, holds: Record<string, Ge
   return out.sort((a, b) => a.t - b.t)
 }
 
+// ---- a leading piece's keys with its origin moved -------------------------------------------------------------------
+
+/**
+ * A leading piece's keys (slot.ik.lead: world moves and turns about its origin from where it rode in the clip,
+ * clipedit.ts onPath) for its origin moved by `o` (a point of its frame now), so it leads along the same path: where it
+ * rode at each key (`unkeyed`, the slot's clip before keys, on its attach bone at its Gear placement) says where the
+ * new origin was then, d = its turn applied to o times its size, and p' = p + q·d - d (gear.origin takes them). `toPlayed`:
+ * the slot's time map (a key's source moment as a phase of `unkeyed`).
+ */
+export function leadKeysMoved (g: Gear, keys: readonly ClipKey[], o: Vec3, unkeyed: THREE.AnimationClip, toPlayed: (u: number) => number, ctx: PoseContext): ClipKey[] {
+  if (g.attach.kind !== 'bone' || !ctx.rest.bones.has(g.attach.bone)) return keys.map(k => ({ ...k }))
+  const bone = g.attach.bone
+  const place = restPlace(g.attach.place)
+  const under = restFrame(ctx.rest, bone).invert().multiply(matrixOf(place))
+  const local = new THREE.Vector3(...o).multiplyScalar(g.attach.place.scale)
+  const poser = new Poser(unkeyed, ctx)
+  try {
+    return keys.map(k => {
+      const time = THREE.MathUtils.clamp(toPlayed(k.u), 0, 1) * unkeyed.duration
+      const rode = poser.world(bone, time).multiply(under)
+      const turn = new THREE.Quaternion(); rode.decompose(new THREE.Vector3(), turn, new THREE.Vector3())
+      const d = local.clone().applyQuaternion(turn)
+      const p = new THREE.Vector3(...(k.p ?? [0, 0, 0])).add(d.clone().applyQuaternion(new THREE.Quaternion(...k.q).normalize())).sub(d)
+      return { ...k, p: p.toArray() as Vec3 }
+    })
+  } finally {
+    poser.done()
+  }
+}
+
 // ---- inside ---------------------------------------------------------------------------------------------------------
 
 function needsPoses (pieces: Array<{ heldBy: HeldBy[] }>): boolean {

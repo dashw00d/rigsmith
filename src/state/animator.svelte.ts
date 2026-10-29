@@ -336,7 +336,8 @@ class Animator {
     const view = this.shown
     if (view === null) return null
     const nodes: string[] = []
-    view.root.traverse(o => { if (o.name.endsWith('_place')) nodes.push(o.name) })
+    // (by node: a piece worn again, its model moved to a new origin, is copied again too)
+    view.root.traverse(o => { if (o.name.endsWith('_place')) nodes.push(`${o.name}:${o.uuid}`) })
     const key = nodes.sort().join('|')
     if (fresh || this.posable === null || key !== this.posableKey) {
       const copy = cloneSkinned(view.root)

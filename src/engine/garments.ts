@@ -82,18 +82,27 @@ export function tickMechanisms (dt: number): void {
   for (const mixers of mechanisms.values()) for (const m of mixers.values()) m.update(dt)
 }
 
-/** The piece's meshes as static geometry, `placement` applied (identity: in its model's own space), in its model's
- * mesh order. Their geometry and materials are copies the piece owns. */
-async function meshesOf (url: string, name: string, placement: THREE.Matrix4): Promise<THREE.Mesh[]> {
+/** Where a piece's model is moved to so its origin (Gear.origin, a point of the model's own space) is at zero: the
+ * frame its placement, handles, pulls and keys are in. Identity for a piece keeping its file's origin. */
+export function originMatrix (g: Pick<Gear, 'origin'>): THREE.Matrix4 {
+  const o = g.origin
+  return o === undefined ? new THREE.Matrix4() : new THREE.Matrix4().makeTranslation(-o[0], -o[1], -o[2])
+}
+
+/** The piece's meshes as static geometry, `placement` applied (identity: in its own frame, its origin at zero), in its
+ * model's mesh order. Their geometry and materials are copies the piece owns. */
+async function meshesOf (url: string, g: Pick<Gear, 'name' | 'origin'>, placement: THREE.Matrix4): Promise<THREE.Mesh[]> {
   const scene = (await loadModel(url)).scene
   scene.updateMatrixWorld(true)
   const out: THREE.Mesh[] = []
+  const name = g.name
+  const own = g.origin === undefined ? placement : placement.clone().multiply(originMatrix(g))
   scene.traverse(o => {
     const mesh = o as THREE.Mesh
     if (!mesh.isMesh) return
     const geometry = mesh.geometry.clone()
     for (const attribute of ['skinIndex', 'skinWeight']) geometry.deleteAttribute(attribute)
-    geometry.applyMatrix4(new THREE.Matrix4().multiplyMatrices(placement, mesh.matrixWorld))
+    geometry.applyMatrix4(new THREE.Matrix4().multiplyMatrices(own, mesh.matrixWorld))
     const material = Array.isArray(mesh.material) ? mesh.material.map(m => m.clone()) : mesh.material.clone()
     const copy = new THREE.Mesh(geometry, material)
     copy.name = `${safeName(name)}_${out.length}`
@@ -516,7 +525,7 @@ export async function wear (view: WearView, g: Gear, o: WearOptions): Promise<Wo
     if (frame === null) return null
     let meshes: THREE.Mesh[]
     try {
-      meshes = await meshesOf(o.url, g.name, new THREE.Matrix4())
+      meshes = await meshesOf(o.url, g, new THREE.Matrix4())
     } catch (error) {
       frame.group.removeFromParent()
       throw error
@@ -536,12 +545,14 @@ export async function wear (view: WearView, g: Gear, o: WearOptions): Promise<Wo
   const model = pinned?.animation !== undefined ? await loadModel(o.url) : null
   const clip = model?.animations.find(x => x.name === pinned?.animation)
   if (pinned !== null && model !== null && clip !== undefined) {
-    const meshes = await meshesOf(o.url, g.name, placed)
+    const meshes = await meshesOf(o.url, g, placed)
     const lead = skeleton.bones[spotWeights(body, partSpot(pinned, meshes))[0][0]] ?? skeleton.bones[0]
     for (const m of meshes) dispose(m)
     const frame = boneFrame(view, g, lead.name, o.place)
     if (frame === null) return null
     const copy = cloneSkinned(model.scene)
+    // (its own animation moves the model's own nodes: the whole model moved so its origin is the piece's)
+    if (g.origin !== undefined) copy.position.add(new THREE.Vector3(...g.origin).negate())
     const shown: THREE.Mesh[] = []
     copy.traverse(x => {
       if (!(x as THREE.Mesh).isMesh) return
@@ -562,14 +573,14 @@ export async function wear (view: WearView, g: Gear, o: WearOptions): Promise<Wo
     const group = new THREE.Group()
     group.name = `${safeName(g.name)}_fit`
     group.userData[GARMENT_FLAG] = g.id
-    const meshes = await meshesOf(o.url, g.name, new THREE.Matrix4())
+    const meshes = await meshesOf(o.url, g, new THREE.Matrix4())
     for (const m of meshes) { m.userData[GARMENT_FLAG] = g.id; group.add(m) }
     placed.decompose(group.position, group.quaternion, group.scale)
     view.root.add(group)
     return { gear: g.id, node: group, meshes, objects: [group] }
   }
   // skin: the body's weights under each vertex, then what was painted; spot: every vertex its spot's weights
-  const meshes = await meshesOf(o.url, g.name, placed)
+  const meshes = await meshesOf(o.url, g, placed)
   const spot = a.kind === 'spot' ? spotWeights(body, partSpot(a, meshes)) : null
   const edits = a.kind === 'skin' && (g.painted ?? 0) > 0 && o.edits !== undefined ? await o.edits().catch(() => []) : []
   const boneNames = skeleton.bones.map(b => b.name)
