@@ -3,6 +3,7 @@
 // its sound, levelled and pitched as the game plays it; scrubbing, a short blip; either way its name flashed over the
 // character), each name's preview muted or not (here only: the game gets every event), and the edits the lane and the
 // inspector make, each one command batch (src/app/motion/events/edit.ts works them out).
+import { untrack } from 'svelte'
 import type { CharacterSound, GameSound, GameSounds } from '../../server/routes/sounds.ts'
 import type { TimelineView } from '../app/motion/lanes.ts'
 import { crossed, measuredHit, playedEvents, type PlayedEvent } from '../app/motion/events/edit.ts'
@@ -191,6 +192,11 @@ class EventsState {
   /** Hear the slot `get` shows while it plays (the lane, while it is up): each event crossed played and flashed. The
    * flash overlay is up meanwhile. Returns the way to stop. */
   watch (get: () => TimelineView | null): () => void {
+    // (called from an effect: what it sets up reads no state for that effect to follow)
+    return untrack(() => this.listen(get))
+  }
+
+  private listen (get: () => TimelineView | null): () => void {
     let last: number | null = null
     viewer.setOverlay('event-flash', { component: EventFlash, props: {} })
     const off = animator.onTick(phase => {

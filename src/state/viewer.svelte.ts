@@ -185,9 +185,11 @@ class Viewer {
     const list = untrack(() => this.overlays)
     const at = list.findIndex(([k]) => k === key)
     if (o === null && at < 0) return
-    this.overlays = o === null ? list.filter(([k]) => k !== key) : at >= 0 ? list.with(at, [key, o]) : [...list, [key, o]]
+    const next: Array<[string, Overlay]> = o === null ? list.filter(([k]) => k !== key) : at >= 0 ? list.with(at, [key, o]) : [...list, [key, o]]
+    this.overlays = next
+    // (from the list just made: reading the state back would make an effect that sets an overlay depend on them all)
     const stage = untrack(() => this.stage)
-    if (stage !== null) stage.covered = this.overlays.some(([, x]) => x.covers === true)
+    if (stage !== null) stage.covered = next.some(([, x]) => x.covers === true)
   }
 
   // ---- display ------------------------------------------------------------------------------------------------
