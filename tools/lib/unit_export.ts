@@ -676,19 +676,19 @@ export function fitEvents (events: BakedEvent[], fit: EventFit): BakedEvent[] {
 }
 
 /** The events file (src/model/unit.ts UnitEvents): each exported clip's loop, length and events as it was exported
- * (`clips`, in the slots' order; `baked`: after a ride's fit, which repeated a loop's events per cycle; `fits.own`: how
- * a companion's fit placed the unit's own clip in the whole). A companion's events (`fits.companion`, phases of the
+ * (`clips`, in the slots' order; `baked`: after a ride's fit, which repeated a loop's events per cycle; `more.own`: how
+ * a companion's fit placed the unit's own clip in the whole). A companion's events (`more.companion`, phases of the
  * whole already) go under `companion`, their bones prefixed, when it has any. */
 export function eventsFile (unit: string, slots: Slot[], clips: THREE.AnimationClip[], baked: Map<string, BakedSlot>, strides: { walk: number | null, run: number | null },
-  fits: { own?: Map<string, EventFit>, companion?: { prefix: string, events: Map<string, BakedEvent[]> } } = {}): UnitEvents {
+  more: { own?: Map<string, EventFit>, companion?: { prefix: string, events: Map<string, BakedEvent[]> } } = {}): UnitEvents {
   const out: UnitEvents = { unit, schema: 1, clips: {}, walkStride: strides.walk, runStride: strides.run }
   slots.forEach((slot, i) => {
     const b = baked.get(slot.name)
-    const fit = fits.own?.get(slot.name)
+    const fit = more.own?.get(slot.name)
     const own = fit === undefined ? b?.events ?? [] : fitEvents(b?.events ?? [], fit)
     out.clips[slot.name] = { loop: slot.loop, seconds: round(clips[i].duration, 3), events: unitEvents(own) }
   })
-  const comp = fits.companion
+  const comp = more.companion
   if (comp !== undefined) {
     const clipsOf: Record<string, { events: UnitEvent[] }> = {}
     for (const slot of slots) {
