@@ -96,8 +96,14 @@ export interface UnitEvents {
   clips: Record<string, { loop: boolean, seconds: number, events: UnitEvent[] }>
   walkStride: number | null
   runStride: number | null
+  /** The game clips that have variants (src/model/variants.ts: slots `Attack 2`... exported as `Attack_2`...), each with
+   * every clip name it plays as, itself first: the game picks one at random. Unset when none has any. */
+  variants?: Record<string, string[]>
 }
 
+/** One event of an exported clip. Besides the slot's own (docs/motion-plan.md §2.4), its gear's (src/engine/geartracks.ts
+ * gearEvents): `hide:<mesh>` / `show:<mesh>` where a piece hides and shows, `detach:<mesh>` / `attach:<mesh>` (`bone`:
+ * who let go, who took it) where it changes bones. */
 export interface UnitEvent { t: number, name: string, to?: number, sound?: string, bone?: string }
 
 export interface BuiltClip {
