@@ -47,7 +47,7 @@ There is no editor to open: the clip playing **is** what you edit. **Clips** lis
 variants under it), then your trials; click one to play it. The timeline docks under the viewport (drag its top edge
 to make it taller), the joints show on the character, and the inspector beside it shows what is selected: keys, a
 joint, a piece of gear, events, a hand bar, a strip of the Gear track. **Settings** under it holds the slot's ground,
-blow timing, pace, hand poses and holds.
+blow timing, pace, hand poses and handle holds.
 
 Every change is in the clip at once and is one step of the character's history: `Ctrl+Z` undoes it, `Ctrl+Shift+Z`
 redoes. Nothing needs saving; the game gets it on Ship.
@@ -73,6 +73,7 @@ retime markers and they stay on the same moment.
 
 Under the ruler, one row per track; the eye on a row switches that track off (kept, not played).
 
+- **Clip**: what the clip is built from (§5a), its length (type one), and **+** to append another clip.
 - **Summary**: every key. **Body**: limb groups (open one with its arrow; **all** shows its unkeyed bones), opening
   to bones; selecting a joint in the viewport opens its row.
 - **Gear**: each piece's keys, and under them its **Held by** and **Shown** strips (§8).
@@ -80,8 +81,8 @@ Under the ruler, one row per track; the eye on a row switches that track off (ke
   when.
 - **Events**: the clip's named moments, a row per name (§9).
 - **Time**: the clip's speed, retime markers (drag to speed up or slow down round them; **+** adds one at the
-  playhead), holds (**hold** adds one; drag its end to hold longer) and the hit (drag it to pick the blow; with the blow
-  timing on, the clip is cut so it still lands where the game times hits).
+  playhead), **insert** (half a second of the pose at the playhead held there, to key: §5a) and the hit (drag it to
+  pick the blow; with the blow timing on, the clip is cut so it still lands where the game times hits).
 
 Each key's span to the next is drawn as its easing: thin line smooth, solid linear, dashed eases, a step, or a thick
 bar where the clip is held.
@@ -96,13 +97,41 @@ bar where the clip is held.
   motion under the keys instead (retime markers).
 - **Duplicate** (`Ctrl+D`, just after the selection), **copy** and **paste** (`Ctrl+C`, `Ctrl+V` at the playhead, in this
   clip or another).
-- **Delete**: keys, events, hand bars, markers, holds and the Gear strips' switches and hidden spans selected.
+- **Delete**: keys, events, hand bars, markers, pieces of the clip and the Gear strips' switches and hidden spans
+  selected.
 
 **Seeing it.** `Ctrl`+wheel zooms (or the wheel over the ruler), Shift+wheel scrolls; `F` with the pointer over the
 timeline fits the clip, `Shift+F` the selection (elsewhere `F` frames the character). **Loop a part**: Shift+drag the
 ruler, or `[` and `]` at the playhead; `\` clears it. **Idle** (on a clip that plays once) previews it into the
 character's Idle, blended in over 0.2 s as the game does. Loop, mirror and the speed menu at the right are the
 preview's only: nothing they change is saved.
+
+## 5a. Longer clips, combined clips (the Clip strip)
+
+A clip can be built from **pieces** played one after another: a part of a library clip, a part of another of the
+character's clips **as it plays** (its timing and keys: combine with an edited Attack), or a **held pose** (the pose
+where the piece before ends, held: real time you pose and key like any other). Neighbours cross-fade, and each piece
+walks on from where the one before left off, facing the same way, so the character never jumps back.
+
+| You want to | Do this |
+| --- | --- |
+| Make the clip longer | Drag the bright grip at the strip's right end (or its left, for time before it), or type a length beside **Clip**. The extra time is the last pose held: key a pose in it. Dragging inward cuts the clip shorter. |
+| Put time in the middle | Put the playhead there, then **insert** in the Time row: the piece is split and half a second held between its parts. Drag the held piece's ends to hold longer. |
+| Add another clip after it | **+** beside Clip: pick one of the character's clips, or search the library, then the part of it (seconds) and the blend. |
+| Trim a piece | Drag its ends (Alt: free of frames). A piece trimmed shorter can be let out again up to its clip's length. |
+| Blend two pieces | Drag the diamond on the later one's top left: how long it cross-fades in (0: a cut). |
+| Reorder | Drag a piece by its middle past another. |
+| Remove a piece | Click it, then the cross on it (or Delete). |
+
+A selected piece shows in the inspector: what it plays, the part of it (typed in seconds), its blend.
+
+**Keys stay on their piece.** Keys, events, hand bars and the Gear strips belong to the piece they were made on:
+trimming, blending or reordering pieces never slides them, and a piece removed (or a part trimmed off) takes what was
+keyed on it along (`Ctrl+Z` brings it back). With the blow timing on, lengthening or shortening the clip keeps its start
+and its hit where they are (the hit is set by hand then, so a longer clip can't find another one) and moves where the
+game times the hit to match.
+
+The game gets the clip as built: nothing is written to the library, and Ship exports it the same way.
 
 ## 6. Make the gear lead
 
@@ -240,7 +269,7 @@ Browsers may keep `Ctrl+Shift+C` for their inspector: `Ctrl+Alt+C` is the same.
 - **The game holds the gear by its Gear placement, moved by the slot's gear keys** (and, leading, by its path).
   Changing the placement in Gear afterwards moves the gear in every clip that keys it.
 - **What you see is what ships.** The viewer, the timeline and the game export bake a clip the one way (hands kept on
-  gear included), so the shown clip is the exported one.
+  gear included, pieces composed), so the shown clip is the exported one.
 - **Settings** (Motion, under the inspector): ground (Auto stands it on the floor by its flat feet), blow timing,
   pace, hand poses and handle holds, each switchable, applied in a fixed order.
 - **Slow steps:** turning Leads on fits the whole clip; Naturalize solves every frame and shows progress.

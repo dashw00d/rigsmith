@@ -8,6 +8,9 @@ weights, comment in the code's own voice); where they disagree about slots, this
 Foundation (this file's §1-§8) is built: the model, the time map, the migration, the commands, the one bake and the
 export's events file. §9 says who builds the rest and which files each owns.
 
+Schema 4 (§11) builds a slot's source from **pieces** (ranges of clips or of other slots, held poses) and drops
+schema 3's holds (§2.2's `holds`, their timemap stage and UI): where §1-§8 speak of holds, read hold pieces.
+
 ---
 
 ## 0. What changes, in one paragraph
@@ -631,3 +634,174 @@ baked clip), `src/app/motion/pose/**`, the easing UI (per span menu writing `eas
   dropped when the slot changed under it, ridden repeats drop what lies outside the clip (keys, events, holds),
   resize scales heldBy places, copied sounds and variant names never collide, holders follow their handles, the pony
   paces a Walk variant, uploads keep a name. GLBs of the five workspace units byte for byte as b281970's.
+
+- Pieces (schema 4, branch motion-pieces): built as §11 says, except or in detail:
+  - **One command**, `slot.pieces.set` (with `seconds` and `split`), not set/add/update/remove: every gesture is a pure
+    helper of `src/model/pieces.ts` (`endAt`, `startAt`, `insertAt`, `appended`, `trimmed`, `blended`, `moved`,
+    `removed`, `patched`), sent with the hit pin and the fit by `src/state/pieces.svelte.ts` as one batch.
+  - **Lengthening holds the last pose as it plays**: with the blow fit cutting the clip's end (most Attacks), dragging
+    the end out first trims the clip piece to the played end (what the fit cut off, never played, goes), then holds; the
+    piece's own end grip lets that tail out again. The same for the start. Insert time at the very start or end is the
+    same gesture; elsewhere it splits the piece there (`split`). Insert time puts in 0.5 s (drag the hold's ends after).
+  - A moment exactly on a seam (blend 0) belongs to the later piece, but goes with the earlier when the later one goes
+    or loses it (a key on the clip's last frame survives removing a hold appended after it).
+  - **Root continuation** turns each moving piece by the twist about up of the Hips' turn (composed, at its blend's
+    start, times its own first turn's inverse): a clip whose Hips sway or lean also turns the next piece by that sway's
+    yaw (a few degrees on Mixamo idles), and a cross-fade blends the rest of the Hips' turn (lean) over the blend.
+  - **A slot piece** is that slot's bake (its timing, keys, hands, ground, ik), bone tracks only: its gear keys, held-by
+    and shown strips are not carried into the composite (the slot's own gear tracks play). It is resampled on the
+    composite's frames: about 0.01 rad off the slot's own clip on a fast attack's arm between frames.
+  - Composites of library clips only are cached per ClipSource; the viewer bakes a slot again when a slot it plays as a
+    piece (or paces like) changes (`animator.inputs` reads `slotsUnder`).
+  - The build record is `schema: 4` (`tools/game_import.py` and restore read 2, 3 or 4; a v3 record's holds become
+    pieces through the library clip's length). The Python readers take character files of schema 3 or 4 (what they read
+    is the same in both).
+  - Proven: every slot of the 30 workspace characters bakes the same before and after (largest difference 0, 169 slots,
+    riders ridden; `tests/equivalence/pieces.test.ts` against `tests/equivalence/v3/bake.ts`); the archer's Walk and
+    Attack with holds put in bake the same as hold pieces (largest difference 0); the 26 workspace units' GLBs and events
+    files byte for byte as 26e8069's (the build records differ in `schema` only). In the app (port 5184): the spearman's
+    Attack lengthened 0.5 s by its end grip (the hit kept at 0.817 s, fit.at 0.45 -> 0.352) and a Spine pose keyed in
+    the held time; Box Walk Arc appended after Idle with a 0.3 s blend (the Hips' largest step per frame through the
+    blend 7.2 mm, the walk's own 5.3 mm); time inserted in Idle and keyed; the edited Attack appended as a slot piece;
+    a hold removed with its key, a piece reordered, every step undone; the combined Idle baked in node as the export
+    bakes it equal to the viewer's within 5.8e-6 on every track, and exported (Idle 5.581 s).
+
+---
+
+## 11. Pieces: a clip built from several (schema 4)
+
+The designer, 2026-10-29: "i dont see any way to make a clip longer except the hold, which doesnt let me do anything.
+There is also no way to combine clips", and "The existing hold thing is useless, I place it and then there is no way to
+animate or extend things into it". Everything keyed is pinned to the source's own time; a hold froze the source, so
+every frame of it was the same source moment and nothing could be keyed there; and a slot had one source clip.
+
+A slot's source can now be **pieces played one after another**: a range of a library clip, a range of another slot of
+the character as that slot plays (its bake: its timing, keys and hands: "so you can combine with an edited Attack"), or
+a held pose (seconds of the pose where the piece before ends: real time, keyable). Neighbours cross-fade over a blend;
+each piece's root motion carries on from where the one before left off. The pieces are composed into the source clip
+the time map then plays, so **source time is the composite's**: everything else (§1-§6) is unchanged.
+
+### 11.1 The model
+
+```ts
+export interface Slot {
+  ...
+  clip: ClipRef            // the clip it was filled with: its name in the lists; with `pieces` set, not what plays
+  /** The source built from pieces played one after another (unset: `clip` whole, as every slot before schema 4). */
+  pieces?: Piece[]
+}
+export type Piece = { id: string, from: number, to: number, blend?: number } & (
+  | { kind: 'clip', clip: ClipRef }      // seconds `from`..`to` of a library clip (as the clip source retargets it)
+  | { kind: 'slot', slot: string }       // seconds of another slot's played clip (its bake)
+  | { kind: 'hold' }                     // the pose where the piece before ends (the first: where the next starts)
+)
+```
+
+- `from`/`to` are seconds of the piece's own content: the clip at speed 1, the other slot as it plays, or a hold's own
+  clock (any numbers, `from < to`: lengthening a hold at its start lowers `from`, so what is keyed in it stays put).
+  A piece lasts `to - from` whatever its content does later: a content shorter than that (the other slot was made
+  shorter) holds its last pose. So the layout, and every stored time, depends on the slot alone.
+- `blend` (seconds, unset 0): the piece starts that much before the one before it ends and cross-fades in over it. Rules
+  (the reducer): ids unique; `from < to`; the first piece has no blend; a blend is at most either neighbour's length,
+  and a piece's two blends don't overlap (`blend_i + blend_i+1 <= length_i`); at least one piece is a clip or a slot; a
+  slot piece names another slot of the character, and no chain of slot pieces leads back to this slot.
+- **Why `clip` stays, with `pieces` beside it** (and not one representation): every slot made so far is one clip
+  whole, and every reader of `slot.clip` (the lists, the library's "used by", variants, the build record, rig.ts) keeps
+  working; a one-piece slot stays the same bytes in its file and bakes down the very same path (§11.6 proves it
+  unchanged, value for value). The cost, two places a source can be named, is held by one rule: with `pieces` set they
+  are the source. A list that is just `clip` whole again (one clip piece of `clip`, 0 to its length, no blend) is
+  stored as no list.
+
+### 11.2 Source time over pieces
+
+The layout (`src/model/pieces.ts layoutOf`, pure): piece i lasts `d_i = to - from` and starts at `s_0 = 0`,
+`s_i = s_i-1 + d_i-1 - blend_i`; the composite lasts `D = s_last + d_last`. A `SourceU` is `t / D` of the composite
+(what the clip source layer hands the bake: a clip `D` seconds long). Markers, the fit, pace, keys, windows, events
+and gear tracks all stay as §2-§3 say, on the composite. A slot without pieces is the layout of one piece, its clip
+whole (`D` the clip's length): identical to schema 3.
+
+**Which piece a moment belongs to:** the piece it falls in; inside a blend, the one before up to the blend's middle,
+the next from there; past the end (a late blow held, §2.2), the last piece, at its distance from that piece's start.
+
+### 11.3 Piece edits remap what is stored
+
+Every stored time is attached to its piece by where it falls (§11.2): to the piece's id and the moment of the piece's
+content (`from` + its offset into the piece). An edit gives the new list; each item goes to the piece of the same id
+whose range still holds its moment (or, for a split, `split[newId] = oldId`: either part), at that piece's new start.
+So trimming, extending, reordering, blending or removing a piece never slides what is keyed on the others, and a key
+trimmed off its piece goes with it, as do a removed piece's items (undo brings them back). Exactly:
+
+- points (keys, events' `u`, a span's ends, holders and shown switches: each `u`): moved; one whose piece went or whose
+  moment was trimmed off is dropped (a span keeps what is left of it; a holder or a shown switch is put at the seam of
+  where its piece was, so the piece is held or hidden from there as before);
+- windows (hand poses, handle holds, ik hands): each end clamped into what is left of its piece; a window left empty
+  goes (a hand pose's whole-clip `windows` unset stays unset);
+- retime markers: `u` as a point; `to` shifted by the seconds its `u` moved (`to' = (to·D + Δ) / D'`); markers that no
+  longer run forward in both times are dropped;
+- past the end (u > 1): at the same distance from the last piece's start, so a late-held end that a hold is appended over
+  plays inside that hold.
+
+### 11.4 Composing (src/engine/pieces.ts, the bake's source)
+
+`sourceClip(c, slot, ctx, o)` is the bake's first stage (`bakeSlot`, a pace's `like`, `bakeRide`'s horse and the
+measures call it): without pieces it is `ctx.clips.get(slot.clip, ...)`, the call it always was; with pieces it is the
+composite, made from the ClipSource (the browser's RetargetCache, node's nodeClipSource) and, for slot pieces,
+`bakeSlot` of that slot (gear nodes off: its bone tracks only), so the viewer, the timeline and the export compose the
+same way, in three.js, with nothing written. Per frame of `frameTimes(D)` (KEY_FPS):
+
+- a clip or slot piece reads its content at `from + offset`, clamped to the content (past its end, its last pose);
+  a hold repeats the composed pose at the end of the piece before (a hold first: the first moving piece's first pose);
+- **root continuation**: each moving piece but the first is turned about the up axis (the twist, about up in the
+  Hips' parent frame, of the composed Hips' turn at the start of its blend times its own first turn's inverse) and moved
+  over the ground (the horizontal part of the difference), so its first frame stands and faces where the composed clip
+  is when it comes in; heights are its own. In place slots compose in-place pieces (the slot's `inPlace`);
+- **cross-fade**: inside a blend, the two pieces mixed by smoothstep of the way through it: turns slerped, moves lerped;
+- tracks: every bone track any piece has; a piece lacking one plays the bone's rest.
+
+The bake refuses a slot whose pieces lead back to it ("plays itself") as the commands do. A composite of library
+clips only is cached per ClipSource (by its pieces, in place, mirror, fps); a slot piece bakes that slot each time (its
+own clip comes from the source's cache).
+
+### 11.5 Commands, migration, schema 4
+
+| command | does | rules |
+|---|---|---|
+| `slot.pieces.set {slot, pieces \| null, seconds?, split?}` | the pieces replaced (null: back to `clip` whole), every stored time remapped (§11.3) in the same command | §11.1; `seconds` (the length of `clip` at speed 1) whenever the slot was or becomes `clip` whole (that layout needs it); `split`: new piece id -> the old piece it continues |
+
+One command, as `slot.keys.set` is for keys: each gesture (extend the end or start, type a length, insert time, append,
+trim, blend, reorder, remove) is a pure helper in `src/model/pieces.ts` giving the next list, and the remap is in one
+place. Journal lines say it in words ("clip Attack: held 0.50 s at the end", "clip Idle: Walk appended, blend 0.20 s",
+"clip Run: Walk removed (3 keys with it)"). With the blow fit on, the timeline's gestures that change the played
+length keep its start and the blow where they are (a measured blow is pinned as the hit event first, so a longer clip
+can't find another fastest moment) and set `fit.at` (and a `window`) so the played end follows the edit: one batch,
+one undo. Other slot commands: `slot.fill` drops the pieces (another clip); `slot.copy` copies them and refuses a copy
+whose pieces would play the slot itself; `slot.remove` refuses a slot another plays as a piece (409: remove that piece
+first); `clips.replace` drops slot pieces naming a slot not in the set (remapped as a removal); `freshSet` re-ids
+pieces and maps their slots. `slot.time` takes no `holds` (400: "holds are pieces now").
+
+**Holds go.** `SlotTime.holds`, its timemap stage and its UI are removed; "Insert time" at the playhead (splitting the
+piece there and putting a hold between: real time to key) replaces it. Schema 4 (`SCHEMA = 4`) is schema 3 with
+`pieces` and without holds. `migrate`: v1 -> v2 -> v3 -> v4; per v3 slot with holds (D its clip's length, measured: a
+schema 3 file with holds `needsClipTimes`, `measureCharacter` measures those clips' lengths), the holds `u_1 < ... <
+u_k` (seconds `s_j`) become `clip [0, u_1·D], hold [0, s_1], clip [u_1·D, u_2·D], ..., clip [u_k·D, D]` (empty
+clip pieces left out) and every stored time `u` becomes `(u·D + Σ s_j for u_j < u) / (D + Σ s_j)` (an item at a hold's
+`u` at its start, as it played); markers move so the warp plays the same (their `u` and `to` through the same seconds,
+plus knots at each hold piece's ends). The same seconds play the same poses (the hold the pose at `u_j`, which is
+where its piece before ends). Without the length (the clip doesn't exist) the holds are dropped with a note; strict
+readers throw as for v2. Every other v3 slot is unchanged: a schema 3 file becomes schema 4 by its number and
+`character.v3.json` keeps the old file (once). `tools/migrate.ts --check` also checks each `character.v3.json`:
+migrating it again gives the current slots, and each converted time plays at the same second. The server, the tools'
+headers (`x-rigsmith-schema` 2, 3 or 4), the Python readers and the build record (`schema: 4`, restore reads 2, 3 or 4;
+a v3 record's holds become pieces the same way) follow.
+
+### 11.6 Proof
+
+- `src/model/pieces.test.ts`: layout, ownership, remapping (keys on piece B keep their pose when piece A is trimmed;
+  trimmed-off and removed items go; splits), every helper; `commands.pieces.test.ts`: the command, its rules, cycles,
+  undo; `migrate.test.ts`: holds become pieces and every time plays at the same second; `src/engine/pieces.test.ts`:
+  composition (a cross-fade's halfway pose, no jump in the Hips' position or facing at a seam, a hold holds, a slot
+  piece is that slot's bake, a cycle refused) and a migrated hold baking as it did.
+- `tests/equivalence/pieces.test.ts`: every slot of every workspace character baked by `bake_v3.ts` (bake.ts as it was
+  before pieces, frozen with the timing it called) on its schema 3 record and by `bakeSlot` on it migrated to schema 4:
+  the largest difference 0; riders ridden too.
+- The export: the workspace units' GLBs byte for byte as before (run by hand, reported).
