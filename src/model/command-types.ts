@@ -10,7 +10,7 @@
 // document through the same journal (server/store.ts updateCharacter) without being commands.
 import type {
   Adjustment, BlowFit, ClipEvent, ClipKey, ClipRef, Gear, GearAttach, GearTrack, Handle, HandPose, HandPoseRef, Joints,
-  MarkerBoardState, Mount, Placement, RetimeMarker, Side, Slot, SlotTime, TimeHold, Vec3,
+  MarkerBoardState, Mount, Placement, RetimeMarker, Side, Slot, SlotIk, SlotTime, TimeHold, Vec3,
 } from './types.ts'
 
 export type Command =
@@ -90,6 +90,8 @@ export type Command =
   | { type: 'slot.event.remove', slot: string, id: string }
   /** Who holds a piece over the clip and when it shows (null clears). */
   | { type: 'slot.gear.update', slot: string, gear: string, patch: { heldBy?: GearTrack['heldBy'] | null, shown?: GearTrack['shown'] | null } }
+  /** The slot's build (types.ts SlotIk): each part given replaced whole, null removes it; nothing left, the build goes. */
+  | { type: 'slot.ik', slot: string, patch: { hands?: SlotIk['hands'] | null, lead?: string[] | null, floor?: boolean | null } }
   /** The whole set replaced (another character's set copied here, or a game build restored). The caller gives the
    * slots fresh ids (select.freshSet, which also remaps time.pace.like). `gearNames` (source gear id -> name): gear
    * references (gear tracks, handleHold, handPose.gear, muted 'gear:<id>') are mapped onto this character's gear of the

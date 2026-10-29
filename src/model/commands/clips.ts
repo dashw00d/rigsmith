@@ -7,7 +7,7 @@
 import type { Command, KeyTrack } from '../command-types.ts'
 import { carryHandle, gearById, gearByName, slotById, slotByName } from '../select.ts'
 import type {
-  Adjustment, AdjustmentKind, BlowFit, Character, ClipEvent, ClipKey, Gear, GearTrack, Handle, RetimeMarker, Slot, SlotTime, TimeHold, Window,
+  Adjustment, AdjustmentKind, BlowFit, Character, ClipEvent, ClipKey, Gear, GearTrack, Handle, RetimeMarker, Slot, SlotIk, SlotTime, TimeHold, Window,
 } from '../types.ts'
 import {
   bad, bool, clipKeys, clipRef, conflict, handPoseRef, id, joint, list, missing, name, names, note, num, obj, oneOf, opt, overlaps,
@@ -171,6 +171,34 @@ function gearTracksOf (v: unknown, what: string): Record<string, GearTrack> {
   return Object.fromEntries(Object.entries(record(v, what, gearTrackOf)).filter(([, t]) => !empty(t)))
 }
 
+function ikHandsOf (v: unknown, what: string): SlotIk['hands'] {
+  const hands = list(v, what, (x, at) => {
+    const o = obj(x, at)
+    for (const k of Object.keys(o)) if (!['hand', 'gear', 'handle', 'windows'].includes(k)) bad(`${at} has no ${k}`)
+    const w = opt(o.windows, y => windows(y, `${at}.windows`))
+    if (w !== undefined && w.length === 0) bad(`${at}.windows can't be empty (leave them out for the whole clip)`)
+    if (w !== undefined && w.some((a, i) => i > 0 && overlaps(w[i - 1], a))) bad(`${at}.windows overlap`)
+    return { hand: side(o.hand, `${at}.hand`), gear: id(o.gear, `${at}.gear`), handle: id(o.handle, `${at}.handle`), ...(w !== undefined ? { windows: w } : {}) }
+  })
+  if (new Set(hands.map(h => h.hand)).size !== hands.length) bad(`${what}: one entry a hand`)
+  return hands
+}
+
+function ikLeadOf (v: unknown, what: string): string[] {
+  const lead = list(v, what, (x, at) => id(x, at))
+  if (new Set(lead).size !== lead.length) bad(`${what}: a piece is named twice`)
+  return lead
+}
+
+function ikOf (v: unknown, what: string): SlotIk | undefined {
+  const o = obj(v, what)
+  for (const k of Object.keys(o)) if (!['hands', 'lead', 'floor'].includes(k)) bad(`${what} has no ${k}`)
+  const out: SlotIk = { hands: ikHandsOf(o.hands ?? [], `${what}.hands`) }
+  const lead = opt(o.lead, x => ikLeadOf(x, `${what}.lead`)); if (lead !== undefined && lead.length > 0) out.lead = lead
+  const floor = opt(o.floor, x => bool(x, `${what}.floor`)); if (floor !== undefined) out.floor = floor
+  return out.hands.length === 0 && out.lead === undefined ? undefined : out
+}
+
 function slotOf (v: unknown, what: string): Slot {
   const s = obj(v, what)
   const text = note(s.note, `${what}.note`)
@@ -192,6 +220,7 @@ function setup (out: Slot, s: Obj, what: string): void {
   const gear = opt(s.gear, x => gearTracksOf(x, `${what}.gear`)); if (gear !== undefined && Object.keys(gear).length > 0) out.gear = gear
   const events = opt(s.events, x => eventsOf(x, `${what}.events`)); if (events !== undefined && events.length > 0) out.events = events
   const muted = opt(s.muted, x => mutedOf(x, `${what}.muted`)); if (muted !== undefined && muted.length > 0) out.muted = muted
+  const ik = opt(s.ik, x => ikOf(x, `${what}.ik`)); if (ik !== undefined) out.ik = ik
 }
 
 // ---- the character's rules -------------------------------------------------------------------------------------------
@@ -222,6 +251,34 @@ function slotRefs (c: Character, slot: Slot, slotIds: Set<string>): void {
     if (!slotIds.has(pace.like)) missing(`No clip ${pace.like} to pace like`)
   }
   for (const gid of Object.keys(slot.gear ?? {})) if (gearById(c, gid) === undefined) missing(`No gear ${gid}`)
+  if (slot.ik !== undefined) ikRefs(c, slot.ik)
+}
+
+/** A build's references resolve: bone gear, a handle on it a hand can hold (not a pull). */
+function ikRefs (c: Character, ik: SlotIk): void {
+  const boneGear = (gid: string): Gear => {
+    const g = gearById(c, gid) ?? missing(`No gear ${gid}`)
+    if (g.attach.kind !== 'bone') bad(`${g.name} isn't on a bone: no hand holds it in a clip`)
+    return g
+  }
+  for (const h of ik.hands) {
+    const g = boneGear(h.gear)
+    const handle = g.handles.find(x => x.id === h.handle) ?? missing(`${g.name} has no handle ${h.handle}`)
+    if (handle.kind === 'pull') bad(`${handle.name} is a pull: a pull is held by a handle hold, not a hand on it`)
+  }
+  for (const gid of ik.lead ?? []) boneGear(gid)
+}
+
+/** A build in words. */
+function ikText (c: Character, ik: Pick<SlotIk, 'hands' | 'lead'>): string[] {
+  const gearName = (gid: string): string => gearById(c, gid)?.name ?? gid
+  return [
+    ...ik.hands.map(h => {
+      const g = gearById(c, h.gear)
+      return `${h.hand} hand on ${gearName(h.gear)} · ${g?.handles.find(x => x.id === h.handle)?.name ?? h.handle}${h.windows !== undefined ? ` in ${windowsText(h.windows)}` : ''}`
+    }),
+    ...(ik.lead ?? []).map(gid => `${gearName(gid)} leads`),
+  ]
 }
 
 /** The slot's rules hold with `a` among `others` (one of the same id is the one it replaces). */
@@ -284,6 +341,7 @@ function lay (c: Character, s: Slot, given: Slot): string[] {
     out.push(`clip ${s.name}: ${names(given.events.map(eventText))}`)
   }
   if (given.muted !== undefined) s.muted = [...new Set([...(s.muted ?? []), ...given.muted])]
+  if (given.ik !== undefined) { s.ik = given.ik; out.push(`clip ${s.name}: ${names(ikText(c, given.ik))}`) }
   return out
 }
 
@@ -296,9 +354,10 @@ function clearSetup (c: Character, s: Slot): string[] {
     ...(s.time?.holds !== undefined ? [plural(s.time.holds.length, 'hold')] : []),
     ...(s.bones !== undefined || s.gear !== undefined ? ['keys and gear tracks'] : []),
     ...(s.events !== undefined ? [plural(s.events.length, 'event')] : []),
+    ...(s.ik !== undefined ? ['hands on gear'] : []),
   ]
   s.adjustments = []
-  delete s.time; delete s.bones; delete s.gear; delete s.events; delete s.muted
+  delete s.time; delete s.bones; delete s.gear; delete s.events; delete s.muted; delete s.ik
   return gone.length > 0 ? [`clip ${s.name}: ${names(gone)} dropped (made for the clip it had)`] : []
 }
 
@@ -545,9 +604,40 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
       putTrack(s, g.id, track)
       return out
     }
+    case 'slot.ik': return ikCommand(c, find(cmd.slot), cmd.patch)
     case 'clips.replace': return replace(c, cmd)
   }
   return unknown(cmd)
+}
+
+function ikCommand (c: Character, s: Slot, v: unknown): string[] {
+  const p = obj(v, 'patch')
+  for (const k of Object.keys(p)) if (!['hands', 'lead', 'floor'].includes(k)) bad(`A slot's build has no ${k}`)
+  const was: SlotIk = s.ik ?? { hands: [] }
+  const next: SlotIk = { ...was, hands: [...was.hands] }
+  if (p.hands !== undefined) next.hands = p.hands === null ? [] : ikHandsOf(p.hands, 'hands')
+  if (p.lead !== undefined) {
+    const lead = p.lead === null ? [] : ikLeadOf(p.lead, 'lead')
+    if (lead.length > 0) next.lead = lead
+    else delete next.lead
+  }
+  if (p.floor !== undefined) {
+    if (p.floor === null) delete next.floor
+    else next.floor = bool(p.floor, 'floor')
+  }
+  const gone = next.hands.length === 0 && next.lead === undefined
+  ikRefs(c, next)
+  if (same(gone ? undefined : next, s.ik)) return []
+  const before = new Set(ikText(c, was)); const after = ikText(c, next)
+  const added = after.filter(x => !before.has(x)); const removed = [...before].filter(x => !after.includes(x))
+  if (gone) delete s.ik
+  else s.ik = next
+  const out: string[] = []
+  if (added.length > 0) out.push(`clip ${s.name}: ${names(added)}`)
+  if (removed.length > 0) out.push(`clip ${s.name}: ${names(removed.map(x => x.replace(/ leads$/, ' no longer leads').replace(/^(\w+ hand) on /, '$1 off ')))}`)
+  if (!gone && was.floor !== next.floor) out.push(`clip ${s.name}: ${next.floor === false ? 'a foot the build sinks left under the floor' : 'the feet kept on the floor'}`)
+  if (out.length === 0) out.push(`clip ${s.name}: hands on gear changed`)
+  return out
 }
 
 function timeCommand (c: Character, s: Slot, v: unknown): string[] {
@@ -696,6 +786,29 @@ function replace (c: Character, cmd: Extract<ClipsCommand, { type: 'clips.replac
       }
       if (Object.keys(mapped).length > 0) s.gear = mapped
       else delete s.gear
+    }
+    if (s.ik !== undefined) {
+      const hands: SlotIk['hands'] = []
+      for (const h of s.ik.hands) {
+        const g = gearFor(h.gear)
+        const handle = g === undefined ? undefined : handleFor(h.gear, g, h.handle)
+        if (g === undefined || g.attach.kind !== 'bone' || handle === undefined || handle.kind === 'pull') {
+          out.push(`clip ${s.name}: ${h.hand} hand on ${sourceName(h.gear)} dropped (${g === undefined ? 'no such gear here' : `${g.name} has no such handle`})`)
+          continue
+        }
+        hands.push({ ...h, gear: g.id, handle: handle.id })
+      }
+      const lead = (s.ik.lead ?? []).flatMap(gid => {
+        const g = gearFor(gid)
+        if (g !== undefined && g.attach.kind === 'bone') return [g.id]
+        out.push(`clip ${s.name}: ${sourceName(gid)} leading dropped (no such gear here)`)
+        return []
+      })
+      const ik: SlotIk = { ...s.ik, hands }
+      if (lead.length > 0) ik.lead = lead
+      else delete ik.lead
+      if (hands.length > 0 || ik.lead !== undefined) s.ik = ik
+      else delete s.ik
     }
     if (s.muted !== undefined) {
       s.muted = s.muted.flatMap(m => {

@@ -187,6 +187,36 @@ function dropTrack (s: Slot, gearId: string): boolean {
   return true
 }
 
+/** Each slot's build (slot.ik) keeps only hands on handles that still are (bone gear, a handle a hand can hold) and
+ * pieces that still lead (bone gear); what went is said. */
+function pruneIk (c: Character): string[] {
+  const out: string[] = []
+  for (const s of c.clips) {
+    const ik = s.ik
+    if (ik === undefined) continue
+    const onBone = (gid: string): Gear | undefined => { const g = gearById(c, gid); return g?.attach.kind === 'bone' ? g : undefined }
+    const hands = ik.hands.filter(h => {
+      const g = onBone(h.gear)
+      const handle = g?.handles.find(x => x.id === h.handle)
+      if (handle !== undefined && handle.kind !== 'pull') return true
+      out.push(`clip ${s.name}: ${h.hand} hand off ${g?.name ?? h.gear} (its handle went)`)
+      return false
+    })
+    const lead = (ik.lead ?? []).filter(gid => {
+      if (onBone(gid) !== undefined) return true
+      out.push(`clip ${s.name}: ${gearById(c, gid)?.name ?? gid} no longer leads`)
+      return false
+    })
+    if (hands.length === ik.hands.length && lead.length === (ik.lead ?? []).length) continue
+    const next = { ...ik, hands }
+    if (lead.length > 0) next.lead = lead
+    else delete next.lead
+    if (hands.length > 0 || next.lead !== undefined) s.ik = next
+    else delete s.ik
+  }
+  return out
+}
+
 /** Shown in a swap set, the others of the set are hidden. */
 function showOnly (c: Character, g: Gear): string[] {
   if (g.hidden === true || g.swapSet === undefined) return []
@@ -266,7 +296,7 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
       const out: string[] = []
       if (!same({ ...was, place: null }, { ...next, place: null })) out.push(`gear ${g.name}: ${attachText(next)}`)
       if (!same(was.place, next.place)) out.push(`gear ${g.name}: ${placeText(next.place)}`)
-      return [...out, ...syncCarry(c, g), ...syncOffBone(c, g)]
+      return [...out, ...syncCarry(c, g), ...syncOffBone(c, g), ...pruneIk(c)]
     }
     case 'gear.place': {
       const g = gearById(c, cmd.id) ?? missing(`No gear ${cmd.id}`)
@@ -296,7 +326,7 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
           return true
         })
       }
-      return out
+      return [...out, ...pruneIk(c)]
     }
     case 'gear.handle.add': {
       const g = gearById(c, cmd.gear) ?? missing(`No gear ${cmd.gear}`)
@@ -384,7 +414,7 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
         s.adjustments = s.adjustments.filter(a => !gone.includes(a))
         out.push(`clip ${s.name}: hold of ${g.name} · ${h.name} removed`)
       }
-      return out
+      return [...out, ...pruneIk(c)]
     }
   }
   return unknown(cmd)

@@ -283,6 +283,21 @@ export interface Slot {
   /** Tracks switched off (kept, not played): 'bones' (every bone's keys), 'gear' (every piece's keys), 'bone:<name>',
    * 'gear:<id>', 'events'. */
   muted?: string[]
+  /** The build (src/engine/ikbuild.ts, the bake's stage in place of keys on bones): hands kept on handles by IK,
+   * leading gear, the floor kept. */
+  ik?: SlotIk
+}
+
+/** A slot's build (docs/motion-plan.md §2.6). */
+export interface SlotIk {
+  /** A hand kept on a handle of a piece (bone gear; not a pull) over `windows` (source time; unset: the whole clip).
+   * One entry a hand. */
+  hands: Array<{ hand: Side, gear: string, handle: string, windows?: Window[] }>
+  /** Pieces that lead: their keys (slot.gear[id].keys) are world moves and turns from where the piece rode in the
+   * clip, about its own origin; the hands on them follow. */
+  lead?: string[]
+  /** A foot the build sank lifted back to the floor (unset: on). */
+  floor?: boolean
 }
 
 /** How the source's time becomes the played clip's, after the slot's speed (src/model/timemap.ts has the stages). */
