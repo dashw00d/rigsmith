@@ -10,6 +10,7 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { CharacterView } from '../../src/engine/CharacterView.ts'
 import { clipUrl, isMixamoJoint, refUrl, type ClipSource, type SourceClip } from '../../src/engine/clips.ts'
 import { loadGlbFile } from '../../src/engine/headless.ts'
+import type { Rom } from '../../src/engine/limits.ts'
 import { captureRest, retarget, type RestSkeleton } from '../../src/engine/retarget.ts'
 import { measureClipTimes } from '../../src/engine/measure.ts'
 import { migrateSettings, migrateV1, readCharacter, type ClipTimes } from '../../src/model/migrate.ts'
@@ -78,25 +79,36 @@ export function nodeClipSource (rest: RestSkeleton, workspace = WORKSPACE): Clip
     root.traverse(o => { if (isBone(o)) hasBones = true })
     return { root, rest: captureRest(root, hasBones ? isBone : isMixamoJoint), clip }
   }
+  const sourceOf = (url: string): Promise<SourceClip> => {
+    let src = sources.get(url)
+    if (src === undefined) {
+      src = source(url)
+      sources.set(url, src)
+      src.catch(() => sources.delete(url))
+    }
+    return src
+  }
   return {
+    async sourceRest (ref) { return (await sourceOf(refUrl(ref))).rest },
     async get (ref, o) {
       const url = refUrl(ref)
       const key = `${url}|${o.inPlace ? 1 : 0}|${o.mirror === true ? 1 : 0}|${o.fps ?? 30}`
       let clip = retargeted.get(key)
       if (clip === undefined) {
-        let src = sources.get(url)
-        if (src === undefined) {
-          src = source(url)
-          sources.set(url, src)
-          src.catch(() => sources.delete(url))
-        }
-        clip = src.then(s => retarget(s.root, s.rest, s.clip, rest, o))
+        clip = sourceOf(url).then(s => retarget(s.root, s.rest, s.clip, rest, o))
         retargeted.set(key, clip)
         clip.catch(() => retargeted.delete(key))
       }
       return await clip
     },
   }
+}
+
+/** A rig's joint ranges (static/templates/rom/<rig>.json, what the browser fetches as /templates/rom/<rig>.json), for
+ * the bake's build (BakeContext.rom); null when the rig has none. */
+export async function nodeRom (rig: string): Promise<Rom | null> {
+  const file = path.join(ROOT, 'static', 'templates', 'rom', `${rig}.json`)
+  return /^[\w-]+$/.test(rig) && existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as Rom : null
 }
 
 /** A character's record (workspace/characters/<id>/character.json), as schema 3 whatever schema the file is (an old
@@ -132,6 +144,6 @@ export async function measureCharacter (id: string, o: { workspace?: string, fil
   if (rigged === undefined || !existsSync(path.join(dir, rigged))) return { times: {}, problems: [`${c.name} has no rig to measure its clips on`] }
   const view = new CharacterView((await load(path.join(dir, rigged))).scene)
   if (view.rest === null) return { times: {}, problems: [`${c.name}'s ${rigged} has no skeleton`] }
-  const ctx = { rest: view.rest, posable: view.root, clips: nodeClipSource(view.rest, workspace), fps: 30, sharedPoses: settings(workspace).handPoses }
+  const ctx = { rest: view.rest, posable: view.root, clips: nodeClipSource(view.rest, workspace), fps: 30, sharedPoses: settings(workspace).handPoses, rom: nodeRom }
   return await measureClipTimes(c, ctx, { all: o.all })
 }

@@ -15,6 +15,8 @@ import type { ClipSource } from './clips.ts'
 import { firstSkinned, gearNode } from './geom.ts'
 import { groundFit } from './ground.ts'
 import { applyHands, handLayers, type HandLayer } from './hands.ts'
+import { ikBuild, playedIk } from './ikbuild.ts'
+import type { Rom } from './limits.ts'
 import { applyBoneKeys, applyLift, propTracks } from './keys.ts'
 import { fitRide, freezeClip } from './mount.ts'
 import { garmentMatrix } from './placement.ts'
@@ -30,6 +32,10 @@ export interface BakeContext {
   fps?: number
   /** Hand poses shared by every character (settings), for {pose} refs the character doesn't have. */
   sharedPoses?: HandPose[]
+  /** A rig's joint ranges by its name ('human', a creature template id): the build's (src/engine/ikbuild.ts) IK keeps
+   * to them. The browser fetches /templates/rom/<rig>.json, the tools read static/templates/rom (tools/lib/node3d.ts
+   * nodeRom): both the same file, so the viewer and the export build alike. Unset: no limits. */
+  rom?: (rig: string) => Promise<Rom | null>
 }
 
 export interface BakedSlot {
@@ -124,8 +130,17 @@ export async function bakeSlot (c: Character, slot: Slot, ctx: BakeContext, o: {
 
   const unkeyed = clip
   const keys = skip.has('keys') ? { bones: {}, gear: {} } : playedKeys(slot, map)
-  clip = applyBoneKeys(clip, keys.bones, slot.loop, boneRest(ctx.rest))
-  const gearKeys = keys.gear
+  let gearKeys = keys.gear
+  // (the build in place of the keys on bones when the slot holds gear by IK (src/engine/ikbuild.ts): its hands on
+  // handles, leading gear, the floor kept; a leading piece's path comes back as its gear keys, frame by frame)
+  if (slot.ik !== undefined && !skip.has('keys')) {
+    const built = await ikBuild(c, playedIk(played, w => windowsToPlayed(map, w)), clip, keys.bones, keys.gear, ctx)
+    clip = built.clip
+    gearKeys = built.gearKeys
+    report.ik = { kind: 'ik', hands: slot.ik.hands.map(h => `${h.hand}:${h.gear}/${h.handle}`), lead: slot.ik.lead ?? [] }
+  } else {
+    clip = applyBoneKeys(clip, keys.bones, slot.loop, boneRest(ctx.rest))
+  }
   if (Object.keys(keys.bones).length > 0 || Object.keys(gearKeys).length > 0) report.keys = { kind: 'keys', bones: counts(keys.bones), gear: counts(gearKeys) }
 
   // every placed gear piece gets tracks, keyed or not, so a clip played before never leaves one moved

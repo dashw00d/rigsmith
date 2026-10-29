@@ -43,7 +43,7 @@ import { gearById, slotByName } from '../../src/model/select.ts'
 import type { Character, ClipKey, Gear, HandPose, Mount, Slot } from '../../src/model/types.ts'
 import type { BuildRecord, BuiltClip, BuiltCompanion, BuiltGear, CompanionSpec, UnitEvent, UnitEvents, UnitSpec } from '../../src/model/unit.ts'
 import { gearSkin, pullHandles, pullSkin, type PullHandle } from './gearskin.ts'
-import { character, isBone, load, nodeClipSource, ROOT, settings } from './node3d.ts'
+import { character, isBone, load, nodeClipSource, nodeRom, ROOT, settings } from './node3d.ts'
 
 export interface UnitExportOptions {
   /** The Rigsmith workspace the characters, the library and the settings are read from. */
@@ -697,7 +697,7 @@ async function subject (unit: string, id: string, workspace: string, shared: Han
   const file = path.join(dir, c.files.rigged)
   const view = new CharacterView((await load(file)).scene)
   if (view.rest === null) throw new Error(`${unit}: ${c.name}'s ${c.files.rigged} has no skeleton`)
-  return { c, dir, file, view, ctx: { rest: view.rest, posable: view.root, clips: nodeClipSource(view.rest, workspace), fps: FPS, sharedPoses: shared } }
+  return { c, dir, file, view, ctx: { rest: view.rest, posable: view.root, clips: nodeClipSource(view.rest, workspace), fps: FPS, sharedPoses: shared, rom: nodeRom } }
 }
 
 async function companionOf (unit: string, spec: CompanionSpec, workspace: string, shared: HandPose[] | undefined): Promise<Companion> {

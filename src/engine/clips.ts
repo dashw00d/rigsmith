@@ -10,6 +10,8 @@ import { captureRest, canonical, retarget, type RestSkeleton, type RetargetOptio
 /** Clips retargeted onto one character. A string ref is a url. */
 export interface ClipSource {
   get (ref: ClipRef | string, o: { inPlace: boolean, mirror?: boolean, fps?: number }): Promise<THREE.AnimationClip>
+  /** The clip's own skeleton at rest (before the retarget): what joint limits are mapped through (src/engine/ikbuild.ts). */
+  sourceRest?: (ref: ClipRef | string) => Promise<RestSkeleton>
 }
 
 /** A converted library clip's file. */
@@ -77,6 +79,10 @@ export class RetargetCache implements ClipSource {
   readonly target: RestSkeleton
 
   constructor (target: RestSkeleton) { this.target = target }
+
+  async sourceRest (ref: ClipRef | string): Promise<RestSkeleton> {
+    return (await loadSource(refUrl(ref))).rest
+  }
 
   /** Drop a clip's retargets (its file written again). */
   forget (url: string): void {

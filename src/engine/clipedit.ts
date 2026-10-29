@@ -83,8 +83,12 @@ function sunk (legs: Leg[], soles: number[][], floor: number): number[] {
  * gear's placement puts the hand (carrierGrip). `exact`: the hand is held there exactly, no give or slide. */
 export type PlacedHandle = Pick<Handle, 'id' | 'name' | 'exact'> & { place: NonNullable<Handle['place']> }
 
-/** A hand on a handle through the clip (the edit's). */
-export interface Attachment { hand: Side, gear: string, handle: string }
+/** A hand on a handle through the clip (the edit's), or only over `windows` (phases of the clip built; the bake's
+ * slot.ik hands): on or off frame by frame. */
+export interface Attachment { hand: Side, gear: string, handle: string, windows?: Window[] }
+
+/** Whether an attachment holds at phase `u` (no windows: all through). */
+export const holdsAt = (a: Pick<Attachment, 'windows'>, u: number): boolean => a.windows === undefined || a.windows.some(([x, y]) => u >= x - 1e-9 && u <= y + 1e-9)
 
 /** Where the carrying hand holds a piece whose carry handle isn't placed: from the gear's placement on its bone and the
  * hand's rest frame (the hand holds it where the placement puts it), in the gear's placed frame. */
@@ -386,9 +390,11 @@ export function armOf (hand: Side): { upper: string, lower: string, end: string 
 /** The hands' goals on a frame (the body as it stands): each attached hand on its handle of its piece, the piece where
  * its path has it (locked: `base` gives where it rode before the edit, by gear id) or as it rides now; a piece's
  * carrying hand with no handle of its own keeps it where it is. */
-export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>, rig: GearRig, u: number, loop: boolean, base: Map<string, THREE.Matrix4> | null): HandGoal[] {
+export function handGoals (root: THREE.Object3D, bones: Map<string, THREE.Bone>, all: GearRig, u: number, loop: boolean, base: Map<string, THREE.Matrix4> | null): HandGoal[] {
   const goals: HandGoal[] = []
   const used = new Set<string>()
+  // (the hands on handles at this moment: one held only over windows is off outside them)
+  const rig: GearRig = all.attachments.every(a => a.windows === undefined) ? all : { ...all, attachments: all.attachments.filter(a => holdsAt(a, u)) }
   for (const [gear, path] of Object.entries(rig.paths)) {
     if (!path.locked) continue
     const node = root.getObjectByName(rig.node(gear))
@@ -533,7 +539,7 @@ export interface EditSeed { u: number, pose: SeedPose }
  */
 export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipKey[]>, loop: boolean, rest: (bone: string) => { q: THREE.Quaternion, p: THREE.Vector3 } | null,
   posable: THREE.Object3D, rig: PoseRig, floor: number, limits: JointLimits | null, gear: GearRig | null = null, height = 1,
-  solver: BodySolver | null = null, o: { seed?: EditSeed | null, states?: Array<BodyState | null> } = {}): THREE.AnimationClip {
+  solver: BodySolver | null = null, o: { seed?: EditSeed | null, states?: Array<BodyState | null>, /** false: a foot the edit sank stays (default: lifted back) */ floor?: boolean } = {}): THREE.AnimationClip {
   const keyed = applyBoneKeys(base, keys, loop, rest)
   const active = gear !== null && (gear.attachments.length > 0 || Object.values(gear.paths).some(p => p.locked))
   // (gear moved in the hand is an edit too, with nothing to solve)
@@ -608,7 +614,7 @@ export function buildEdit (base: THREE.AnimationClip, keys: Record<string, ClipK
     const now = sunk(legs, soles, floor)
     // (only what the edit sank: lift the leg by that, from where it stands)
     const lift = legs.map((_, i) => now[i] - was[i])
-    if (lift.some(x => x > 1e-4)) {
+    if (o.floor !== false && lift.some(x => x > 1e-4)) {
       changed = true
       legs.forEach((leg, i) => {
         if (lift[i] <= 1e-4) return
