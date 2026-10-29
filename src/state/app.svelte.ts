@@ -32,7 +32,9 @@ export type Drawer = 'library' | 'catalog' | 'activity'
 // (the step a drawer belongs to: it closes on leaving it; the activity drawer goes with every step)
 const DRAWER_STEP: Partial<Record<Drawer, Step>> = { library: 'motion', catalog: 'gear' }
 
-export interface Toast { id: number, kind: 'info' | 'ok' | 'error', text: string }
+export interface Toast { id: number, kind: 'info' | 'ok' | 'error', text: string, action?: ToastAction }
+/** A button on a toast (Undo what was just done for you). */
+export interface ToastAction { label: string, run: () => void }
 export interface ConfirmOptions { title: string, body?: string, confirm?: string, cancel?: string, danger?: boolean }
 export interface Navigation { step?: Step, characterId?: string | null }
 /** Asked before the step or the character changes; false (or a promise of it) keeps them as they are. */
@@ -309,9 +311,9 @@ class AppState {
 
   // ---- feedback ------------------------------------------------------------------------------------------------
 
-  toast (kind: Toast['kind'], text: string, ms = kind === 'error' ? 8000 : 5000): void {
+  toast (kind: Toast['kind'], text: string, ms = kind === 'error' ? 8000 : 5000, action?: ToastAction): void {
     const id = ++this.toastId
-    this.toasts = [...untrack(() => this.toasts), { id, kind, text }]
+    this.toasts = [...untrack(() => this.toasts), { id, kind, text, ...(action !== undefined ? { action } : {}) }]
     setTimeout(() => { this.dismiss(id) }, ms)
   }
 

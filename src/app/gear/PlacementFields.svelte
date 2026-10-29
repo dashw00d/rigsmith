@@ -1,7 +1,7 @@
 <script lang="ts">
   // Where a piece sits: the gizmo's mode, and the same placement as numbers (one placement: dragging the gizmo and
   // typing both send gear.place). In the character's rest space: position in its units, turns in degrees, one size.
-  import { Move3d, Rotate3d, RotateCcw, Scale3d } from '@lucide/svelte'
+  import { HandFist, Move3d, Rotate3d, RotateCcw, Scale3d } from '@lucide/svelte'
   import type { Character, Gear, Vec3 } from '../../state/api.ts'
   import { gear as gearState } from '../../state/gear.svelte.ts'
   import { gizmo, type GizmoMode } from '../../state/gizmo.svelte.ts'
@@ -26,6 +26,16 @@
     const next = [...place[key]] as Vec3
     next[i] = v
     void gearState.place(character, gear, { [key]: next })
+  }
+
+  let fitting = $state(false)
+  async function fit (): Promise<void> {
+    fitting = true
+    try {
+      await gearState.fitToHand(character, gear)
+    } finally {
+      fitting = false
+    }
   }
 
   function onkeydown (event: KeyboardEvent): void {
@@ -56,8 +66,16 @@
       <NumberField size="sm" width="100%" step={0.05} min={0.001} digits={3} value={place.scale} label="Size" onchange={(v) => gearState.place(character, gear, { scale: v })} />
     </div>
   </div>
-  {#if gear.catalog !== undefined}
-    <Button size="sm" variant="ghost" onclick={() => gearState.resetPlacement(character, gear)}><RotateCcw size={13} /> Back to the catalog's placement</Button>
+  {#if gearState.inHand(gear) || gear.catalog !== undefined}
+    <div class="row">
+      {#if gearState.inHand(gear)}
+        <Button size="sm" loading={fitting} disabled={!gearState.isWorn(gear.id)} onclick={fit}
+          title="Into the fist: its grip (its origin, when that is on its shaft) in the hand, its long axis through the grip"><HandFist size={13} /> Fit to hand</Button>
+      {/if}
+      {#if gear.catalog !== undefined}
+        <Button size="sm" variant="ghost" onclick={() => gearState.resetPlacement(character, gear)}><RotateCcw size={13} /> Back to the catalog's placement</Button>
+      {/if}
+    </div>
   {/if}
 {/if}
 
@@ -66,4 +84,5 @@
   .label { font-size: 12px; color: var(--text-3); }
   .wide { grid-column: span 3; }
   .note { margin: 0; font-size: 12px; color: var(--text-3); }
+  .row { display: flex; flex-wrap: wrap; gap: 4px; }
 </style>

@@ -22,6 +22,7 @@
   import Toggle from '../../ui/Toggle.svelte'
   import GearList from '../gear/GearList.svelte'
   import HandleList from '../gear/HandleList.svelte'
+  import OriginFields from '../gear/OriginFields.svelte'
   import PlacementFields from '../gear/PlacementFields.svelte'
   import WearOptions from '../gear/WearOptions.svelte'
   import { boneChoices, boneLabel, fromGame, swapSets } from '../gear/text.ts'
@@ -148,8 +149,10 @@
       <div class="place">
         {#if a.kind === 'bone'}
           <PlacementFields {character} gear={piece} />
+          {#if a.legacyFrame === undefined}<OriginFields {character} gear={piece} />{/if}
         {:else if fitting}
           <PlacementFields {character} gear={piece} />
+          <OriginFields {character} gear={piece} />
           <p class="note">Shown unbound while you place it.</p>
           <Button variant="primary" block onclick={() => gearState.fit(null)}>Bind to {character.name}</Button>
         {:else}

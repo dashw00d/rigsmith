@@ -8,11 +8,15 @@ import * as THREE from 'three'
 import { untrack } from 'svelte'
 import type { Command } from '../model/command-types.ts'
 import { newId } from '../model/ids.ts'
-import { gearById, handSide, heightOf, hierarchyOf, slotById } from '../model/select.ts'
-import type { Character, Gear, GearAttach, Handle, Placement, Side, Window } from '../model/types.ts'
+import { carryHandle, gearById, handSide, heightOf, hierarchyOf, slotById } from '../model/select.ts'
+import { originOf } from '../model/origin.ts'
+import type { Character, ClipKey, Gear, GearAttach, Handle, Placement, Side, Vec3, Window } from '../model/types.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
-import { boneFrame, GARMENT_FLAG, type GarmentEdit, hideBodyUnder, takeOff, takeOffAll, tickMechanisms, wear, type Worn } from '../engine/garments.ts'
-import { counterpart, mirroredPlacement, nearerMirror, placementMatrix, placementOf } from '../engine/placement.ts'
+import { carrierGrip, handGrip } from '../engine/clipedit.ts'
+import { boneFrame, GARMENT_FLAG, type GarmentEdit, hideBodyUnder, restFrame, takeOff, takeOffAll, tickMechanisms, wear, type Worn } from '../engine/garments.ts'
+import { fistAt, fitMatrix, heldAt, inFist, offBox, onShaft, restPoints, shapeOf, surfacePoints, type HandAt, type Shape } from '../engine/gearfit.ts'
+import { leadKeysMoved } from '../engine/geartracks.ts'
+import { counterpart, mirroredPlacement, nearerMirror, placementFromMatrix, placementMatrix, placementOf } from '../engine/placement.ts'
 import { catalogItem, catalogPlacement, catalogUrl, defaultPlacement, defaultScale, gripPoint, gripToRest } from '../engine/props.ts'
 import { findHolds as holdsOf, strandMiddle, strandSegment, tickPulls } from '../engine/pulls.ts'
 import { animator } from './animator.svelte.ts'
@@ -37,6 +41,13 @@ interface Wearer { view: CharacterView, id: string, rider: boolean, pieces: Map<
 
 const r4 = (v: number): number => Math.round(v * 1e4) / 1e4
 const r5 = (v: number): number => Math.round(v * 1e5) / 1e5
+const r6 = (v: number): number => (Object.is(Math.round(v * 1e6) / 1e6, -0) ? 0 : Math.round(v * 1e6) / 1e6)
+
+/** Where a piece's origin can be put (Gear: "Set origin"): its middle or its base (bottom middle) as it sits at rest,
+ * where a hand holds it. */
+export type OriginAt = 'middle' | 'base' | 'grip'
+/** An upload whose origin lies farther off it than this share of the body's height gets one on it. */
+const OFF_PIECE = 0.05
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 const sleep = async (ms: number): Promise<void> => { await new Promise(resolve => setTimeout(resolve, ms)) }
 
@@ -52,6 +63,8 @@ class GearState {
   worn = $state(0)
   /** Finding a pull's hold windows. */
   finding = $state<string | null>(null)
+  /** The piece whose origin the gizmo is placing (its marker dragged, not the piece). */
+  placingOrigin = $state<string | null>(null)
 
   private rider: Wearer | null = null
   private horse: Wearer | null = null
@@ -61,6 +74,12 @@ class GearState {
   private offPicking: (() => void) | null = null
   private loading = 0
   private refreshing = false
+  /** Pieces uploaded here still importing: once worn, each gets an origin on it and goes into the hand (settle). */
+  private fresh = new Set<string>()
+  /** The selected piece's origin, shown on stage (and dragged while placing it). */
+  private marker: THREE.Object3D | null = null
+  /** The gizmo's mode before placing an origin (it places in Move). */
+  private modeBefore: typeof gizmo.mode | null = null
 
   /** Start following the viewer (called once, below). */
   start (): void {
@@ -76,7 +95,7 @@ class GearState {
         untrack(() => { this.syncAll() })
       })
       $effect(() => {
-        void app.step; void this.selected; void this.fitting; void this.picking; void paint.active; void this.worn
+        void app.step; void this.selected; void this.fitting; void this.picking; void paint.active; void this.worn; void this.placingOrigin
         untrack(() => { this.updateGizmo() })
       })
       // (leaving the step: nothing half placed or picked is left behind)
@@ -85,6 +104,7 @@ class GearState {
         untrack(() => {
           if (this.picking !== null) this.stopPicking()
           if (this.fitting !== null) this.fitting = null
+          if (this.placingOrigin !== null) this.placeOrigin(null)
         })
       })
       $effect(() => {
@@ -126,9 +146,11 @@ class GearState {
       tickMechanisms(dt)
       // (nothing playing: every pull at rest; while a slot plays the animator ticks them)
       if (animator.playing === null) tickPulls(null, 0)
+      this.followMarker()
     })
     return () => {
       off?.()
+      this.dropMarker()
       this.stopPicking()
       for (const p of rider.pieces.values()) gizmo.detach(p.frame?.place ?? p.worn?.node)
       takeOffAll(view)
@@ -181,9 +203,9 @@ class GearState {
     const painted = paint.active ? null : g.painted ?? 0
     if (a.kind === 'bone') {
       const pulls = g.handles.filter(h => h.kind === 'pull').map(h => [h.id, h.name, h.pull])
-      return JSON.stringify(['bone', g.name, url, a.bone, pulls, pulls.length > 0 ? painted : null])
+      return JSON.stringify(['bone', g.name, url, a.bone, pulls, pulls.length > 0 ? painted : null, g.origin ?? null])
     }
-    return JSON.stringify([a.kind, g.name, url, a, a.kind === 'skin' ? painted : null, fitting])
+    return JSON.stringify([a.kind, g.name, url, a, a.kind === 'skin' ? painted : null, fitting, g.origin ?? null])
   }
 
   /** Where its model loads from (catalog gear: the bundled file). */
@@ -244,6 +266,7 @@ class GearState {
         if (worn === null) frame?.group.removeFromParent()
         if (g.attach.kind === 'skin') hideBodyUnder(view, this.wornOf(w))
         this.worn++
+        if (worn !== null && w.rider && this.fresh.delete(g.id)) void this.settle(c.id, g.id)
       })
       .catch((error: unknown) => {
         if (w.pieces.get(g.id) !== piece) return
@@ -317,14 +340,88 @@ class GearState {
   private updateGizmo (): void {
     const id = this.selected
     const node = app.step === 'gear' && this.picking === null && !paint.active && id !== null ? this.rider?.pieces.get(id)?.worn?.node ?? null : null
-    if (node === null) {
+    if (this.placingOrigin !== null && this.placingOrigin !== id) this.placeOrigin(null)
+    const marker = node !== null && this.placingOrigin === id ? this.ensureMarker() : null
+    const target = marker ?? node
+    if (target === null) {
       gizmo.detach(this.gizmoOn)
       this.gizmoOn = null
       return
     }
-    if (gizmo.target === node) return
-    this.gizmoOn = node
-    gizmo.attach(node, { space: 'world', onCommit: () => { this.commitPlace(id!, node) } })
+    if (gizmo.target === target) return
+    this.gizmoOn = target
+    if (marker !== null) {
+      this.followMarker(true)
+      gizmo.attach(marker, { mode: 'translate', space: 'world', onCommit: () => { void this.commitOrigin(id!, node!) } })
+    } else {
+      gizmo.attach(node!, { space: 'world', onCommit: () => { this.commitPlace(id!, node!) } })
+    }
+  }
+
+  // ---- the origin's marker ---------------------------------------------------------------------------------------
+
+  /** The marker (made once a stage: a dot and three short axes, drawn over everything), on the stage's scene. */
+  private ensureMarker (): THREE.Object3D | null {
+    const stage = viewer.stage
+    if (stage === null) return null
+    if (this.marker !== null && this.marker.parent === stage.scene) return this.marker
+    this.dropMarker()
+    const group = new THREE.Group()
+    group.name = 'gear-origin'
+    const top = (m: THREE.Material): THREE.Material => { m.depthTest = false; m.depthWrite = false; m.transparent = true; return m }
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), top(new THREE.MeshBasicMaterial({ color: 0xffd23f })))
+    dot.scale.setScalar(0.012)
+    dot.renderOrder = 1000
+    group.add(dot)
+    const o = new THREE.Vector3()
+    const axes = new THREE.LineSegments(
+      new THREE.BufferGeometry().setFromPoints([o, new THREE.Vector3(1, 0, 0), o, new THREE.Vector3(0, 1, 0), o, new THREE.Vector3(0, 0, 1)]),
+      top(new THREE.LineBasicMaterial({ vertexColors: true })))
+    axes.geometry.setAttribute('color', new THREE.Float32BufferAttribute([1, 0.3, 0.3, 1, 0.3, 0.3, 0.3, 1, 0.3, 0.3, 1, 0.3, 0.3, 0.5, 1, 0.3, 0.5, 1], 3))
+    axes.scale.setScalar(0.06)
+    axes.renderOrder = 1000
+    group.add(axes)
+    group.visible = false
+    stage.scene.add(group)
+    this.marker = group
+    return group
+  }
+
+  private dropMarker (): void {
+    const m = this.marker
+    if (m === null) return
+    if (gizmo.target === m) gizmo.detach(m)
+    m.removeFromParent()
+    m.traverse(o => { const x = o as THREE.Mesh; if (x.geometry !== undefined) x.geometry.dispose(); if (x.material !== undefined) for (const mat of Array.isArray(x.material) ? x.material : [x.material]) mat.dispose() })
+    this.marker = null
+  }
+
+  /** The marker on the selected piece's origin, turned as it is, sized to the body (shown in Gear only). While the
+   * gizmo drags it (placing the origin) it stays where it is dragged, unless `snap`. */
+  private followMarker (snap = false): void {
+    const id = this.selected
+    const node = app.step === 'gear' && id !== null && !paint.active ? this.rider?.pieces.get(id)?.worn?.node ?? null : null
+    if (node === null) { if (this.marker !== null) this.marker.visible = false; return }
+    const m = this.ensureMarker()
+    if (m === null) return
+    m.visible = true
+    if (!snap && this.placingOrigin === id && gizmo.dragging && gizmo.target === m) return
+    node.updateWorldMatrix(true, false)
+    node.matrixWorld.decompose(m.position, m.quaternion, new THREE.Vector3())
+    m.scale.setScalar(this.rider?.view.height ?? 1)
+    m.updateMatrixWorld(true)
+  }
+
+  /** The marker let go: the origin where it was dragged (a point of the piece's frame now). */
+  private async commitOrigin (id: string, node: THREE.Object3D): Promise<void> {
+    const c = this.character
+    const g = c === null ? undefined : gearById(c, id)
+    const m = this.marker
+    if (c === null || g === undefined || m === null) return
+    node.updateWorldMatrix(true, false)
+    const at = node.worldToLocal(m.getWorldPosition(new THREE.Vector3()))
+    if (at.length() < 1e-7) return
+    await this.setOrigin(c, g, at)
   }
 
   private commitPlace (id: string, node: THREE.Object3D): void {
@@ -347,6 +444,8 @@ class GearState {
     this.stopPicking()
     if (id !== null) this.selected = id
     this.fitting = id
+    // (worn again, unbound or bound: what it is worn from says whether it is being fitted)
+    this.syncAll()
   }
 
   /** A bone the skeleton has to put new gear on: `want` if it has it, else a hand, else its first. */
@@ -362,7 +461,7 @@ class GearState {
         const after = await api.uploadGear(c.id, file, kind, kind === 'bone' ? { bone: this.boneFor(c) } : {})
         app.upsert(after)
         const added = after.gear.find(g => !before.has(g.id))
-        if (added !== undefined) this.select(added.id)
+        if (added !== undefined) { this.fresh.add(added.id); this.select(added.id) }
       } catch (error) {
         app.toast('error', `${file.name}: ${message(error)}`)
       }
@@ -395,6 +494,185 @@ class GearState {
     if (item === undefined || g.attach.kind !== 'bone' || view === null) return
     const place = catalogPlacement(view, item, g.attach.bone)
     if (place !== null) await app.do(c.id, { type: 'gear.place', id: g.id, place })
+  }
+
+  // ---- its origin, and into the hand ----------------------------------------------------------------------------
+
+  /** Drag the selected piece's origin with the gizmo (its marker), not the piece; null: done. */
+  placeOrigin (id: string | null): void {
+    if (id === this.placingOrigin) return
+    this.stopPicking()
+    if (id !== null) {
+      this.selected = id
+      this.modeBefore ??= gizmo.mode
+    } else if (this.modeBefore !== null) {
+      // (after the effect puts the gizmo back on the piece: the mode it had)
+      const mode = this.modeBefore
+      this.modeBefore = null
+      queueMicrotask(() => { gizmo.mode = mode })
+    }
+    this.placingOrigin = id
+  }
+
+  /** The piece's points as worn, in its own frame (its origin at zero), spread on its surface. Null when it isn't on. */
+  private pointsOf (g: Gear): THREE.Vector3[] | null {
+    const worn = this.rider?.pieces.get(g.id)?.worn
+    if (worn == null || worn.meshes.length === 0) return null
+    if (worn.node !== null) {
+      // (a bone piece, a mechanism, a piece being fitted: its meshes under its node, whatever pose it is in)
+      worn.node.updateWorldMatrix(true, true)
+      const inv = worn.node.matrixWorld.clone().invert()
+      return surfacePoints(worn.meshes, 3000, m => inv.clone().multiply(m.matrixWorld))
+    }
+    // (skin and spot gear bound to the body: their meshes are at rest, placed)
+    const unplace = placementMatrix(g.attach.place).invert()
+    return surfacePoints(worn.meshes, 3000, () => unplace)
+  }
+
+  /** A hand at rest with its grip (clipedit.ts handGrip) and the way its fingers point. */
+  private handAt (side: Side): HandAt | null {
+    const rest = this.rider?.view.rest ?? null
+    const wrist = rest?.bones.get(`${side}Hand`)
+    const grip = rest === null ? null : handGrip(rest, side)
+    if (rest === null || wrist === undefined || grip === null) return null
+    const knuckle = rest.bones.get(`${side}HandMiddle1`) ?? rest.bones.get(`${side}HandIndex1`)
+    const fingers = knuckle === undefined ? new THREE.Vector3(0, -1, 0) : knuckle.worldPosition.clone().sub(wrist.worldPosition).normalize()
+    return { position: wrist.worldPosition.clone(), quaternion: wrist.worldQuaternion.clone(), grip, fingers }
+  }
+
+  /** Where a hand holds the piece, in its frame: its carry hand's fist as its carry handle has it, else a grip
+   * handle's, else the middle of its handle end (gearfit.ts shapeOf). */
+  private gripOf (g: Gear, points: THREE.Vector3[]): THREE.Vector3 | null {
+    const view = this.rider?.view ?? null
+    const place = this.placeOf(g)
+    const s = place.scale
+    const carried = g.attach.kind === 'bone' ? handSide(g.attach.bone) : null
+    const carry = carryHandle(g)
+    const handles: Array<{ side: Side, h: Handle }> = []
+    if (carried !== null && carry !== undefined) handles.push({ side: carried, h: carry })
+    for (const h of g.handles) if (h.kind === 'grip' && h.place !== undefined) handles.push({ side: h.hand ?? (carried === 'Left' ? 'Right' : 'Left'), h })
+    for (const { side, h } of handles) {
+      const hand = this.handAt(side)
+      const wrist = view === null ? null : restFrame(view, `${side}Hand`)
+      const at = h.place ?? (h.kind === 'carry' && wrist !== null ? carrierGrip(placementMatrix(place), wrist) : null)
+      if (hand === null || at === null) continue
+      return new THREE.Vector3(...at.position).add(hand.grip.fist.clone().divideScalar(s).applyQuaternion(new THREE.Quaternion(...at.rotation).normalize()))
+    }
+    return shapeOf(points)?.grip ?? null
+  }
+
+  /** The point of the piece's frame now that `at` names. */
+  originPoint (g: Gear, at: OriginAt): THREE.Vector3 | null {
+    const points = this.pointsOf(g)
+    if (points === null || points.length < 3) return null
+    if (at === 'grip') return this.gripOf(g, points)
+    return restPoints(points, placementMatrix(this.placeOf(g)))[at]
+  }
+
+  /**
+   * The piece's origin moved to `at` (a point of its frame now, or one it names), nothing moving: one command (one
+   * undo) carrying its placement, handles, pulls and every clip's track of it over. A clip it leads in has its keys
+   * carried by baking it (where it rode at each key).
+   */
+  async setOrigin (c: Character, g: Gear, at: THREE.Vector3 | OriginAt | null): Promise<boolean> {
+    if (g.attach.kind === 'bone' && g.attach.legacyFrame !== undefined) return false
+    const point = at === null ? null : typeof at === 'string' ? this.originPoint(g, at) : at
+    if (at !== null && point === null) { app.toast('error', `${g.name} isn't on stage to measure`); return false }
+    const was = originOf(g)
+    const origin: Vec3 | null = point === null ? null : [r6(was[0] + point.x), r6(was[1] + point.y), r6(was[2] + point.z)]
+    const o: Vec3 = origin === null ? [-was[0], -was[1], -was[2]] : [origin[0] - was[0], origin[1] - was[1], origin[2] - was[2]]
+    if (o.every(x => x === 0)) return true
+    const lead = await this.leadKeys(c, g, o)
+    const entry = await app.do(c.id, { type: 'gear.origin', id: g.id, origin, ...(Object.keys(lead).length > 0 ? { lead } : {}) }, 'gear.origin')
+    return entry !== null
+  }
+
+  /** The keys of every clip `g` leads in, carried for its origin moved by `o` (geartracks.ts leadKeysMoved), by slot id. */
+  private async leadKeys (c: Character, g: Gear, o: Vec3): Promise<Record<string, ClipKey[]>> {
+    const out: Record<string, ClipKey[]> = {}
+    for (const s of c.clips) {
+      const keys = s.gear?.[g.id]?.keys
+      if (s.ik?.lead?.includes(g.id) !== true || keys === undefined || keys.length === 0) continue
+      const baked = await animator.bake(c, s, { skip: ['keys'] }).catch(() => null)
+      const ctx = animator.bakeContext()
+      if (baked === null || ctx === null) continue
+      out[s.id] = leadKeysMoved(g, keys, o, baked.unkeyed, u => baked.time.toPlayed(u), ctx)
+    }
+    return out
+  }
+
+  /** Whether `g` rides a hand (what Fit to hand is for). */
+  inHand (g: Gear): boolean {
+    return g.attach.kind === 'bone' && g.attach.legacyFrame === undefined && handSide(g.attach.bone) !== null
+  }
+
+  /** Its shape, held at its origin when that is on its shaft (most pieces' origin is where they are held), else at
+   * the middle of its handle end; and the hand it rides. */
+  private heldShape (g: Gear, points: THREE.Vector3[]): { shape: Shape, hand: HandAt } | null {
+    const side = g.attach.kind === 'bone' ? handSide(g.attach.bone) : null
+    const hand = side === null ? null : this.handAt(side)
+    if (hand === null) return null
+    const near = fistAt(hand).applyMatrix4(placementMatrix(this.placeOf(g)).invert())
+    const shape = shapeOf(points, near)
+    if (shape === null) return null
+    return { shape: onShaft(shape, new THREE.Vector3()) ? heldAt(shape, new THREE.Vector3()) : shape, hand }
+  }
+
+  /** A hand piece put into its fist: its grip in the fist, its long axis along the fist's grip line (one undo; a carry
+   * handle the editor placed goes back to the placement's). */
+  async fitToHand (c: Character, g: Gear): Promise<void> {
+    const points = this.inHand(g) ? this.pointsOf(g) : null
+    const held = points === null ? null : this.heldShape(g, points)
+    if (held === null) { app.toast('error', `${g.name}: nothing to fit (it needs a hand with fingers, and to be on stage)`); return }
+    const place = placementFromMatrix(fitMatrix(held.shape, held.hand, this.placeOf(g).scale))
+    const carry = carryHandle(g)
+    await app.do(c.id, [
+      { type: 'gear.place', id: g.id, place },
+      ...(carry?.place !== undefined ? [{ type: 'gear.handle.update' as const, gear: g.id, id: carry.id, patch: { place: null } }] : []),
+    ], 'gear.fit')
+  }
+
+  /**
+   * An upload just worn: an origin far off the piece (a piece modelled in place on a character, its origin at the
+   * feet) moved onto it (a hand piece: its grip; else its middle), and a hand piece put into the fist unless it is in
+   * it already (modelled there). One undo, offered in the toast.
+   */
+  private async settle (characterId: string, gearId: string): Promise<void> {
+    const c = app.byId(characterId)
+    const g = c === null ? undefined : gearById(c, gearId)
+    const view = this.rider?.view
+    const points = g === undefined ? null : this.pointsOf(g)
+    if (c === null || g === undefined || view === undefined || points === null || points.length < 3) return
+    const place = this.placeOf(g)
+    const P = placementMatrix(place)
+    const off = offBox(points, new THREE.Vector3()) * place.scale
+    const held = this.inHand(g) ? this.heldShape(g, points) : null
+    const already = held === null ? null : inFist(held.shape, P, held.hand, view.height)
+    let at: THREE.Vector3 | null = null
+    let where = ''
+    if (off > OFF_PIECE * view.height) {
+      at = already ?? held?.shape.grip ?? restPoints(points, P).middle
+      where = held !== null ? 'its grip' : 'its middle'
+    }
+    const commands: Command[] = []
+    const was = originOf(g)
+    if (at !== null) commands.push({ type: 'gear.origin', id: g.id, origin: [r6(was[0] + at.x), r6(was[1] + at.y), r6(was[2] + at.z)] })
+    if (held !== null && already === null) {
+      // (the fit in its frame as the origin leaves it)
+      const shift = at === null ? new THREE.Vector3() : new THREE.Vector3(r6(was[0] + at.x) - was[0], r6(was[1] + at.y) - was[1], r6(was[2] + at.z) - was[2])
+      const shape = { ...held.shape, center: held.shape.center.clone().sub(shift), grip: held.shape.grip.clone().sub(shift) }
+      commands.push({ type: 'gear.place', id: g.id, place: placementFromMatrix(fitMatrix(shape, held.hand, place.scale)) })
+    }
+    if (commands.length === 0) return
+    const entry = await app.do(c.id, commands, 'gear.settle')
+    if (entry === null) return
+    const side = g.attach.kind === 'bone' ? handSide(g.attach.bone) : null
+    const said = [
+      ...(at !== null ? [`origin moved to ${where} (the file's was ${Math.round(off / view.height * 100)}% of the body's height off it)`] : []),
+      ...(held !== null && already === null ? [`fitted into the ${side?.toLowerCase() ?? ''} hand`] : []),
+      ...(held !== null && already !== null ? ['kept in the hand as it was modelled'] : []),
+    ]
+    app.toast('ok', `${g.name}: ${said.join('; ')}.`, 10000, { label: 'Undo', run: () => { void app.undo(c.id, entry.seq) } })
   }
 
   async remove (c: Character, g: Gear): Promise<void> {

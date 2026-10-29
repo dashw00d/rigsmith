@@ -10,6 +10,10 @@
     <div class="toast {toast.kind}" role={toast.kind === 'error' ? 'alert' : undefined}>
       {#if toast.kind === 'ok'}<CircleCheck size={15} />{:else if toast.kind === 'error'}<CircleAlert size={15} />{:else}<Info size={15} />{/if}
       <span>{toast.text}</span>
+      {#if toast.action !== undefined}
+        {@const action = toast.action}
+        <button class="action" onclick={() => { app.dismiss(toast.id); action.run() }}>{action.label}</button>
+      {/if}
       <button aria-label="Dismiss" onclick={() => { app.dismiss(toast.id) }}><X size={13} /></button>
     </div>
   {/each}
@@ -32,6 +36,7 @@
   .toast span { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: pre-line; }
   .toast button { display: grid; place-items: center; flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-3); }
   .toast button:hover { background: var(--bg-4); color: var(--text-1); }
+  .toast button.action { width: auto; height: 20px; padding: 0 8px; margin-top: -1px; border-radius: var(--r-1); color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; }
   .toast :global(svg) { flex: none; margin-top: 1px; }
   .ok :global(svg) { color: var(--ok); }
   .error :global(svg) { color: var(--danger); }
