@@ -271,5 +271,8 @@ describe('gear tracks: the export and the game', () => {
     expect(again.sword.holds.map(h => [h.bone, h.t])).toEqual([['Spine2', 0], ['RightHand', 0.25], ['Spine2', 0.5], ['RightHand', 0.75]])
     expect(again.sword.shown.map(x => [x.t, x.shown])).toEqual([[0, true], [0.4, false], [0.5, true], [0.9, false]])
     expect(holdsAgain(s.holds, 1)).toBe(s.holds)
+    // (switches a cut left outside the clip: the one before the start is where each cycle starts, none after the end)
+    const cut = { sword: { holds: [{ ...s.holds.sword.holds[0], t: -0.2 }, { ...s.holds.sword.holds[1], t: 0.5 }, { ...s.holds.sword.holds[0], t: 1.3 }], shown: [] } }
+    expect(holdsAgain(cut, 2).sword.holds.map(h => [h.bone, h.t])).toEqual([['Spine2', 0], ['RightHand', 0.25], ['Spine2', 0.5], ['RightHand', 0.75]])
   })
 })

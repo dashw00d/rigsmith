@@ -37,7 +37,7 @@ describe('the events file', () => {
       clips: {
         Walk: { loop: true, seconds: 2.2, events: [{ t: 0.1, name: 'step.L', bone: 'LeftFoot' }, { t: 0.6, name: 'step.R', sound: 'mix:hooves_walk' }] },
         // (a span begun before the clip starts with it; an event after its end isn't played)
-        Attack: { loop: false, seconds: 1.033, events: [{ t: 0.2, name: 'swing', volume: 0.333 }, { t: 0.45, name: 'hit' }] },
+        Attack: { loop: false, seconds: 1.033, events: [{ t: 0, name: 'draw', to: 0.3, pitch: 1.25 }, { t: 0.2, name: 'swing', volume: 0.333 }, { t: 0.45, name: 'hit' }] },
       },
     })
   })

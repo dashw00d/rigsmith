@@ -287,8 +287,8 @@ export async function bakeRide (rider: BakedSlot, horse: { c: Character, ctx: Ba
   // to the rider's whole, so its phases stay)
   const horseCycles = Array.isArray(fit.report.cycles) ? (fit.report.cycles as number[])[1] : 1
   const again = (w: Window[]): Window[] => Array.from({ length: cycles }, (_, k) => w.map(([a, b]): Window => [(a + k) / cycles, (b + k) / cycles])).flat()
-  const keysAgain = (ks: ClipKey[]): ClipKey[] => Array.from({ length: cycles }, (_, k) => ks.map(x => ({ ...x, u: (x.u + k) / cycles }))).flat()
-  const eventsAgain = (es: BakedEvent[]): BakedEvent[] => Array.from({ length: cycles }, (_, k) => es.map(e => ({ ...e, t: (e.t + k) / cycles, ...(e.to !== undefined ? { to: (e.to + k) / cycles } : {}) }))).flat()
+  const keysAgain = (ks: ClipKey[]): ClipKey[] => keysRepeated(ks, cycles)
+  const eventsAgain = (es: BakedEvent[]): BakedEvent[] => eventsRepeated(es, cycles)
   return {
     rider: {
       ...rider,
@@ -301,10 +301,38 @@ export async function bakeRide (rider: BakedSlot, horse: { c: Character, ctx: Ba
       ...(rider.gearHolds !== undefined ? { gearHolds: holdsAgain(rider.gearHolds, cycles) } : {}),
     },
     horse: fit.horse,
-    horseEvents: horseCycles === 1 ? hbaked.events : Array.from({ length: horseCycles }, (_, k) => hbaked.events.map(e => ({ ...e, t: (e.t + k) / horseCycles, ...(e.to !== undefined ? { to: (e.to + k) / horseCycles } : {}) }))).flat(),
+    horseEvents: horseCycles === 1 ? hbaked.events : eventsRepeated(hbaked.events, horseCycles),
     cycles,
     report: { horse: hs.name, ...fit.report },
   }
+}
+
+/** Events inside the clip they are phases of (0..1, a millionth either side): a point outside it dropped, a span
+ * clipped to it (dropped when none of it is inside). A blow cut can leave events outside the clip it plays. */
+export function eventsInClip (es: BakedEvent[]): BakedEvent[] {
+  const E = 1e-6
+  return es.flatMap(e => {
+    if (e.to === undefined) return e.t >= -E && e.t <= 1 + E ? [e] : []
+    if (e.to <= E || e.t >= 1 - E) return []
+    return e.t >= 0 && e.to <= 1 ? [e] : [{ ...e, t: Math.max(0, e.t), to: Math.min(1, e.to) }]
+  })
+}
+
+/** A clip's events played `n` times over (each cycle a 1/n of the whole), only what is inside the clip: one left
+ * outside it would land in the next cycle or the one before. */
+export function eventsRepeated (es: BakedEvent[], n: number): BakedEvent[] {
+  if (n === 1) return es
+  const inside = eventsInClip(es)
+  return Array.from({ length: n }, (_, k) => inside.map(e => ({ ...e, t: (e.t + k) / n, ...(e.to !== undefined ? { to: (e.to + k) / n } : {}) }))).flat()
+}
+
+/** A clip's keys played `n` times over. A key before the clip's start (a blow cut leaves them there) is kept only
+ * before the first cycle and one after its end only after the last, where they shape the ends as they did; in any
+ * other cycle they would land in its neighbour. */
+export function keysRepeated (ks: ClipKey[], n: number): ClipKey[] {
+  if (n === 1) return ks
+  const E = 1e-6
+  return Array.from({ length: n }, (_, k) => ks.filter(x => (x.u >= -E || k === 0) && (x.u <= 1 + E || k === n - 1)).map(x => ({ ...x, u: (x.u + k) / n }))).flat()
 }
 
 /** Each gear piece's place over a clip, its keys (by gear id) on top (keys.ts propTracks). */

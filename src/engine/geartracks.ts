@@ -178,10 +178,15 @@ export function withTracks (clip: THREE.AnimationClip, extra: THREE.KeyframeTrac
 }
 
 /** A baked slot's holds again over `cycles` cycles of a ridden clip (bake.ts bakeRide): each cycle starts as the
- * first did. */
+ * first did. Only what is inside the clip is repeated (a switch a blow cut left before the start is where the cycle
+ * starts, one after the end none): repeated, it would land in a neighbouring cycle. */
 export function holdsAgain (holds: Record<string, GearHolds>, cycles: number): Record<string, GearHolds> {
   if (cycles === 1) return holds
-  const again = <T extends { t: number }>(xs: T[]): T[] => Array.from({ length: cycles }, (_, k) => xs.map(x => ({ ...x, t: (x.t + k) / cycles }))).flat()
+  const inside = <T extends { t: number }>(xs: T[]): T[] => {
+    const start = xs.filter(x => x.t <= 0).at(-1)
+    return [...(start !== undefined ? [{ ...start, t: 0 }] : []), ...xs.filter(x => x.t > 0 && x.t <= 1)]
+  }
+  const again = <T extends { t: number }>(xs: T[]): T[] => { const one = inside(xs); return Array.from({ length: cycles }, (_, k) => one.map(x => ({ ...x, t: (x.t + k) / cycles }))).flat() }
   return Object.fromEntries(Object.entries(holds).map(([id, h]) => [id, { holds: again(h.holds), shown: again(h.shown) }]))
 }
 

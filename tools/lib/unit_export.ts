@@ -28,7 +28,7 @@ import path from 'node:path'
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
-import { bakeRide, bakeSlot, gearTracks, type BakeContext, type BakedEvent, type BakedSlot, type GearTrackTarget, type PullPlan } from '../../src/engine/bake.ts'
+import { bakeRide, bakeSlot, eventsInClip, gearTracks, type BakeContext, type BakedEvent, type BakedSlot, type GearTrackTarget, type PullPlan } from '../../src/engine/bake.ts'
 import { CharacterView } from '../../src/engine/CharacterView.ts'
 import { budgetOf, budgetRatio, clipProblem, DEFAULT_LODS, gearLeftOut, HIT_AT, meshNameOf, NO_LOD_BELOW } from '../../src/engine/contract.ts'
 import type { GarmentEdit } from '../../src/engine/garments.ts'
@@ -43,7 +43,7 @@ import { pelvisName } from '../../src/engine/retarget.ts'
 import { retime, sample, stride } from '../../src/engine/timing.ts'
 import { gearEvents, holdTracks, withTracks as withHoldTracks, type HoldTarget } from '../../src/engine/geartracks.ts'
 import { gearById, slotByName } from '../../src/model/select.ts'
-import { exportName, gameNameOf, variantsField, withVariants } from '../../src/model/variants.ts'
+import { exportClash, exportName, gameNameOf, variantsField, withVariants } from '../../src/model/variants.ts'
 import type { Character, ClipKey, Gear, HandPose, Mount, Slot } from '../../src/model/types.ts'
 import type { BuildRecord, BuiltClip, BuiltCompanion, BuiltGear, CompanionSpec, UnitEvent, UnitEvents, UnitSpec } from '../../src/model/unit.ts'
 import { gearSkin, pullHandles, pullSkin, type PullHandle } from './gearskin.ts'
@@ -81,6 +81,8 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   // (each game clip followed by its variants, `Attack 2` played as `Attack_2`: src/model/variants.ts)
   const stored = withVariants(c, spec.clips)
   const slots = stored.map(s => (s.name === exportName(s.name, spec.clips) ? s : { ...s, name: exportName(s.name, spec.clips) }))
+  const clash = exportClash(stored, spec.clips)
+  if (clash !== null) throw new Error(`${unit}: ${c.name}'s clips ${clash.join(' and ')} both play as ${exportName(clash[0], spec.clips)} in the game; rename one in Rigsmith`)
   const gameName = (name: string): string => gameNameOf(name, spec.clips)
 
   // Its clips as the viewer bakes them, on the character in its own units (the export keys its own gear bones, below).
@@ -494,6 +496,11 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   // (where each clip's events land in the clip as exported, when a companion's tracks lengthened it or repeated it)
   const ownFits = new Map<string, EventFit>()
   const compEvents = new Map<string, BakedEvent[]>()
+  const strideOf = (clip: THREE.AnimationClip): number => {
+    exportSkeleton.pose()
+    out.updateMatrixWorld(true)
+    return stride(out, clip)
+  }
   if (comp !== null && compReport !== undefined) {
     const feet = (comp.spec.feet ?? HORSE_FEET).map(f => comp.spec.prefix + f)
     for (let k = 0; k < clips.length; k++) {
@@ -512,7 +519,9 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
       if (own === undefined) continue
       let other = placeClip(own.clip)
       const info: Record<string, unknown> = builtFrom(own.slot)
-      const pace = main.name === 'Walk' ? walkStride : main.name === 'Run' ? runStride : null
+      // (a variant, Walk_2, by its own stride: the companion plays its Walk under it)
+      const game = gameName(main.name)
+      const pace = main.name === 'Walk' ? walkStride : main.name === 'Run' ? runStride : game === 'Walk' || game === 'Run' ? strideOf(main) : null
       if (pace !== null) {
         const f = pace / stride(out, other, feet)
         other = retime(other, f)
@@ -687,11 +696,14 @@ export function recordSlots (c: Pick<Character, 'gear'>, slots: Slot[]): Slot[] 
  * (a companion's tracks can make the whole longer). */
 export interface EventFit { repeat: number, share: number }
 
-/** Events as phases of the clip as exported: repeated per cycle, then scaled into its share of the whole. */
+/** Events as phases of the clip as exported: those inside the clip (bake.ts eventsInClip: one outside it would land in
+ * another cycle, or inside the whole when the clip is a share of it) repeated per cycle, then scaled into its share of
+ * the whole. */
 export function fitEvents (events: BakedEvent[], fit: EventFit): BakedEvent[] {
   const n = Math.max(1, fit.repeat)
   const at = (t: number, k: number): number => ((t + k) / n) * fit.share
-  return Array.from({ length: n }, (_, k) => events.map(e => ({ ...e, t: at(e.t, k), ...(e.to !== undefined ? { to: at(e.to, k) } : {}) }))).flat()
+  const inside = eventsInClip(events)
+  return Array.from({ length: n }, (_, k) => inside.map(e => ({ ...e, t: at(e.t, k), ...(e.to !== undefined ? { to: at(e.to, k) } : {}) }))).flat()
 }
 
 /** The events file (src/model/unit.ts UnitEvents): each exported clip's loop, length and events as it was exported
@@ -726,9 +738,9 @@ export function eventsFile (unit: string, slots: Slot[], clips: THREE.AnimationC
   return out
 }
 
-/** Baked events as the game reads them: inside the clip, phases rounded to 1e-4, sorted. */
+/** Baked events as the game reads them: inside the clip (a span clipped to it), phases rounded to 1e-4, sorted. */
 function unitEvents (events: BakedEvent[]): UnitEvent[] {
-  return events.filter(e => e.t >= -1e-6 && e.t <= 1 + 1e-6).map(e => ({
+  return eventsInClip(events).map(e => ({
     t: round(Math.min(1, Math.max(0, e.t)), 4), name: e.name,
     ...(e.to !== undefined ? { to: round(Math.min(1, Math.max(0, e.to)), 4) } : {}),
     ...(e.sound !== undefined ? { sound: e.sound } : {}), ...(e.bone !== undefined ? { bone: e.bone } : {}),
@@ -745,11 +757,23 @@ export function soundFile (sound: string | undefined): string | null {
 
 /** The files the events play, copied from each character's sounds/ folder into `to` (emptied first, so a sound no event
  * plays any more doesn't linger), where the game's build installs them. A companion's are copied under its prefix
- * (`horse_neigh.wav`: two characters may each have a neigh.wav) and its events renamed to match. A file that is gone
- * is warned about and its events keep no sound. */
+ * (`horse_neigh.wav`: two characters may each have a neigh.wav) and its events renamed to match; a name another file
+ * took already (the unit's own horse_neigh.wav) is numbered (`horse_neigh_2.wav`). A file that is gone is warned about
+ * and its events keep no sound. */
 export function copySounds (events: UnitEvents, from: { unit: string, companion?: string }, to: string, warn: (line: string) => void): string[] {
   rmSync(to, { recursive: true, force: true })
   const copied: string[] = []
+  // (each source file's name as copied: one name a file)
+  const nameOf = new Map<string, string>()
+  const nameFor = (src: string, want: string): string => {
+    const had = nameOf.get(src)
+    if (had !== undefined) return had
+    const ext = path.extname(want); const stem = want.slice(0, want.length - ext.length)
+    let name = want
+    for (let n = 2; copied.includes(name); n++) name = `${stem}_${n}${ext}`
+    nameOf.set(src, name)
+    return name
+  }
   const take = (list: UnitEvent[], dir: string | undefined, prefix: string, where: string): void => {
     for (const e of list) {
       const file = soundFile(e.sound)
@@ -757,7 +781,7 @@ export function copySounds (events: UnitEvents, from: { unit: string, companion?
       if (file === null) continue
       const src = dir === undefined ? null : path.join(dir, 'sounds', file)
       if (src === null || !existsSync(src)) { warn(`${where}: ${e.name} plays sounds/${file}, which is gone: left silent`); delete e.sound; continue }
-      const name = prefix + file
+      const name = nameFor(path.resolve(src), prefix + file)
       if (!copied.includes(name)) {
         mkdirSync(to, { recursive: true })
         copyFileSync(src, path.join(to, name))
