@@ -6,10 +6,11 @@ import type { Command } from '../command-types.ts'
 import { carryHandle, gearById, handSide, safeName } from '../select.ts'
 import type { Character, Gear, GearAttach, Handle, SkinPolicy, Slot } from '../types.ts'
 import {
-  bad, bool, conflict, handPoseRef, id, joint, list, missing, name, num, obj, oneOf, opt, overlaps, patchOf, placeText,
-  placement, quat, refText, same, side, str, under, uniqueName, unknown, vec3, vecText,
+  bad, bool, clipKeys, conflict, handPoseRef, id, joint, list, missing, name, names, num, obj, oneOf, opt, overlaps, patchOf,
+  placeText, placement, plural, quat, refText, same, side, str, under, uniqueName, unknown, vec3, vecText,
 } from './common.ts'
 import { mendHolders } from './clips.ts'
+import { rebaseGear } from '../origin.ts'
 
 export type GearCommand = Extract<Command, { type: `gear.${string}` }>
 
@@ -79,9 +80,11 @@ function gearOf (c: Character, v: unknown): Gear {
   const swapSet = opt(g.swapSet, x => (typeof x === 'string' ? x.trim() : bad('gear.swapSet must be text')))
   const from = opt(g.from, x => str(x, 'gear.from'))
   const painted = opt(g.painted, x => num(x, 'gear.painted', { min: 0 }))
+  const origin = opt(g.origin, x => vec3(x, 'gear.origin'))
   return {
     id: gid, name: name(g.name, 'gear.name'),
     ...(model !== undefined ? { model } : {}), ...(catalog !== undefined ? { catalog } : {}),
+    ...(origin !== undefined && origin.some(x => x !== 0) ? { origin } : {}),
     status: oneOf(g.status, ['importing', 'ready', 'error'] as const, 'gear.status'), ...(error !== undefined ? { error } : {}),
     attach: attach(c, g.attach), handles,
     ...(hidden === true ? { hidden } : {}), ...(swapSet ? { swapSet } : {}), ...(from !== undefined ? { from } : {}),
@@ -291,7 +294,13 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
       }
       if (p.model !== undefined) {
         const model = under(p.model, `garments/${g.id}/`, 'model')
-        if (model !== g.model) { g.model = model; out.push(`gear ${g.name}: new mesh`) }
+        if (model !== g.model) {
+          g.model = model
+          // (the origin was a point of the old file: the new one comes with its own)
+          const had = g.origin !== undefined
+          delete g.origin
+          out.push(`gear ${g.name}: new mesh${had ? ' (its origin the new file\'s own)' : ''}`)
+        }
       }
       if (p.hidden !== undefined) {
         const hidden = bool(p.hidden, 'hidden')
@@ -323,6 +332,24 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
       g.attach.place = place
       if (g.attach.kind === 'bone') delete g.attach.legacyFrame
       return [`gear ${g.name}: ${placeText(place)}`]
+    }
+    case 'gear.origin': {
+      const g = gearById(c, cmd.id) ?? missing(`No gear ${cmd.id}`)
+      if (g.attach.kind === 'bone' && g.attach.legacyFrame !== undefined) conflict(`${g.name} is still placed in the old catalog frame: place it in Gear first`)
+      const origin = cmd.origin === null ? null : vec3(cmd.origin, 'origin')
+      const lead = cmd.lead === undefined ? {} : Object.fromEntries(Object.entries(obj(cmd.lead, 'lead')).map(([sid, keys]) => [sid, clipKeys(keys, `lead.${sid}`)]))
+      if (same(g.origin ?? [0, 0, 0], origin ?? [0, 0, 0])) return []
+      const r = rebaseGear(c, g, origin, lead)
+      const carried = [
+        'its placement',
+        ...(r.handles > 0 ? [plural(r.handles, 'handle')] : []),
+        ...(r.pulls > 0 ? [plural(r.pulls, 'pull')] : []),
+        ...(r.slots.length > 0 ? [`its track in ${plural(r.slots.length, 'clip')}`] : []),
+      ]
+      return [
+        `gear ${g.name}: origin ${origin === null || origin.every(x => x === 0) ? "back to its file's own" : `at ${vecText(origin)} of its model`} (nothing moves: ${names(carried)} carried over)`,
+        ...r.leadKept.map(n => `clip ${n}: the keys of ${g.name}, which leads there, kept as they were (they turn about its new origin)`),
+      ]
     }
     case 'gear.remove': {
       const g = gearById(c, cmd.id) ?? missing(`No gear ${cmd.id}`)

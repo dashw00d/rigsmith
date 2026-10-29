@@ -4,8 +4,8 @@
 import type { Character, Joints, Vec3 } from './types.ts'
 
 /** Positions in the character's space get p·s + d; lengths get ×s. Left as they are: grip and carry handle places
- * and gear keys' moves (in the gear's placed frame, which its place.scale already sizes), a pull's rest (the gear
- * model's own space), the position of a piece still placed in the old grip frame (in bone lengths, which grow with
+ * and gear keys' moves (in the gear's placed frame, which its place.scale already sizes), a pull's rest and a piece's
+ * origin (the gear model's own space), the position of a piece still placed in the old grip frame (in bone lengths, which grow with
  * the bones), rotations, and mount.position (the horse's space). */
 export function rescale (c: Character, s: number, d: Vec3): Character {
   const out = structuredClone(c)

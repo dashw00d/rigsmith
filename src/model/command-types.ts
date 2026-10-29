@@ -48,6 +48,12 @@ export type Command =
    * or off a hand adds or removes its carry handle. */
   | { type: 'gear.attach', id: string, attach: GearAttach }
   | { type: 'gear.place', id: string, place: Placement }
+  /** The piece's origin (Gear.origin: a point of its model's own space; null: the file's own), everything kept in its
+   * frame carried over so nothing moves (src/model/origin.ts): its placement, handles, pulls, every slot's keys and
+   * holders of it. A leading piece's keys are world moves about its origin, which only a bake can carry over (where it
+   * rode at each key): `lead` gives them by slot id, as the caller worked them out; a slot it leads in not given keeps
+   * its keys as they are. Refused while the piece is still in the old catalog frame. */
+  | { type: 'gear.origin', id: string, origin: Vec3 | null, lead?: Record<string, ClipKey[]> }
   /** Also takes out what pointed at it in this character (adjustments) and reports it. Never deletes files. (Riders
    * whose mount wears it are updated by the server, journaled on them.) */
   | { type: 'gear.remove', id: string }

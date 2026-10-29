@@ -203,6 +203,11 @@ export interface Gear {
   model?: string
   /** A bundled catalog model (static/props/<file>) instead of an uploaded one. */
   catalog?: string
+  /** The point of its model's own space that is the piece's origin (unset: the file's own, [0, 0, 0]). Wherever the
+   * model is loaded (the viewer, the export) it is moved by minus this, so its placement, its handles' places, its
+   * pulls' rest points and its gear keys are all about this point: what the gizmo sits on and turns it round. Set by
+   * gear.origin, which carries all of those over so nothing moves (src/model/origin.ts). A new model forgets it. */
+  origin?: Vec3
   status: 'importing' | 'ready' | 'error'
   error?: string
   attach: GearAttach
