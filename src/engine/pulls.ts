@@ -278,6 +278,11 @@ export interface PullRig {
 }
 
 const rigs = new Map<object, PullRig[]>()
+// (the pieces on stage register here as they are worn: a hot update of this module would leave them in the old copy's
+// map while the animator ticks the new, empty one, and every string stays at rest until a reload; so a change here
+// reloads the page instead (the designer, 2026-10-29: "is it caching again"))
+const hot = (import.meta as ImportMeta & { hot?: { accept: (cb: () => void) => void } }).hot
+if (hot !== undefined) hot.accept(() => { location.reload() })
 
 export function registerPulls (owner: object, list: PullRig[]): void { rigs.set(owner, [...(rigs.get(owner) ?? []), ...list]) }
 /** Take an owner's rigs off (all of them, or one piece's). */
