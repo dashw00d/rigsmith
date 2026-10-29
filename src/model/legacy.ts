@@ -4,13 +4,14 @@
 // read-only: a v1 client changes animations, scripts, garments and props only, through v1PatchToCommands.
 //
 // Slots go through schema 2's shape (src/model/migrate.ts slotToV2 / slotFromV2), their times left as they are: v1
-// clients never read a slot's phases closely, and what schema 3 has that v1 had no place for (retime markers, holds,
-// events, who holds gear) stays on a slot whose clip a PATCH leaves as it was.
+// clients never read a slot's phases closely. A slot a PATCH says of as the view did stays exactly as it was; one it
+// changes keeps what schema 3 has that v1 had no place for (retime markers, holds, events, the hit's sound, who holds
+// gear, the build, eases, mutes) while its clip stays the same.
 import type { Command } from './command-types.ts'
 import { applyCommands } from './commands.ts'
 import { gearFromProp, gearFromV1, holdsFromV1, slotFromV2, slotsFromV1, slotToV2 } from './migrate.ts'
 import { DEFAULT_FIST, carryHandle, handSide, jointsOf } from './select.ts'
-import type { Character, Gear, Handle, HandPoseRef, Job, Side, Slot } from './types.ts'
+import type { Character, ClipEvent, ClipKey, Gear, Handle, HandPoseRef, Job, Side, Slot } from './types.ts'
 import type { V2Adjustment as Adjustment, V2AdjustmentKind as AdjustmentKind, V2Slot, V2Window as Window } from './v2.ts'
 import type { GameSpec } from './unit.ts'
 import type {
@@ -315,12 +316,22 @@ export function v1PatchToCommands (c: Character, patch: V1Patch, newId: () => st
     const gearIdByName: Record<string, string> = {}
     for (const g of [...before.gear.filter(isGarment), ...before.gear.filter(g => !isGarment(g))]) gearIdByName[g.name] ??= g.id
     // (a pull the piece doesn't have, being off the bones, holds nothing)
-    const garments = (patch.garments ?? v.garments)?.map(g => {
+    const pulled = (list: V1Garment[] | undefined): V1Garment[] | undefined => list?.map(g => {
       const pulls = g.pulls?.filter(p => before.gear.find(x => x.id === g.id)?.handles.some(h => h.id === p.id && h.kind === 'pull') === true)
       return pulls?.length === g.pulls?.length ? g : { ...g, pulls }
     })
-    const next = slotsFromV1(patch.animations ?? v.animations, patch.scripts ?? v.scripts, gearIdByName, c.id, { poses, garments })
-    const slots = keepIds(viewed(before), next, newId).map((s, i) => carried(before, slotFromV2(s, { characterId: c.id, index: i })))
+    const fromV1 = (animations: V1AnimationEntry[], scripts: V1ClipScript[] | undefined, garments: V1Garment[] | undefined): V2Slot[] =>
+      slotsFromV1(animations, scripts, gearIdByName, c.id, { poses, garments: pulled(garments) })
+    // (a slot the PATCH says of as the view did is left exactly as it is: the trip through v1 would lose what schema 3
+    // has that v1 has no place for)
+    const was = shapes(fromV1(v.animations, v.scripts, v.garments))
+    const next = fromV1(patch.animations ?? v.animations, patch.scripts ?? v.scripts, patch.garments ?? v.garments)
+    const now = shapes(next)
+    const slots = keepIds(viewed(before), next, newId).map((s, i) => {
+      const kept = work.clips.find(x => x.name === s.name)
+      if (kept !== undefined && was.has(s.name) && equal(was.get(s.name), now.get(s.name))) return structuredClone(kept)
+      return carried(work, slotFromV2(s, { characterId: c.id, index: i }))
+    })
     if (!equal(slots, work.clips)) run({ type: 'clips.replace', slots })
   }
   return out
@@ -365,21 +376,56 @@ function keepIds (c: Viewed, next: V2Slot[], newId: () => string): V2Slot[] {
   return out
 }
 
-/** A slot back from v1 with what v1 has no place for (retime markers, holds, events but the hit, who holds gear and
- * when it shows, the tracks switched off) from the slot it stands for, while that one plays the same clip. */
+/** Slots made from v1, each as what it says (ids aside, the clip a pace follows by name), by name: two equal ones
+ * say the same of their slot. */
+function shapes (slots: V2Slot[]): Map<string, unknown> {
+  const names = new Map(slots.map(s => [s.id, s.name]))
+  return new Map(slots.map(s => [s.name, {
+    ...s,
+    id: undefined,
+    adjustments: s.adjustments.map(a => JSON.stringify({ ...a, id: undefined, ...(a.kind === 'pace' ? { like: names.get(a.like) ?? a.like } : {}) })).sort(),
+  }]))
+}
+
+/** A slot back from v1 with what v1 has no place for, from the slot it stands for while that one plays the same clip:
+ * retime markers, holds, events but the hit, who holds gear and when it shows, the build (ik), every key's ease (the
+ * key at the same moment of the same track), the hit's id, sound, bone, volume and pitch (v1 says only where it is;
+ * the whole hit when the slot has no fit, v1 having no place for it then), the tracks switched off but the pair v1
+ * says as its keys switched off. */
 function carried (c: Character, s: Slot): Slot {
   const old = c.clips.find(x => x.id === s.id)
   if (old === undefined || old.clip.id !== s.clip.id || old.clip.url !== s.clip.url) return s
   const out: Slot = { ...s }
   const markers = old.time?.markers; const holds = old.time?.holds
-  if (markers !== undefined || holds !== undefined) out.time = { ...out.time, ...(markers !== undefined ? { markers } : {}), ...(holds !== undefined ? { holds } : {}) }
-  const events = (old.events ?? []).filter(e => !(e.name === 'hit' && e.to === undefined))
-  if (events.length > 0) out.events = [...(out.events ?? []), ...events].sort((a, b) => a.u - b.u)
+  if (markers !== undefined || holds !== undefined) out.time = { ...out.time, ...(markers !== undefined ? { markers: structuredClone(markers) } : {}), ...(holds !== undefined ? { holds: structuredClone(holds) } : {}) }
+  if (old.ik !== undefined) out.ik = structuredClone(old.ik)
+
+  const eased = (ks: ClipKey[] | undefined, was: ClipKey[] | undefined): ClipKey[] | undefined => ks?.map(k => {
+    const e = was?.find(x => Math.abs(x.u - k.u) < 1e-6)?.ease
+    return e === undefined || k.ease !== undefined ? k : { ...k, ease: e }
+  })
+  if (out.bones !== undefined) out.bones = Object.fromEntries(Object.entries(out.bones).map(([b, ks]) => [b, eased(ks, old.bones?.[b])!]))
+  if (out.gear !== undefined) {
+    out.gear = Object.fromEntries(Object.entries(out.gear).map(([g, t]) => [g, t.keys === undefined ? t : { ...t, keys: eased(t.keys, old.gear?.[g]?.keys) }]))
+  }
+
+  const isHit = (e: ClipEvent): boolean => e.name === 'hit' && e.to === undefined
+  const oldHit = old.events?.find(isHit)
+  const newHit = out.events?.find(isHit)
+  const hit = oldHit === undefined ? newHit : newHit !== undefined ? { ...structuredClone(oldHit), u: newHit.u } : old.time?.fit === undefined ? structuredClone(oldHit) : undefined
+  const events = [...(out.events ?? []).filter(e => !isHit(e)), ...structuredClone((old.events ?? []).filter(e => !isHit(e))), ...(hit !== undefined ? [hit] : [])]
+  if (events.length > 0) out.events = events.sort((a, b) => a.u - b.u)
+  else delete out.events
+
   for (const [g, t] of Object.entries(old.gear ?? {})) {
     if (t.heldBy === undefined && t.shown === undefined) continue
-    out.gear = { ...out.gear, [g]: { ...out.gear?.[g], ...(t.heldBy !== undefined ? { heldBy: t.heldBy } : {}), ...(t.shown !== undefined ? { shown: t.shown } : {}) } }
+    out.gear = { ...out.gear, [g]: { ...out.gear?.[g], ...(t.heldBy !== undefined ? { heldBy: structuredClone(t.heldBy) } : {}), ...(t.shown !== undefined ? { shown: structuredClone(t.shown) } : {}) } }
   }
-  if (old.muted !== undefined && out.muted === undefined) out.muted = old.muted
+  // (v1 says 'bones' and 'gear' together, as its keys switched off; any other, or one of them alone, it can't say)
+  const pair = old.muted?.includes('bones') === true && old.muted.includes('gear')
+  const unsaid = (old.muted ?? []).filter(m => !pair || (m !== 'bones' && m !== 'gear'))
+  const muted = [...new Set([...(out.muted ?? []), ...unsaid])]
+  if (muted.length > 0) out.muted = muted
   return out
 }
 

@@ -232,6 +232,51 @@ describe('v1PatchToCommands', () => {
     expect(slotByName(swapped, 'Walk')!.adjustments).toEqual([])
   })
 
+  // what schema 3 has that v1 has no place for, on the archer's Attack (fit, keys) and Idle (no fit)
+  const rich = (): Character => {
+    const x = structuredClone(c)
+    const attack = slotByName(x, 'Attack')!
+    attack.bones = { Spine: [{ u: 0, q: [0, 0, 0, 1], ease: 'linear' }, { u: 0.6, q: [0, 0.1, 0, 0.995], ease: 'step' }] }
+    attack.gear = { g1: { keys: [{ u: 0.5, q: [0, 0, 0, 1], p: [0, 0, 0.1], ease: 'ease' }] } }
+    attack.events = [{ id: 'e2', name: 'swing', u: 0.3 }, { id: 'e1', name: 'hit', u: 0.4, sound: 'mix:sword', bone: 'RightHand', volume: 0.8, pitch: 1.1 }]
+    attack.ik = { hands: [{ hand: 'Right', gear: 'g1', handle: 'right-hand', windows: [[0.1, 0.5]] }] }
+    attack.muted = ['bone:Spine', 'events']
+    const idle = slotByName(x, 'Idle')!
+    idle.events = [{ id: 'e3', name: 'hit', u: 0.4, sound: 'mix:thud' }]
+    idle.muted = ['bones']
+    return x
+  }
+
+  it('leaves every slot exactly as it was when a PATCH sends its garments unchanged', () => {
+    const x = rich()
+    const w = toV1(x)
+    expect(v1PatchToCommands(x, { garments: w.garments }, counter())).toEqual([])
+    const cmds = v1PatchToCommands(x, all(w), counter())
+    expect(applyCommands(x, cmds).character.clips).toEqual(x.clips)
+  })
+
+  it('keeps the other slots exactly, and the changed one\'s eases, build, hit and mutes, when a PATCH changes one clip', () => {
+    const x = rich()
+    const w = toV1(x)
+    const faster = w.animations.map((a): V1AnimationEntry => (a.name === 'Attack' ? { ...a, speed: 1.5 } : a))
+    const cmds = v1PatchToCommands(x, { animations: faster }, counter())
+    expect(types(cmds)).toEqual(['clips.replace'])
+    const after = applyCommands(x, cmds).character
+    for (const s of x.clips) if (s.name !== 'Attack') expect(slotByName(after, s.name)).toEqual(s)
+    const was = slotByName(x, 'Attack')!
+    const attack = slotByName(after, 'Attack')!
+    expect(attack.speed).toBe(1.5)
+    expect(attack.bones).toEqual(was.bones)
+    expect(attack.gear).toEqual(was.gear)
+    expect(attack.ik).toEqual(was.ik)
+    expect(attack.events).toEqual(was.events)
+    expect(attack.muted).toEqual(was.muted)
+    // a blow moved by v1 moves the hit, its sound and id kept
+    const blow = w.scripts!.map(s => (s.kind === 'blow' ? { ...s, blowU: 0.35 } : s))
+    const moved = slotByName(applyCommands(x, v1PatchToCommands(x, { scripts: blow }, counter())).character, 'Attack')!
+    expect(moved.events!.find(e => e.name === 'hit')).toEqual({ ...was.events![1], u: 0.35 })
+  })
+
   it('moves a catalog prop in its grip frame, its hand left open when it comes back onto one', () => {
     const off = v1PatchToCommands(c, { props: [{ ...v.props![0], socket: 'LeftForeArm', position: [0.1, 0, 0] }] }, counter())
     expect(types(off)).toEqual(['gear.attach'])
