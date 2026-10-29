@@ -18,6 +18,7 @@ import { viewer, type MountView } from './viewer.svelte.ts'
 import { gizmo } from './gizmo.svelte.ts'
 import { stableJson } from '../model/entities.ts'
 import { gearKeysFromPaths, gearTracksOf, slotById } from '../model/select.ts'
+import { slotsUnder } from '../model/pieces.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
 import { forgetClip, RetargetCache, type ClipSource } from '../engine/clips.ts'
 import { bakeRide, bakeSlot, boneRest, type BakeContext, type BakedSlot, type BakeSkip, type PullPlan } from '../engine/bake.ts'
@@ -239,8 +240,9 @@ class Animator {
   /** What a bake of `now` depends on in the character, as one string. */
   private inputs (now: NowPlaying, c: Character): string {
     const slot = now.kind === 'slot' ? slotById(c, now.slotId ?? '') : undefined
-    const like = slot?.time?.pace === undefined ? undefined : slotById(c, slot.time.pace.like)
-    return stableJson({ slot, like, gear: c.gear, hands: c.hands, mount: c.mount, shared: app.settings?.handPoses ?? null })
+    // (what its bake reads of the other slots: the one it paces like, those it plays as pieces, theirs in turn)
+    const under = slot === undefined ? [] : slotsUnder(c, slot)
+    return stableJson({ slot, under, gear: c.gear, hands: c.hands, mount: c.mount, shared: app.settings?.handPoses ?? null })
   }
 
   // ---- what plays --------------------------------------------------------------------------------------------------
@@ -319,6 +321,12 @@ class Animator {
   async bake (c: Character, slot: Slot, o: { skip?: BakeSkip, autoGround?: boolean } = {}): Promise<BakedSlot | null> {
     const ctx = c.id === this.characterId ? this.bakeContext() : null
     return ctx === null ? null : await bakeSlot(c, slot, ctx, o)
+  }
+
+  /** A clip's length (seconds at speed 1, as it plays on the character on stage): what a piece of it can last. */
+  async clipSeconds (ref: ClipRef, inPlace: boolean): Promise<number | null> {
+    if (this.cache === null) return null
+    return (await this.cache.get(ref, { inPlace, fps: FPS })).duration
   }
 
   /** A posable copy of the character, at rest, with its gear nodes (copied again when its gear changed, or `fresh`):

@@ -10,7 +10,7 @@
 import type { Command } from '../model/command-types.ts'
 import {
   copyKeys, deleteKeys, isKeyTrack, keysOf, keysToFrame, keyTracks, moveKeys, pasteKeys, snapPlayed, spanOf, stretchFactor, stretchKeys,
-  stretchMarkers, warpFactor, type KeyClipboard, type KeyEdit, type KeyRef, type TimeFrame,
+  stretchMarkers, type KeyClipboard, type KeyEdit, type KeyRef, type TimeFrame,
 } from '../model/keyedit.ts'
 import { newId } from '../model/ids.ts'
 import { hierarchyOf, slotById } from '../model/select.ts'
@@ -22,6 +22,7 @@ import { AREAS } from '../app/motion/areas.ts'
 import { framesOf, timeAt, cycleAt } from '../app/motion/rules.ts'
 import { app } from './app.svelte.ts'
 import { animator } from './animator.svelte.ts'
+import { clipPieces } from './pieces.svelte.ts'
 
 const same = (a: SelectedItem, b: SelectedItem): boolean => a.track === b.track && a.id === b.id
 
@@ -238,10 +239,7 @@ class Timeline {
     const factor = span === null ? null : stretchFactor(span, edge, to, f.frames)
     if (span === null || factor === null) return
     const from = f.toSource(span[0]); const until = f.toSource(span[1])
-    // (the factor dragged is of played time, holds and all; the markers scale the warp, which has no holds)
-    const warp = warpFactor(f, p.slot.time?.holds, from, until, factor)
-    if (warp === null) { app.toast('error', 'The clip can’t be squeezed that far: the holds inside the selection take that long'); return }
-    const markers = stretchMarkers(p.slot.time?.markers, from, until, edge, warp, newId)
+    const markers = stretchMarkers(p.slot.time?.markers, from, until, edge, factor, newId)
     if (markers === null) { app.toast('error', 'The clip can’t be retimed that way: an edge of the selection is at the clip’s start or end, or it would run past another marker'); return }
     void this.send(p.character, [{ type: 'slot.time', slot: p.slot.id, patch: { markers } }], 'retime')
   }
@@ -319,7 +317,7 @@ class Timeline {
   }
 
   /** Delete what is selected, across tracks: keys, the areas' items (events, gear strips' switches and hidden spans),
-   * hand bars, retime markers and holds. One undo. */
+   * hand bars, retime markers and pieces of the clip (with what is keyed on them). One undo. */
   remove (): void {
     const p = this.playing
     if (p === null || this.selection.length === 0) return
@@ -343,14 +341,17 @@ class Timeline {
     const time = this.selection.filter(s => s.track === 'time')
     if (time.length > 0) {
       const markers = (p.slot.time?.markers ?? []).filter(m => !time.some(s => s.id === m.id))
-      const holds = (p.slot.time?.holds ?? []).filter(h => !time.some(s => s.id === h.id))
-      const patch: { markers?: null | typeof markers, holds?: null | typeof holds } = {}
-      if (markers.length !== (p.slot.time?.markers ?? []).length) patch.markers = markers.length > 0 ? markers : null
-      if (holds.length !== (p.slot.time?.holds ?? []).length) patch.holds = holds.length > 0 ? holds : null
-      if (Object.keys(patch).length > 0) extra.push({ type: 'slot.time', slot: p.slot.id, patch })
+      if (markers.length !== (p.slot.time?.markers ?? []).length) extra.push({ type: 'slot.time', slot: p.slot.id, patch: { markers: markers.length > 0 ? markers : null } })
+    }
+    // (pieces of the clip: last, so what the other commands touched is moved or goes with them)
+    const pieces = this.selection.filter(s => s.track === 'pieces').map(s => s.id)
+    if (pieces.length > 0) {
+      const sent = clipPieces.removeCommands(p, pieces)
+      if (sent === null) { app.toast('info', 'A clip keeps at least one piece of a clip'); return }
+      extra.push(...sent)
     }
     const keys = deleteKeys(p.slot, this.keys)
-    const left = this.selection.filter(s => !isKeyTrack(s.track) && !areas.some(a => a.area.owns(s.track)) && !s.track.startsWith('hands:') && s.track !== 'time')
+    const left = this.selection.filter(s => !isKeyTrack(s.track) && !areas.some(a => a.area.owns(s.track)) && !s.track.startsWith('hands:') && s.track !== 'time' && s.track !== 'pieces')
     void this.applyKeys(keys, 'delete', extra).then(ok => { if (ok) this.selection = left })
   }
 

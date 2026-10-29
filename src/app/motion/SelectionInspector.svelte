@@ -1,7 +1,8 @@
 <script lang="ts">
   // The inspector of what the timeline or the viewport has selected, for the clip playing (docs/motion-plan.md §9 B):
   // keys (where they are, typed to a frame, how each span eases; duplicate, copy, paste, delete), a joint (key it here,
-  // its keys), a piece of gear (GearBox, and the gear area's inspector), events (the events area's), a hand bar or the
+  // its keys), a piece of the clip (the Clip strip's: its range, blend, remove), a piece of gear (GearBox, and the gear
+  // area's inspector), events (the events area's), a hand bar or the
   // Time track's items (their settings opened in the stack below). Then the posing tools that act on the clip (Solve
   // body, Naturalize, joint limits) and "Save as <clip>" (slot.copy: it replaces what that clip played).
   import { ClipboardPaste, Copy, CopyPlus, PersonStanding, Save, Trash2, WandSparkles, X } from '@lucide/svelte'
@@ -23,6 +24,7 @@
   import EventsInspector from './events/EventsInspector.svelte'
   import GearInspector from './gear/GearInspector.svelte'
   import GearBox from './GearBox.svelte'
+  import PieceInspector from './pieces/PieceInspector.svelte'
   import { boneLabel } from './tracks.ts'
 
   let { character }: { character: Character } = $props()
@@ -47,6 +49,7 @@
   })
   const bar = $derived(timeline.selection.find(s => s.track.startsWith('hands:') && !s.track.startsWith('hands:ik:')))
   const time = $derived(timeline.selection.find(s => s.track === 'time'))
+  const piece = $derived(timeline.selection.find(s => s.track === 'pieces'))
   // (a bar or a Time track item selected: its setting opened in the stack below)
   $effect(() => { if (bar !== undefined) adjust.open = bar.track.slice(6) })
   $effect(() => { if (time !== undefined && slot?.time?.fit !== undefined) adjust.open = FIT })
@@ -115,6 +118,7 @@
       </div>
     {/if}
 
+    {#if piece !== undefined}<PieceInspector {p} id={piece.id} />{/if}
     {#if events && view !== null}<EventsInspector {view} />{/if}
 
     {#if gearSel !== null}

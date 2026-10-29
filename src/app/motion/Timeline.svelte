@@ -1,10 +1,11 @@
 <script lang="ts">
   // The Motion timeline, docked under the viewport while anything plays (the animator registers it). One track timeline
   // over the slot playing (docs/motion-plan.md §9 B): a ruler (frames of one cycle as it plays, 30 a second; zoom with
-  // Ctrl+wheel, or the wheel over the ruler; Shift+drag on it for a loop region), then the tracks: Summary (every key),
+  // Ctrl+wheel, or the wheel over the ruler; Shift+drag on it for a loop region), then the tracks: Clip (the pieces it is
+  // built from, §11: drag its ends longer or shorter, type its length, append another clip), Summary (every key),
   // Body (limb groups opening to bones, following the joint selected in the viewport), Gear (each piece's keys, and its
   // Held by and Shown strips), Hands (hand poses, pulls held, hands on handles: bars dragged by their middle or edges),
-  // Events, and Time (speed, retime markers, holds, the hit). Keys are clicked, Shift/Ctrl-clicked or boxed, dragged
+  // Events, and Time (speed, retime markers, Insert time at the playhead, the hit). Keys are clicked, Shift/Ctrl-clicked or boxed, dragged
   // (snapped to frames; Alt: free), stretched by the selection's edges; every edit is one command, one undo (the
   // journal's). A library preview or a rig test shows the ruler and the transport only.
   import {
@@ -26,6 +27,9 @@
   import { tooltip } from '../../ui/tooltip.ts'
   import { allowsShortcut } from '../../ui/shortcuts.ts'
   import EventsLane from './events/EventsLane.svelte'
+  import AppendPicker from './pieces/AppendPicker.svelte'
+  import PiecesLane from './pieces/PiecesLane.svelte'
+  import { clipPieces } from '../../state/pieces.svelte.ts'
   import GearLanes from './gear/GearLanes.svelte'
   import PoseToolbar from './pose/PoseToolbar.svelte'
   import { cycleAt, frameOf, framesOf, speedOptions } from './rules.ts'
@@ -75,7 +79,7 @@
     | { kind: 'bone', key: string, label: string, bone: string, tracks: string[], mute: string }
     | { kind: 'gear', key: string, label: string, gear: string, tracks: string[], mute: string }
     | { kind: 'bar', key: string, bar: HandsBar }
-    | { kind: 'events' | 'time', key: string, label: string }
+    | { kind: 'events' | 'time' | 'pieces', key: string, label: string }
 
   const bones = $derived([...(animator.view?.bones.keys() ?? [])])
   const groups = $derived(bodyGroups(bones))
@@ -83,6 +87,9 @@
     if (p === null) return []
     const slot = p.slot
     const out: Row[] = []
+    // (what the clip is built from first: its pieces, its length; the designer, 2026-10-29: "i dont see any way to make a
+    // clip longer except the hold")
+    out.push({ kind: 'pieces', key: 'pieces', label: 'Clip' })
     const boneTracks = Object.keys(slot.bones ?? {}).map(b => `body:${b}`)
     const gearTracks = Object.keys(slot.gear ?? {}).filter(g => (slot.gear?.[g].keys?.length ?? 0) > 0).map(g => `gear:${g}`)
     out.push({ kind: 'summary', key: 'summary', label: 'Summary', tracks: [...boneTracks, ...gearTracks] })
@@ -150,7 +157,6 @@
     | { kind: 'region', from: number, to: number }
     | { kind: 'bar', bar: HandsBar, index: number, edge: 'start' | 'end' | 'body', x0: number, dv: number, free: boolean }
     | { kind: 'marker', id: string, x0: number, v0: number, dv: number, free: boolean }
-    | { kind: 'hold', id: string, edge: 'body' | 'end', x0: number, v0: number, dv: number, free: boolean }
     | { kind: 'hit', x0: number, v0: number, dv: number, free: boolean }
 
   let drag = $state.raw<Drag | null>(null)
@@ -246,7 +252,7 @@
       case 'box': drag = { ...d, x1: e.clientX, y1: e.clientY, moved: d.moved || Math.hypot(e.clientX - d.x0, e.clientY - d.y0) > 4 }; break
       case 'scrub': timeline.seek(fromX(lanesX(e)), e.altKey); break
       case 'region': drag = { ...d, to: fromX(lanesX(e)) }; break
-      case 'bar': case 'marker': case 'hold': case 'hit': drag = { ...d, dv, free: e.altKey }; break
+      case 'bar': case 'marker': case 'hit': drag = { ...d, dv, free: e.altKey }; break
     }
   }
 
@@ -269,7 +275,6 @@
       }
       case 'bar': finishBar(d); break
       case 'marker': finishMarker(d); break
-      case 'hold': finishHold(d); break
       case 'hit': finishHit(d); break
     }
   }
@@ -333,7 +338,6 @@
   /** Played phase per unit of the warp (a marker's `to`): the clip's seconds per its kept span. */
   const perWarp = $derived(p === null ? 1 : source / Math.max(1e-9, p.slot.speed) / Math.max(1e-9, p.map.kept[1] - p.map.kept[0]))
   const markers = $derived((p?.slot.time?.markers ?? []).map(m => ({ ...m, v: f.toPlayed(m.u) })))
-  const holds = $derived((p?.slot.time?.holds ?? []).map(h => ({ ...h, v: f.toPlayed(h.u), w: h.seconds / Math.max(1e-9, p?.slot.speed ?? 1) / Math.max(1e-9, (p?.map.kept[1] ?? 1) - (p?.map.kept[0] ?? 0)) })))
   const hit = $derived.by(() => {
     if (p === null) return null
     const e = hitOf(p.slot)
@@ -341,20 +345,19 @@
     const b = p.baked?.events.find(x => x.name === 'hit')
     return b === undefined ? null : { id: 'hit', v: b.t, measured: true }
   })
-  const dragged = (kind: 'marker' | 'hold' | 'hit', id: string, v: number): number => {
+  const dragged = (kind: 'marker' | 'hit', id: string, v: number): number => {
     const d = drag
     if (d === null || d.kind !== kind || ('id' in d && d.id !== id)) return v
     return snapPlayed(v + d.dv, frames, d.free)
   }
 
-  function downTime (e: PointerEvent, kind: 'marker' | 'hold' | 'hit', id: string, v: number, edge: 'body' | 'end' = 'body'): void {
+  function downTime (e: PointerEvent, kind: 'marker' | 'hit', id: string, v: number): void {
     measure()
     if (e.button !== 0 || busy) return
     e.stopPropagation(); e.preventDefault()
     timeline.select([{ track: kind === 'hit' ? (hit?.measured === true ? 'time' : 'events') : 'time', id, u: f.toSource(v) }], e.shiftKey ? 'add' : 'set')
     ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
     if (kind === 'marker') drag = { kind, id, x0: e.clientX, v0: v, dv: 0, free: e.altKey }
-    else if (kind === 'hold') drag = { kind, id, edge, x0: e.clientX, v0: v, dv: 0, free: e.altKey }
     else drag = { kind, x0: e.clientX, v0: v, dv: 0, free: e.altKey }
   }
 
@@ -363,19 +366,6 @@
     const v = snapPlayed(d.v0 + d.dv, frames, d.free)
     const ms = (p.slot.time?.markers ?? []).map(m => (m.id !== d.id ? m : { ...m, to: Math.round((m.to + (v - d.v0) / perWarp) * 1e6) / 1e6 }))
     void timeline.send(p.character, [{ type: 'slot.time', slot: p.slot.id, patch: { markers: ms } }], 'retime marker')
-  }
-
-  function finishHold (d: Extract<Drag, { kind: 'hold' }>): void {
-    if (p === null || Math.abs(d.dv) < 1e-9) return
-    const hs = (p.slot.time?.holds ?? []).map(h => {
-      if (h.id !== d.id) return h
-      if (d.edge === 'end') {
-        const w = Math.max(1 / frames, holds.find(x => x.id === h.id)!.w + d.dv)
-        return { ...h, seconds: Math.round(w * (p.map.kept[1] - p.map.kept[0]) * p.slot.speed * 1000) / 1000 }
-      }
-      return { ...h, u: Math.round(Math.min(1, Math.max(0, f.toSource(snapPlayed(d.v0 + d.dv, frames, d.free)))) * 1e6) / 1e6 }
-    })
-    void timeline.send(p.character, [{ type: 'slot.time', slot: p.slot.id, patch: { holds: hs } }], 'hold')
   }
 
   function finishHit (d: Extract<Drag, { kind: 'hit' }>): void {
@@ -393,12 +383,17 @@
     void timeline.send(p.character, [{ type: 'slot.time', slot: p.slot.id, patch: { markers: ms } }], 'retime marker')
   }
 
-  function addHold (): void {
-    if (p === null) return
-    const u = Math.round(Math.min(1, Math.max(0, f.toSource(at))) * 1e6) / 1e6
-    if ((p.slot.time?.holds ?? []).some(h => Math.abs(h.u - u) < 1e-6)) return
-    const hs = [...(p.slot.time?.holds ?? []), { id: newId(), u, seconds: 0.25 }].sort((a, b) => a.u - b.u)
-    void timeline.send(p.character, [{ type: 'slot.time', slot: p.slot.id, patch: { holds: hs } }], 'hold')
+  /** Held time put in at the playhead (the piece there split, a held pose between: real time to key; the designer,
+   * 2026-10-29: "The existing hold thing is useless, I place it and then there is no way to animate or extend things
+   * into it"). Drag its ends on the Clip strip to hold longer. */
+  const INSERT = 0.5
+  function insertTime (): void {
+    if (p !== null) void clipPieces.insertTime(p, at, INSERT)
+  }
+
+  /** The clip's length typed (seconds as it plays): its end moved, a held pose past it. */
+  function typeLength (seconds: number): void {
+    if (p !== null && Number.isFinite(seconds) && Math.abs(seconds - p.duration) > 1e-4) void clipPieces.setLength(p, seconds)
   }
 
   // ---- transport and keys ------------------------------------------------------------------------------------------
@@ -639,6 +634,13 @@
                 <button class="tiny icon" onclick={() => toggleMute('events')} aria-label={muted('events') ? 'Play the events' : 'Switch the events off'}>
                   {#if muted('events')}<EyeOff size={11} />{:else}<Eye size={11} />{/if}
                 </button>
+              {:else if row.kind === 'pieces'}
+                <span class="text">Clip</span>
+                <input class="length mono" type="number" min="0.05" step="0.05" value={p.duration.toFixed(2)} aria-label="Length of {p.slot.name} (seconds)" disabled={busy || p.baked === null}
+                  use:tooltip={'Its length (seconds as it plays): longer holds its last pose (to key), shorter cuts its end'}
+                  onchange={(e) => typeLength(e.currentTarget.valueAsNumber)} />
+                <span class="faint small unit">s</span>
+                <AppendPicker {p} />
               {:else if row.kind === 'time'}
                 <span class="text">Time</span>
                 <select class="mono speed" value={String(p.slot.speed)} aria-label="Speed of {p.slot.name}" use:tooltip={'The clip\'s speed (saved: what the game plays)'}
@@ -646,7 +648,7 @@
                   {#each speedOptions(p.slot.speed) as v (v)}<option value={String(v)}>{v}×</option>{/each}
                 </select>
                 <button class="tiny icon" onclick={addMarker} aria-label="Add a retime marker" use:tooltip={'A retime marker at the playhead: drag it to speed up or slow down the clip round it'}><Plus size={11} /></button>
-                <button class="tiny" onclick={addHold} use:tooltip={'Hold the pose at the playhead (a quarter second; drag its end)'}>hold</button>
+                <button class="tiny" onclick={insertTime} use:tooltip={`Insert time: ${INSERT} s of the pose at the playhead held there, to key (a held piece on the Clip strip: drag its ends to hold longer)`}>insert</button>
               {:else}
                 <span class="text">{row.label}</span>
               {/if}
@@ -669,15 +671,9 @@
                 {/each}
               {:else if row.kind === 'events' && view !== null}
                 <EventsLane {view} />
+              {:else if row.kind === 'pieces' && view !== null}
+                <PiecesLane {view} />
               {:else if row.kind === 'time'}
-                {#each holds as h (h.id)}
-                  {@const v = dragged('hold', h.id, h.v)}
-                  <div class="hold" class:on={timeline.isSelected('time', h.id)} style:left={pct(v)} style:width={`${Math.max(4, toX(v + h.w) - toX(v))}px`} role="button" tabindex="-1"
-                    aria-label={`Hold of ${h.seconds} s at ${frameText(v)}`} use:tooltip={`The pose held ${h.seconds} s at ${frameText(v)}: drag it, or its end to hold longer`}
-                    onpointerdown={(e) => downTime(e, 'hold', h.id, h.v)} onpointermove={move} onpointerup={up}>
-                    <span class="grip end" role="presentation" onpointerdown={(e) => downTime(e, 'hold', h.id, h.v, 'end')}></span>
-                  </div>
-                {/each}
                 {#each markers as m (m.id)}
                   {@const v = dragged('marker', m.id, m.v)}
                   <button class="marker" class:on={timeline.isSelected('time', m.id)} style:left={pct(v)} aria-label={`Retime marker at ${frameText(v)}`}
@@ -773,6 +769,10 @@
   .label .tiny:hover { color: var(--text-1); background: var(--bg-3); }
   .label .tiny.on { color: var(--accent-strong); }
   .label .speed { width: 50px; height: 16px; font-size: 10px; margin-left: 4px; padding: 0; }
+  .label .length { width: 46px; height: 16px; margin-left: auto; padding: 0 3px; border: 1px solid var(--line); border-radius: 3px; background: var(--bg-2); font-size: 10px; text-align: right; appearance: textfield; }
+  .label .length::-webkit-inner-spin-button { appearance: none; }
+  .label .unit { margin: 0 3px 0 1px; font-size: 10px; }
+  .row.k-pieces .lane { overflow: visible; background: var(--bg-1); }
   .lane { position: relative; height: 15px; border-radius: 3px; background: var(--bg-2); overflow: hidden; touch-action: none; cursor: crosshair; }
   .lane.free { height: auto; background: transparent; overflow: visible; cursor: default; }
   .row.k-section .lane, .row.k-summary .lane { background: var(--bg-3); }
@@ -798,8 +798,6 @@
   .grip.start { left: -2px; }
   .grip.end { right: -2px; }
   .grip:hover { background: rgb(255 255 255 / 35%); }
-  .hold { position: absolute; top: 2px; height: 11px; border-radius: 2px; background: repeating-linear-gradient(45deg, rgb(142 162 255 / 50%) 0 3px, rgb(142 162 255 / 20%) 3px 6px); cursor: grab; }
-  .hold.on, .hold:hover { box-shadow: 0 0 0 1px var(--text-1); }
   .marker { position: absolute; top: 1px; width: 7px; height: 13px; margin-left: -3.5px; padding: 0; border: 0; border-radius: 2px; background: var(--accent); cursor: ew-resize; z-index: 2; }
   .marker.on, .marker:hover { background: var(--side-right, #ff7ab8); }
   .hit { position: absolute; top: 0; width: 14px; height: 15px; margin-left: -7px; padding: 0; border: 0; border-radius: 3px; background: var(--danger); color: #fff; display: grid; place-items: center; cursor: ew-resize; z-index: 2; }
