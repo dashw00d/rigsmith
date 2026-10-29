@@ -86,6 +86,9 @@ class AppState {
   busy = $derived(this.busyTexts.at(-1)?.[1] ?? null)
 
   private tracks = new Map<string, Track<Character, Command>>()
+  /** Per character, what tells its edits apart (not undos, not notes): the newest such entry seen and the batches this
+   * page sent. */
+  private edits = new Map<string, { seq: number, sent: number }>()
   private sending = new Map<string, Promise<unknown>>()
   private cids = 0
   private guards = new Set<Guard>()
@@ -122,10 +125,12 @@ class AppState {
     if (t === undefined || commands.length === 0) return null
     const cid = `${SESSION}-${++this.cids}`
     this.put(id, push(t, { cid, commands }))
+    this.marked(id).sent++
     return await this.inTurn(id, async () => {
       try {
         const { character, entry } = await api.command(id, commands, cid, what)
         this.take(character, cid)
+        this.edited(id, entry)
         return entry
       } catch (error) {
         const now = this.tracks.get(id)
@@ -155,6 +160,27 @@ class AppState {
    * held is ignored. */
   upsert (character: Character, entry?: JournalEntry | null): void {
     this.take(character, entry?.cid)
+    this.edited(character.id, entry)
+  }
+
+  /** Changes whenever the character is edited (here or anywhere: a command, a job's change; not an undo or a note), so
+   * whoever keeps undos to redo can tell something was done since (and redo nothing). */
+  editMark (id: string): string {
+    const e = this.edits.get(id)
+    return e === undefined ? '' : `${e.seq}/${e.sent}`
+  }
+
+  private marked (id: string): { seq: number, sent: number } {
+    let e = this.edits.get(id)
+    if (e === undefined) { e = { seq: 0, sent: 0 }; this.edits.set(id, e) }
+    return e
+  }
+
+  /** A journal entry seen (a reply, the server's event; the same one may come both ways): an edit moves the mark. */
+  private edited (id: string, entry: JournalEntry | null | undefined): void {
+    if (entry === null || entry === undefined || entry.undoes !== undefined || entry.note === true) return
+    const e = this.marked(id)
+    if (entry.seq > e.seq) e.seq = entry.seq
   }
 
   async importFiles (files: File[]): Promise<void> {

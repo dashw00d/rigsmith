@@ -10,7 +10,8 @@
 // it. Keys are the timeline's (src/state/timeline.svelte.ts) and the posing's (src/state/pose.svelte.ts).
 import type { Adjustment, Character, Side, Slot, Window } from './api.ts'
 import type { Command } from '../model/command-types.ts'
-import { IDENTITY, sourceAt, windowsToPlayed, windowsToSource, type TimeMap } from '../model/timemap.ts'
+import { IDENTITY, sourceAt, windowsToPlayed, type TimeMap } from '../model/timemap.ts'
+import { editWindows } from '../model/windowedit.ts'
 import { app } from './app.svelte.ts'
 import { animator, type NowPlaying } from './animator.svelte.ts'
 import { newId } from '../model/ids.ts'
@@ -141,7 +142,10 @@ class Adjust {
       const muted = (slot.muted ?? []).filter(m => m !== 'bones' && m !== 'gear')
       return [{ type: 'slot.update', id: slot.id, patch: { muted: patch.enabled ? muted : [...muted, 'bones', 'gear'] } }]
     }
-    const p = Array.isArray(patch.windows) ? { ...patch, windows: windowsToSource(this.timeOf(slot.id), patch.windows as Window[]) } : patch
+    // (only the window edited is converted: the others keep their source times, those in a part cut off too)
+    const a = slot.adjustments.find(x => x.id === id)
+    const stored = a !== undefined && 'windows' in a ? a.windows ?? [] : []
+    const p = Array.isArray(patch.windows) ? { ...patch, windows: editWindows(this.timeOf(slot.id), stored, patch.windows as Window[]) } : patch
     return [{ type: 'slot.adjust.update', slot: slot.id, id, patch: p }]
   }
 

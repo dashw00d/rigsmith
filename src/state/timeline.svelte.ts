@@ -10,7 +10,7 @@
 import type { Command } from '../model/command-types.ts'
 import {
   copyKeys, deleteKeys, isKeyTrack, keysOf, keysToFrame, keyTracks, moveKeys, pasteKeys, snapPlayed, spanOf, stretchFactor, stretchKeys,
-  stretchMarkers, type KeyClipboard, type KeyEdit, type KeyRef, type TimeFrame,
+  stretchMarkers, warpFactor, type KeyClipboard, type KeyEdit, type KeyRef, type TimeFrame,
 } from '../model/keyedit.ts'
 import { newId } from '../model/ids.ts'
 import { hierarchyOf, slotById } from '../model/select.ts'
@@ -52,11 +52,14 @@ class Timeline {
   retimeClip = $state(false)
   /** The rows opened (Body's limb groups, a group's bones). */
   open = $state.raw<string[]>(['body'])
+  /** The pointer is over the timeline: F fits the clip there, and frames the character elsewhere (Viewport). */
+  hovered = $state(false)
   /** The lanes' width in pixels (the Timeline measures it). */
   width = $state(600)
   private clipboard: Clipboard | null = null
-  /** Undos made from here (their journal entries), for redo, newest last; any new edit clears them. */
-  private redos: Array<{ character: string, seq: number }> = []
+  /** Undos made from here (their journal entries, and the character's edit mark after each), for redo, newest last;
+   * any new edit to the character ends them (its mark moves on: app.editMark). */
+  private redos: Array<{ character: string, seq: number, mark: string }> = []
   /** The last bake of each slot (its time map stays while it bakes again). */
   private lastBaked = new Map<string, BakedSlot>()
 
@@ -234,7 +237,11 @@ class Timeline {
     const span = spanOf(p.slot, this.keys, f)
     const factor = span === null ? null : stretchFactor(span, edge, to, f.frames)
     if (span === null || factor === null) return
-    const markers = stretchMarkers(p.slot.time?.markers, f.toSource(span[0]), f.toSource(span[1]), edge, factor, newId)
+    const from = f.toSource(span[0]); const until = f.toSource(span[1])
+    // (the factor dragged is of played time, holds and all; the markers scale the warp, which has no holds)
+    const warp = warpFactor(f, p.slot.time?.holds, from, until, factor)
+    if (warp === null) { app.toast('error', 'The clip can’t be squeezed that far: the holds inside the selection take that long'); return }
+    const markers = stretchMarkers(p.slot.time?.markers, from, until, edge, warp, newId)
     if (markers === null) { app.toast('error', 'The clip can’t be retimed that way: an edge of the selection is at the clip’s start or end, or it would run past another marker'); return }
     void this.send(p.character, [{ type: 'slot.time', slot: p.slot.id, patch: { markers } }], 'retime')
   }
@@ -351,14 +358,19 @@ class Timeline {
 
   async undo (c: Character): Promise<void> {
     const entry = await app.undo(c.id)
-    if (entry !== null) this.redos.push({ character: c.id, seq: entry.seq })
+    if (entry === null) return
+    const mark = app.editMark(c.id)
+    this.redos = [...this.redos.filter(r => r.character !== c.id || r.mark === mark), { character: c.id, seq: entry.seq, mark }]
   }
 
   async redo (c: Character): Promise<void> {
     const last = this.redos.at(-1)
-    if (last === undefined || last.character !== c.id) { app.toast('info', 'Nothing to redo'); return }
-    this.redos.pop()
-    await app.undo(c.id, last.seq)
+    if (last !== undefined && last.character === c.id) {
+      if (last.mark === app.editMark(c.id)) { this.redos.pop(); await app.undo(c.id, last.seq); return }
+      // (an edit made since the undo, here or anywhere (the posing, the events, a setting), ends what redo could put back)
+      this.redos = this.redos.filter(r => r.character !== c.id)
+    }
+    app.toast('info', 'Nothing to redo')
   }
 
   // ---- zoom --------------------------------------------------------------------------------------------------------

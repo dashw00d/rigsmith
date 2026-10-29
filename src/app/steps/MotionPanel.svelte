@@ -92,6 +92,8 @@
     if (action === 'deselect' && timeline.selection.length === 0 && pose.selected === null && pose.gear === null) return
     if ((action === 'copy' || action === 'duplicate') && !timeline.copyable) return
     if (action.startsWith('nudge') && timeline.selection.length === 0) return
+    // (F frames the character, the viewport's, unless the pointer is over the timeline)
+    if ((action === 'fit' || action === 'fitSelection') && !timeline.hovered) return
     if (pose.busy !== null && action !== 'undo' && action !== 'redo') return
     e.preventDefault()
     switch (action) {

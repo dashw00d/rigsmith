@@ -18,7 +18,7 @@
   import { keyItem, timeline } from '../../state/timeline.svelte.ts'
   import { eventsOf, hitOf } from '../../model/select.ts'
   import { keysOf, momentsOf, snapPlayed, spanOf, stretchFactor, warpAt } from '../../model/keyedit.ts'
-  import { windowsToSource } from '../../model/timemap.ts'
+  import { editWindows } from '../../model/windowedit.ts'
   import { newId } from '../../model/ids.ts'
   import type { Ease, Side, Window } from '../../model/types.ts'
   import type { Command } from '../../model/command-types.ts'
@@ -299,10 +299,14 @@
     const i = bar.whole ? 0 : d.index
     if (wins[i] === undefined) return
     wins[i] = dragWindow(wins[i], d.edge, d.dv, frames, d.free)
-    const source = windowsToSource(p.map, wins)
+    // (only the window dragged is written anew: the others keep their source times, those in a part the clip's cut
+    // too, which the bar doesn't show)
+    const hand = bar.track.slice(9) as Side
+    const adjustment = p.slot.adjustments.find(a => a.id === bar.track.slice(6))
+    const stored = bar.whole ? [] : bar.kind === 'ik' ? p.slot.ik?.hands.find(h => h.hand === hand)?.windows ?? [] : adjustment !== undefined && 'windows' in adjustment ? adjustment.windows ?? [] : []
+    const source = editWindows(p.map, stored, wins)
     const commands: Command[] = []
     if (bar.kind === 'ik') {
-      const hand = bar.track.slice(9) as Side
       const hands = (p.slot.ik?.hands ?? []).map(h => (h.hand === hand ? { ...h, windows: source } : h))
       commands.push({ type: 'slot.ik', slot: p.slot.id, patch: { hands } })
     } else {
@@ -496,7 +500,8 @@
 {/snippet}
 
 {#if now !== null}
-  <div class="timeline" aria-label="Timeline">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="timeline" aria-label="Timeline" onpointerenter={() => { timeline.hovered = true }} onpointerleave={() => { timeline.hovered = false }}>
     {#if p !== null}<div class="grab" role="separator" aria-orientation="horizontal" aria-label="Resize the timeline" onpointerdown={startResize}></div>{/if}
     <div class="heading">
       <span class="name" title={now.label}>{now.label}</span>
@@ -541,7 +546,7 @@
         {#if p !== null}
           <button class:on={region !== null} aria-pressed={region !== null} onclick={() => { if (animator.region !== null) timeline.clearRegion(); else timeline.regionAt('start') }}
             aria-label="Loop region" use:tooltip={region !== null ? 'Clear the loop region (\\)' : 'A loop region from the playhead ([ and ] set its ends; Shift+drag the ruler)'}><Repeat size={13} /><span class="mini">R</span></button>
-          <button onclick={() => timeline.fit()} disabled={zoom[0] === 0 && zoom[1] === 1} aria-label="Fit" use:tooltip={'Fit the whole clip (F; Shift+F: the selection). Ctrl+wheel zooms'}><Maximize2 size={13} /></button>
+          <button onclick={() => timeline.fit()} disabled={zoom[0] === 0 && zoom[1] === 1} aria-label="Fit" use:tooltip={'Fit the whole clip (F with the pointer over the timeline; Shift+F: the selection). Ctrl+wheel zooms'}><Maximize2 size={13} /></button>
           {#if p.slot.loop === false}
             <button class:on={animator.intoIdle} aria-pressed={animator.intoIdle} onclick={() => animator.setIntoIdle(!animator.intoIdle)} aria-label="Preview into Idle"
               use:tooltip={'Preview into Idle: the clip, then the character\'s Idle blended in over 0.2 s, as the game does'}><Timer size={13} /><span class="mini">Idle</span></button>

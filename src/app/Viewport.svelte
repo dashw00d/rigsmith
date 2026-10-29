@@ -9,6 +9,7 @@
   import type { DisplayMode } from '../engine/CharacterView.ts'
   import { app } from '../state/app.svelte.ts'
   import { viewer } from '../state/viewer.svelte.ts'
+  import { timeline } from '../state/timeline.svelte.ts'
   import Segmented from '../ui/Segmented.svelte'
   import { allowsShortcut } from '../ui/shortcuts.ts'
   import { tooltip } from '../ui/tooltip.ts'
@@ -56,7 +57,8 @@
   })
 
   function onkeydown (e: KeyboardEvent): void {
-    if (e.key.toLowerCase() === 'f' && allowsShortcut(e) && app.selected !== null) viewer.focus()
+    // (over the timeline, F fits the clip instead: src/app/steps/MotionPanel.svelte)
+    if (e.key.toLowerCase() === 'f' && allowsShortcut(e) && app.selected !== null && !timeline.hovered) viewer.focus()
   }
 </script>
 
