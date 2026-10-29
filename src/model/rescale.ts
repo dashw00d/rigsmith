@@ -37,6 +37,14 @@ export function rescale (c: Character, s: number, d: Vec3): Character {
     for (const a of slot.adjustments) if (a.kind === 'ground') a.lift *= s
     // (every bone's move, in its parent's frame: a human keys the Hips, a horse its hips or root)
     for (const keys of Object.values(slot.bones ?? {})) for (const k of keys) if (k.p !== undefined) k.p = times(k.p)
+    // (a holder's place is rest space, as the gear's placement is)
+    for (const track of Object.values(slot.gear ?? {})) {
+      for (const x of track.heldBy ?? []) {
+        if (x.place === undefined) continue
+        x.place.position = at(x.place.position)
+        x.place.scale *= s
+      }
+    }
   }
 
   if (out.mount?.hips !== undefined) out.mount.hips = times(out.mount.hips)

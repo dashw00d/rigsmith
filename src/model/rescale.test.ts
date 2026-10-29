@@ -70,4 +70,11 @@ describe('rescale', () => {
     expect(r.mount?.position).toEqual([0, 0.5, 0])
     expect(r.clips[0].bones).toMatchObject({ Spine: [{ u: 0, q: [0, 0, 0, 1] }] })
   })
+
+  it("moves and sizes a holder's place, rest space as the gear's placement is", () => {
+    const c = fixture()
+    c.clips[0].gear = { bow: { heldBy: [{ u: 0.2, bone: 'Spine2', place: { position: [0, 1, 0.5], rotation: [0, 90, 0], scale: 1.5 } }, { u: 0.6, bone: 'LeftHand', handle: 'carry' }] } }
+    const r = rescale(c, 2, [0, -0.5, 0])
+    expect(r.clips[0].gear?.bow.heldBy).toEqual([{ u: 0.2, bone: 'Spine2', place: { position: [0, 1.5, 1], rotation: [0, 90, 0], scale: 3 } }, { u: 0.6, bone: 'LeftHand', handle: 'carry' }])
+  })
 })
