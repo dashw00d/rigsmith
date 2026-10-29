@@ -126,6 +126,73 @@ clip playing, with its timing, keys, hands on gear and events, is copied over it
 back), and plays from then on. Nothing new is written to the library: the clip stays the library clip it was, with your
 changes on top, exactly as the game will play it.
 
+## 7. Change hands, hide it (Motion step, the Gear track)
+
+Each piece has a **Held by** strip and a **Shown** strip under its keys in the timeline, so a clip can draw a sword
+from the back, throw a javelin and have it gone, or pick a tool up.
+
+- **Change hands:** put the playhead where it changes hands and press the scissors on Held by (or **Change hands at
+  frame N** in the inspector). The strip splits; pick the new segment and choose who holds it from there:
+  - **a hand on one of its handles** (Left hand on Front grip): the hand takes it where the handle says;
+  - **as placed in Gear**, on its own bone (sheathed again, back exactly where Gear puts it);
+  - **a bone, where it is**: it changes hands without a pop, staying where it was at that frame and riding the new
+    bone from then on. **Pin this place** keeps that spot even if the timing changes later.
+  **No pop** on a segment says the same: on, it takes the piece where it is; off, by its handle, its placement or the
+  pinned spot. Drag a boundary to move the switch (frames; Alt between them); the trash button or Delete hands it back
+  to the holder before. The first segment is its Gear bone unless you set who holds it from the start.
+- **Hide it:** put the playhead where it goes and press the eye on Shown (**Hide from frame N**): it is hidden from
+  there to the next hidden span or the end. Press it inside a hidden span to show it again from there. Drag a span, or
+  its edges; Delete or the trash button shows it again.
+- **Plays in this clip** (the inspector) switches the piece's whole track off without losing it.
+
+The piece never changes parents: the game gets it on its own `Prop_<piece>` bone under its Gear bone, moved to wherever
+the holder has it, and sized to 0 while hidden. The unit's events file also tells the game `hide:<mesh>` /
+`show:<mesh>` and `detach:<mesh>` / `attach:<mesh>` (with the bone) at each change, so it can spawn the thrown javelin or
+play a sound.
+
+**Variants:** **+ variant** on one of the game's clips (Attack, Die...) copies it as `Attack 2` (then `Attack 3`...) and
+plays it to change. The game gets it as `Attack_2` and picks one of them at random each time; remove the slot to drop
+it.
+
+## 8. Pose tools (the timeline's toolbar)
+
+They work at the playhead (on its frame), on the bones whose Body tracks are selected, or on every bone with none
+selected. Each is one change in Activity (one Undo).
+
+| Tool | What it does |
+| --- | --- |
+| **Copy pose** (Ctrl+Shift+C, or Ctrl+Alt+C) | Takes the pose as the slot shows it at the playhead, and the Hips' height. It stays copied when you play another clip or character. |
+| **Paste** (Ctrl+Shift+V) | Keys the copied bones so the slot shows that pose at the playhead, whatever the clip does there. The Hips get the copied height, not where the body stood, so a walk isn't pulled back. A bone's first key also pins it at the clip's ends. |
+| **Paste mirrored** (Ctrl+Alt+V) | The same with left and right swapped and each turn reflected across the body's middle: a left-arm raise pasted mirrored is the same raise on the right arm, and a twist to the left becomes a twist to the right. |
+| **Tween / Push / Relax** slider | **Tween** keys the selected bones (or every keyed bone) between the keys either side of the playhead: left is the previous key, right the next. **Push** moves the pose away from the plain inbetween of those keys (more of it). **Relax** moves it toward that inbetween (smoother). The character shows it as you drag; letting go keys it, and Esc cancels. |
+| **Onion skins** (Alt+O) | Ghost skeletons before (orange) and after (blue) the playhead, every few frames or at the keys around it. Set the counts in its menu; the settings are remembered. |
+| **Ease** | For the selected keys, how the span to the next key tweens: Smooth (the default), Linear, Ease (stops at both keys), Step (holds, then jumps) or Hold (the clip's own motion stopped on the bone until the next key). |
+| **Range edit** | Box-select keys across a range and **Set range**. Then change the pose at a frame inside it (drag, paste, tween) and **Spread change**: what changed at the playhead since the range was set reaches the whole range, all of it at the playhead and none at the ends, with a **Smooth** or **Linear** falloff. Outside the range nothing changes. |
+| **Seam** (loops) | Shows how far the last frame jumps to the first, by the worst bone. **Match ends** keys the last frame to the first. **Blend** takes half the jump off each side of the seam over N frames, so the loop meets in the middle without stopping. |
+
+Keys are stored on the source clip's moments, so a later change of timing (speed, fit, markers) keeps them on the same
+part of the motion.
+
+## 7. Events: hits, sounds, steps (Motion step)
+
+The **Events** track under the timeline names moments of a clip for the game: **hit** (the blow lands; the game deals
+its damage there and fits the Attack's speed to it), **release** (the arrow or javelin flies from its bone), **swing**,
+**draw** (a span), **step.L** and **step.R**, or a name of your own (it is kept for the character: typed again in
+another clip, it is the same name, with the same sound).
+
+- **Add** puts one at the playhead; double-click a row to add that name there. **Add footsteps** lays a step wherever
+  a foot comes down in the clip as it plays.
+- Click to select (Shift adds, Ctrl toggles); drag to move on frames (Alt: free); drag a span's ends; Delete removes.
+  While the blow timing measures the hit, it shows hollow: moving it (or typing its frame) picks it by hand.
+- In the inspector: its frame, its **sound** (one of the game's, each with a play button, or drop a WAV, OGG or MP3
+  file on it: kept with the character and installed in the game when the unit is exported), volume, pitch, and the
+  bone it happens at (a release: where the projectile leaves).
+- While the clip plays you hear each event's sound and see its name over the character; scrubbing blips. Each row's
+  speaker mutes it in the preview only: the game gets every event.
+
+Events are stored on the source clip, so retiming the clip never moves them; the game reads them from the unit's
+`<unit>.events.json` beside its model.
+
 ## Good to know
 
 - **The game holds the gear by its Gear placement, moved by the slot's gear keys** (and, leading, by its path).

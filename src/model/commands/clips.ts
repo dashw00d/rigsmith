@@ -114,7 +114,12 @@ function eventOf (v: unknown, what: string): ClipEvent {
   const sound = opt(e.sound, x => str(x, `${what}.sound`))
   if (sound !== undefined && !SOUND.test(sound)) bad(`${what}.sound must be 'mix:<id>' or 'file:<path>'`)
   const bone = opt(e.bone, x => str(x, `${what}.bone`))
-  return { id: id(e.id, `${what}.id`), name: n, u, ...(to !== undefined ? { to } : {}), ...(sound !== undefined ? { sound } : {}), ...(bone !== undefined ? { bone } : {}) }
+  const volume = opt(e.volume, x => num(x, `${what}.volume`, { above: 0, max: 4 }))
+  const pitch = opt(e.pitch, x => num(x, `${what}.pitch`, { min: 0.25, max: 4 }))
+  return {
+    id: id(e.id, `${what}.id`), name: n, u, ...(to !== undefined ? { to } : {}), ...(sound !== undefined ? { sound } : {}), ...(bone !== undefined ? { bone } : {}),
+    ...(volume !== undefined ? { volume } : {}), ...(pitch !== undefined ? { pitch } : {}),
+  }
 }
 
 function eventsOf (v: unknown, what: string): ClipEvent[] {
@@ -141,9 +146,26 @@ function segments<T extends { u: number }> (v: unknown, what: string, each: (o: 
 
 const heldByOf = (v: unknown, what: string): NonNullable<GearTrack['heldBy']> =>
   segments(v, what, (o, at) => {
+    for (const k of Object.keys(o)) if (!['u', 'bone', 'place', 'handle', 'placed'].includes(k)) bad(`${at} has no ${k}`)
     const place = opt(o.place, x => placement(x, `${at}.place`))
-    return { bone: str(o.bone, `${at}.bone`), ...(place !== undefined ? { place } : {}) }
+    const handle = opt(o.handle, x => id(x, `${at}.handle`))
+    const placed = opt(o.placed, x => bool(x, `${at}.placed`))
+    if ([place !== undefined, handle !== undefined, placed === true].filter(Boolean).length > 1) bad(`${at}: one of place, handle or placed`)
+    return { bone: str(o.bone, `${at}.bone`), ...(place !== undefined ? { place } : {}), ...(handle !== undefined ? { handle } : {}), ...(placed === true ? { placed: true as const } : {}) }
   })
+
+/** A piece's holders checked against it: a handle one of its carry or grip handles, on the hand it is for; placed on
+ * its Gear attach bone. */
+function checkHolders (g: Gear, held: NonNullable<GearTrack['heldBy']>): void {
+  for (const x of held) {
+    if (x.placed === true && (g.attach.kind !== 'bone' || g.attach.bone !== x.bone)) bad(`${g.name} is placed on ${g.attach.kind === 'bone' ? g.attach.bone : 'no bone'}, not ${x.bone}`)
+    if (x.handle === undefined) continue
+    const h = g.handles.find(y => y.id === x.handle) ?? missing(`${g.name} has no handle ${x.handle}`)
+    if (h.kind === 'pull') bad(`${g.name}'s ${h.name} is a pull: a hand holds it by a carry or grip handle`)
+    const bone = h.kind === 'carry' ? (g.attach.kind === 'bone' ? g.attach.bone : undefined) : h.hand !== undefined ? `${h.hand}Hand` : undefined
+    if (bone !== undefined ? bone !== x.bone : !/^(Left|Right)Hand$/.test(x.bone)) bad(`${g.name}'s ${h.name} is held by ${bone ?? 'a hand'}, not ${x.bone}`)
+  }
+}
 const shownOf = (v: unknown, what: string): NonNullable<GearTrack['shown']> => segments(v, what, (o, at) => ({ shown: bool(o.shown, `${at}.shown`) }))
 
 function gearTrackOf (v: unknown, what: string): GearTrack {
@@ -561,7 +583,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
       if (i < 0) missing(`clip ${s.name} has no event ${cmd.id}`)
       const was = s.events![i]
       const patch = obj(cmd.patch, 'patch')
-      for (const k of Object.keys(patch)) if (!['name', 'u', 'to', 'sound', 'bone'].includes(k)) bad(`An event can't change ${k}`)
+      for (const k of Object.keys(patch)) if (!['name', 'u', 'to', 'sound', 'bone', 'volume', 'pitch'].includes(k)) bad(`An event can't change ${k}`)
       const merged: Obj = { ...was }
       for (const [k, v] of Object.entries(patch)) {
         if (v === null) delete merged[k]
@@ -591,6 +613,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
       if (patch.heldBy !== undefined) {
         const next = patch.heldBy === null ? [] : heldByOf(patch.heldBy, 'heldBy')
         for (const x of next) joint(c, x.bone, 'heldBy bone')
+        checkHolders(g, next)
         if (next.length > 0) track.heldBy = next
         else delete track.heldBy
         out.push(`clip ${s.name}: ${g.name} ${next.length > 0 ? `held by ${names(next.map(x => `${x.bone} from ${pct(x.u)}`))}` : `held by ${g.attach.kind === 'bone' ? g.attach.bone : 'its place'} all through`}`)
@@ -781,8 +804,21 @@ function replace (c: Character, cmd: Extract<ClipsCommand, { type: 'clips.replac
       const mapped: Record<string, GearTrack> = {}
       for (const [gid, track] of Object.entries(s.gear)) {
         const g = gearFor(gid)
-        if (g !== undefined) mapped[g.id] = track
-        else out.push(`clip ${s.name}: the track of ${sourceName(gid)} dropped (no such gear here)`)
+        if (g !== undefined) {
+          // (a holder by a handle: the handle of that name here, else where it is)
+          if (track.heldBy !== undefined) {
+            track.heldBy = track.heldBy.map(x => {
+              if (x.handle === undefined) return x
+              const h = handleFor(gid, g, x.handle)
+              if (h !== undefined && h.kind !== 'pull') return { ...x, handle: h.id }
+              out.push(`clip ${s.name}: ${g.name} held by ${x.bone} where it is (no such handle here)`)
+              const rest = { ...x }
+              delete rest.handle
+              return rest
+            })
+          }
+          mapped[g.id] = track
+        } else out.push(`clip ${s.name}: the track of ${sourceName(gid)} dropped (no such gear here)`)
       }
       if (Object.keys(mapped).length > 0) s.gear = mapped
       else delete s.gear

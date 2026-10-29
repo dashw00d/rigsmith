@@ -6,6 +6,7 @@ import { slotToV2 } from '../../model/migrate.ts'
 import type { V2Adjustment, V2AdjustmentKind } from '../../model/v2.ts'
 import { clipUrl } from '../../engine/clips.ts'
 import { KEY_FPS } from '../../engine/keys.ts'
+import { variantOf as variantBase } from '../../model/variants.ts'
 
 /** A row of the adjustments stack: a setting the slot keeps (ground, a hand pose, a handle hold), or its blow fit, its
  * pace or its keys shown as one (ids FIT, PACE, KEYS), in the shape the stack has always shown (src/model/migrate.ts
@@ -45,11 +46,10 @@ export function defaultInPlace (clip: { inPlace: boolean, category?: string }): 
   return clip.inPlace || clip.category === 'locomotion'
 }
 
-/** The game clip a slot named `<Clip> <n>` (n >= 2: "Attack 2") is a variant of, or null. The game picks one of a clip
- * and its variants at random. TODO: use src/model/variants.ts variantOf (C2's) once merged. */
+/** The game clip a slot named `<Clip> <n>` (n >= 2: "Attack 2") is a variant of, or null (src/model/variants.ts). The
+ * game picks one of a clip and its variants at random. */
 export function variantOf (name: string, gameNames: readonly string[]): string | null {
-  const m = /^(.+) (\d+)$/.exec(name)
-  return m !== null && Number(m[2]) >= 2 && gameNames.includes(m[1]) ? m[1] : null
+  return variantBase(name, gameNames)?.base ?? null
 }
 
 /** A trial: a slot whose name the game doesn't play (kept here to compare), nor a variant of one it does. */

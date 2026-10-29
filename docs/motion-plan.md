@@ -173,16 +173,18 @@ slot whose fit is on and has no hit event still exports a `hit`: the measured bl
 ```ts
 export interface GearTrack {
   keys?: ClipKey[]
-  /** Who holds it, from `u` on (segments sorted by u; before the first, its Gear attach bone). `place`: where it sits
-   * on that bone (the bone's rest frame, as Placement); unset: wherever it was at `u`, so it changes hands without a
-   * pop (Back -> Right hand at frame 12). */
-  heldBy?: Array<{ u: SourceU, bone: string, place?: Placement }>
+  /** Who holds it, from `u` on (segments sorted by u; before the first, its Gear attach bone). Where it sits there,
+   * the first given of: `place` (rest space, as Gear's placement: where it would be at rest, carried by that bone);
+   * `handle` (one of its carry or grip handles, on the hand it is for); `placed` (its Gear placement, on its attach
+   * bone); none: wherever it was at `u`, so it changes hands without a pop (Back -> Right hand at frame 12). */
+  heldBy?: Array<{ u: SourceU, bone: string, place?: Placement, handle?: string, placed?: true }>
   /** Shown or hidden from `u` on (sorted; before the first, as Gear has it). */
   shown?: Array<{ u: SourceU, shown: boolean }>
 }
 ```
 
-The bake ignores `heldBy` and `shown` until C2's stage lands (§9); the commands keep them valid now.
+The bake plays them (`src/engine/geartracks.ts`, §10 C2); the commands keep them valid (a handle one of the piece's carry
+or grip handles on the hand it is for, `placed` only on its attach bone, one of place, handle, placed).
 
 ### 2.6 The editor's build in the one bake (Phase B adds `ik`)
 
@@ -374,12 +376,34 @@ Settings are unchanged (schema 2).
 }
 ```
 
-- `t` is a phase 0-1 of the FINAL clip (as exported: a rider's after the ride fit; a loop's repeated per cycle), `to`
-  a span's end, `sound` as stored ('mix:<id>' or 'file:<path>'; C1 decides how a file reaches the game), `bone` the
-  game bone (Mixamo names; `root` above Hips). Sorted by `t`.
+- `t` is a phase 0-1 of the FINAL clip (as exported: a rider's after the ride fit; a loop's repeated per cycle; a
+  clip a companion beside the unit repeated or lengthened, placed in the whole), `to` a span's end, `sound` 'mix:<id>'
+  (a sound of the game's mix.json) or 'file:sounds/<file>' (a file dropped in Rigsmith: copied to
+  `<work dir>/<unit>/sounds/<file>`, which the game's `build.sh` installs as a mix sound of its own and renames the
+  event's sound to), `bone` the game bone (Mixamo names; `root` above Hips), `volume` a gain on the sound's level and
+  `pitch` its playback rate (each only when not 1). Sorted by `t`.
 - Every clip the unit exports is listed (`tools/lib/unit_export.ts eventsFile`, times rounded to 1e-4). A companion's
-  clips aren't in it yet (a horse's events are C1's: `"companion": {"clips": {...}}` under its prefix's names).
+  events (a ridden horse's, as `bakeRide` fitted its clip: `horseEvents`; a pony's, as its fit placed it) go under
+  `"companion": {"prefix": "Horse_", "clips": {"Walk": {"events": [...]}}}` (same clip names, phases of the same
+  clip, bones prefixed), only when it has any.
+
+```json
+{ "unit": "knight", "schema": 1,
+  "clips": { "Attack": { "loop": false, "seconds": 0.556, "events": [
+    { "t": 0.2, "name": "swing", "to": 0.4, "sound": "mix:sword_blow" },
+    { "t": 0.45, "name": "hit" },
+    { "t": 0.5, "name": "release", "sound": "file:sounds/twang.wav", "bone": "LeftHand", "volume": 0.8, "pitch": 1.1 } ] } },
+  "walkStride": 1.677, "runStride": null,
+  "companion": { "prefix": "Horse_", "clips": { "Walk": { "events": [
+    { "t": 0.25, "name": "step.FL", "bone": "Horse_front_leg_foot_l", "sound": "file:sounds/horse_hoof.wav" } ] } } } }
+```
 - The record (`rigsmith.json`) gets `schema: 3`, `slots` as stored (v3, gear by name), and `events` (this object).
+- Gear events (C2, `geartracks.ts gearEvents`), among each clip's own: `hide:<mesh>` / `show:<mesh>` where a piece hides
+  and shows again (a hide at 0 when it starts hidden), `detach:<mesh>` (`bone`: who let go) and `attach:<mesh>` (`bone`:
+  who took it) where it changes bones. `<mesh>` is the piece's mesh name in the GLB (`contract.ts meshNameOf`).
+- Variants (C2, `src/model/variants.ts`): a slot named `<Clip> <n>` (n from 2) of a game clip exports as `<Clip>_<n>`
+  (its horse or companion playing `<Clip>`'s), and the file gets `"variants": {"Attack": ["Attack", "Attack_2"]}` (each
+  clip that has any, itself first; the key is left out when none has any). The game picks one at random.
 
 The GLB itself does not change (§8 checks it byte for byte for the workspace units).
 
@@ -526,3 +550,66 @@ baked clip), `src/app/motion/pose/**`, the easing UI (per span menu writing `eas
   - Variants: listed under their game clip (`rules.ts variantOf`, to be replaced by C2's `src/model/variants.ts`),
     `AddVariant.svelte` mounted on each filled game clip row (a placeholder here).
   - The preview into Idle isn't offered for a rider (the horse's clip would need the same blend).
+
+- C2 (branch `motion-gear`): gear held by / shown and variants, as §9, except:
+  - `heldBy` segments gained `handle` (a carry or grip handle of the piece: the hand's wrist on it as the handle says)
+    and `placed` (its Gear placement on its attach bone: sheathed again); `place` is rest space, like Gear's placement
+    (§2.5). `slot.gear.update` checks them; `clips.replace` maps handles by name (a handle not found here: where it is).
+  - The stage is one call in `bake.ts` after the gear keys (`holdGear`), skipped with 'keys'; a muted `gear:<id>` mutes
+    the piece's holds and hidden spans too. What it resolved is `BakedSlot.gearHolds` (played phases, every holder's
+    place found; `bakeRide` repeats it per cycle), so the export plays the same places. A switch that jumps (a handle, a
+    placement) is a step a ten-thousandth of a second wide; a no-pop switch keeps the world pose (7e-8 on the workspace
+    spearman). A piece hidden in any clip of the character gets a size track in every clip (constant elsewhere), so a
+    clip that hid it never leaves it hidden; characters that hide nothing get no new tracks.
+  - The export's Prop_ bones are for gearKeys ∪ gearHolds; their moves come from the bake's holds sampled on the clip
+    as baked (`holdTracks`, the character's own units, moves times the game scale). Gear events reach the events file
+    through `eventsFile`'s new optional `more.gear` (and `more.variants`): C1's writer should keep passing them through.
+  - A rider's holds are resolved before the ride freezes his hips and legs: a piece handed to or from a frozen bone
+    (Hips, a leg) may sit off in the ride (none of the workspace riders do that).
+  - Mount points for B: `GearLanes`/`GearInspector` as lanes.ts says (selection tracks `held:<id>` with the entry's
+    index as id, -1 the first segment, and `shown:<id>` with the hidden span's index); `src/app/motion/variants/
+    AddVariant.svelte {character, name, names}` on each filled game clip row of the slot list (`names` the game's clip
+    names). Variant slots are trials to `rules.ts isTrial` today: show them under their clip (`variantOf`).
+  - Unverified in the live app: the components ran against a harness (commands applied locally), not inside B's
+    timeline.
+
+- C3 (pose tools, branch motion-pose): built as §9 says. `src/model/posetools.ts` (pure: no three; poses, rest frames
+  and a key sampler handed in): `copyPose`, `mirrorName` (Left/Right with or without `mixamorig:`, `_l`/`.L`),
+  `mirrorPose` (a bone's turn from rest in the character's axes, its parent at rest, G = P·L·R⁻¹·P⁻¹, reflected
+  (x, -y, -z, w) and put on the other side's bone; mirrored down a chain, world turns are mirrored whatever the bones'
+  own axes), `pastePose` (key = unkeyed⁻¹ · pose at the moment; the Hips' height only by default; an unkeyed bone already
+  there gets no key; a first key pins the clip's ends, the editor's rule), `tween` / `pushRelax` (between the
+  neighbouring keys, round a loop), `spreadChange` + `falloff` / `rangeWeight` (range edit: key' = key · change^w over
+  the range, keyed at its ends, the moment, its keys and up to four frames a side; the spans out of it that join equal
+  keys eased, so a Catmull-Rom tangent doesn't leak the change past the ends), `seamJump` / `jumping` (SEAM_EPS 1e-4 rad)
+  / `matchEnds` / `blendSeam`, `setEase` / `easeOf`, `putKey` (a key put over one at its moment keeps its ease; between
+  keys it takes the span's ease, so it holds in a held span). `src/engine/onion.ts`: `poseAt` (a clip's local pose by
+  rest names, no mixer), `restFrames`, `keySampler`, `framePhase`, `onionTimes`, `OnionSkins` (`show(view, clip, at,
+  {before, after, step, keys?, loop})`, `hide`, `dispose`; one group under `stage.scene`, worked out only when the moment
+  or clip changes: 0.23 ms a playhead move for six ghosts). The toolbar: `src/app/motion/pose/{PoseToolbar.svelte,
+  tools.ts, pose.svelte.ts}`. Range edit is a button, not a live mode: the range keeps the Body track as it was when
+  set, and **Spread change** spreads what changed at the playhead since then. A spread done automatically after each
+  drag would come back after Undo.
+  - **Shortcuts taken (B: leave these):** Ctrl+Shift+C and Ctrl+Alt+C (copy pose), Ctrl+Shift+V (paste), Ctrl+Alt+V
+    (paste mirrored), Alt+O (onion skins), Esc while the tween slider drags (cancel). They are window keydown handlers
+    that skip text fields and events already `defaultPrevented`. Browsers may keep Ctrl+Shift+C for DevTools' inspector;
+    Ctrl+Alt+C is the fallback.
+  - **What the toolbar needs from B:** the TimelineView as lanes.ts has it, reactive (playhead, selection, baked and slot
+    read in `$derived`/`$effect`); `selection` items on `body:<bone>` / `gear:<id>` tracks with `u` the key's source
+    phase; `frames` the clip's frame count as `rules.ts framesOf` gives it; `snap` to frames. It also reads
+    `animator.view` (the rest skeleton, the bones it previews on), `animator.stage` (onion skins), `animator.time`,
+    `animator.seek`, `animator.setPlaying` and `animator.holding` (set while the slider drags, so the player doesn't
+    write over the preview); keep them, or hand them through the view. The toolbar needs about 520 px; it doesn't wrap.
+
+
+- C1 (events, sounds, the events file; branch motion-events): additive to the contract: `ClipEvent.volume` (a gain,
+  above 0, at most 4) and `.pitch` (a rate, 0.25-4) with their checks in `slot.event.add/update` and `EventPatch`;
+  `BakedEvent` carries both; `bakeRide` also returns `horseEvents` (the horse's events as its fitted clip plays them).
+  The events file gained `companion`, `volume`/`pitch`, and the sound files (§6); with no events the GLBs and events
+  files of the five workspace units are byte for byte what they were (`tools/lib/unit_events.test.ts` checks the GLBs
+  with events added too). The Events track: `src/app/motion/events/` (vocabulary, edits as commands, footsteps from
+  the feet, the lane, the inspector, the flash over the character; `harness/` mounts the lane and inspector against a
+  TimelineView of its own: `npx vitest run --config src/app/motion/events/harness/vitest.config.ts`),
+  `src/state/events.svelte.ts` (sounds, the preview on `animator.onTick`, footsteps), `server/routes/sounds.ts`
+  (`GET /api/game/sounds`, `/api/game/sounds/file/<file>`, `GET|POST /api/characters/<id>/sounds`). A preview mute is
+  the lane's only (the game gets every event); `muted: ['events']` still switches the slot's events off for the game.
