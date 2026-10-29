@@ -376,11 +376,27 @@ Settings are unchanged (schema 2).
 }
 ```
 
-- `t` is a phase 0-1 of the FINAL clip (as exported: a rider's after the ride fit; a loop's repeated per cycle), `to`
-  a span's end, `sound` as stored ('mix:<id>' or 'file:<path>'; C1 decides how a file reaches the game), `bone` the
-  game bone (Mixamo names; `root` above Hips). Sorted by `t`.
+- `t` is a phase 0-1 of the FINAL clip (as exported: a rider's after the ride fit; a loop's repeated per cycle; a
+  clip a companion beside the unit repeated or lengthened, placed in the whole), `to` a span's end, `sound` 'mix:<id>'
+  (a sound of the game's mix.json) or 'file:sounds/<file>' (a file dropped in Rigsmith: copied to
+  `<work dir>/<unit>/sounds/<file>`, which the game's `build.sh` installs as a mix sound of its own and renames the
+  event's sound to), `bone` the game bone (Mixamo names; `root` above Hips), `volume` a gain on the sound's level and
+  `pitch` its playback rate (each only when not 1). Sorted by `t`.
 - Every clip the unit exports is listed (`tools/lib/unit_export.ts eventsFile`, times rounded to 1e-4). A companion's
-  clips aren't in it yet (a horse's events are C1's: `"companion": {"clips": {...}}` under its prefix's names).
+  events (a ridden horse's, as `bakeRide` fitted its clip: `horseEvents`; a pony's, as its fit placed it) go under
+  `"companion": {"prefix": "Horse_", "clips": {"Walk": {"events": [...]}}}` (same clip names, phases of the same
+  clip, bones prefixed), only when it has any.
+
+```json
+{ "unit": "knight", "schema": 1,
+  "clips": { "Attack": { "loop": false, "seconds": 0.556, "events": [
+    { "t": 0.2, "name": "swing", "to": 0.4, "sound": "mix:sword_blow" },
+    { "t": 0.45, "name": "hit" },
+    { "t": 0.5, "name": "release", "sound": "file:sounds/twang.wav", "bone": "LeftHand", "volume": 0.8, "pitch": 1.1 } ] } },
+  "walkStride": 1.677, "runStride": null,
+  "companion": { "prefix": "Horse_", "clips": { "Walk": { "events": [
+    { "t": 0.25, "name": "step.FL", "bone": "Horse_front_leg_foot_l", "sound": "file:sounds/horse_hoof.wav" } ] } } } }
+```
 - The record (`rigsmith.json`) gets `schema: 3`, `slots` as stored (v3, gear by name), and `events` (this object).
 - Gear events (C2, `geartracks.ts gearEvents`), among each clip's own: `hide:<mesh>` / `show:<mesh>` where a piece hides
   and shows again (a hide at 0 when it starts hidden), `detach:<mesh>` (`bone`: who let go) and `attach:<mesh>` (`bone`:
@@ -549,3 +565,15 @@ baked clip), `src/app/motion/pose/**`, the easing UI (per span menu writing `eas
     `animator.seek`, `animator.setPlaying` and `animator.holding` (set while the slider drags, so the player doesn't
     write over the preview); keep them, or hand them through the view. The toolbar needs about 520 px; it doesn't wrap.
 
+
+- C1 (events, sounds, the events file; branch motion-events): additive to the contract: `ClipEvent.volume` (a gain,
+  above 0, at most 4) and `.pitch` (a rate, 0.25-4) with their checks in `slot.event.add/update` and `EventPatch`;
+  `BakedEvent` carries both; `bakeRide` also returns `horseEvents` (the horse's events as its fitted clip plays them).
+  The events file gained `companion`, `volume`/`pitch`, and the sound files (§6); with no events the GLBs and events
+  files of the five workspace units are byte for byte what they were (`tools/lib/unit_events.test.ts` checks the GLBs
+  with events added too). The Events track: `src/app/motion/events/` (vocabulary, edits as commands, footsteps from
+  the feet, the lane, the inspector, the flash over the character; `harness/` mounts the lane and inspector against a
+  TimelineView of its own: `npx vitest run --config src/app/motion/events/harness/vitest.config.ts`),
+  `src/state/events.svelte.ts` (sounds, the preview on `animator.onTick`, footsteps), `server/routes/sounds.ts`
+  (`GET /api/game/sounds`, `/api/game/sounds/file/<file>`, `GET|POST /api/characters/<id>/sounds`). A preview mute is
+  the lane's only (the game gets every event); `muted: ['events']` still switches the slot's events off for the game.

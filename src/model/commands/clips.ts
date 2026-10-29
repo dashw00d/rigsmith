@@ -114,7 +114,12 @@ function eventOf (v: unknown, what: string): ClipEvent {
   const sound = opt(e.sound, x => str(x, `${what}.sound`))
   if (sound !== undefined && !SOUND.test(sound)) bad(`${what}.sound must be 'mix:<id>' or 'file:<path>'`)
   const bone = opt(e.bone, x => str(x, `${what}.bone`))
-  return { id: id(e.id, `${what}.id`), name: n, u, ...(to !== undefined ? { to } : {}), ...(sound !== undefined ? { sound } : {}), ...(bone !== undefined ? { bone } : {}) }
+  const volume = opt(e.volume, x => num(x, `${what}.volume`, { above: 0, max: 4 }))
+  const pitch = opt(e.pitch, x => num(x, `${what}.pitch`, { min: 0.25, max: 4 }))
+  return {
+    id: id(e.id, `${what}.id`), name: n, u, ...(to !== undefined ? { to } : {}), ...(sound !== undefined ? { sound } : {}), ...(bone !== undefined ? { bone } : {}),
+    ...(volume !== undefined ? { volume } : {}), ...(pitch !== undefined ? { pitch } : {}),
+  }
 }
 
 function eventsOf (v: unknown, what: string): ClipEvent[] {
@@ -519,7 +524,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
       if (i < 0) missing(`clip ${s.name} has no event ${cmd.id}`)
       const was = s.events![i]
       const patch = obj(cmd.patch, 'patch')
-      for (const k of Object.keys(patch)) if (!['name', 'u', 'to', 'sound', 'bone'].includes(k)) bad(`An event can't change ${k}`)
+      for (const k of Object.keys(patch)) if (!['name', 'u', 'to', 'sound', 'bone', 'volume', 'pitch'].includes(k)) bad(`An event can't change ${k}`)
       const merged: Obj = { ...was }
       for (const [k, v] of Object.entries(patch)) {
         if (v === null) delete merged[k]

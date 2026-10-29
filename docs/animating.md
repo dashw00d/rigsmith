@@ -184,6 +184,26 @@ selected. Each is one change in Activity (one Undo).
 Keys are stored on the source clip's moments, so a later change of timing (speed, fit, markers) keeps them on the same
 part of the motion.
 
+## 7. Events: hits, sounds, steps (Motion step)
+
+The **Events** track under the timeline names moments of a clip for the game: **hit** (the blow lands; the game deals
+its damage there and fits the Attack's speed to it), **release** (the arrow or javelin flies from its bone), **swing**,
+**draw** (a span), **step.L** and **step.R**, or a name of your own (it is kept for the character: typed again in
+another clip, it is the same name, with the same sound).
+
+- **Add** puts one at the playhead; double-click a row to add that name there. **Add footsteps** lays a step wherever
+  a foot comes down in the clip as it plays.
+- Click to select (Shift adds, Ctrl toggles); drag to move on frames (Alt: free); drag a span's ends; Delete removes.
+  While the blow timing measures the hit, it shows hollow: moving it (or typing its frame) picks it by hand.
+- In the inspector: its frame, its **sound** (one of the game's, each with a play button, or drop a WAV, OGG or MP3
+  file on it: kept with the character and installed in the game when the unit is exported), volume, pitch, and the
+  bone it happens at (a release: where the projectile leaves).
+- While the clip plays you hear each event's sound and see its name over the character; scrubbing blips. Each row's
+  speaker mutes it in the preview only: the game gets every event.
+
+Events are stored on the source clip, so retiming the clip never moves them; the game reads them from the unit's
+`<unit>.events.json` beside its model.
+
 ## Good to know
 
 - **The game holds the gear by its Gear placement, moved by the slot's gear keys.** Keys are relative to that
