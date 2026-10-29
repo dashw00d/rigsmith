@@ -46,20 +46,30 @@ function piecesOf (c: Character, posable: THREE.Object3D): Piece[] {
 
 /**
  * `fn` run with a node for every bone piece on the copy: the viewer's copy has the gear on it, the export's body hasn't
- * (it bakes before it hangs the gear): an empty node is hung for a piece the copy lacks, where Gear places it on its bone
- * (all the build reads of a node is where it is), and taken off after.
+ * (it bakes before it hangs the gear): an empty node is hung for a piece the copy lacks, framed as the viewer frames a
+ * worn piece (garments.ts boneFrame: the bone, its rest frame undone, then the place node with Gear's placement, which
+ * is in the character's rest space), so its world is the viewer's (all the build reads of a node is where it is); taken
+ * off after. `rest`: the skeleton at rest the frame is undone by (unset: the copy's bones as they stand, at rest).
  */
-export async function withGearNodes<T> (c: Character, posable: THREE.Object3D, fn: () => Promise<T> | T): Promise<T> {
+export async function withGearNodes<T> (c: Character, posable: THREE.Object3D, fn: () => Promise<T> | T, rest?: BakeContext['rest']): Promise<T> {
   const hung: THREE.Object3D[] = []
+  posable.updateMatrixWorld(true)
   for (const g of c.gear) {
     if (!onBone(g) || g.attach.kind !== 'bone' || posable.getObjectByName(gearNode(g)) !== undefined) continue
     const bone = posable.getObjectByName(g.attach.bone)
     if (bone === undefined) continue
+    const r = rest?.bones.get(g.attach.bone)
+    const frame = r !== undefined
+      ? new THREE.Matrix4().compose(r.worldPosition, r.worldQuaternion, new THREE.Vector3(1, 1, 1))
+      : (() => { const p = new THREE.Vector3(); const q = new THREE.Quaternion(); posable.matrixWorld.clone().invert().multiply(bone.matrixWorld).decompose(p, q, new THREE.Vector3()); return new THREE.Matrix4().compose(p, q, new THREE.Vector3(1, 1, 1)) })()
+    const group = new THREE.Object3D()
+    group.applyMatrix4(frame.invert())
     const node = new THREE.Object3D()
     node.name = gearNode(g)
     garmentMatrix(g.attach.place).decompose(node.position, node.quaternion, node.scale)
-    bone.add(node)
-    hung.push(node)
+    group.add(node)
+    bone.add(group)
+    hung.push(group)
   }
   if (hung.length > 0) posable.updateMatrixWorld(true)
   try {
@@ -211,7 +221,7 @@ async function limitsOf (c: Character, slot: Slot, ctx: BakeContext): Promise<Jo
  */
 export async function ikBuild (c: Character, slot: Slot, unkeyed: THREE.AnimationClip, boneKeys: Record<string, ClipKey[]>, gearKeys: Record<string, ClipKey[]>,
   ctx: BakeContext): Promise<{ clip: THREE.AnimationClip, gearKeys: Record<string, ClipKey[]> }> {
-  return await withGearNodes(c, ctx.posable, async () => await build(c, slot, unkeyed, boneKeys, gearKeys, ctx))
+  return await withGearNodes(c, ctx.posable, async () => await build(c, slot, unkeyed, boneKeys, gearKeys, ctx), ctx.rest)
 }
 
 async function build (c: Character, slot: Slot, unkeyed: THREE.AnimationClip, boneKeys: Record<string, ClipKey[]>, gearKeys: Record<string, ClipKey[]>,
