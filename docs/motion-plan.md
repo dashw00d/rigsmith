@@ -651,8 +651,21 @@ baked clip), `src/app/motion/pose/**`, the easing UI (per span menu writing `eas
   - **A slot piece** is that slot's bake (its timing, keys, hands, ground, ik), bone tracks only: its gear keys, held-by
     and shown strips are not carried into the composite (the slot's own gear tracks play). It is resampled on the
     composite's frames: about 0.01 rad off the slot's own clip on a fast attack's arm between frames.
-  - Composites of library clips only are cached per ClipSource; the viewer bakes a slot again when a slot it plays as a
-    piece (or paces like) changes (`animator.inputs` reads `slotsUnder`).
+  - Composites of library clips only are cached per ClipSource (forgotten with a clip file written again:
+    `animator.forgetClip`); the viewer bakes a slot again when a slot it plays as a piece (or paces like) changes
+    (`animator.inputs` reads `slotsUnder`).
+  - After review: **a bake that would read itself** is refused through pace as well as pieces (`pieces.ts bakeCycle`:
+    a slot's bake reads its slot pieces' bakes and the source of the clip it paces like; the commands refuse such a
+    pace or piece, `slot.copy` and `clips.replace` too, and the bake carries the pacing slot in `via`, so a file that
+    holds one fails to play rather than hangs). **Retime markers** are rebuilt on every pieces edit (`rewarp`): each part
+    of the old composite plays at the speed it did, what is new unwarped; only when a warped part is cut away is what is
+    left scaled as one to keep the warp's length. **Stored times** move only when their piece moved (an edit elsewhere
+    leaves the very same numbers) and are no longer rounded; `fit.at` is exact. A window or span crossing a seam whose
+    pieces are reordered keeps the part on its start's piece. `clips.replace` drops a lost slot piece as `removed` does
+    (blends fitted, the rest remapped on the list as it was), or, when only holds would be left, plays the slot's own clip
+    in its place for as long. The gestures are `src/model/pieceplan.ts` (pure, tested): the playhead read through the time
+    map (markers), a late blow's held end kept when lengthening, the slot's own clip length sent with every edit so a list
+    that is that clip whole again is stored as none, another slot's length measured again when it changes.
   - The build record is `schema: 4` (`tools/game_import.py` and restore read 2, 3 or 4; a v3 record's holds become
     pieces through the library clip's length). The Python readers take character files of schema 3 or 4 (what they read
     is the same in both).

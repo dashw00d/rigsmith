@@ -18,7 +18,7 @@ describe('servable', () => {
   })
 
   it('refuses the records, journals and painted weights', () => {
-    for (const f of ['journal.jsonl', 'character.json', 'character.v1.json', 'weight_edits.json']) {
+    for (const f of ['journal.jsonl', 'character.json', 'character.v1.json', 'character.v2.json', 'character.v3.json', 'weight_edits.json']) {
       expect(servable(`characters/knight-abc123/${f}`)).toBe(false)
     }
   })
