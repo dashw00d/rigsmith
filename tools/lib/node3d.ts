@@ -12,8 +12,8 @@ import { clipUrl, isMixamoJoint, refUrl, type ClipSource, type SourceClip } from
 import { loadGlbFile } from '../../src/engine/headless.ts'
 import type { Rom } from '../../src/engine/limits.ts'
 import { captureRest, retarget, type RestSkeleton } from '../../src/engine/retarget.ts'
-import { measureClipTimes } from '../../src/engine/measure.ts'
-import { migrateSettings, migrateV1, readCharacter, type ClipTimes } from '../../src/model/migrate.ts'
+import { measureClipTimes, noClip } from '../../src/engine/measure.ts'
+import { migrateSettings, migrateV1, readCharacter, type MeasuredTimes } from '../../src/model/migrate.ts'
 import type { Character, Settings } from '../../src/model/types.ts'
 
 export const ROOT = path.resolve(import.meta.dirname, '..', '..')
@@ -65,7 +65,7 @@ export function nodeClipSource (rest: RestSkeleton, workspace = WORKSPACE): Clip
     let gltf = files.get(file)
     if (gltf === undefined) {
       const at = clipFile(file, workspace)
-      if (!existsSync(at)) throw new Error(`no clip file for ${url}`)
+      if (!existsSync(at)) throw noClip(`no clip file for ${url}`)
       gltf = load(at)
       files.set(file, gltf)
       gltf.catch(() => files.delete(file))
@@ -73,7 +73,7 @@ export function nodeClipSource (rest: RestSkeleton, workspace = WORKSPACE): Clip
     const { scene, animations } = await gltf
     const name = hash === undefined ? undefined : decodeURIComponent(hash)
     const clip = name === undefined ? animations[0] : animations.find(a => a.name === name)
-    if (clip === undefined) throw new Error(`No animation ${name ?? ''} in ${file}`)
+    if (clip === undefined) throw noClip(`No animation ${name ?? ''} in ${file}`)
     const root = name === undefined ? scene : cloneSkinned(scene)
     let hasBones = false
     root.traverse(o => { if (isBone(o)) hasBones = true })
@@ -136,14 +136,16 @@ export async function body (id: string, workspace = WORKSPACE): Promise<Characte
 /** An old (schema 1 or 2) character's clips measured for its move to schema 3 (src/engine/measure.ts), on its rig as
  * the bake measures them: `file` the record to read (default its character.json; tools/migrate.ts --check reads the
  * character.v2.json kept). */
-export async function measureCharacter (id: string, o: { workspace?: string, file?: string, all?: boolean } = {}): Promise<{ times: Record<string, ClipTimes>, problems: string[] }> {
+export async function measureCharacter (id: string, o: { workspace?: string, file?: string, all?: boolean } = {}): Promise<MeasuredTimes> {
   const workspace = o.workspace ?? WORKSPACE
   const dir = path.join(workspace, 'characters', id)
   const c = migrateV1(JSON.parse(readFileSync(o.file ?? path.join(dir, 'character.json'), 'utf8'))).character
   const rigged = c.files.rigged
-  if (rigged === undefined || !existsSync(path.join(dir, rigged))) return { times: {}, problems: [`${c.name} has no rig to measure its clips on`] }
+  // (no rig, or one without a skeleton: none of its clips can play, so none is there to measure)
+  const all = c.clips.map(s => s.id)
+  if (rigged === undefined || !existsSync(path.join(dir, rigged))) return { times: {}, problems: [`${c.name} has no rig to measure its clips on`], missing: all }
   const view = new CharacterView((await load(path.join(dir, rigged))).scene)
-  if (view.rest === null) return { times: {}, problems: [`${c.name}'s ${rigged} has no skeleton`] }
+  if (view.rest === null) return { times: {}, problems: [`${c.name}'s ${rigged} has no skeleton`], missing: all }
   const ctx = { rest: view.rest, posable: view.root, clips: nodeClipSource(view.rest, workspace), fps: 30, sharedPoses: settings(workspace).handPoses, rom: nodeRom }
   return await measureClipTimes(c, ctx, { all: o.all })
 }

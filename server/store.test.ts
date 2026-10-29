@@ -116,6 +116,33 @@ describe('migration of a schema 2 file on read', () => {
   }, 60_000)
 })
 
+describe('migrationContext', () => {
+  const raw = async (id: string): Promise<Record<string, unknown>> => ({
+    ...(await import('../src/model/migrate.ts')).migrateV1(v1(id, 'Measured')).character,
+    clips: [{
+      id: 'atk', name: 'Attack', clip: { id: 'mixamo-Stab' }, speed: 1, loop: false, inPlace: true, adjustments: [
+        { id: 'b', kind: 'blowTiming', enabled: true, at: 0.45 },
+        { id: 'k', kind: 'keys', enabled: true, bones: { Spine: [{ u: 0.5, q: [0, 0, 0, 1] }] } },
+      ],
+    }],
+  })
+
+  it('refuses a migration whose clip failed to measure, and takes one whose clip doesn\'t exist', async () => {
+    const id = 'measured-cccccc'
+    const r = await raw(id)
+    put(id, { 'character.json': JSON.stringify(r) })
+    // (the child crashed or timed out)
+    await expect(store.migrationContext(id, r, async () => { throw new Error('timed out') })).rejects.toThrow(/could not be measured \(timed out\).*left at schema 2/)
+    // (the clip failed to load: not missing)
+    await expect(store.migrationContext(id, r, async () => ({ times: {}, problems: ['clip Attack: bad GLB'] }))).rejects.toThrow(/clips Attack could not be measured \(clip Attack: bad GLB\)/)
+    // (the clip isn't there: migrated with its phases kept, said)
+    const gone = await store.migrationContext(id, r, async () => ({ times: {}, problems: ['clip Attack: no clip file'], missing: ['atk'] }))
+    expect(gone.notes).toEqual(['not measured: clip Attack: no clip file'])
+    const measured = await store.migrationContext(id, r, async () => ({ times: { atk: { seconds: 2, blow: 0.6 } }, problems: [] }))
+    expect(measured.ctx.clipTimes).toEqual({ atk: { seconds: 2, blow: 0.6 } })
+  })
+})
+
 describe('updateCharacter', () => {
   let id = ''
   const heard: Array<{ character: Character, entry?: { seq: number } }> = []

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { cleanImageName } from '../../server/glbimages.ts'
 import { applyCommands } from './commands.ts'
 import { stableId } from './ids.ts'
-import { gearFromProp, gearFromV1, holdsFromV1, migrate, migrateSettings, migrateV1, readCharacter, slotFromV2, slotsFromV1, slotToV2, v2TimeMap } from './migrate.ts'
+import { gearFromProp, gearFromV1, holdsFromV1, migrate, migrateSettings, migrateV1, readCharacter, slotFromV2, slotsFromV1, slotToV2, unmeasured, v2TimeMap } from './migrate.ts'
 import { DEFAULT_FIST, jointsOf } from './select.ts'
 import { hierarchyOf, humanHierarchy } from './skeletons.ts'
 import type { Adjustment, Character, FingerLevel, Joints, Vec3 } from './types.ts'
@@ -460,6 +460,22 @@ describe('migrate: schema 2 -> 3', () => {
       muted: ['bones', 'gear'],
       events: [{ id: stableId(`${ID}:hit:2`), name: 'hit', u: 0.3 }],
     })
+  })
+
+  it('may be written unmeasured only where the clip doesn\'t exist: a clip that failed to measure leaves it unwritten', () => {
+    const keyed = v2slot({ adjustments: [blow(), { id: 'k', enabled: true, kind: 'keys', bones: { Spine: [k(0.2)] } }] })
+    const picked = v2slot({ id: 's2', name: 'Thrust', adjustments: [blow({ blowU: 0.3 }), { id: 'k', enabled: true, kind: 'keys', bones: { Spine: [k(0.2)] } }] })
+    const idle = v2slot({ id: 's3', name: 'Idle', adjustments: [{ id: 'k', enabled: true, kind: 'keys', bones: { Spine: [k(0.2)] } }] })
+    const raw = v2char([keyed, picked, idle])
+    // (measured: nothing stops it)
+    expect(unmeasured(raw, { s1: { seconds: 2, blow: 1.2 }, s2: { seconds: 2 } })).toEqual([])
+    // (a measure that failed, or a blow it didn't find: those slots stop it; Idle has no cut to measure)
+    expect(unmeasured(raw, {})).toEqual(['Attack', 'Thrust'])
+    expect(unmeasured(raw, undefined)).toEqual(['Attack', 'Thrust'])
+    expect(unmeasured(raw, { s1: { seconds: 2 }, s2: { seconds: 2 } })).toEqual(['Attack'])
+    // (a clip that doesn't exist can't play either: its phases may be kept)
+    expect(unmeasured(raw, { s2: { seconds: 2 } }, ['s1'])).toEqual([])
+    expect(unmeasured({ ...raw, schema: 3 }, {})).toEqual([])
   })
 
   it('moves phases through the cut the fit made: a late blow cuts the start, a held one runs past 1, a window', () => {

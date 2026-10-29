@@ -19,8 +19,9 @@
 //               workspace (`cd workspace && sha256sum characters/*/rigged.glb characters/*/weight_edits.json`); a
 //               list that doesn't exist yet is written, with the hashes from before the run
 //
-// It refuses to write while a Rigsmith server answers (that server migrates each character itself). Exits 1 when
-// anything failed or a check did not pass.
+// It refuses to write while a Rigsmith server answers (that server migrates each character itself). A character one of
+// whose clips is there but fails to load or measure is left as it is (counted as failed, to run again): only a clip
+// that doesn't exist is migrated unmeasured. Exits 1 when anything failed or a check did not pass.
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { copyFile, readdir, readFile, writeFile } from 'node:fs/promises'

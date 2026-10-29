@@ -3,16 +3,22 @@
 // measures it (src/engine/timing.ts blowCut: on the clip at the slot's speed, on the character's posable copy). The
 // migration (src/model/migrate.ts) is pure; tools/migrate.ts calls this in its own process and the server through
 // tools/measure_clips.ts.
-import { cutMoves, type ClipTimes } from '../model/migrate.ts'
+import { cutMoves, type ClipTimes, type MeasuredTimes } from '../model/migrate.ts'
 import type { V2Adjustment, V2Character, V2Slot } from '../model/v2.ts'
 import type { BakeContext } from './bake.ts'
 import { blowTime, retime, saveBones } from './timing.ts'
 
+/** The code of an error a clip source throws for a clip that doesn't exist (as against one that failed to load). */
+export const NO_CLIP = 'ENOCLIP'
+export const noClip = (message: string): Error => Object.assign(new Error(message), { code: NO_CLIP })
+const isNoClip = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === NO_CLIP
+
 /** Per slot id, its clip's times; `all`: every slot with a blow timing, not only those whose phases move. Slots whose
- * clip won't load are left out and said in `problems`. */
-export async function measureClipTimes (c: Pick<V2Character, 'clips'>, ctx: BakeContext, o: { all?: boolean } = {}): Promise<{ times: Record<string, ClipTimes>, problems: string[] }> {
+ * clip won't load are left out and said in `problems` (and in `missing` when the clip doesn't exist). */
+export async function measureClipTimes (c: Pick<V2Character, 'clips'>, ctx: BakeContext, o: { all?: boolean } = {}): Promise<Required<MeasuredTimes>> {
   const times: Record<string, ClipTimes> = {}
   const problems: string[] = []
+  const missing: string[] = []
   for (const s of c.clips) {
     const blow = blowOf(s)
     if (blow === undefined || (o.all !== true && !cutMoves(s))) continue
@@ -27,9 +33,10 @@ export async function measureClipTimes (c: Pick<V2Character, 'clips'>, ctx: Bake
       times[s.id] = t
     } catch (error) {
       problems.push(`clip ${s.name}: ${(error as Error).message}`)
+      if (isNoClip(error)) missing.push(s.id)
     }
   }
-  return { times, problems }
+  return { times, problems, missing }
 }
 
 /** Whether a schema 2 character has a slot whose phases need its clip measured to move into source time. */

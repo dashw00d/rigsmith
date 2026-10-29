@@ -20,7 +20,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { bindJoints, readGlb } from '../src/engine/glb.ts'
 import { touchedBy, undoRecord } from '../src/model/entities.ts'
-import { migrate, migrateSettings, needsClipTimes, type ClipTimes, type MigrateContext, type Migration } from '../src/model/migrate.ts'
+import { migrate, migrateSettings, needsClipTimes, unmeasured, type MeasuredTimes, type MigrateContext, type Migration } from '../src/model/migrate.ts'
 import type { Character, JournalEntry, Settings } from '../src/model/types.ts'
 import type { GameSpec } from '../src/model/unit.ts'
 import { HttpError } from './http.ts'
@@ -181,20 +181,28 @@ async function migrateLocked (id: string, raw: Record<string, unknown>): Promise
 /** What migrate needs to know from an old character's files, and lines on what could not be read. Only reads.
  * (tools/migrate.ts migrates the workspace with this and writeMigration, as the store does on first read; it passes
  * its own `measure`, in process.) The clips of slots whose phases move into source time are measured on the rig by
- * tools/measure_clips.ts, a child, so three's headless shims stay out of the server. */
+ * tools/measure_clips.ts, a child, so three's headless shims stay out of the server. When that fails for a clip that
+ * is there (the child crashed or timed out, its answer didn't parse, the clip didn't load) it throws: the old file is
+ * left as it is, to be measured again the next time it is read (src/model/migrate.ts unmeasured). Only a clip that
+ * doesn't exist is migrated unmeasured, its phases kept with a note. */
 export async function migrationContext (id: string, raw: Record<string, unknown>,
-  measure: (id: string) => Promise<{ times: Record<string, ClipTimes>, problems: string[] }> = measureChild): Promise<{ ctx: MigrateContext, notes: string[] }> {
+  measure: (id: string) => Promise<MeasuredTimes> = measureChild): Promise<{ ctx: MigrateContext, notes: string[] }> {
   const dir = characterDir(id)
   const notes: string[] = []
   const ctx: MigrateContext = { textureFiles: await textureFiles(dir), units: await readJson<GameSpec | undefined>(UNITS_FILE, undefined) }
   if (needsClipTimes(raw)) {
+    const schema = typeof raw.schema === 'number' ? raw.schema : 1
+    const left = `left at schema ${schema}, to be measured again when it is next read (or by node tools/migrate.ts)`
+    let m: MeasuredTimes
     try {
-      const m = await measure(id)
-      ctx.clipTimes = m.times
-      for (const p of m.problems) notes.push(`not measured: ${p}`)
+      m = await measure(id)
     } catch (error) {
-      notes.push(`its clips could not be measured (${(error as Error).message})`)
+      throw new Error(`${id}: its clips could not be measured (${(error as Error).message}): ${left}`, { cause: error })
     }
+    ctx.clipTimes = m.times
+    for (const p of m.problems) notes.push(`not measured: ${p}`)
+    const failed = unmeasured(raw, m.times, m.missing ?? [])
+    if (failed.length > 0) throw new Error(`${id}: clips ${failed.join(', ')} could not be measured (${m.problems.join('; ') || 'no times for them'}): ${left}`)
   }
   const edits = await readJson<Record<string, unknown> | null>(path.join(dir, 'weight_edits.json'), null)
   if (edits !== null && typeof edits === 'object') ctx.paintedCount = Object.keys(edits).length
@@ -210,11 +218,11 @@ export async function migrationContext (id: string, raw: Record<string, unknown>
 }
 
 /** tools/measure_clips.ts run on a character (as a child, with this store's workspace). */
-async function measureChild (id: string): Promise<{ times: Record<string, ClipTimes>, problems: string[] }> {
+async function measureChild (id: string): Promise<MeasuredTimes> {
   const { stdout } = await run(process.execPath, [path.join(ROOT, 'tools', 'measure_clips.ts'), id], {
     cwd: ROOT, env: { ...process.env, RIGSMITH_WORKSPACE: WORKSPACE }, timeout: 120_000, maxBuffer: 1 << 22,
   })
-  return JSON.parse(stdout.trim().split('\n').pop() ?? '{}') as { times: Record<string, ClipTimes>, problems: string[] }
+  return JSON.parse(stdout.trim().split('\n').pop() ?? '{}') as MeasuredTimes
 }
 
 /** A migration written, the caller holding the store lock (or no server running): the old copy kept (once: a v1 file

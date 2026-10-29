@@ -39,6 +39,11 @@ export interface MigrateContext {
 
 export interface ClipTimes { seconds: number, blow?: number }
 
+/** What a measure of a character's clips found (src/engine/measure.ts measureClipTimes): per slot id, its clip's
+ * times; the slots it couldn't measure, said in `problems`; of those, `missing` the ids of the slots whose clip doesn't
+ * exist (no file, no such animation in it, no rig to play it on), as against one that failed to load or measure. */
+export interface MeasuredTimes { times: Record<string, ClipTimes>, problems: string[], missing?: string[] }
+
 export interface MigrateOptions {
   /** Throw when a slot's phases can't be moved into source time without `clipTimes` (a tool reading an old file),
    * rather than keep them as they were with a note. */
@@ -177,6 +182,20 @@ export function needsClipTimes (raw: unknown): boolean {
   const schema = (raw as { schema?: unknown }).schema
   if (schema === 3) return false
   return migrateV1(raw).character.clips.some(s => cutMoves(s, { windowsInSource: schema === undefined }))
+}
+
+/** What stops an old file (any schema) being written as schema 3 with `clipTimes`: the names of the slots whose keys
+ * and windows move into source time (cutMoves) but whose cut can't be known from the times, unless their clip doesn't
+ * exist (`missing`, slot ids: it can't play either, so its phases are kept with a note). A clip that failed to load or
+ * measure (a crash, a timeout, a bad file) is not missing: written then, its keys and windows would stay phases of the
+ * clip as it played (wrong wherever a blow cut its start) and never be measured again, so the caller leaves the old
+ * file to try again. Empty: it can be written. */
+export function unmeasured (raw: unknown, clipTimes: Record<string, ClipTimes> | undefined, missing: readonly string[] = []): string[] {
+  const schema = (raw as { schema?: unknown }).schema
+  if (schema === 3) return []
+  return migrateV1(raw).character.clips
+    .filter(s => cutMoves(s, { windowsInSource: schema === undefined }) && !missing.includes(s.id) && v2TimeMap(s, clipTimes?.[s.id]) === null)
+    .map(s => s.name)
 }
 
 /** The time map schema 2 played a slot by (its blow cut, with the measured blow where the fit measured it), or null
