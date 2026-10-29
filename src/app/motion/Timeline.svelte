@@ -206,6 +206,9 @@
   function downLane (e: PointerEvent): void {
     measure()
     if (e.button !== 0 || busy || p === null) return
+    // (a control inside a lane (the Events row's Add and its menu, a field) is its own: capturing the pointer here would
+    // take its click and scrub instead; the designer, 2026-10-29: "cant click the button, it just moves the timeline marker")
+    if ((e.target as Element | null)?.closest('button, input, select, textarea, a, label, form, [role="menu"], [role="button"]') != null) return
     const r = tracksEl?.getBoundingClientRect()
     if (r === undefined) return
     ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
