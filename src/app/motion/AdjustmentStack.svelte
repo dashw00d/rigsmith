@@ -2,7 +2,7 @@
   // A slot's settings over its clip, in the order the bake applies them (src/engine/bake.ts: speed, blow timing, pace,
   // hands, ground), whatever order they were added in (its keys are the timeline's). Each can be switched off (kept, not played), opened to edit, or
   // removed; Add offers what the slot can take one more of. Every change is one command, undoable in Activity.
-  import { ArrowDownToLine, ChevronDown, ChevronRight, Footprints, Hand, KeyRound, Plus, Swords, Trash2, Waypoints } from '@lucide/svelte'
+  import { ArrowDownToLine, ChevronDown, ChevronRight, Footprints, Hand, KeyRound, Plus, Swords, Trash2, Waypoints, Volume2 } from '@lucide/svelte'
   import type { Component } from 'svelte'
   import type { Character, Slot } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
@@ -80,6 +80,8 @@
         {@const Icon = ICON[kind]}
         <button disabled={adjust.busy !== null} onclick={() => adjust.add(character, slot.id, kind)} use:tooltip={KIND_HINT[kind]}><Icon size={12} /> {KIND_LABEL[kind]}</button>
       {/each}
+      <!-- (events and their sounds live on the timeline's Events row: this opens its menu there, at the playhead) -->
+      <button onclick={() => { window.dispatchEvent(new CustomEvent('rigsmith:add-event')) }} use:tooltip={'An event at the playhead (a hit, a swing, a step, a name of your own) and its sound: on the timeline’s Events row'}><Volume2 size={12} /> Event or sound</button>
     </div>
   {/if}
 </div>

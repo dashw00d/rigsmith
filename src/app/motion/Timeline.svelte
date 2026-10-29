@@ -86,6 +86,10 @@
     const boneTracks = Object.keys(slot.bones ?? {}).map(b => `body:${b}`)
     const gearTracks = Object.keys(slot.gear ?? {}).filter(g => (slot.gear?.[g].keys?.length ?? 0) > 0).map(g => `gear:${g}`)
     out.push({ kind: 'summary', key: 'summary', label: 'Summary', tracks: [...boneTracks, ...gearTracks] })
+    // (events and time first, under the summary: a few rows that are always worth seeing, however many bones and pieces
+    // follow; the designer, 2026-10-29, couldn't find the Events row below the body and gear)
+    out.push({ kind: 'events', key: 'events', label: 'Events' })
+    out.push({ kind: 'time', key: 'time', label: 'Time' })
     const bodyOpen = timeline.open.includes('body')
     out.push({ kind: 'section', key: 'body', label: 'Body', tracks: boneTracks, open: bodyOpen, mute: 'bones', count: boneTracks.length })
     if (bodyOpen) {
@@ -108,8 +112,6 @@
     const handsOpen = !timeline.open.includes('hands-closed')
     out.push({ kind: 'section', key: 'hands', label: 'Hands and pulls', tracks: [], open: handsOpen, count: bars.length })
     if (handsOpen) for (const bar of bars) out.push({ kind: 'bar', key: bar.track, bar })
-    out.push({ kind: 'events', key: 'events', label: 'Events' })
-    out.push({ kind: 'time', key: 'time', label: 'Time' })
     return out
   })
 

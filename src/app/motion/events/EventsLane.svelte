@@ -25,6 +25,13 @@
   let anchor = $state<HTMLSpanElement | null>(null)
   let menuEl = $state<HTMLDivElement | null>(null)
 
+  // ("Event or sound" in the clip's settings: the row brought into view and its menu opened, at the playhead)
+  $effect(() => {
+    const open = (): void => { lane?.scrollIntoView({ block: 'nearest' }); menu = true }
+    window.addEventListener('rigsmith:add-event', open)
+    return () => { window.removeEventListener('rigsmith:add-event', open) }
+  })
+
   // (the menu is fixed over the page, above the Add button, or under it with no room above: the timeline's tracks
   // scroll and would cut it off)
   $effect(() => {
