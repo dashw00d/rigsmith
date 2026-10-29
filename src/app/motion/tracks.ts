@@ -10,7 +10,8 @@ export interface BodyGroup { id: string, label: string, bones: string[] }
 
 const GROUPS: Array<{ id: string, label: string, test: (b: string) => boolean }> = [
   { id: 'torso', label: 'Hips and spine', test: b => /^(Hips|Spine\d*|hips|spine.*|chest.*|root)$/i.test(b) },
-  { id: 'head', label: 'Head', test: b => /^(Neck|Head|HeadTop_End)$|neck|head|jaw|ear|mouth|nose|eye/i.test(b) },
+  // (a word of the name, not letters inside one: "ForeArm" has no ear)
+  { id: 'head', label: 'Head', test: b => /^(Neck\d*|Head|HeadTop_End)$|(^|[^A-Z])(Neck|Head|Jaw|Ear|Mouth|Nose|Eye)|(^|[_.:\- ])(neck|head|jaw|ear|mouth|nose|eye)/.test(b) },
   { id: 'armL', label: 'Left arm', test: b => /^Left(Shoulder|Arm|ForeArm|Hand)$/.test(b) },
   { id: 'handL', label: 'Left fingers', test: b => /^LeftHand.+/.test(b) },
   { id: 'armR', label: 'Right arm', test: b => /^Right(Shoulder|Arm|ForeArm|Hand)$/.test(b) },
