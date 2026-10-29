@@ -192,8 +192,9 @@ export function copyKeys (slot: Pick<Slot, 'bones' | 'gear'>, selection: readonl
   const first = Math.min(...sel.map(x => x.v))
   return {
     items: sel.map(({ track, k, v }) => {
-      const { u: _u, ...key } = k
-      return { track, frames: Math.round((v - first) * f.frames), key: JSON.parse(JSON.stringify(key)) as Omit<ClipKey, 'u'> }
+      const key: Partial<ClipKey> = JSON.parse(JSON.stringify(k)) as ClipKey
+      delete key.u
+      return { track, frames: Math.round((v - first) * f.frames), key: key as Omit<ClipKey, 'u'> }
     }),
   }
 }
@@ -223,8 +224,9 @@ export function easeKeys (slot: Pick<Slot, 'bones' | 'gear'>, selection: readonl
     if (ks.every(k => (k.ease ?? 'smooth') === ease)) continue
     tracks.push(trackOf(track, keysOf(slot, track).map(k => {
       if (!ks.includes(k)) return k
-      const { ease: _e, ...rest } = k
-      return ease === 'smooth' ? rest : { ...rest, ease }
+      const next: ClipKey = { ...k }
+      delete next.ease
+      return ease === 'smooth' ? next : { ...next, ease }
     })))
   }
   return tracks.length === 0 ? null : { tracks, selection: [...selection] }
