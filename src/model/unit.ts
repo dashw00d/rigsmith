@@ -96,9 +96,15 @@ export interface UnitEvents {
   clips: Record<string, { loop: boolean, seconds: number, events: UnitEvent[] }>
   walkStride: number | null
   runStride: number | null
+  /** The companion's events (a pony beside it, the horse under it) on the same clips, by the unit's clip names: phases
+   * of the clip as exported (the companion's tracks are in it), bones with its prefix. Only when it has any. */
+  companion?: { prefix: string, clips: Record<string, { events: UnitEvent[] }> }
 }
 
-export interface UnitEvent { t: number, name: string, to?: number, sound?: string, bone?: string }
+/** One event as the game reads it. `sound`: 'mix:<id>' (a sound of the game's mix.json) or 'file:sounds/<file>' (a file
+ * dropped in Rigsmith, copied to <work dir>/<unit>/sounds/<file>: the game's build installs it as a mix sound);
+ * `volume` a gain on its level (1 as it is), `pitch` its playback rate (1 as it is). */
+export interface UnitEvent { t: number, name: string, to?: number, sound?: string, bone?: string, volume?: number, pitch?: number }
 
 export interface BuiltClip {
   /** The library clip and where it loads from. */
