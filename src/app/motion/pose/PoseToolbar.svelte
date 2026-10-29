@@ -9,6 +9,7 @@
   // Shortcuts (docs/motion-plan.md §10, so the timeline's leave them): Ctrl+Shift+C (or Ctrl+Alt+C) copy, Ctrl+Shift+V
   // paste, Ctrl+Alt+V paste mirrored, Alt+O onion skins on and off. Not while typing in a field.
   import { onDestroy } from 'svelte'
+  import type * as THREE from 'three'
   import { Brackets, Check, ChevronDown, ClipboardPaste, Copy, FlipHorizontal2, Ghost, Repeat2 } from '@lucide/svelte'
   import type { TimelineView } from '../lanes.ts'
   import type { KeyTrack } from '../../../model/command-types.ts'
@@ -76,6 +77,7 @@
   let amount = $state(0.5)
   let dragging = false
   let pending: KeyTrack[] = []
+  const saved = new Map<THREE.Object3D, { q: THREE.Quaternion, p: THREE.Vector3 }>()
 
   function previewTween (): void {
     if (!ready) return
@@ -85,10 +87,20 @@
       animator.holding = true
     }
     pending = tools.tweenWrites(view, poseTools.tweenMode, amount)
-    for (const [node, v] of tools.previewOf(view, rest!, pending)) {
+    const shown = tools.previewOf(view, rest!, pending)
+    // (a bone shown before but not now goes back; three's mixer won't write it again while its value doesn't change)
+    for (const [node, was] of saved) if (!shown.has(node)) { node.quaternion.copy(was.q); node.position.copy(was.p) }
+    for (const [node, v] of shown) {
+      if (!saved.has(node)) saved.set(node, { q: node.quaternion.clone(), p: node.position.clone() })
       node.quaternion.fromArray(v.q)
       if (v.p !== undefined) node.position.fromArray(v.p)
     }
+  }
+
+  /** The bones a preview moved put back where the clip had them. */
+  function unpreview (): void {
+    for (const [node, was] of saved) { node.quaternion.copy(was.q); node.position.copy(was.p) }
+    saved.clear()
   }
 
   function endTween (keep: boolean): void {
@@ -99,10 +111,14 @@
     const label = poseTools.tweenMode === 'tween' ? `Tweened ${Math.round(amount * 100)}%` : `${poseTools.tweenMode === 'push' ? 'Pushed' : 'Relaxed'} ${Math.round(amount * 100)}%`
     amount = restValue()
     if (keep && writes.length > 0) {
-      void commit(writes, `${poseTools.tweenMode} pose`, `${label} on ${tracksText(writes.length)}`).finally(() => { animator.holding = false })
+      void commit(writes, `${poseTools.tweenMode} pose`, `${label} on ${tracksText(writes.length)}`).then(done => {
+        // (kept: the slot bakes again and plays the keys; refused: the pose goes back)
+        if (done) saved.clear()
+        else unpreview()
+      }).finally(() => { animator.holding = false })
     } else {
+      unpreview()
       animator.holding = false
-      animator.seek(animator.time)
       if (keep) say('No keys round the playhead')
     }
   }
