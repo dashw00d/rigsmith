@@ -151,6 +151,8 @@ class Pose {
   private shafts = new Map<string, { from: THREE.Vector3, to: THREE.Vector3, radius: number }>()
   private dragFrom = new Map<string, THREE.Matrix4>()
   private dragPlaces = new Map<string, THREE.Matrix4>()
+  /** The hands near a piece's shaft as the drag began (`<side>:<gear id>`): letting go there is a nudge, not a grip. */
+  private nearAtStart = new Set<string>()
   private naturalizeCancelled = false
   private turn = 0
 
@@ -209,6 +211,8 @@ class Pose {
         animator.setPlaying(false); animator.holding = true; this.dragging = true
         this.dragPlaces = this.leadingPlaces()
         this.dragFrom = new Map([...this.pieceNodes()].map(([n, node]) => { node.updateMatrix(); return [n, node.matrix.clone()] }))
+        const h = this.here()
+        this.nearAtStart = new Set(h === null ? [] : SIDES.flatMap(hand => this.pieces.filter(p => this.shaftGap(h, hand, p) !== null).map(p => `${hand}:${p.id}`)))
       },
       commit: bones => { void this.commit(bones) },
       // (a drag is IK alone: the body is solved only when asked, solveBody)
@@ -445,24 +449,38 @@ class Pose {
     }
   }
 
-  /** A hand on no handle, let go with its fist near a piece's shaft (not the piece it carries): that hand and piece. */
+  /**
+   * A hand on no handle, let go with its fist near a piece's shaft (not the piece it carries): that hand and piece. Not a
+   * hand that was near it already when the drag began (a nudge of a hand by the gear isn't taking hold of it), nor the
+   * hand that draws the piece's string (the bow's right hand pulls, it doesn't grip; the designer, 2026-10-29: "im trying
+   * to drag the right hand 1 inch to the string, but the auto socket feature we use for spears sockets to the string").
+   */
   private snapTarget (h: Here, moved: string[]): { hand: Side, gear: string } | null {
     let best: { hand: Side, gear: string, d: number } | null = null
     for (const hand of SIDES) {
-      const bone = h.view.bones.get(`${hand}Hand`)
-      if (!moved.includes(`${hand}Hand`) || bone === undefined || this.attachedNow(h).some(a => a.hand === hand)) continue
+      if (!moved.includes(`${hand}Hand`) || this.attachedNow(h).some(a => a.hand === hand)) continue
       for (const p of this.pieces) {
-        if (p.bone === `${hand}Hand`) continue
-        const shaft = this.shaftOf(p.id); const grip = this.gripOf(hand, p.id)
-        if (shaft === null || grip === null) continue
-        const fist = grip.fist.clone().applyQuaternion(bone.getWorldQuaternion(new THREE.Quaternion())).add(bone.getWorldPosition(new THREE.Vector3()))
-        const length = shaft.from.distanceTo(shaft.to)
-        const k = Math.max(0, Math.min(length, fist.clone().sub(shaft.from).dot(shaft.dir)))
-        const d = shaft.from.clone().addScaledVector(shaft.dir, k).distanceTo(fist)
-        if (d < SNAP_REACH * h.view.height && (best === null || d < best.d)) best = { hand, gear: p.id, d }
+        if (this.nearAtStart.has(`${hand}:${p.id}`)) continue
+        const d = this.shaftGap(h, hand, p)
+        if (d !== null && (best === null || d < best.d)) best = { hand, gear: p.id, d }
       }
     }
     return best === null ? null : { hand: best.hand, gear: best.gear }
+  }
+
+  /** How far `hand`'s fist is from piece `p`'s shaft, when it is near enough to take hold (SNAP_REACH), else null; never
+   * for the piece the hand carries or one whose string it draws. */
+  private shaftGap (h: Here, hand: Side, p: Piece): number | null {
+    const bone = h.view.bones.get(`${hand}Hand`)
+    if (bone === undefined || p.bone === `${hand}Hand`) return null
+    if (p.gear.handles.some(x => x.kind === 'pull' && x.pull?.bone === `${hand}Hand`)) return null
+    const shaft = this.shaftOf(p.id); const grip = this.gripOf(hand, p.id)
+    if (shaft === null || grip === null) return null
+    const fist = grip.fist.clone().applyQuaternion(bone.getWorldQuaternion(new THREE.Quaternion())).add(bone.getWorldPosition(new THREE.Vector3()))
+    const length = shaft.from.distanceTo(shaft.to)
+    const k = Math.max(0, Math.min(length, fist.clone().sub(shaft.from).dot(shaft.dir)))
+    const d = shaft.from.clone().addScaledVector(shaft.dir, k).distanceTo(fist)
+    return d < SNAP_REACH * h.view.height ? d : null
   }
 
   // ---- gear on stage ---------------------------------------------------------------------------------------------
