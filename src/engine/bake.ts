@@ -206,8 +206,10 @@ export async function timeSlot (c: Character, slot: Slot, raw: THREE.AnimationCl
     const like = slotById(c, pace.like)
     if (like === undefined || like.id === slot.id) report.pace = { kind: 'pace', clip: slot.name, like: pace.like, missing: true }
     else {
-      const likeRaw = await sourceOf(c, like, ctx, { mirror: o.mirror, via: o.via })
-      const r = paceTo(ctx.posable, clip, (await timeSlot(c, like, likeRaw, ctx, { mirror: o.mirror, noPace: true, via: o.via })).clip)
+      // (the slot pacing is on the way too: a like that plays it as a piece is refused, not baked round for ever)
+      const via = [...(o.via ?? []), slot.id]
+      const likeRaw = await sourceOf(c, like, ctx, { mirror: o.mirror, via })
+      const r = paceTo(ctx.posable, clip, (await timeSlot(c, like, likeRaw, ctx, { mirror: o.mirror, noPace: true, via })).clip)
       clip = r.clip
       factor = r.factor
       report.pace = { kind: 'pace', clip: slot.name, like: like.name, retimed: +r.factor.toFixed(3) }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  appended, blended, endAt, fitFor, insertAt, isWhole, layoutOf, MAIN, moved, ownerAt, piecesProblem, playsItself, remapper, remapSlot, removed,
+  appended, bakeCycle, blended, endAt, fitFor, insertAt, isWhole, layoutOf, MAIN, moved, ownerAt, piecesProblem, playsItself, remapper, remapSlot, removed, rewarp,
   slotsUnder, startAt, trimmed, wholeClip,
 } from './pieces.ts'
 import type { Piece, Slot } from './types.ts'
@@ -94,9 +94,51 @@ describe('remapping what a slot stores', () => {
     expect(slot.gear!.spear.keys![0].u).toBeCloseTo(0.6, 9)
     expect(slot.gear!.spear.heldBy![0].u).toBeCloseTo(0.2, 9)
     expect(slot.events!.map(e => [e.id, e.u, e.to])).toEqual([['e2', 0, 0.5], ['e1', 0.5, undefined]])
-    expect(slot.adjustments[0]).toMatchObject({ windows: [[0.2, 0.8]] })
-    expect(slot.time!.markers![0]).toMatchObject({ u: 0.5, to: 0.4 })
+    expect((slot.adjustments[0] as { windows: number[][] }).windows).toEqual([[expect.closeTo(0.2, 12), expect.closeTo(0.8, 12)]])
+    // (B played its first half at 14/15 speed and its second at 6/5: still so, spread over B alone (0.4375 of it)
+    expect(slot.time!.markers![0]).toMatchObject({ u: 0.5, to: expect.closeTo(0.4375, 12) })
     expect(dropped).toBe(1)
+  })
+})
+
+describe('retime markers through a piece edit (the review: an append re-warped the clip)', () => {
+  // (a 2 s clip, its first half played in 0.5 s (marker u 0.5 -> 0.25), a hit at 0.75)
+  const W = (ms: Array<{ u: number, to: number }>, u: number): number => {
+    const xs = [0, ...ms.map(m => m.u), 1]; const ys = [0, ...ms.map(m => m.to), 1]
+    let i = 1; while (i < xs.length - 1 && xs[i] < u) i++
+    return ys[i - 1] + (u - xs[i - 1]) / (xs[i] - xs[i - 1]) * (ys[i] - ys[i - 1])
+  }
+  const ms = [{ id: 'm', u: 0.5, to: 0.25 }]
+
+  it('plays every old part as it played and what is appended unwarped', () => {
+    const next = [clip('A', 0, 2), clip('B', 0, 2)]
+    const out = rewarp(ms, [clip('A', 0, 2)], next)
+    // (seconds played of a source second, before (2 s) and after (4 s))
+    const before = (t: number): number => W(ms, t / 2) * 2
+    const after = (t: number): number => W(out, t / 4) * 4
+    for (const t of [0.5, 1, 1.5, 2]) expect(after(t)).toBeCloseTo(before(t), 12)
+    expect(after(3) - after(2)).toBeCloseTo(1, 12)
+    expect(out[0].id).toBe('m')
+    expect(rewarp(ms, [clip('A', 0, 2)], [hold('h', 0, 1), clip('A', 0, 2)]).map(m => [m.u * 3, m.to * 3])).toEqual([[expect.closeTo(1, 12), expect.closeTo(1, 12)], [expect.closeTo(2, 12), expect.closeTo(1.5, 12)]])
+  })
+
+  it('a slot without markers gets none', () => {
+    expect(rewarp([], [clip('A', 0, 2)], [clip('A', 0, 2), clip('B', 0, 2)])).toEqual([])
+  })
+})
+
+describe('a window across a seam when the pieces under it are reordered (the review: it was dropped)', () => {
+  it('keeps the part on the piece its start is on', () => {
+    const s = slotWith({ pieces: [clip('A', 0, 1), clip('B', 0, 1)], adjustments: [{ id: 'p', enabled: true, kind: 'handPose', hand: 'Left', pose: 'clip', windows: [[0.25, 0.75]] }], events: [{ id: 'sw', name: 'swing', u: 0.25, to: 0.75 }] })
+    const { slot, dropped } = remapSlot(s, [clip('A', 0, 1), clip('B', 0, 1)], [clip('B', 0, 1), clip('A', 0, 1)])
+    expect((slot.adjustments[0] as { windows: number[][] }).windows).toEqual([[expect.closeTo(0.75, 12), expect.closeTo(1, 12)]])
+    expect([slot.events![0].u, slot.events![0].to]).toEqual([expect.closeTo(0.75, 12), expect.closeTo(1, 12)])
+    expect(dropped).toBe(0)
+  })
+
+  it('leaves every number as it was where nothing round it moved', () => {
+    const r = remapper([clip('A', 0, 1), clip('B', 0, 1)], [clip('A', 0, 1), { ...clip('B', 0, 1), from: 0 }])
+    expect(r.point(0.1 + 0.2)).toBe(0.1 + 0.2)
   })
 })
 
@@ -143,8 +185,8 @@ describe('the strip\'s gestures', () => {
   })
 
   it('keeps the blow fit\'s start and blow, ending where the edit says', () => {
-    expect(fitFor({ enabled: true, at: 0.45 }, 0, 0.35, 1.28)).toEqual({ enabled: true, at: 0.273438 })
-    expect(fitFor({ enabled: true, at: 0.45, window: 0.8 }, 0.1, 0.5, 1.1)).toEqual({ enabled: true, at: 0.4, window: 1 })
+    expect(fitFor({ enabled: true, at: 0.45 }, 0, 0.35, 1.28)).toEqual({ enabled: true, at: 0.35 / 1.28 })
+    expect(fitFor({ enabled: true, at: 0.45, window: 0.8 }, 0.1, 0.5, 1.1)).toEqual({ enabled: true, at: expect.closeTo(0.4, 12), window: 1 })
     expect(fitFor({ enabled: true, at: 0.45 }, 0, 1.2, 1)).toBeNull()
   })
 })
@@ -159,9 +201,19 @@ describe('slots played as pieces', () => {
     ],
   }
 
-  it('finds a chain that leads back to the slot', () => {
+  it('finds a chain that leads back to the slot, through pieces and the paces they follow', () => {
     expect(playsItself(c, 'c', [clip('z', 0, 1), { id: 'r', kind: 'slot', slot: 'a', from: 0, to: 1 }])).toBe(true)
-    expect(playsItself(c, 'd', [{ id: 'r', kind: 'slot', slot: 'a', from: 0, to: 1 }])).toBe(false)
+    // (D playing A: A plays B, B paces like D, whose source plays A again)
+    expect(playsItself(c, 'd', [{ id: 'r', kind: 'slot', slot: 'a', from: 0, to: 1 }])).toBe(true)
+    expect(playsItself(c, 'c', [{ id: 'r', kind: 'slot', slot: 'd', from: 0, to: 1 }])).toBe(false)
+  })
+
+  it('finds a slot that paces like a clip playing it (the review\'s endless bake), and lets two paces follow each other', () => {
+    const paced = { clips: [slotWith({ id: 'A', name: 'A', time: { pace: { enabled: true, like: 'B' } } }), slotWith({ id: 'B', name: 'B', pieces: [clip('b', 0, 1), { id: 'p', kind: 'slot', slot: 'A', from: 0, to: 1 }] })] }
+    expect(bakeCycle(paced)?.id).toBeDefined()
+    // (a pace measures the other timed without its own pace: two following each other end)
+    const mutual = { clips: [slotWith({ id: 'A', name: 'A', time: { pace: { enabled: true, like: 'B' } } }), slotWith({ id: 'B', name: 'B', time: { pace: { enabled: true, like: 'A' } } })] }
+    expect(bakeCycle(mutual)).toBeNull()
   })
 
   it('lists what a slot\'s bake reads of the others', () => {

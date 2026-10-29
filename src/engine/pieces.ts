@@ -22,7 +22,7 @@ export async function sourceClip (c: Character, slot: Slot, ctx: SourceContext, 
   if (slot.pieces === undefined) return await ctx.clips.get(slot.clip, { inPlace: slot.inPlace, mirror: o.mirror, fps: ctx.fps })
   // (library clips only: the same pieces compose the same, so it is kept per clip source; a slot piece may change)
   const cacheable = slot.pieces.every(p => p.kind !== 'slot')
-  const key = cacheable ? JSON.stringify([slot.pieces, slot.inPlace, o.mirror === true, ctx.fps ?? 30, slot.name]) : ''
+  const key = cacheable ? JSON.stringify([generation, slot.pieces, slot.inPlace, o.mirror === true, ctx.fps ?? 30, slot.name]) : ''
   let kept = cacheable ? composites.get(ctx.clips) : undefined
   if (cacheable && kept === undefined) { kept = new Map(); composites.set(ctx.clips, kept) }
   const hit = kept?.get(key)
@@ -37,6 +37,10 @@ export async function sourceClip (c: Character, slot: Slot, ctx: SourceContext, 
 }
 
 const composites = new WeakMap<ClipSource, Map<string, Promise<THREE.AnimationClip>>>()
+let generation = 0
+
+/** Composites made before forgotten (a clip file written again: a composite of it is made afresh next time). */
+export function forgetComposites (): void { generation++ }
 
 async function compose (c: Character, slot: Slot, pieces: readonly Piece[], ctx: SourceContext, o: { mirror?: boolean, bakeSlot: SlotBaker, via?: readonly string[] }): Promise<THREE.AnimationClip> {
   const via = [...(o.via ?? []), slot.id]

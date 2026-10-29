@@ -6,7 +6,7 @@
 // The layout: piece i lasts d_i = to - from and starts at s_0 = 0, s_i = s_i-1 + d_i-1 - blend_i; the composite lasts
 // D = s_last + d_last. A SourceU of a slot with pieces is t / D of the composite. A slot without pieces is one piece,
 // its clip whole (id MAIN), so the same arithmetic covers it.
-import type { Adjustment, BlowFit, Character, ClipEvent, ClipKey, ClipRef, GearTrack, Piece, Slot, SlotIk, Window } from './types.ts'
+import type { Adjustment, BlowFit, Character, ClipEvent, ClipKey, ClipRef, GearTrack, Piece, RetimeMarker, Slot, SlotIk, Window } from './types.ts'
 import { MAX_U } from './types.ts'
 
 /** The id of a slot's clip whole as a piece (what a slot without pieces is). */
@@ -87,18 +87,40 @@ export function piecesProblem (pieces: readonly Piece[]): string | null {
   return null
 }
 
-/** Whether `pieces` (for slot `slotId`) play that slot again somewhere down their slot pieces. */
+/** A slot whose bake would read its own again, or null: the bake of a slot reads its source (each slot piece's whole
+ * bake) and, with pace, the source of the slot it paces like (that slot timed without its own pace), so a chain of
+ * slot pieces and paces' sources that comes back round never ends (src/engine/bake.ts refuses it too). */
+export function bakeCycle (c: Pick<Character, 'clips'>): Slot | null {
+  const byId = new Map(c.clips.map(s => [s.id, s]))
+  // (nodes 'b:<id>', a slot's bake, and 's:<id>', its source)
+  const next = (node: string): string[] => {
+    const s = byId.get(node.slice(2))
+    if (s === undefined) return []
+    if (node.startsWith('b:')) return [`s:${s.id}`, ...(s.time?.pace !== undefined && s.time.pace.like !== s.id ? [`s:${s.time.pace.like}`] : [])]
+    return (s.pieces ?? []).flatMap(p => (p.kind === 'slot' ? [`b:${p.slot}`] : []))
+  }
+  const state = new Map<string, 1 | 2>()
+  const visit = (node: string): string | null => {
+    state.set(node, 1)
+    for (const n of next(node)) {
+      if (state.get(n) === 1) return n
+      if (state.get(n) === undefined) { const found = visit(n); if (found !== null) return found }
+    }
+    state.set(node, 2)
+    return null
+  }
+  for (const s of c.clips) {
+    if (state.has(`b:${s.id}`)) continue
+    const found = visit(`b:${s.id}`)
+    if (found !== null) return byId.get(found.slice(2)) ?? null
+  }
+  return null
+}
+
+/** Whether giving slot `slotId` these pieces would make a bake read itself (bakeCycle). */
 export function playsItself (c: Pick<Character, 'clips'>, slotId: string, pieces: readonly Piece[]): boolean {
-  const seen = new Set<string>()
-  const walk = (ps: readonly Piece[]): boolean => ps.some(p => {
-    if (p.kind !== 'slot') return false
-    if (p.slot === slotId) return true
-    if (seen.has(p.slot)) return false
-    seen.add(p.slot)
-    const s = c.clips.find(x => x.id === p.slot)
-    return s?.pieces !== undefined && walk(s.pieces)
-  })
-  return walk(pieces)
+  if (pieces.some(p => p.kind === 'slot' && p.slot === slotId)) return true
+  return bakeCycle({ clips: c.clips.map(s => (s.id === slotId ? { ...s, pieces: [...pieces] } : s)) }) !== null
 }
 
 /** The slots a slot's bake reads besides itself (its slot pieces, a pace's like, theirs in turn): what the viewer
@@ -127,6 +149,9 @@ export interface Remap {
   /** A window's end or a switch (a holder, a shown change) moved with its piece, kept inside what is left of it (a
    * piece removed: the seam where it was). */
   clamp: (u: number) => number
+  /** Where the piece a moment is on ends now (source u of the new composite; null: it went): a window crossing a seam
+   * is kept on the piece its start is on when the pieces round it are reordered. */
+  ownEnd: (u: number) => number | null
   /** The composites' seconds, before and after. */
   seconds: [number, number]
 }
@@ -142,6 +167,10 @@ export function remapper (old: readonly Piece[], next: readonly Piece[], split: 
     continued.set(of, [...(continued.get(of) ?? []), p])
   }
   const at = (c: Placed, m: number): number => c.start + (m - c.piece.from)
+  /** A moment as a source u of the new composite: the very same number when its piece starts where it did on the same
+   * content and the composite is as long (nothing round it changed), so an edit elsewhere never nudges it. */
+  const toU = (c: Placed, m: number, u: number, owner: Placed): number =>
+    c.start === owner.start && c.piece.from === owner.piece.from && a.seconds === b.seconds ? u : at(c, m) / D2
   // (a moment on the boundary of two parts goes to the later: time inserted at the playhead pushes what is there on)
   const holding = (m: number, cs: Placed[]): Placed | undefined =>
     cs.find(c => m >= c.piece.from - E && m < c.piece.to - E) ?? cs.find(c => m >= c.piece.from - E && m <= c.piece.to + E)
@@ -170,14 +199,14 @@ export function remapper (old: readonly Piece[], next: readonly Piece[], split: 
       return at(cs.reduce((x, y) => (y.piece.to > x.piece.to ? y : x)), m) / D2
     }
     const c = holding(m, cs)
-    if (c !== undefined) return at(c, m) / D2
+    if (c !== undefined) return toU(c, m, u, a.placed[o.index])
     // (a moment the other piece there plays too (a seam, a blend): with that piece, when its own went or lost it)
     const t = u * D
     for (const other of piecesAt(a, t)) {
       if (other.index === o.index) continue
       const om = other.piece.from + (t - other.start)
       const oc = holding(om, continued.get(other.piece.id) ?? [])
-      if (oc !== undefined) return at(oc, om) / D2
+      if (oc !== undefined) return toU(oc, om, u, other)
     }
     return null
   }
@@ -185,17 +214,33 @@ export function remapper (old: readonly Piece[], next: readonly Piece[], split: 
     const { o, m, cs } = locate(u)
     if (o.past) return point(u)!
     const c = holding(m, cs)
-    if (c !== undefined) return at(c, m) / D2
+    if (c !== undefined) return toU(c, m, u, a.placed[o.index])
     if (cs.length === 0) return seam(o.index) / D2
     const nearest = cs.reduce((x, y) => (dist(m, y.piece) < dist(m, x.piece) ? y : x))
     return at(nearest, Math.min(nearest.piece.to, Math.max(nearest.piece.from, m))) / D2
   }
-  return { point, clamp, seconds: [a.seconds, b.seconds] }
+  const ownEnd = (u: number): number | null => {
+    const { o, m, cs } = locate(u)
+    if (o.past) return point(u)
+    const c = holding(m, cs)
+    return c === undefined ? null : (c.start + c.length) / D2
+  }
+  return { point, clamp, ownEnd, seconds: [a.seconds, b.seconds] }
 }
 
 const dist = (m: number, p: Pick<Piece, 'from' | 'to'>): number => (m < p.from ? p.from - m : m > p.to ? m - p.to : 0)
 const okU = (u: number | null): u is number => u !== null && Number.isFinite(u) && u >= -E && u <= MAX_U
-const fixU = (u: number): number => Math.min(MAX_U, Math.max(0, Math.round(u * 1e9) / 1e9))
+const fixU = (u: number): number => Math.min(MAX_U, Math.max(0, u))
+
+/** A span [a, b] moved with its pieces: each end with its piece; when its end then falls before its start (the pieces
+ * under it reordered), the part on its start's piece, clipped there. Null: nothing of it is left. */
+function remapSpan (a: number, b: number, r: Remap): [number, number] | null {
+  const from = r.point(a) ?? r.clamp(a)
+  const to = r.point(b) ?? r.clamp(b)
+  if (to - from > 1e-6) return [fixU(from), fixU(to)]
+  const clipped = r.ownEnd(a)
+  return clipped !== null && clipped - from > 1e-6 ? [fixU(from), fixU(clipped)] : null
+}
 
 /** Keys moved with their pieces: those whose piece went or that were trimmed off dropped; sorted, one a moment. */
 function remapKeys (keys: readonly ClipKey[], r: Remap): { keys: ClipKey[], dropped: number } {
@@ -214,7 +259,7 @@ function remapSwitches<T extends { u: number }> (xs: readonly T[], r: Remap): T[
 
 /** Windows moved, each end kept inside what is left of its piece; empty ones gone, overlapping ones merged. */
 function remapWindows (ws: readonly Window[], r: Remap): Window[] {
-  const moved = ws.map(([x, y]): Window => [fixU(r.clamp(x)), fixU(r.clamp(y))]).filter(([x, y]) => y - x > 1e-6).sort((p, q) => p[0] - q[0])
+  const moved = ws.flatMap(([x, y]): Window[] => { const w = remapSpan(x, y, r); return w === null ? [] : [w] }).sort((p, q) => p[0] - q[0])
   const out: Window[] = []
   for (const w of moved) {
     const last = out.at(-1)
@@ -262,8 +307,8 @@ export function remapSlot (slot: Slot, old: readonly Piece[], next: readonly Pie
         if (okU(u)) events.push({ ...e, u: fixU(u) }); else dropped++
         continue
       }
-      const from = r.point(e.u) ?? r.clamp(e.u); const to = r.point(e.to) ?? r.clamp(e.to)
-      if (okU(from) && okU(to) && to - from > 1e-6) events.push({ ...e, u: fixU(from), to: fixU(to) }); else dropped++
+      const span = remapSpan(e.u, e.to, r)
+      if (span !== null && okU(span[0]) && okU(span[1])) events.push({ ...e, u: span[0], to: span[1] }); else dropped++
     }
     events.sort((x, y) => x.u - y.u)
     if (events.length > 0) s.events = events
@@ -286,20 +331,72 @@ export function remapSlot (slot: Slot, old: readonly Piece[], next: readonly Pie
     if (hands.length === 0 && s.ik.lead === undefined) delete s.ik
   }
   if (s.time?.markers !== undefined) {
-    const [D, D2] = r.seconds
-    const moved = s.time.markers.flatMap(m => {
-      const u = r.point(m.u)
-      if (!okU(u)) return []
-      return [{ ...m, u: fixU(u), to: fixU((m.to * D + (u * D2 - m.u * D)) / Math.max(D2, 1e-9)) }]
-    }).sort((x, y) => x.u - y.u)
-    const kept = moved.filter(m => m.u > 1e-6 && m.u < 1 - 1e-6 && m.to > 1e-6 && m.to < 1 - 1e-6)
-      .filter((m, i, all) => i === 0 || (m.u - all[i - 1].u >= 1e-6 && m.to - all[i - 1].to >= 1e-6))
-    dropped += s.time.markers.length - kept.length
-    if (kept.length > 0) s.time.markers = kept
+    const markers = rewarp(s.time.markers, old, next, split, s.id)
+    if (markers.length > 0) s.time.markers = markers
     else delete s.time.markers
     if (Object.keys(s.time).length === 0) delete s.time
   }
   return { slot: s, dropped }
+}
+
+/**
+ * Retime markers for the new pieces that play every part of the old ones at the speed it played (a part's played
+ * seconds stay its played seconds, so a hit keeps its second) and what is new unwarped: the warp's slope at each moment
+ * of the new composite is the old one's at the same moment of the same piece (1 on what is new), its knots wherever
+ * the slope changes. A warp keeps the composite's length (0 -> 0, 1 -> 1); when a warped part is cut away, what is left
+ * plays that much differently in all, spread over the whole as one factor.
+ */
+export function rewarp (markers: readonly RetimeMarker[], old: readonly Piece[], next: readonly Piece[], split: Readonly<Record<string, string>> = {}, base = 'w'): RetimeMarker[] {
+  const ms = [...markers].filter(m => m.u > 0 && m.u < 1).sort((x, y) => x.u - y.u)
+  if (ms.length === 0) return []
+  const a = layoutOf(old); const b = layoutOf(next)
+  const D = Math.max(a.seconds, 1e-9); const D2 = Math.max(b.seconds, 1e-9)
+  const xs = [0, ...ms.map(m => m.u * D), D]; const ys = [0, ...ms.map(m => m.to * D), D]
+  const slopeOld = (t: number): number => {
+    let i = 1
+    while (i < xs.length - 1 && xs[i] <= t) i++
+    return (ys[i] - ys[i - 1]) / Math.max(xs[i] - xs[i - 1], 1e-12)
+  }
+  const olds = new Map(a.placed.map(p => [p.piece.id, p]))
+  // (every moment the slope may change: the new pieces' ends and blends, the old knots and pieces' ends where they are now)
+  const r = remapper(old, next, split)
+  const cuts = new Set<number>([0, D2])
+  for (const p of b.placed) { cuts.add(p.start); cuts.add(p.start + p.blend / 2); cuts.add(p.start + p.length) }
+  for (const t of [...xs, ...a.placed.flatMap(p => [p.start, p.start + p.length])]) {
+    const u = r.point(t / D)
+    if (u !== null) cuts.add(u * D2)
+  }
+  const knots = [...cuts].filter(t => t >= 0 && t <= D2).sort((x, y) => x - y).filter((t, i, all) => i === 0 || t - all[i - 1] > 1e-9)
+  const slopeNew = (t: number): number => {
+    const o = ownerAt(b, t)
+    const p = b.placed[o.index].piece
+    const was = olds.get(split[p.id] ?? p.id)
+    const m = p.from + o.local
+    if (was === undefined || m < was.piece.from - E || m > was.piece.to + E) return 1
+    return slopeOld(was.start + (m - was.piece.from))
+  }
+  const taus = [0]
+  const slopes: number[] = []
+  for (let i = 1; i < knots.length; i++) {
+    const k = slopeNew((knots[i - 1] + knots[i]) / 2)
+    slopes.push(k)
+    taus.push(taus[i - 1] + k * (knots[i] - knots[i - 1]))
+  }
+  const scale = D2 / Math.max(taus.at(-1)!, 1e-9)
+  const out: RetimeMarker[] = []
+  for (let i = 1; i < knots.length - 1; i++) {
+    if (Math.abs(slopes[i] - slopes[i - 1]) < 1e-9) continue
+    out.push({ id: '', u: knots[i] / D2, to: taus[i] * scale / D2 })
+  }
+  if (out.every(m => Math.abs(m.u - m.to) < 1e-12)) return []
+  // (ids: an old marker's where one lands, else made from the slot's)
+  const ids = new Set<string>()
+  return out.filter(m => m.u > 1e-9 && m.u < 1 - 1e-9 && m.to > 1e-9 && m.to < 1 - 1e-9).map((m, i) => {
+    const was = ms.find(x => { const u = r.point(x.u); return u !== null && Math.abs(u - m.u) < 1e-9 && !ids.has(x.id) })
+    const id = was?.id ?? `${base}-${i}`
+    ids.add(id)
+    return { ...m, id }
+  })
 }
 
 // ---- the gestures (each a next list for slot.pieces.set) -------------------------------------------------------------
@@ -479,8 +576,8 @@ const round = (x: number): number => Math.round(x * 1e6) / 1e6
 export function fitFor (fit: BlowFit, start: number, blow: number, end: number): BlowFit | null {
   const span = end - start
   if (!(span > MIN_PIECE) || blow <= start + E || blow >= end - E) return null
-  const at = Math.round((blow - start) / span * 1e6) / 1e6
-  return { ...fit, at, ...(fit.window !== undefined ? { window: round(span) } : {}) }
+  // (exact, not rounded: the played end must land where the gesture put it)
+  return { ...fit, at: (blow - start) / span, ...(fit.window !== undefined ? { window: span } : {}) }
 }
 
 // ---- in words ------------------------------------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import * as THREE from 'three'
 import type { Character, ClipRef, Piece, Slot } from '../model/types.ts'
 import { makeCharacter } from '../model/fixtures.ts'
 import { bakeSlot, type BakeContext } from './bake.ts'
-import { composePieces, twist } from './pieces.ts'
+import { composePieces, forgetComposites, twist } from './pieces.ts'
 import { captureRest } from './retarget.ts'
 
 function rig (): THREE.Group {
@@ -121,6 +121,29 @@ describe('the bake of a slot built from pieces', () => {
     // (the other's keys are in: the Hips half a metre up there; its speed: its 0.5 s is all of it)
     expect(value(baked.clip, 'Hips.position', 1.25)[1]).toBeCloseTo(value(alone.clip, 'Hips.position', 0.25)[1], 6)
     expect(value(baked.clip, 'Hips.position', 1.25)[1]).toBeCloseTo(1.5, 6)
+  })
+
+  it('refuses, never bakes round for ever, a slot pacing like a clip that plays it as a piece', async () => {
+    // (the review's: B plays A as a piece, A paces like B; the commands refuse it, a file could still hold it)
+    const a = slot({ id: 'a1', name: 'A', time: { pace: { enabled: true, like: 'b1' } } })
+    const b = slot({ id: 'b1', name: 'B', pieces: [piece('b', 1), { id: 'p', kind: 'slot', slot: 'a1', from: 0, to: 1 }] })
+    let gets = 0
+    const counting: BakeContext = { ...ctx(), clips: { get: async (ref: ClipRef | string) => { if (++gets > 200) throw new Error('round for ever'); return library[typeof ref === 'string' ? ref : ref.id] } } }
+    await expect(bakeSlot(character([a, b]), a, counting)).rejects.toThrow(/plays itself/)
+  })
+
+  it('composes a clip made again afresh once it is forgotten (a custom clip written again)', async () => {
+    const lib: Record<string, THREE.AnimationClip> = { a: walk(1), b: walk(1) }
+    const source = { get: async (ref: ClipRef | string) => lib[typeof ref === 'string' ? ref : ref.id] }
+    const c: BakeContext = { rest, posable: rig(), clips: source }
+    const s = slot({ id: 'c', name: 'C', pieces: [piece('a', 1), piece('b', 1)] })
+    const once = await bakeSlot(character([s]), s, c)
+    lib.b = walk(1, { bend: 1 })
+    expect((await bakeSlot(character([s]), s, c)).raw).toBe(once.raw)
+    forgetComposites()
+    const again = await bakeSlot(character([s]), s, c)
+    expect(again.raw).not.toBe(once.raw)
+    expect(new THREE.Quaternion().fromArray(value(again.raw, 'Spine.quaternion', 1.9)).angleTo(new THREE.Quaternion().fromArray(about(X, 1)))).toBeLessThan(1e-3)
   })
 
   it('refuses a slot that plays itself through its pieces', async () => {

@@ -103,6 +103,37 @@ describe('slot.pieces.set', () => {
     expect(replaced.clips[0].pieces).toEqual([main])
   })
 
+  it('refuses a pace that would make a bake read itself (the review: B plays A as a piece, A paces like B: an endless bake)', () => {
+    const c = applyCommand(base(), set([main, run], { seconds: 2 })).character
+    // (Run paces like Attack, which plays Run: refused; pieces that would close such a loop too)
+    expect(failure(() => applyCommand(c, { type: 'slot.time', slot: 'run', patch: { pace: { enabled: true, like: 'atk' } } })).message).toMatch(/itself/)
+    const paced = applyCommand(base(), { type: 'slot.time', slot: 'run', patch: { pace: { enabled: true, like: 'atk' } } }).character
+    expect(failure(() => applyCommand(paced, set([main, run], { seconds: 2 }))).message).toMatch(/itself/)
+    // (two clips pacing each other are fine: a pace measures the other without its own)
+    const mutual = applyCommand(paced, { type: 'slot.time', slot: 'atk', patch: { pace: { enabled: true, like: 'run' } } }).character
+    expect(mutual.clips[0].time?.pace?.like).toBe('run')
+  })
+
+  it('drops a piece playing a clip not in the set without moving the rest (the review\'s clips.replace cases)', () => {
+    const c = base()
+    // (the first piece lost, the clip after it blending 0.5 s over it, a key at its second 1.0)
+    const s1 = makeSlot({ id: 'S', name: 'S', clip: { id: 'a' }, pieces: [{ id: 'x', kind: 'slot', slot: 'GONE', from: 0, to: 1 }, { id: 'k', kind: 'clip', clip: { id: 'a' }, from: 0, to: 2, blend: 0.5 }],
+      bones: { Spine: [{ u: 1.5 / 2.5, q }] } })
+    // (the lost piece in the middle, the piece after it blending longer than the one before lasts)
+    const s2 = makeSlot({ id: 'T', name: 'T', clip: { id: 'a' }, pieces: [{ id: 'a0', kind: 'clip', clip: { id: 'a' }, from: 0, to: 0.3 }, { id: 'x', kind: 'slot', slot: 'GONE', from: 0, to: 2 }, { id: 'b0', kind: 'clip', clip: { id: 'b' }, from: 0, to: 2, blend: 1 }] })
+    // (only held poses would be left: the clip's own plays in the lost piece's place, for as long)
+    const s3 = makeSlot({ id: 'U', name: 'U', clip: { id: 'a' }, pieces: [{ id: 'h', kind: 'hold', from: 0, to: 0.5 }, { id: 'x', kind: 'slot', slot: 'GONE', from: 0, to: 1 }], bones: { Spine: [{ u: 0.8, q }] } })
+    const r = applyCommands(c, [{ type: 'clips.replace', slots: [s1, s2, s3] }])
+    const [S, T, U] = r.character.clips
+    expect(S.pieces).toEqual([{ id: 'k', kind: 'clip', clip: { id: 'a' }, from: 0, to: 2 }])
+    expect(S.bones!.Spine[0].u * 2).toBeCloseTo(1, 12)
+    expect(T.pieces!.map(p => [p.id, p.blend])).toEqual([['a0', undefined], ['b0', 0.3]])
+    expect(U.pieces![1]).toEqual({ id: 'x', kind: 'clip', clip: { id: 'a' }, from: 0, to: 1 })
+    expect(U.bones!.Spine[0].u).toBe(0.8)
+    // (the slots given are left as they were)
+    expect(s1.pieces![1].blend).toBe(0.5)
+  })
+
   it('takes a slot with its pieces in slot.add and clips.replace', () => {
     const c = base()
     const added = applyCommand(c, { type: 'slot.add', slot: makeSlot({ id: 'new', name: 'Combo', pieces: [main, { ...run, slot: 'atk' }] }) })

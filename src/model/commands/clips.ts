@@ -5,7 +5,7 @@
 // retime markers run forward in both times; a slot's pieces follow src/model/pieces.ts piecesProblem and never play the
 // slot itself; every reference (a paced-like slot, a slot played as a piece, gear, a handle, a bone keyed) resolves.
 import type { Command, KeyTrack } from '../command-types.ts'
-import { isWhole, layoutOf, lengthOf, pieceText, piecesProblem, playsItself, remapSlot, wholeClip } from '../pieces.ts'
+import { bakeCycle, isWhole, layoutOf, lengthOf, pieceText, piecesProblem, playsItself, remapSlot, removed, wholeClip } from '../pieces.ts'
 import { carryHandle, gearById, gearByName, slotById, slotByName } from '../select.ts'
 import { hierarchyOf } from '../skeletons.ts'
 import { playedAs, playsAs } from '../variants.ts'
@@ -334,6 +334,7 @@ function slotRefs (c: Character, slot: Slot, slotIds: Set<string>): void {
     if (!slotIds.has(pace.like)) missing(`No clip ${pace.like} to pace like`)
   }
   if (slot.pieces !== undefined) pieceRefs(c, slot, slot.pieces, slotIds)
+  noCycle(c)
   for (const gid of Object.keys(slot.gear ?? {})) if (gearById(c, gid) === undefined) missing(`No gear ${gid}`)
   if (slot.ik !== undefined) ikRefs(c, slot.ik)
 }
@@ -357,7 +358,13 @@ function pieceRefs (c: Character, slot: Slot, pieces: readonly Piece[], slotIds:
     if (p.slot === slot.id) bad(`clip ${slot.name} can't play itself as a piece`)
     if (!slotIds.has(p.slot)) missing(`No clip ${p.slot} to play as a piece`)
   }
-  if (playsItself(c, slot.id, pieces)) bad(`clip ${slot.name} would play itself: a clip it plays as a piece plays it`)
+  if (playsItself(c, slot.id, pieces)) bad(`clip ${slot.name} would play itself: a clip it plays as a piece (or paces like) plays it`)
+}
+
+/** No slot's bake reads itself (src/model/pieces.ts bakeCycle: slot pieces, and the clips paces follow). */
+function noCycle (c: Pick<Character, 'clips'>): void {
+  const s = bakeCycle(c)
+  if (s !== null) bad(`clip ${s.name} would play itself: through the clips played as pieces and the paces they follow, it comes back to itself`)
 }
 
 /** No other slot plays under the same name in the game as `name` (src/model/variants.ts playedAs: `Attack 2` and
@@ -599,6 +606,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
         out.push(`clip ${s.name}: pace dropped (it would follow itself)`)
       }
       if (s.pieces !== undefined) pieceRefs(c, s, s.pieces, slotIdsOf(c))
+      noCycle(c)
       return out
     }
     case 'slot.remove': {
@@ -783,6 +791,8 @@ function timeCommand (c: Character, s: Slot, v: unknown): string[] {
     if (next !== undefined) {
       if (next.like === s.id) bad(`clip ${s.name} can't pace like itself`)
       const like = slotById(c, next.like) ?? missing(`No clip ${next.like} to pace like`)
+      // (pacing like a clip that plays this one as a piece would never end baking)
+      noCycle({ clips: c.clips.map(x => (x === s ? { ...s, time: { ...t, pace: next } } : x)) })
       if (!same(next, t.pace)) out.push(`clip ${s.name}: pace of ${like.name}${next.enabled ? '' : ' (off)'}`)
       t.pace = next
     } else if (t.pace !== undefined) {
@@ -921,15 +931,16 @@ function replace (c: Character, cmd: Extract<ClipsCommand, { type: 'clips.replac
     // (a piece playing a clip not in the set (or itself) goes, with what was keyed on it)
     const lost = (s.pieces ?? []).filter(p => p.kind === 'slot' && (!ids.has(p.slot) || p.slot === s.id))
     if (s.pieces !== undefined && lost.length > 0) {
-      const left = s.pieces.filter(p => !lost.includes(p))
-      if (left.some(p => p.kind !== 'hold')) {
-        delete left[0].blend
-        Object.assign(s, remapSlot(s, s.pieces, left).slot)
-        s.pieces = left
-        out.push(`clip ${s.name}: ${names(lost.map(p => pieceText(p)))} dropped (that clip isn't in the set)`)
+      const edit = removed(s.pieces, lost.map(p => p.id))
+      if (edit !== null) {
+        const { slot: moved } = remapSlot(s, s.pieces, edit.pieces)
+        for (const k of Object.keys(s) as Array<keyof Slot>) if (!(k in moved)) delete s[k]
+        Object.assign(s, moved, { pieces: edit.pieces })
+        out.push(`clip ${s.name}: ${names(lost.map(p => pieceText(p)))} dropped, with what was keyed on it (that clip isn't in the set)`)
       } else {
-        delete s.pieces
-        out.push(`clip ${s.name}: its pieces dropped (the clips they played aren't in the set); it plays ${s.clip.id} whole: check its keys`)
+        // (only held poses would be left: the clip's own clip plays in the lost pieces' place, for as long, so nothing moves)
+        s.pieces = s.pieces.map(p => (lost.includes(p) ? { id: p.id, kind: 'clip' as const, clip: { ...s.clip }, from: 0, to: p.to - p.from, ...(p.blend !== undefined ? { blend: p.blend } : {}) } : p))
+        out.push(`clip ${s.name}: ${names(lost.map(p => pieceText(p)))} played as ${s.clip.id} instead (that clip isn't in the set)`)
       }
     }
     if (s.time?.pace !== undefined && (!ids.has(s.time.pace.like) || s.time.pace.like === s.id)) {
