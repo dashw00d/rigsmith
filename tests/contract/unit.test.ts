@@ -208,7 +208,7 @@ describe('the unit export keeps the game\'s contract', () => {
 
   it('writes the build record: the run, the strides, the clips as baked, the slots and the gear by name', () => {
     expect(JSON.parse(readFileSync(path.join(fx.workDir, UNIT, 'rigsmith.json'), 'utf8'))).toEqual(record)
-    expect(record).toMatchObject({ schema: 2, unit: UNIT, run: 'test-run', rigsmith: { character: CHARACTER, name: 'Tester' } })
+    expect(record).toMatchObject({ schema: 3, unit: UNIT, run: 'test-run', rigsmith: { character: CHARACTER, name: 'Tester' } })
     expect(record.rigged.file).toBe(path.join('characters', CHARACTER, 'rigged.glb'))
     expect(record.texture).toBeNull()
     expect(record.hands).toEqual({})
@@ -228,12 +228,18 @@ describe('the unit export keeps the game\'s contract', () => {
     expect(record.slots.map(x => x.name)).toEqual(fx.spec.clips)
     const of = <K extends Adjustment['kind']> (slot: string, kind: K): Extract<Adjustment, { kind: K }> =>
       record.slots.find(x => x.name === slot)!.adjustments.find((a): a is Extract<Adjustment, { kind: K }> => a.kind === kind)!
-    expect(Object.keys(of('Walk', 'keys').gear!)).toEqual([BOW_NAME])
-    expect(of('Attack', 'handleHold')).toMatchObject({ gear: BOW_NAME, handle: 'string', windows: [HOLD] })
+    expect(Object.keys(record.slots.find(x => x.name === 'Walk')!.gear!)).toEqual([BOW_NAME])
+    // (the slots as stored: source time, gear by name)
+    const stored = slotByName(fx.character, 'Attack')!.adjustments.find(a => a.kind === 'handleHold')!
+    expect(of('Attack', 'handleHold')).toMatchObject({ gear: BOW_NAME, handle: 'string', windows: stored.kind === 'handleHold' ? stored.windows : [] })
+    // (the events file beside the GLB: the hit where the fit landed it, nothing else)
+    expect(record.events.clips.Attack).toEqual({ loop: false, seconds: record.clips.Attack.seconds, events: [{ t: 0.45, name: 'hit' }] })
+    expect(record.events.clips.Walk.events).toEqual([])
+    expect(JSON.parse(readFileSync(path.join(fx.modelsDir, `${UNIT}.events.json`), 'utf8'))).toEqual(record.events)
     expect(record.gearIds).toEqual({ [BOW]: { name: BOW_NAME, from: `emberhold:${UNIT}/${BOW_NAME}`, handles: { carry: 'Carried', string: 'String' } } })
     expect(record.gear[BOW_NAME]).toMatchObject({
       kind: 'prop', bone: 'RightHand', propBone: PROP,
-      pulls: [{ id: 'string', name: 'String', bone: 'LeftHand', holds: { Attack: [HOLD] } }],
+      pulls: [{ id: 'string', name: 'String', bone: 'LeftHand', holds: { Attack: [[expect.closeTo(HOLD[0], 9), expect.closeTo(HOLD[1], 9)]] } }],
     })
   })
 })
@@ -263,7 +269,7 @@ describe('the viewer\'s bake and the export agree', () => {
 
   it('draws the string to the left hand\'s grip while Attack holds it, and rests it on the bow outside', async () => {
     const baked = await bakeSlot(fx.character, slotByName(fx.character, 'Attack')!, viewer.ctx)
-    expect(baked.pulls).toEqual([{ gear: BOW, handle: 'string', bone: 'LeftHand', windows: [HOLD] }])
+    expect(baked.pulls).toEqual([{ gear: BOW, handle: 'string', bone: 'LeftHand', windows: [[expect.closeTo(HOLD[0], 9), expect.closeTo(HOLD[1], 9)]] }])
     const clip = gameClip('Attack')
     const pull = named(game.scene, PULL)
     // (held: on a frame of the clip, where the export keys the pull)
@@ -290,8 +296,8 @@ describe('the export and the Ship checks refuse the same unit', () => {
     c.id = 'tester-clash01'
     // (a game part keyed in Walk whose Prop_ bone is the bow's string's)
     c.gear.push({ ...bowGear(), id: 'c1a50001', name: `${BOW_NAME} String`, from: 'emberhold:clashunit/Quiver', handles: [] })
-    const keys = slotByName(c, 'Walk')!.adjustments.find((a): a is Extract<Adjustment, { kind: 'keys' }> => a.kind === 'keys')!
-    keys.gear = { ...keys.gear, c1a50001: keys.gear![BOW] }
+    const walk = slotByName(c, 'Walk')!
+    walk.gear = { ...walk.gear, c1a50001: walk.gear![BOW] }
     writeVariant(fx, c)
     const spec = { ...fx.spec, character: c.id, clips: ['Walk'] }
     expect(failing(unitChecks({ unit: 'clashunit', spec, character: c })).map(x => x.rule)).toEqual(['bone-names'])

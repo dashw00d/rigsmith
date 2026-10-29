@@ -10,13 +10,14 @@ import { describe, expect, it } from 'vitest'
 import { captureRest, retarget } from './retarget.ts'
 import {
   bonePoseAt, bonesOf, buildEdit, carrierGrip, editNameOf, frameAt, frameSolve, fromHere, gripName, handleMisses, handOn, handPoseSource, keyFor, legsOf, letGoFrames,
-  mergeWindows, parseWindows, reachGoals, saveIntoSlotCommands, saveToSlotCommands, toHere, unretarget, windowsText, withoutGearKeys, type EditBody, type GearRig,
+  mergeWindows, parseWindows, reachGoals, saveIntoSlotCommands, saveToSlotCommands, toHere, unretarget, windowsText, withoutGearKeys, type EditBody, type GearRig, type PlayedAs,
 } from './clipedit.ts'
 import { handleRef } from './hands.ts'
 import { makeCharacter, makeGear, makeSlot } from '../model/fixtures.ts'
 import { frameTimes } from './keys.ts'
 import { BODY, createBodySolver, FOLLOW, PoseModel, seedOf, type BodySolveOptions, type BodySolver, type BodyState, type HandGoal, type PoseModelData } from './posespace.ts'
-import type { Adjustment, Character, ClipKey, Gear, Handle, Quat, Slot } from '../model/types.ts'
+import type { Adjustment, Character, ClipEvent, ClipKey, Gear, Handle, Quat, Slot } from '../model/types.ts'
+import { resolveTime } from '../model/timemap.ts'
 
 const g = globalThis as Record<string, unknown>
 g.self ??= globalThis
@@ -211,39 +212,45 @@ describe('names', () => {
 describe('saving an edit to its slot', () => {
   const adjustments: Adjustment[] = [
     { id: 'g', kind: 'ground', enabled: true, lift: 0.02 },
-    { id: 'b', kind: 'blowTiming', enabled: true, at: 0.45 },
-    { id: 'p', kind: 'pace', enabled: false, like: 'walk' },
     { id: 'h', kind: 'handPose', enabled: true, hand: 'Left', pose: 'clip', windows: [[0.5, 1]], gear: 'bow' },
     { id: 'hh', kind: 'handleHold', enabled: true, gear: 'bow', handle: 'draw', windows: [[0.2, 0.6]] },
-    { id: 'k', kind: 'keys', enabled: true, bones: { Spine: [{ u: 0.5, q: [0, 0, 0, 1] }] } },
+    { id: 'o', kind: 'handPose', enabled: false, hand: 'Right', pose: 'default', windows: [[0, 0.1]] },
   ]
-  const slot: Slot = { id: 's1', name: 'Attack', clip: { id: 'mixamo-Slash' }, speed: 1.4, loop: false, inPlace: true, adjustments }
+  const slot: Slot = {
+    id: 's1', name: 'Attack', clip: { id: 'mixamo-Slash' }, speed: 1.4, loop: false, inPlace: true, adjustments,
+    time: { fit: { enabled: true, at: 0.45 }, pace: { enabled: false, like: 'walk' } }, bones: { Spine: [{ u: 0.5, q: [0, 0, 0, 1] }] },
+    events: [{ id: 'e', name: 'swing', u: 0.6 }],
+  }
+  // (as it played: the fit kept the second half of its source, the blow it measured landing at 45 %)
+  const played: PlayedAs = { time: resolveTime({ seconds: 1, speed: 1, kept: [0.5, 1] }), events: [{ id: 'e', name: 'swing', t: 0.2 }, { id: 'hit', name: 'hit', t: 0.45 }] }
   const keys = { bow: [{ u: 0, q: [0, 0, 0, 1] as [number, number, number, number], p: [0, 0, 0] as [number, number, number] }] }
   let n = 0
   const newId = (): string => `new${++n}`
 
-  it('as it plays: one fill at speed 1, baked kinds gone, ground and windows kept, gear keys from the edit', () => {
-    const [cmd] = saveToSlotCommands(slot, 'plays', { id: 'custom-Attack_Edit' }, { loop: false, gearKeys: keys, newId })
-    expect(cmd).toMatchObject({ type: 'slot.fill', id: 's1', clip: { id: 'custom-Attack_Edit' }, speed: 1, loop: false, inPlace: true, keepAdjustments: false })
-    const kept = (cmd as { adjustments: Adjustment[] }).adjustments
-    // (the disabled pace played no part: it stays as it was)
-    expect(kept.map(a => a.id)).toEqual(['g', 'p', 'h', 'hh', 'k'])
-    expect(kept.find(a => a.id === 'k')).toEqual({ id: 'k', kind: 'keys', enabled: true, gear: keys })
+  it('as it plays: one fill at speed 1 with no time of its own, ground kept, hands and events where they played, gear keys from the edit', () => {
+    const [cmd] = saveToSlotCommands(slot, 'plays', { id: 'custom-Attack_Edit' }, { loop: false, gearKeys: keys, newId, played })
+    expect(cmd).toEqual({
+      type: 'slot.fill', id: 's1', clip: { id: 'custom-Attack_Edit' }, speed: 1, loop: false, inPlace: true, keepAdjustments: false,
+      adjustments: [
+        adjustments[0],
+        { ...adjustments[1], windows: [[0, 1]] },
+        // (clipped to what played)
+        { ...adjustments[2], windows: [[0, expect.closeTo(0.2, 12)]] },
+        // (switched off it played no part: it stays as it was)
+        adjustments[3],
+      ],
+      gear: { bow: { keys: keys.bow } },
+      events: [{ id: 'e', name: 'swing', u: 0.2 }, { id: 'hit', name: 'hit', u: 0.45 }],
+    })
   })
 
-  it('as it plays, no gear moved: the keys on bones are baked and go', () => {
-    const [cmd] = saveToSlotCommands(slot, 'plays', { id: 'x' }, { loop: true, gearKeys: {}, newId })
-    expect((cmd as { adjustments: Adjustment[] }).adjustments.map(a => a.kind)).toEqual(['ground', 'pace', 'handPose', 'handleHold'])
-  })
-
-  it('the clip alone: speed and adjustments kept, gear the edit moved keyed on top', () => {
-    const [cmd] = saveToSlotCommands(slot, 'alone', { id: 'x' }, { loop: false, gearKeys: keys, newId })
-    expect(cmd).toMatchObject({ type: 'slot.fill', id: 's1', speed: 1.4, keepAdjustments: true })
-    expect((cmd as { adjustments: Adjustment[] }).adjustments).toEqual([{ id: expect.stringMatching(/^new/) as unknown as string, kind: 'keys', enabled: true, gear: keys }])
+  it('the clip alone: its speed, time, settings and events kept, gear the edit moved keyed on top', () => {
+    const [cmd] = saveToSlotCommands(slot, 'alone', { id: 'x' }, { loop: false, gearKeys: keys, newId, played })
+    expect(cmd).toEqual({ type: 'slot.fill', id: 's1', clip: { id: 'x' }, speed: 1.4, loop: false, inPlace: true, keepAdjustments: true, gear: { bow: { keys: keys.bow } } })
   })
 
   it('copies what it keeps (the slot may be live state)', () => {
-    const [cmd] = saveToSlotCommands(slot, 'plays', { id: 'x' }, { loop: false, gearKeys: {}, newId })
+    const [cmd] = saveToSlotCommands(slot, 'plays', { id: 'x' }, { loop: false, gearKeys: {}, newId, played })
     const ground = (cmd as { adjustments: Adjustment[] }).adjustments[0]
     expect(ground).toEqual(adjustments[0])
     expect(ground).not.toBe(adjustments[0])
@@ -253,31 +260,32 @@ describe('saving an edit to its slot', () => {
 describe('saving an edit as one of the character\'s slots', () => {
   const adjustments: Adjustment[] = [
     { id: 'g', kind: 'ground', enabled: true, lift: 0.02 },
-    { id: 'b', kind: 'blowTiming', enabled: true, at: 0.45 },
     { id: 'h', kind: 'handPose', enabled: true, hand: 'Left', pose: 'clip', windows: [[0.5, 1]], gear: 'bow' },
     { id: 'hh', kind: 'handleHold', enabled: true, gear: 'bow', handle: 'draw', windows: [[0.2, 0.6]] },
   ]
-  const idle: Slot = { id: 's1', name: 'Idle', clip: { id: 'mixamo-Idle' }, speed: 1.2, loop: true, inPlace: true, adjustments }
-  const run: Slot = { id: 's2', name: 'Run', clip: { id: 'mixamo-Run' }, speed: 1.5, loop: true, inPlace: true, adjustments: [{ id: 'old', kind: 'pace', enabled: true, like: 's1' }] }
+  const idle: Slot = { id: 's1', name: 'Idle', clip: { id: 'mixamo-Idle' }, speed: 1.2, loop: true, inPlace: true, adjustments, time: { fit: { enabled: true, at: 0.45 } } }
+  const run: Slot = { id: 's2', name: 'Run', clip: { id: 'mixamo-Run' }, speed: 1.5, loop: true, inPlace: true, adjustments: [], time: { pace: { enabled: true, like: 's1' } } }
   const keys = { bow: [{ u: 0, q: [0, 0, 0, 1] as [number, number, number, number] }] }
   let n = 0
   const newId = (): string => `new${++n}`
-  const o = { loop: false, inPlace: false, lift: 0.03, gearKeys: {}, newId }
+  const played: PlayedAs = { time: resolveTime({ seconds: 1, speed: 1 }), events: [{ id: 'hit', name: 'hit', t: 0.45 }] }
+  const o = { loop: false, inPlace: false, lift: 0.03, gearKeys: {}, newId, played }
 
   it('into the slot it was made on: as saving to it does', () => {
     expect(saveIntoSlotCommands({ slot: idle, name: 'Idle' }, { slot: idle, mode: 'plays' }, { id: 'x' }, o))
-      .toEqual(saveToSlotCommands(idle, 'plays', { id: 'x' }, { loop: true, gearKeys: {}, newId }).map(c => ({ ...c, adjustments: expect.any(Array) as unknown })))
+      .toEqual(saveToSlotCommands(idle, 'plays', { id: 'x' }, { loop: true, gearKeys: {}, newId, played }))
   })
 
-  it('over another slot: speed 1, its loop and in place kept, its old adjustments gone, the edit\'s ground, hands and gear keys', () => {
+  it('over another slot: speed 1, its loop and in place kept, what it had gone, the edit\'s ground, hands, events and gear keys', () => {
     const [cmd] = saveIntoSlotCommands({ slot: run, name: 'Run' }, { slot: idle, mode: 'plays' }, { id: 'custom-Run' }, { ...o, gearKeys: keys })
-    expect(cmd).toMatchObject({ type: 'slot.fill', id: 's2', clip: { id: 'custom-Run' }, speed: 1, loop: true, inPlace: true, keepAdjustments: false })
+    expect(cmd).toMatchObject({ type: 'slot.fill', id: 's2', clip: { id: 'custom-Run' }, speed: 1, loop: true, inPlace: true, keepAdjustments: false, gear: { bow: { keys: keys.bow } } })
     const got = (cmd as { adjustments: Adjustment[] }).adjustments
-    expect(got.map(a => a.kind)).toEqual(['ground', 'handPose', 'handleHold', 'keys'])
+    expect(got.map(a => a.kind)).toEqual(['ground', 'handPose', 'handleHold'])
     expect(got[0]).toMatchObject({ lift: 0.03 })
     // (copies with ids of their own: the slot they came from keeps its own)
     expect(got.every(a => /^new/.test(a.id))).toBe(true)
-    expect(got[1]).not.toBe(adjustments[2])
+    expect(got[1]).not.toBe(adjustments[1])
+    expect((cmd as { events: ClipEvent[] }).events).toEqual([{ id: expect.stringMatching(/^new/) as unknown as string, name: 'hit', u: 0.45 }])
   })
 
   it('a new clip held from a frame, or a library preview: a new slot by the name, the edit\'s loop and in place, no hands copied', () => {
@@ -289,24 +297,23 @@ describe('saving an edit as one of the character\'s slots', () => {
   it('a slot\'s clip alone saved over another: nothing of the slot it was made on comes with it', () => {
     const [cmd] = saveIntoSlotCommands({ slot: run, name: 'Run' }, { slot: idle, mode: 'alone' }, { id: 'x' }, { ...o, lift: 0 })
     expect((cmd as { adjustments: Adjustment[] }).adjustments).toEqual([])
+    expect(cmd).not.toHaveProperty('events')
   })
 })
 
 describe('an edit opened again from its record', () => {
   it('leaves out the slot\'s keys on the pieces the record\'s paths move again, and nothing else', () => {
     const k = (u: number): { u: number, q: [number, number, number, number] } => ({ u, q: [0, 0, 0, 1] })
-    const adjustments: Adjustment[] = [
-      { id: 'g', kind: 'ground', enabled: true, lift: 0.02 },
-      { id: 'k', kind: 'keys', enabled: true, bones: { Spine: [k(0.5)] }, gear: { spear: [k(0)], shield: [k(0.2)] } },
-    ]
-    expect(withoutGearKeys(adjustments, ['spear'])).toEqual([adjustments[0], { id: 'k', kind: 'keys', enabled: true, bones: { Spine: [k(0.5)] }, gear: { shield: [k(0.2)] } }])
-    // (nothing left on it: it goes)
-    expect(withoutGearKeys([{ id: 'k', kind: 'keys', enabled: true, gear: { spear: [k(0)] } }], ['spear'])).toEqual([])
-    // (its bones' keys keep it)
-    expect(withoutGearKeys([{ id: 'k', kind: 'keys', enabled: true, bones: { Spine: [k(0.5)] }, gear: { spear: [k(0)] } }], ['spear'])).toEqual([{ id: 'k', kind: 'keys', enabled: true, bones: { Spine: [k(0.5)] } }])
-    expect(withoutGearKeys(adjustments, [])).toEqual(adjustments)
-    // (the slot's own list is left as it was)
-    expect((adjustments[1] as { gear?: object }).gear).toEqual({ spear: [k(0)], shield: [k(0.2)] })
+    const slot: Slot = {
+      id: 's', name: 'Attack', clip: { id: 'x' }, speed: 1, loop: false, inPlace: true, adjustments: [{ id: 'g', kind: 'ground', enabled: true, lift: 0.02 }],
+      bones: { Spine: [k(0.5)] }, gear: { spear: { keys: [k(0)] }, shield: { keys: [k(0.2)] }, axe: { keys: [k(0.1)], shown: [{ u: 0.5, shown: false }] } },
+    }
+    expect(withoutGearKeys(slot, ['spear', 'axe'])).toEqual({ ...slot, gear: { shield: { keys: [k(0.2)] }, axe: { shown: [{ u: 0.5, shown: false }] } } })
+    // (nothing left of its tracks: they go)
+    expect(withoutGearKeys({ ...slot, gear: { spear: { keys: [k(0)] } } }, ['spear'])).not.toHaveProperty('gear')
+    expect(withoutGearKeys(slot, [])).toBe(slot)
+    // (the slot is left as it was)
+    expect(slot.gear!.spear).toEqual({ keys: [k(0)] })
   })
 })
 

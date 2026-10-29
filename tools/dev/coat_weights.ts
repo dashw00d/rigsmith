@@ -305,7 +305,7 @@ if (reportPath !== undefined) writeFileSync(reportPath, JSON.stringify({ id, gap
 
 if (apply) {
   const server = `http://localhost:${process.env.RIGSMITH_PORT ?? 5180}`
-  const headers = { 'content-type': 'application/json', 'x-rigsmith': '1', 'x-rigsmith-by': 'coat weights tool', 'x-rigsmith-schema': '2' }
+  const headers = { 'content-type': 'application/json', 'x-rigsmith': '1', 'x-rigsmith-by': 'coat weights tool', 'x-rigsmith-schema': '3' }
   const payload = { edits: edits.map(({ v, top }) => ({ mesh: 0, vertex: v, weights: top.map(([b, x]) => [bones[b], Math.round(x * 1e5) / 1e5]) })) }
   const res = await fetch(`${server}/api/characters/${id}/weights`, { method: 'PUT', headers, body: JSON.stringify(payload) })
   if (!res.ok) throw new Error(`not applied (${res.status}): ${await res.text()}`)

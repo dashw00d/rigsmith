@@ -42,7 +42,7 @@ describe('the Ship checks', () => {
   it('warns of an attack without blow timing', () => {
     const c = makeRigged({ clips: [makeSlot({ id: 'a', name: 'Attack', loop: false })] })
     expect(rule(unitChecks({ unit: 'x', spec: spec({ clips: ['Attack'] }), character: c }), 'blow')[0].status).toBe('warn')
-    c.clips[0].adjustments.push({ id: 'b', kind: 'blowTiming', enabled: true, at: 0.45 })
+    c.clips[0].time = { fit: { enabled: true, at: 0.45 } }
     expect(rule(unitChecks({ unit: 'x', spec: spec({ clips: ['Attack'] }), character: c }), 'blow')).toEqual([])
   })
 
@@ -79,14 +79,16 @@ describe('the Ship checks', () => {
       id: 'bow', name: 'Bow', from: 'emberhold:archer/Bow',
       handles: [{ id: 'p1', name: 'Draw', kind: 'pull', hand: 'Right', pull: { bone: 'RightHand', grip: [0, 0, 0], rest: [0, 0, 0] } }],
     })
-    const keys = { id: 'k', kind: 'keys' as const, enabled: true, gear: { bow: [{ u: 0, q: [0, 0, 0, 1] as [number, number, number, number] }] } }
-    const c = makeRigged({ clips: [makeSlot({ adjustments: [keys] })], gear: [bow] })
+    const keys = [{ u: 0, q: [0, 0, 0, 1] as [number, number, number, number] }]
+    const c = makeRigged({ clips: [makeSlot({ gear: { bow: { keys } } })], gear: [bow] })
     expect([...keyedGear(c, ['Idle'])]).toEqual(['bow'])
     expect(gearBones(c, ['Idle']).map(x => x.bone)).toEqual(['Prop_Bow', 'Prop_Bow_Draw'])
     expect(rule(unitChecks({ unit: 'x', spec: spec(), character: c }), 'bone-names')[0].status).toBe('pass')
     // (a piece named so its keyed bone is another's pull bone)
     const clash = gameGear({ id: 'b2', name: 'Bow Draw', from: 'emberhold:archer/Bow Draw' })
-    const both = makeRigged({ clips: [makeSlot({ adjustments: [{ ...keys, gear: { ...keys.gear, b2: keys.gear.bow } }] })], gear: [bow, clash] })
+    const both = makeRigged({ clips: [makeSlot({ gear: { bow: { keys }, b2: { keys } } })], gear: [bow, clash] })
+    // (a muted piece's keys don't play: it gets no bone of its own)
+    expect([...keyedGear(makeRigged({ clips: [makeSlot({ gear: { bow: { keys } }, muted: ['gear:bow'] })], gear: [bow] }), ['Idle'])]).toEqual([])
     expect(rule(unitChecks({ unit: 'x', spec: spec(), character: both }), 'bone-names')[0].text).toContain('Two bones would be named Prop_Bow_Draw')
   })
 

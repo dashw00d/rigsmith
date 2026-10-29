@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { failing, gearBones, unitChecks, type Check } from '../../src/engine/checks.ts'
 import { makeRigged } from '../../src/model/fixtures.ts'
 import { hierarchyOf, slotByName } from '../../src/model/select.ts'
-import type { Adjustment, Character, Gear, Mount } from '../../src/model/types.ts'
+import type { Character, Gear, Mount } from '../../src/model/types.ts'
 import type { UnitSpec } from '../../src/model/unit.ts'
 
 const rule = (checks: Check[], r: string): Check[] => checks.filter(x => x.rule === r)
@@ -21,8 +21,8 @@ function clashing (c: Character, keyed = true): Character {
     attach: { kind: 'bone', bone: 'Spine2', place: { position: [0, 1.5, -0.12], rotation: [0, 0, 0], scale: 1 } }, handles: [],
   })
   if (keyed) {
-    const keys = slotByName(c, 'Walk')!.adjustments.find((a): a is Extract<Adjustment, { kind: 'keys' }> => a.kind === 'keys')!
-    keys.gear = { ...keys.gear, c1a50001: [{ u: 0, q: [0, 0, 0, 1] }] }
+    const walk = slotByName(c, 'Walk')!
+    walk.gear = { ...walk.gear, c1a50001: { keys: [{ u: 0, q: [0, 0, 0, 1] }] } }
   }
   return c
 }

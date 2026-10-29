@@ -60,8 +60,9 @@ describe('unit export: the build record', () => {
     const key = { u: 0, q: [0, 0, 0, 1] as [number, number, number, number] }
     const slot: Slot = {
       id: 's1', name: 'Attack', clip: { id: 'mixamo-Shoot' }, speed: 1.2, loop: false, inPlace: true, note: 'why',
+      bones: { Spine: [key] }, gear: { g1: { keys: [key], shown: [{ u: 0.5, shown: false }] }, gone: { keys: [key] } }, muted: ['gear:g1', 'bones'],
+      time: { fit: { enabled: true, at: 0.45 } }, events: [{ id: 'e', name: 'hit', u: 0.5 }],
       adjustments: [
-        { id: 'a1', enabled: true, kind: 'keys', bones: { Spine: [key] }, gear: { g1: [key], gone: [key] } },
         { id: 'a2', enabled: false, kind: 'handleHold', gear: 'g1', handle: 'h1', windows: [[0.2, 0.5]] },
         { id: 'a3', enabled: true, kind: 'handPose', hand: 'Left', pose: 'clip', gear: 'g1' },
         { id: 'a4', enabled: true, kind: 'ground', lift: 0.1 },
@@ -71,8 +72,9 @@ describe('unit export: the build record', () => {
     const [out] = recordSlots(c, [slot])
     expect(out).toEqual({
       ...before,
+      gear: { GearBow: { keys: [key], shown: [{ u: 0.5, shown: false }] }, gone: { keys: [key] } },
+      muted: ['gear:GearBow', 'bones'],
       adjustments: [
-        { id: 'a1', enabled: true, kind: 'keys', bones: { Spine: [key] }, gear: { GearBow: [key], gone: [key] } },
         { id: 'a2', enabled: false, kind: 'handleHold', gear: 'GearBow', handle: 'h1', windows: [[0.2, 0.5]] },
         { id: 'a3', enabled: true, kind: 'handPose', hand: 'Left', pose: 'clip', gear: 'GearBow' },
         { id: 'a4', enabled: true, kind: 'ground', lift: 0.1 },

@@ -2,12 +2,14 @@
 // times its hits, a walk retimed to another's pace, a hand's fist taken from a clip's most closed moment. The one bake
 // (src/engine/bake.ts) runs these in its fixed order; every measurement leaves the bones as they were.
 import * as THREE from 'three'
-import type { Adjustment, Side } from '../model/types.ts'
+import { fitBlow, fitRange, heldSeconds, sourceOfTime, warps } from '../model/timemap.ts'
+import type { BlowFit, Side, SlotTime } from '../model/types.ts'
 import { frameTimes } from './keys.ts'
 import { holdFactor } from './pulls.ts'
 
-/** What a blowTiming adjustment says (src/model/types.ts). */
-export type BlowTiming = Pick<Extract<Adjustment, { kind: 'blowTiming' }>, 'at' | 'blowU' | 'late' | 'hand' | 'window'>
+/** What a blow fit says (src/model/types.ts SlotTime fit), with the blow picked by hand as a phase of the clip before
+ * the fit (`blowU`: the slot's hit event, src/model/timemap.ts phaseBeforeFit); unset: the hand's fastest moment. */
+export type BlowTiming = Pick<BlowFit, 'at' | 'late' | 'hand' | 'window'> & { blowU?: number }
 
 // (the finger chains a fist's closedness is read from; the thumb curls across, not closed like these)
 const CHAINS = ['Index', 'Middle', 'Ring', 'Pinky']
@@ -99,6 +101,26 @@ export function cut (clip: THREE.AnimationClip, start: number, end: number, name
   return new THREE.AnimationClip(name, end - start, tracks)
 }
 
+/** The source with a slot's retime markers and holds laid in (src/model/timemap.ts: the warp, then each hold's pose
+ * held), on KEY_FPS frames; the source itself when it has neither. Before the speed. */
+export function warpClip (clip: THREE.AnimationClip, time: SlotTime | undefined): THREE.AnimationClip {
+  if (!warps(time)) return clip
+  const D = clip.duration
+  const duration = D + heldSeconds(time)
+  const times = frameTimes(duration)
+  // (the source second each frame shows: past the source's end its last pose)
+  const at = times.map(t => Math.min(1, Math.max(0, sourceOfTime(t, { seconds: D, time }))) * D)
+  const tracks = clip.tracks.map(t => {
+    const size = t.getValueSize()
+    const interpolant = (t as unknown as { createInterpolant: () => THREE.Interpolant }).createInterpolant()
+    const values: number[] = []
+    for (const s of at) values.push(...Array.from(interpolant.evaluate(s) as ArrayLike<number>).slice(0, size))
+    const Track = t.constructor as new (name: string, times: number[], values: number[]) => THREE.KeyframeTrack
+    return new Track(t.name, times, values)
+  })
+  return new THREE.AnimationClip(clip.name, duration, tracks)
+}
+
 /** The clip played `speed` times as fast (the same clip at 1). */
 export function retime (clip: THREE.AnimationClip, speed: number): THREE.AnimationClip {
   if (speed === 1) return clip
@@ -168,22 +190,13 @@ export function holdFist (clip: THREE.AnimationClip, pose: Map<string, THREE.Qua
 /** The attack cut so its blow lands at `at` of it (or `window` seconds around the blow). Leaves the bones as they were. */
 export function blowCut (root: THREE.Object3D, clip: THREE.AnimationClip, s: BlowTiming): { clip: THREE.AnimationClip, blow: number, kept: [number, number] } {
   let blow: number
-  if (s.blowU !== undefined) {
-    // (kept a frame inside the clip: a blow on its first or last frame would cut it down to nothing)
-    const edge = Math.min(1 / 30, clip.duration / 4)
-    blow = Math.min(clip.duration - edge, Math.max(edge, Math.min(1, Math.max(0, s.blowU)) * clip.duration))
-  } else {
+  if (s.blowU !== undefined) blow = fitBlow(s.blowU, clip.duration)
+  else {
     const restore = saveBones(root)
     blow = blowTime(root, clip, s.hand ?? 'RightHand')
     restore()
   }
-  let start = 0; let end = clip.duration
-  if (s.window !== undefined) {
-    start = Math.max(0, blow - s.at * s.window)
-    end = Math.min(clip.duration, start + s.window)
-  } else if (blow / clip.duration < s.at) end = Math.min(clip.duration, blow / s.at)
-  else if (s.late === 'hold') end = blow / s.at    // (past its end: the last pose held there)
-  else start = Math.max(0, (blow - s.at * end) / (1 - s.at))
+  const [start, end] = fitRange(blow, clip.duration, s)
   return { clip: cut(clip, start, end), blow, kept: [start, end] }
 }
 

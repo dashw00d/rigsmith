@@ -21,7 +21,9 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { humanJoints, makeRigged } from '../../src/model/fixtures.ts'
 import { DEFAULT_FIST } from '../../src/model/select.ts'
 import { humanHierarchy } from '../../src/model/skeletons.ts'
+import { slotFromV2 } from '../../src/model/migrate.ts'
 import type { Character, ClipKey, FingerLevel, Gear, Joints, Placement, Quat, Slot, Vec3 } from '../../src/model/types.ts'
+import type { V2Slot } from '../../src/model/v2.ts'
 import type { UnitSpec } from '../../src/model/unit.ts'
 
 export const UNIT = 'testunit'
@@ -107,7 +109,14 @@ export function bowGear (): Gear {
 }
 
 /** The slots: the unit's four, and a trial. */
+/** The slots, written as schema 2 had them (phases of each clip as it plays) and moved into source time as the
+ * migration moves them (src/model/migrate.ts slotFromV2; test-walk is 1 s long): what the contract checks is that the
+ * unit plays them where they were set. */
 export function fixtureSlots (): Slot[] {
+  return v2FixtureSlots().map((s, i) => slotFromV2(s, { characterId: CHARACTER, index: i, times: { seconds: 1 }, strict: true }))
+}
+
+function v2FixtureSlots (): V2Slot[] {
   return [
     {
       id: 'a0000001', name: 'Idle', clip: { id: 'test-idle' }, speed: 1, loop: true, inPlace: true,

@@ -2,8 +2,8 @@
 // each passed or failed in words, so a unit is fixed before its export stops on it. What only the export can measure
 // (a clip's feet and hips, the budget after the gear's own triangles) is said as such. Pure: a unit's entry (with the
 // game's defaults under it) and its characters in, the list out.
-import { hierarchyOf, phaseOf, safeName, slotByName } from '../model/select.ts'
-import type { Adjustment, Character, Gear } from '../model/types.ts'
+import { gearKeysOf, hierarchyOf, isMuted, phaseOf, safeName, slotByName } from '../model/select.ts'
+import type { Character, Gear } from '../model/types.ts'
 import type { UnitSpec } from '../model/unit.ts'
 import { DEFAULT_LODS, gearLeftOut, HIT_AT, meshNameOf, STANDS, STEPS } from './contract.ts'
 
@@ -32,12 +32,13 @@ export function leftOut (g: Gear): string | null {
     : g.attach.kind === 'bone' && g.attach.legacyFrame !== undefined ? 'still placed in the old catalog frame (place it in Gear)' : null)
 }
 
-/** The gear ids the unit's clips key (their enabled keys adjustments): each gets a Prop_ bone of its own. */
+/** The gear ids the unit's clips key (their gear tracks' keys that play): each gets a Prop_ bone of its own. */
 export function keyedGear (c: Character, clips: string[]): Set<string> {
   const out = new Set<string>()
   for (const name of clips) {
     const slot = slotByName(c, name)
-    for (const a of slot?.adjustments ?? []) if (a.enabled && a.kind === 'keys') for (const id of Object.keys(a.gear ?? {})) out.add(id)
+    if (slot === undefined) continue
+    for (const id of Object.keys(gearKeysOf(slot))) if (!isMuted(slot, 'gear', id)) out.add(id)
   }
   return out
 }
@@ -102,7 +103,7 @@ export function unitChecks (i: UnitCheckInput): Check[] {
     add('motion', 'info', `Checked when exported: ${[steps.length > 0 ? `${list(steps)} must step` : '', stands.length > 0 ? `${list(stands)} must stand` : ''].filter(Boolean).join('; ')}`)
   }
   const attack = slotByName(c, 'Attack')
-  if (clips.includes('Attack') && attack !== undefined && !attack.adjustments.some((a: Adjustment) => a.enabled && a.kind === 'blowTiming')) {
+  if (clips.includes('Attack') && attack !== undefined && attack.time?.fit?.enabled !== true) {
     add('blow', 'warn', `Attack has no blow timing: the game lands each hit at ${Math.round(HIT_AT * 100)} % of the clip`)
   }
 

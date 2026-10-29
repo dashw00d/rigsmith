@@ -84,7 +84,7 @@ const bow: Gear = {
 
 function character (clips: Slot[] = [], patch: Partial<Character> = {}): Character {
   return {
-    schema: 2, id: 'c1', name: 'Test', createdAt: 0, updatedAt: 0, version: 1, revision: 0, files: { rigged: 'rigged.glb' }, status: 'rigged',
+    schema: 3, id: 'c1', name: 'Test', createdAt: 0, updatedAt: 0, version: 1, revision: 0, files: { rigged: 'rigged.glb' }, status: 'rigged',
     source: { file: 'source/original.glb', originalName: 'test.glb', bytes: 1, kind: 'mesh', scale: 1, warnings: [], stats: { vertices: 30, triangles: 0, height: 1.8, meshes: 1, bones: 16 } },
     skeleton: { template: 'human', fingerLevel: 'full', overrides: {} },
     skin: { locked: false },
@@ -97,15 +97,21 @@ function character (clips: Slot[] = [], patch: Partial<Character> = {}): Charact
 const slot = (adjustments: Adjustment[], patch: Partial<Slot> = {}): Slot =>
   ({ id: 'attack', name: 'Attack', clip: { id: 'raw' }, speed: 2, loop: false, inPlace: false, adjustments, ...patch })
 
-/** Every kind of adjustment once: the blow at 3/4 of the sped clip, landing at half of the cut; the hand open in the
- * first 30 % of the final clip; a lift; a turn on the spine; the spear moved. */
+/** Everything once: the blow (its hit) at 3/4 of the source, landing at half of the cut; the hand open in the first
+ * 30 % of the final clip; a lift; a turn on the spine; the spear moved; a swing. Every time is source time: the cut
+ * keeps the second half of the source, so a played phase v is source 0.5 + v / 2. */
 const ATTACK: Adjustment[] = [
-  { id: 'keys', kind: 'keys', enabled: true, bones: { Spine: [{ u: 0, q: q4(about(X, 0.2)) }] }, gear: { spear: [{ u: 0, q: [0, 0, 0, 1], p: [0.1, 0, 0] }] } },
   { id: 'ground', kind: 'ground', enabled: true, lift: 0.1 },
-  { id: 'open', kind: 'handPose', enabled: true, hand: 'Right', pose: 'clip', windows: [[0, 0.3]] },
-  { id: 'blow', kind: 'blowTiming', enabled: true, at: 0.5, blowU: 0.75 },
-  { id: 'draw', kind: 'handleHold', enabled: true, gear: 'bow', handle: 'draw', windows: [[0.5, 0.8]] },
+  { id: 'open', kind: 'handPose', enabled: true, hand: 'Right', pose: 'clip', windows: [[0.5, 0.65]] },
+  { id: 'draw', kind: 'handleHold', enabled: true, gear: 'bow', handle: 'draw', windows: [[0.75, 0.9]] },
 ]
+const ATTACK_SETUP: Partial<Slot> = {
+  time: { fit: { enabled: true, at: 0.5 } },
+  bones: { Spine: [{ u: 0.5, q: q4(about(X, 0.2)) }] },
+  gear: { spear: { keys: [{ u: 0.5, q: [0, 0, 0, 1], p: [0.1, 0, 0] }] } },
+  events: [{ id: 'hit', name: 'hit', u: 0.75 }, { id: 'sw', name: 'swing', u: 0.55, to: 0.7, sound: 'mix:swing', bone: 'RightHand' }],
+}
+const attack = (patch: Partial<Slot> = {}): Slot => slot(ATTACK, { ...ATTACK_SETUP, ...patch })
 
 const at = (clip: THREE.AnimationClip, name: string, t: number): number[] => {
   const track = clip.tracks.find(x => x.name === name)
@@ -115,8 +121,8 @@ const at = (clip: THREE.AnimationClip, name: string, t: number): number[] => {
 const turn = (clip: THREE.AnimationClip, name: string, t: number): THREE.Quaternion => new THREE.Quaternion().fromArray(at(clip, name, t))
 
 describe('bakeSlot', () => {
-  it('runs speed, blow timing, hands, ground, keys and gear tracks in that order', async () => {
-    const s = slot(ATTACK)
+  it('runs speed, blow timing, hands, ground, keys, gear tracks and events in that order', async () => {
+    const s = attack()
     const baked = await bakeSlot(character([s]), s, context())
     const { clip } = baked
     expect(clip.name).toBe('Attack')
@@ -125,7 +131,7 @@ describe('bakeSlot', () => {
     expect(baked.cut?.uncut).toBeCloseTo(0.5)
     expect(baked.cut?.start).toBeCloseTo(0.25)
     expect(baked.cut?.blow).toBeCloseTo(0.375)
-    expect(baked.report.blow).toMatchObject({ kind: 'blow', clip: 'Attack' })
+    expect(baked.report.fit).toMatchObject({ kind: 'blow', clip: 'Attack', blowU: 0.75 })
     // (the window is a phase of the cut clip: at 10 % the clip's own hand, 0.5 + 0.05 rad of the raw turn)
     expect(turn(clip, 'RightHandIndex2.quaternion', 0.025).angleTo(about(X, 0.55))).toBeLessThan(1e-3)
     expect(turn(clip, 'RightHandIndex2.quaternion', 0.225).angleTo(about(Z, 1))).toBeLessThan(1e-3)
@@ -138,12 +144,59 @@ describe('bakeSlot', () => {
     // (the spear's key moves it in its placed, scaled frame)
     expect(at(clip, 'Spear_place.position', 0.1)[0]).toBeCloseTo(0.4)
     expect(baked.gearKeys).toEqual({ spear: [{ u: 0, q: [0, 0, 0, 1], p: [0.1, 0, 0] }] })
-    expect(baked.pulls).toEqual([{ gear: 'bow', handle: 'draw', bone: 'RightHand', windows: [[0.5, 0.8]] }])
+    expect(baked.boneKeys.Spine.map(k => k.u)).toEqual([0])
+    expect(baked.pulls.map(p => ({ ...p, windows: p.windows.map(w => w.map(x => +x.toFixed(9))) }))).toEqual([{ gear: 'bow', handle: 'draw', bone: 'RightHand', windows: [[0.5, 0.8]] }])
     expect(baked.raw).toBe(LIBRARY.raw)
+    // (the events where the final clip plays them: the hit where the fit landed it)
+    expect(baked.events.map(e => ({ ...e, t: +e.t.toFixed(9), ...(e.to !== undefined ? { to: +e.to.toFixed(9) } : {}) }))).toEqual([
+      { id: 'sw', name: 'swing', t: 0.1, to: 0.4, sound: 'mix:swing', bone: 'RightHand' },
+      { id: 'hit', name: 'hit', t: 0.5 },
+    ])
+    // (the time map it played by: source <-> played)
+    expect(baked.time.toPlayed(0.75)).toBeCloseTo(0.5, 12)
+    expect(baked.time.toSource(0)).toBeCloseTo(0.5, 12)
+  })
+
+  it('reports the blow it measured as the hit when the slot has no hit of its own', async () => {
+    const s = attack({ events: undefined })
+    const baked = await bakeSlot(character([s]), s, context())
+    expect(baked.events.map(e => [e.id, e.name, +e.t.toFixed(6)])).toEqual([['hit', 'hit', 0.5]])
+    expect(baked.report.fit).toMatchObject({ blowU: undefined })
+    const muted = await bakeSlot(character([s]), { ...attack(), muted: ['events'] }, context())
+    expect(muted.events).toEqual([])
+  })
+
+  it('keeps its keys and windows on the same moments of the source when the timing changes', async () => {
+    // (the fit off: the whole source plays, and the key at source 0.5 is half way through it)
+    const s = attack({ time: { fit: { enabled: false, at: 0.5 } } })
+    const baked = await bakeSlot(character([s]), s, context())
+    expect(baked.clip.duration).toBeCloseTo(0.5)
+    expect(baked.gearKeys.spear[0].u).toBe(0.5)
+    expect(baked.pulls[0].windows).toEqual([[0.75, 0.9]])
+    expect(baked.events.map(e => e.t)).toEqual([0.55, 0.75])
+  })
+
+  it('lays in holds and retime markers before the speed, keys staying on their moments', async () => {
+    // (a 1 s source held 0.5 s at 0.25, at speed 2: 0.75 s played)
+    const held = slot([], { time: { holds: [{ id: 'h', u: 0.25, seconds: 0.5 }] }, gear: { spear: { keys: [{ u: 0.5, q: [0, 0, 0, 1] }] } } })
+    const a = await bakeSlot(character([held]), held, context(), { skip: ['hands'] })
+    expect(a.clip.duration).toBeCloseTo(0.75)
+    expect(a.gearKeys.spear[0].u).toBeCloseTo(1 / 1.5, 9)
+    // (the source's pose at 0.25 all through the hold: 0.125 s to 0.375 s at speed 2)
+    const still = turn(LIBRARY.raw, 'RightHandIndex2.quaternion', 0.25)
+    for (const t of [0.15, 0.25, 0.35]) expect(turn(a.unkeyed, 'RightHandIndex2.quaternion', t).angleTo(still)).toBeLessThan(1e-3)
+    expect(turn(a.unkeyed, 'RightHandIndex2.quaternion', 0.5).angleTo(turn(LIBRARY.raw, 'RightHandIndex2.quaternion', 0.5))).toBeLessThan(1e-3)
+    const warped = slot([], { speed: 1, time: { markers: [{ id: 'm', u: 0.5, to: 0.25 }] } })
+    const b = await bakeSlot(character([warped]), warped, context(), { skip: ['hands'] })
+    expect(b.clip.duration).toBeCloseTo(1)
+    // (source 0.5 plays at 0.25 s: on its frames, the first half of the source twice as fast, the rest slower)
+    expect(turn(b.clip, 'RightHandIndex2.quaternion', 0.2).angleTo(turn(LIBRARY.raw, 'RightHandIndex2.quaternion', 0.4))).toBeLessThan(1e-3)
+    expect(turn(b.clip, 'RightHandIndex2.quaternion', 0.6).angleTo(turn(LIBRARY.raw, 'RightHandIndex2.quaternion', 0.5 + 0.35 / 0.75 * 0.5))).toBeLessThan(1e-3)
+    expect(b.time.toPlayed(0.5)).toBeCloseTo(0.25, 12)
   })
 
   it('plays the clip alone with skip all: speed 1, no hands, no adjustments, gear at its place', async () => {
-    const s = slot(ATTACK)
+    const s = attack()
     const baked = await bakeSlot(character([s]), s, context(), { skip: 'all' })
     expect(baked.clip.duration).toBeCloseTo(1)
     expect(baked.cut).toBeUndefined()
@@ -153,11 +206,12 @@ describe('bakeSlot', () => {
     expect(baked.hands).toEqual({ Left: [], Right: [] })
     expect(baked.gearKeys).toEqual({})
     expect(baked.pulls).toEqual([])
+    expect(baked.events).toEqual([])
     expect(at(baked.clip, 'Spear_place.position', 0.5)[0]).toBeCloseTo(0.2)
   })
 
   it('leaves out the kinds it is told to', async () => {
-    const s = slot(ATTACK)
+    const s = attack()
     const c = character([s])
     const slow = await bakeSlot(c, s, context(), { skip: ['speed'] })
     expect(slow.cut?.uncut).toBeCloseTo(1)
@@ -165,16 +219,17 @@ describe('bakeSlot', () => {
     const open = await bakeSlot(c, s, context(), { skip: ['hands'] })
     expect(turn(open.clip, 'RightHandIndex2.quaternion', 0.225).angleTo(about(X, 0.95))).toBeLessThan(1e-3)
     expect(open.hands).toEqual({ Left: [], Right: [] })
-    const plain = await bakeSlot(c, s, context(), { skip: ['blowTiming', 'keys', 'handleHold'] })
+    const plain = await bakeSlot(c, s, context(), { skip: ['fit', 'keys', 'handleHold'] })
     expect(plain.cut).toBeUndefined()
     expect(plain.clip.duration).toBeCloseTo(0.5)
     expect(turn(plain.clip, 'Spine.quaternion', 0.1).angleTo(new THREE.Quaternion())).toBeLessThan(1e-4)
     expect(plain.gearKeys).toEqual({})
     expect(plain.pulls).toEqual([])
     expect(at(plain.clip, 'Spear_place.position', 0.1)[0]).toBeCloseTo(0.2)
-    const off = await bakeSlot(c, { ...s, adjustments: ATTACK.map(a => ({ ...a, enabled: false })) }, context())
+    const off = await bakeSlot(c, { ...s, adjustments: ATTACK.map(a => ({ ...a, enabled: false })), time: { fit: { enabled: false, at: 0.5 } }, muted: ['bones', 'gear'] }, context())
     expect(off.cut).toBeUndefined()
     expect(off.lift).toBe(0)
+    expect([off.boneKeys, off.gearKeys]).toEqual([{}, {}])
   })
 
   it('stands a clip on its flat feet with autoGround, on top of its lift', async () => {
@@ -187,7 +242,7 @@ describe('bakeSlot', () => {
 
   it('paces a slot like another (its planted foot as fast)', async () => {
     const walk: Slot = { id: 'walk', name: 'Walk', clip: { id: 'fast' }, speed: 1, loop: true, inPlace: false, adjustments: [] }
-    const carry: Slot = { id: 'carry', name: 'Carry', clip: { id: 'slow' }, speed: 1, loop: true, inPlace: false, adjustments: [{ id: 'pace', kind: 'pace', enabled: true, like: 'walk' }] }
+    const carry: Slot = { id: 'carry', name: 'Carry', clip: { id: 'slow' }, speed: 1, loop: true, inPlace: false, adjustments: [], time: { pace: { enabled: true, like: 'walk' } } }
     const baked = await bakeSlot(character([walk, carry]), carry, context())
     expect(baked.clip.duration).toBeCloseTo(0.5, 2)
     expect(baked.report.pace).toMatchObject({ kind: 'pace', like: 'Walk' })
@@ -232,8 +287,7 @@ describe('bakeRide', () => {
   it('seats the rider, fits him to the horse by whole cycles and repeats his windows and gear keys', async () => {
     const s = slot([
       { id: 'draw', kind: 'handleHold', enabled: true, gear: 'bow', handle: 'draw', windows: [[0.2, 0.4]] },
-      { id: 'keys', kind: 'keys', enabled: true, gear: { spear: [{ u: 0.5, q: [0, 0, 0, 1] }] } },
-    ], { loop: true })
+    ], { loop: true, gear: { spear: { keys: [{ u: 0.5, q: [0, 0, 0, 1] }] } }, events: [{ id: 'st', name: 'step.L', u: 0.25 }] })
     const ctx = context()
     const rider = await bakeSlot(character([s]), s, ctx)
     expect(rider.clip.duration).toBeCloseTo(0.5)
@@ -247,6 +301,7 @@ describe('bakeRide', () => {
     expect(ride.rider.clip.duration).toBeCloseTo(1)
     expect(ride.rider.pulls[0].windows).toEqual([[0.1, 0.2], [0.6, 0.7]])
     expect(ride.rider.gearKeys.spear.map(k => k.u)).toEqual([0.25, 0.75])
+    expect(ride.rider.events.map(e => e.t)).toEqual([0.125, 0.625])
     expect(at(ride.rider.clip, 'Hips.position', 0.7)).toEqual([0, 0.5, 0])
     // (float32 tracks: an angle from acos of a dot near 1 makes their rounding about 2e-4 rad)
     expect(turn(ride.rider.clip, 'LeftUpLeg.quaternion', 0.7).angleTo(about(X, -1))).toBeLessThan(1e-3)

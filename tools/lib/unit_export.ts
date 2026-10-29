@@ -14,6 +14,8 @@
 //   <models dir>/<unit>.glb          the character at its game height, soles at y = 0, facing +Z, a "root" bone above
 //                                    Hips, LOD0 within the budget plus <unit>_LOD1/_LOD2, tangents, one material
 //                                    "Main" (the game binds its own maps), its gear, the clips
+//   <models dir>/<unit>.events.json  each clip's loop, length and events as exported (docs/motion-plan.md §6): what
+//                                    the game times hits, sounds and spawns by
 //   <work dir>/<unit>/base.*         the character's colour texture (the game's map build reads it)
 //   <work dir>/<unit>/skeleton.json  every joint in game space, and each hand's grip
 //   <work dir>/<unit>/rigsmith.json  the build record (src/model/unit.ts BuildRecord)
@@ -38,8 +40,8 @@ import { holdFactor } from '../../src/engine/pulls.ts'
 import { pelvisName } from '../../src/engine/retarget.ts'
 import { retime, sample, stride } from '../../src/engine/timing.ts'
 import { gearById, slotByName } from '../../src/model/select.ts'
-import type { Adjustment, Character, ClipKey, Gear, HandPose, Mount, Slot } from '../../src/model/types.ts'
-import type { BuildRecord, BuiltClip, BuiltCompanion, BuiltGear, CompanionSpec, UnitSpec } from '../../src/model/unit.ts'
+import type { Character, ClipKey, Gear, HandPose, Mount, Slot } from '../../src/model/types.ts'
+import type { BuildRecord, BuiltClip, BuiltCompanion, BuiltGear, CompanionSpec, UnitEvent, UnitEvents, UnitSpec } from '../../src/model/unit.ts'
 import { gearSkin, pullHandles, pullSkin, type PullHandle } from './gearskin.ts'
 import { character, isBone, load, nodeClipSource, ROOT, settings } from './node3d.ts'
 
@@ -77,6 +79,8 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   // Its clips as the viewer bakes them, on the character in its own units (the export keys its own gear bones, below).
   const baked = new Map<string, BakedSlot>()
   for (const slot of slots) baked.set(slot.name, await bakeSlot(c, slot, me.ctx, { gearNodes: false }))
+  // (as each slot plays alone, before a ride fits it: what the record says of its keys and holds)
+  const alone = new Map(baked)
   const audit = readAudit(o.workspace)
   const clipReport: Record<string, BuiltClip> = {}
   for (const slot of slots) clipReport[slot.name] = clipRecord(c, slot, baked.get(slot.name)!, audit, warn)
@@ -266,7 +270,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     parts.push({ geometry: geo, material: mats.length === 1 ? mats[0] : mats, name, pulled: pulls.length > 0 ? new Set(pullBones.filter(pb => pb.gear === g).map(pb => bones.indexOf(pb.bone))) : undefined })
     gearReport[name] = {
       bone: a.bone, ...shown, propBone: joint !== index ? bones[joint].name : undefined, mesh: sha256(readFileSync(file)), kind, group: g.swapSet,
-      pulls: pulls.length > 0 ? pulls.map(h => ({ id: h.id, name: h.name, bone: h.pull.bone, holds: holdsOf(c, g, h) })) : undefined,
+      pulls: pulls.length > 0 ? pulls.map(h => ({ id: h.id, name: h.name, bone: h.pull.bone, holds: holdsOf(alone, g, h) })) : undefined,
       painted,
     }
   }
@@ -520,8 +524,14 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   const rigged = readFileSync(me.file)
   const image = baseImage(rigged)
   if (image !== null) writeFileSync(path.join(srcDir, `base.${image.ext}`), image.bytes)
+  // (next to the GLB, what the game times its hits, sounds and spawns by)
+  const events = eventsFile(unit, slots, clips, baked, {
+    walk: ride !== null ? compReport!.walkStride : walkStride === null ? null : round(walkStride, 3),
+    run: ride !== null ? compReport!.runStride ?? null : runStride === null ? null : round(runStride, 3),
+  })
+  writeFileSync(path.join(o.modelsDir, `${unit}.events.json`), JSON.stringify(events, null, 1) + '\n')
   const record: BuildRecord = {
-    schema: 2,
+    schema: 3,
     unit,
     generator: 'rigsmith tools/game_export.ts',
     run: o.runToken ?? null,
@@ -540,6 +550,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     texture: image === null ? null : { file: `base.${image.ext}`, sha256: sha256(image.bytes) },
     rigged: { file: path.relative(o.workspace, me.file), sha256: sha256(rigged) },
     slots: recordSlots(c, slots),
+    events,
     hands: c.hands.hold ?? {},
     gearIds: Object.fromEntries(c.gear.map(g => [g.id, {
       name: g.name, from: g.from, handles: g.handles.length > 0 ? Object.fromEntries(g.handles.map(h => [h.id, h.name])) : undefined,
@@ -630,13 +641,30 @@ export function recordSlots (c: Pick<Character, 'gear'>, slots: Slot[]): Slot[] 
   const name = (id: string): string => gearById(c, id)?.name ?? id
   return slots.map(slot => {
     const copy = structuredClone(slot)
+    if (copy.gear !== undefined) copy.gear = byGearName(c, copy.gear)
+    if (copy.muted !== undefined) copy.muted = copy.muted.map(m => (m.startsWith('gear:') ? `gear:${name(m.slice(5))}` : m))
     for (const a of copy.adjustments) {
-      if (a.kind === 'keys' && a.gear !== undefined) a.gear = byGearName(c, a.gear)
       if (a.kind === 'handleHold') a.gear = name(a.gear)
       if (a.kind === 'handPose' && a.gear !== undefined) a.gear = name(a.gear)
     }
     return copy
   })
+}
+
+/** The events file (src/model/unit.ts UnitEvents): each exported clip's loop, length and events as it was exported
+ * (`clips`, in the slots' order; `baked`: after a ride's fit, which repeated a loop's events per cycle). */
+export function eventsFile (unit: string, slots: Slot[], clips: THREE.AnimationClip[], baked: Map<string, BakedSlot>, strides: { walk: number | null, run: number | null }): UnitEvents {
+  const out: UnitEvents = { unit, schema: 1, clips: {}, walkStride: strides.walk, runStride: strides.run }
+  slots.forEach((slot, i) => {
+    const b = baked.get(slot.name)
+    const events: UnitEvent[] = (b?.events ?? []).filter(e => e.t >= -1e-6 && e.t <= 1 + 1e-6).map(e => ({
+      t: round(Math.min(1, Math.max(0, e.t)), 4), name: e.name,
+      ...(e.to !== undefined ? { to: round(Math.min(1, Math.max(0, e.to)), 4) } : {}),
+      ...(e.sound !== undefined ? { sound: e.sound } : {}), ...(e.bone !== undefined ? { bone: e.bone } : {}),
+    }))
+    out.clips[slot.name] = { loop: slot.loop, seconds: round(clips[i].duration, 3), events }
+  })
+  return out
 }
 
 // ---- inside ---------------------------------------------------------------------------------------------------------
@@ -702,11 +730,12 @@ function clipRecord (c: Character, slot: Slot, b: BakedSlot, audit: Audit, warn:
     else if (x.kind === 'pace') Object.assign(r, { pacedLike: x.like, retimed: x.retimed })
   }
   if (b.lift !== 0) r.lift = b.lift
-  const keys = slot.adjustments.find((a): a is Extract<Adjustment, { kind: 'keys' }> => a.enabled && a.kind === 'keys')
-  if (keys !== undefined) {
-    const props = byGearName(c, keys.gear)
-    r.keys = { bones: counted(keys.bones), props: counted(props) }
-    r.keyData = { bones: keys.bones, props }
+  // (the keys as they played: phases of this clip, as game_import has always read them)
+  const bones = Object.keys(b.boneKeys).length > 0 ? b.boneKeys : undefined
+  const props = byGearName(c, Object.keys(b.gearKeys).length > 0 ? b.gearKeys : undefined)
+  if (bones !== undefined || props !== undefined) {
+    r.keys = { bones: counted(bones), props: counted(props) }
+    r.keyData = { bones, props }
   }
   return r
 }
@@ -716,11 +745,11 @@ function builtFrom (slot: Slot): Pick<BuiltClip, 'clip' | 'url' | 'loop' | 'inPl
   return { clip: slot.clip.id, url: slot.clip.url, loop: slot.loop, inPlace: slot.inPlace, speed: slot.speed }
 }
 
-/** The windows (by slot name) each slot holds a pull handle in. */
-function holdsOf (c: Character, g: Gear, h: PullHandle): Record<string, Array<[number, number]>> {
+/** The windows (by slot name, phases of each exported clip as it plays alone) each slot holds a pull handle in. */
+function holdsOf (baked: Map<string, BakedSlot>, g: Gear, h: PullHandle): Record<string, Array<[number, number]>> {
   const out: Record<string, Array<[number, number]>> = {}
-  for (const slot of c.clips) {
-    for (const a of slot.adjustments) if (a.enabled && a.kind === 'handleHold' && a.gear === g.id && a.handle === h.id) out[slot.name] = a.windows
+  for (const [name, b] of baked) {
+    for (const p of b.pulls) if (p.gear === g.id && p.handle === h.id) out[name] = p.windows
   }
   return out
 }

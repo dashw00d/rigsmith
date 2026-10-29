@@ -1,16 +1,18 @@
 // Keyframed tweaks on a clip, applied by the one bake (src/engine/bake.ts) for the viewer and the game export alike: the
 // clip's ground height (its lift), turns (and the Hips' moves) on bones, and moves and turns of gear. Applied last, on
-// the clip as it plays: after its speed, timing and hands. Keys sit at a phase of the clip (u: 0 its start, 1 its end),
-// so a clip played faster keeps them on the same moment of the motion; a looping clip's keys wrap round, a one-shot's
-// hold their first and last values.
+// the clip as it plays: after its speed, timing and hands. The keys handed in here are at phases of the clip as it plays
+// (u: 0 its start, 1 its end): a slot stores them against its source and the bake maps them (src/model/timemap.ts), so a
+// clip retimed keeps them on the same moment of the motion. A looping clip's keys wrap round, a one-shot's hold their
+// first and last values. Each key says how its span to the next tweens (types.ts Ease; unset: smooth).
 import * as THREE from 'three'
-import type { ClipKey } from '../model/types.ts'
+import type { ClipKey, Ease } from '../model/types.ts'
 
 export const KEY_FPS = 30
 
-/** The tweak at phase `u`: keys tweened smoothly (a cubic through them, Catmull-Rom tangents: a motion passes through
- * a key without stopping), wrapping round on a loop; a one-shot eases out of its first key and into its last, and holds
- * them beyond. */
+/** The tweak at phase `u`: keys tweened span by span as each key's `ease` says (unset 'smooth': a cubic through them,
+ * Catmull-Rom tangents, so a motion passes through a key without stopping; 'linear'; 'ease' stops at both keys; 'step'
+ * and 'hold' keep the key's value until the next), wrapping round on a loop; a one-shot eases out of its first key and
+ * into its last, and holds them beyond. */
 export function sampleKeys (keys: ClipKey[], u: number, loop: boolean): { q: THREE.Quaternion, p: THREE.Vector3 } {
   if (keys.length === 0) return { q: new THREE.Quaternion(), p: new THREE.Vector3() }
   const ks = [...keys].sort((a, b) => a.u - b.u)
@@ -19,10 +21,10 @@ export function sampleKeys (keys: ClipKey[], u: number, loop: boolean): { q: THR
   const out = (v: { q: number[], p: number[] }): { q: THREE.Quaternion, p: THREE.Vector3 } => ({ q: new THREE.Quaternion(...v.q as [number, number, number, number]).normalize(), p: new THREE.Vector3(...v.p as [number, number, number]) })
   if (n === 1) return out(val(ks[0]))
   // the segment: keys i and i+1 (indices past the ends wrap round a loop, a cycle on)
-  const at = (i: number): { u: number, v: { q: number[], p: number[] } } => {
+  const at = (i: number): { u: number, v: { q: number[], p: number[] }, ease: Ease } => {
     const cycle = Math.floor(i / n)
     const k = ks[((i % n) + n) % n]
-    return { u: k.u + cycle, v: val(k) }
+    return { u: k.u + cycle, v: val(k), ease: k.ease ?? 'smooth' }
   }
   let i: number
   let x = u
@@ -36,20 +38,35 @@ export function sampleKeys (keys: ClipKey[], u: number, loop: boolean): { q: THR
   const k0 = at(i - 1); const k1 = at(i); const k2 = at(i + 1); const k3 = at(i + 2)
   const span = Math.max(k2.u - k1.u, 1e-9)
   const f = Math.min(1, Math.max(0, (x - k1.u) / span))
-  // tangents (per unit of the segment): Catmull-Rom over uneven spacing; none at a one-shot's ends (it eases)
-  const ends = !loop
-  const first = ends && i === 0; const last = ends && i + 1 === n - 1
+  if (k1.ease === 'step' || k1.ease === 'hold') return out(k1.v)
   // (quaternions on one side of the sphere, as the segment's first)
   const align = (q: number[]): number[] => (q[0] * k1.v.q[0] + q[1] * k1.v.q[1] + q[2] * k1.v.q[2] + q[3] * k1.v.q[3] < 0 ? q.map(c => -c) : q)
   const q0 = align(k0.v.q); const q1 = k1.v.q; const q2 = align(k2.v.q); const q3 = align(k3.v.q)
-  const tangent = (a: number[], b: number[], ua: number, ub: number, none: boolean): number[] => none ? a.map(() => 0) : a.map((c, j) => (b[j] - c) / Math.max(ub - ua, 1e-9) * span)
+  if (k1.ease === 'linear') return out({ q: q1.map((c, j) => c + (q2[j] - c) * f), p: k1.v.p.map((c, j) => c + (k2.v.p[j] - c) * f) })
   const h00 = 2 * f ** 3 - 3 * f ** 2 + 1; const h10 = f ** 3 - 2 * f ** 2 + f; const h01 = -2 * f ** 3 + 3 * f ** 2; const h11 = f ** 3 - f ** 2
+  if (k1.ease === 'ease') return out({ q: q1.map((c, j) => h00 * c + h01 * q2[j]), p: k1.v.p.map((c, j) => h00 * c + h01 * k2.v.p[j]) })
+  // tangents (per unit of the segment): Catmull-Rom over uneven spacing; none at a one-shot's ends (it eases)
+  const ends = !loop
+  const first = ends && i === 0; const last = ends && i + 1 === n - 1
+  const tangent = (a: number[], b: number[], ua: number, ub: number, none: boolean): number[] => none ? a.map(() => 0) : a.map((c, j) => (b[j] - c) / Math.max(ub - ua, 1e-9) * span)
   const hermite = (p0: number[], p1: number[], p2: number[], p3: number[]): number[] => {
     const m1 = tangent(p0, p2, k0.u, k2.u, first)
     const m2 = tangent(p1, p3, k1.u, k3.u, last)
     return p1.map((c, j) => h00 * c + h10 * m1[j] + h01 * p2[j] + h11 * m2[j])
   }
   return out({ q: hermite(q0, q1, q2, q3), p: hermite(k0.v.p, k1.v.p, k2.v.p, k3.v.p) })
+}
+
+/** The key whose span holds phase `u` with ease 'hold' (the bone held where that key is), else null. */
+export function holdingKey (keys: ClipKey[], u: number, loop: boolean): ClipKey | null {
+  if (!keys.some(k => k.ease === 'hold')) return null
+  const ks = [...keys].sort((a, b) => a.u - b.u)
+  let k: ClipKey | undefined
+  if (u < ks[0].u) k = loop ? ks[ks.length - 1] : undefined
+  else k = ks.findLast(x => x.u <= u)
+  // (a one-shot's last key holds nothing past it: the clip plays on under it)
+  if (k === undefined || (!loop && k === ks[ks.length - 1])) return null
+  return k.ease === 'hold' ? k : null
 }
 
 /** A clip's frames as times: as many as KEY_FPS gives it, spread evenly from its start to its very end (a clip whose
@@ -103,10 +120,13 @@ export function applyBoneKeys (clip: THREE.AnimationClip, bones: Record<string, 
     for (const t of times) {
       const u = clip.duration > 0 ? t / clip.duration : 0
       const { q, p } = sampleKeys(keys, u, loop)
-      const base = new THREE.Quaternion().fromArray(trackValue(qTrack, t, 4, r.q.toArray()))
+      // (a 'hold' span: the clip's own turn of the bone stopped where its key is)
+      const held = holdingKey(keys, u, loop)
+      const tb = held === null ? t : Math.min(clip.duration, Math.max(0, held.u * clip.duration))
+      const base = new THREE.Quaternion().fromArray(trackValue(qTrack, tb, 4, r.q.toArray()))
       qs.push(...base.multiply(q).toArray())
       if (moves) {
-        const bp = new THREE.Vector3().fromArray(trackValue(pTrack, t, 3, r.p.toArray()))
+        const bp = new THREE.Vector3().fromArray(trackValue(pTrack, tb, 3, r.p.toArray()))
         ps.push(...bp.addScaledVector(p, moveScale).toArray())
       }
     }

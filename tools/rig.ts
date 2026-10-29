@@ -25,7 +25,7 @@
 //   node tools/rig.ts unit NAME JSON|null               set one unit's entry (in Rigsmith: the game is untouched)
 //   node tools/rig.ts export UNIT ...                   export units into the game (its units.json entry, its build)
 //
-// WHO: a character id, its name, or the game unit it is. Reads come from the workspace's files (as schema 2, however
+// WHO: a character id, its name, or the game unit it is. Reads come from the workspace's files (as schema 3, however
 // old the file); changes need the server (the app: RIGSMITH_URL, default port 5180). The game's repo is written by
 // `export` alone.
 import { createHash } from 'node:crypto'
@@ -37,7 +37,9 @@ import type { Command } from '../src/model/command-types.ts'
 import { pct, r3, refText, windowsText } from '../src/model/commands/common.ts'
 import { newId } from '../src/model/ids.ts'
 import { gearById, heightOf, phaseOf, slotById } from '../src/model/select.ts'
-import type { Adjustment, Character, Gear, Handle, HandPose, HandPoseRef, Job, JournalEntry, Mount, Side, Slot } from '../src/model/types.ts'
+import type { Character, Gear, Handle, HandPose, HandPoseRef, Job, JournalEntry, Mount, Side, Slot } from '../src/model/types.ts'
+import type { V2Adjustment } from '../src/model/v2.ts'
+import { slotToV2 } from '../src/model/migrate.ts'
 import type { GameSpec, UnitSpec } from '../src/model/unit.ts'
 import { character as readOne, ROOT, settings as readSettings, WORKSPACE } from './lib/node3d.ts'
 
@@ -95,7 +97,7 @@ async function call<T> (method: string, url: string, body?: unknown): Promise<T>
   try {
     r = await fetch(SERVER + url, {
       method,
-      headers: { 'content-type': 'application/json', 'x-rigsmith': '1', 'x-rigsmith-schema': '2', 'x-rigsmith-by': BY },
+      headers: { 'content-type': 'application/json', 'x-rigsmith': '1', 'x-rigsmith-schema': '3', 'x-rigsmith-by': BY },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch {
@@ -143,13 +145,15 @@ async function follow (job: Job, done: (j: Job) => string): Promise<void> {
 
 const r3s = (v: readonly number[] | undefined): string => (v ?? []).map(r3).join(', ')
 
-function keysText (c: Character, a: Extract<Adjustment, { kind: 'keys' }>): string {
+function keysText (c: Character, a: Extract<V2Adjustment, { kind: 'keys' }>): string {
   const all = [...Object.entries(a.bones ?? {}), ...Object.entries(a.gear ?? {}).map(([id, k]) => [gearById(c, id)?.name ?? id, k] as const)]
   return `keys ${all.map(([n, k]) => `${n} (${k.map(x => pct(x.u)).join(' ')})`).join(', ')}`
 }
 
-/** An adjustment in words. Ground in the game's centimetres when the character is a unit (else a share of its height). */
-function adjustmentText (c: Character, a: Adjustment, game: number | null): string {
+/** An adjustment in words (the slot's fit, pace and keys as the adjustments they were: src/model/migrate.ts slotToV2;
+ * their times source time). Ground in the game's centimetres when the character is a unit (else a share of its
+ * height). */
+function adjustmentText (c: Character, a: V2Adjustment, game: number | null): string {
   const gearName = (id: string): string => gearById(c, id)?.name ?? id
   switch (a.kind) {
     case 'ground': {
@@ -175,7 +179,11 @@ function slotLines (c: Character, s: Slot, game: number | null, pad: number): st
   const out = [`  ${s.name.padEnd(pad)} ${bits.join(' · ')}`]
   const indent = `  ${''.padEnd(pad)} `
   if (s.note !== undefined) out.push(`${indent}why: ${s.note}`)
-  for (const a of s.adjustments) out.push(`${indent}[${a.enabled ? 'on ' : 'off'}] ${adjustmentText(c, a, game)}${a.note !== undefined ? ` · ${a.note}` : ''}`)
+  for (const a of slotToV2(s).adjustments) out.push(`${indent}[${a.enabled ? 'on ' : 'off'}] ${adjustmentText(c, a, game)}${a.note !== undefined ? ` · ${a.note}` : ''}`)
+  for (const m of s.time?.markers ?? []) out.push(`${indent}retimed: ${pct(m.u)} of the source plays at ${pct(m.to)}`)
+  for (const h of s.time?.holds ?? []) out.push(`${indent}held ${r3(h.seconds)} s at ${pct(h.u)}`)
+  for (const e of s.events ?? []) out.push(`${indent}event ${e.name} at ${pct(e.u)}${e.to !== undefined ? `-${pct(e.to)}` : ''}${e.sound !== undefined ? ` (${e.sound})` : ''}${e.bone !== undefined ? ` on ${e.bone}` : ''}`)
+  if (s.muted !== undefined) out.push(`${indent}switched off: ${s.muted.join(', ')}`)
   return out
 }
 
@@ -494,7 +502,7 @@ async function main (): Promise<void> {
         keepAdjustments: same,
       }
       for (const line of await run(c, [fill])) console.log(`${c.name}: ${line}`)
-      if (was !== undefined && !same && was.adjustments.length > 0) console.log(`(a new clip: its ${was.adjustments.length} adjustments start again)`)
+      if (was !== undefined && !same && slotToV2(was).adjustments.length > 0) console.log(`(a new clip: its ${slotToV2(was).adjustments.length} adjustments start again)`)
       return
     }
     case 'units': {

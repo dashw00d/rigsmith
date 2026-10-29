@@ -31,6 +31,24 @@ describe('sampleKeys', () => {
   it('is no change with no keys', () => { expect(sampleKeys([], 0.5, true).q.w).toBe(1) })
 })
 
+describe('sampleKeys: each span\'s ease', () => {
+  const three = (ease?: ClipKey['ease']): ClipKey[] => [{ u: 0, q: turn(0) }, { u: 0.5, q: turn(40), ...(ease !== undefined ? { ease } : {}) }, { u: 1, q: turn(80) }]
+  const at = (keys: ClipKey[], u: number): number => angle(sampleKeys(keys, u, false).q)
+  it('steps: the key until the next, then a jump', () => {
+    expect([at(three('step'), 0.6), at(three('step'), 0.99), at(three('step'), 1)]).toEqual([40, 40, 80])
+    expect(at(three('hold'), 0.75)).toBe(40)
+  })
+  it('runs straight on a linear span, eases out and in on an ease span', () => {
+    expect(at(three('linear'), 0.75)).toBe(60)
+    // (stopping at both keys: a quarter of the way in, an eased span is behind a straight one)
+    expect(at(three('ease'), 0.625)).toBeLessThan(at(three('linear'), 0.625))
+    expect(at(three('ease'), 0.75)).toBe(60)
+  })
+  it('leaves the spans before it as they were: a smooth span is the same with or without eases after it', () => {
+    expect(sampleKeys(three('step'), 0.25, false).q.toArray()).toEqual(sampleKeys(three(), 0.25, false).q.toArray())
+  })
+})
+
 describe('applyLift and applyBoneKeys', () => {
   const clip = new THREE.AnimationClip('c', 1, [
     new THREE.VectorKeyframeTrack('Hips.position', [0, 1], [0, 1, 0, 0, 1.2, 0]),
@@ -45,6 +63,16 @@ describe('applyLift and applyBoneKeys', () => {
     const keyed = applyBoneKeys(clip, { Arm: [{ u: 0, q: turn(30) }] }, false, () => ({ q: new THREE.Quaternion(), p: new THREE.Vector3() }))
     const t = keyed.tracks.find(x => x.name === 'Arm.quaternion')!
     expect(angle(new THREE.Quaternion().fromArray(Array.from(t.values.slice(0, 4))))).toBe(30)
+  })
+  it('holds the bone entirely over a hold span: the clip\'s own turn stopped at the key', () => {
+    // (the clip turns the arm 0 -> 60 degrees; a hold at 0.25 keeps it where the clip had it then until 0.75)
+    const turning = new THREE.AnimationClip('t', 1, [new THREE.QuaternionKeyframeTrack('Arm.quaternion', [0, 1], [...turn(0), ...turn(60)])])
+    const rest = (): { q: THREE.Quaternion, p: THREE.Vector3 } => ({ q: new THREE.Quaternion(), p: new THREE.Vector3() })
+    const keyed = applyBoneKeys(turning, { Arm: [{ u: 0.25, q: turn(0), ease: 'hold' }, { u: 0.75, q: turn(0) }] }, false, rest)
+    const t = keyed.tracks.find(x => x.name === 'Arm.quaternion')!
+    const at = (time: number): number => { const i = t.times.findIndex(x => Math.abs(x - time) < 1e-6); return angle(new THREE.Quaternion().fromArray(Array.from(t.values.slice(i * 4, i * 4 + 4)))) }
+    expect([at(0.5), at(0.7)]).toEqual([15, 15])
+    expect(at(0.9)).toBe(54)
   })
 })
 

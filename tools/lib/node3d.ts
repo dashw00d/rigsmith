@@ -11,7 +11,8 @@ import { CharacterView } from '../../src/engine/CharacterView.ts'
 import { clipUrl, isMixamoJoint, refUrl, type ClipSource, type SourceClip } from '../../src/engine/clips.ts'
 import { loadGlbFile } from '../../src/engine/headless.ts'
 import { captureRest, retarget, type RestSkeleton } from '../../src/engine/retarget.ts'
-import { migrateSettings, readCharacter } from '../../src/model/migrate.ts'
+import { measureClipTimes } from '../../src/engine/measure.ts'
+import { migrateSettings, migrateV1, readCharacter, type ClipTimes } from '../../src/model/migrate.ts'
 import type { Character, Settings } from '../../src/model/types.ts'
 
 export const ROOT = path.resolve(import.meta.dirname, '..', '..')
@@ -98,7 +99,8 @@ export function nodeClipSource (rest: RestSkeleton, workspace = WORKSPACE): Clip
   }
 }
 
-/** A character's record (workspace/characters/<id>/character.json), as schema 2 whatever schema the file is. */
+/** A character's record (workspace/characters/<id>/character.json), as schema 3 whatever schema the file is (an old
+ * file whose slots need their clips measured to move to schema 3 throws: run node tools/migrate.ts). */
 export function character (id: string, workspace = WORKSPACE): Character {
   const file = path.join(workspace, 'characters', id, 'character.json')
   if (!existsSync(file)) throw new Error(`no character ${id}`)
@@ -117,4 +119,19 @@ export async function body (id: string, workspace = WORKSPACE): Promise<Characte
   if (c.files.rigged === undefined) throw new Error(`${c.name} (${id}) is not rigged`)
   const { scene } = await load(path.join(workspace, 'characters', id, c.files.rigged))
   return new CharacterView(scene)
+}
+
+/** An old (schema 1 or 2) character's clips measured for its move to schema 3 (src/engine/measure.ts), on its rig as
+ * the bake measures them: `file` the record to read (default its character.json; tools/migrate.ts --check reads the
+ * character.v2.json kept). */
+export async function measureCharacter (id: string, o: { workspace?: string, file?: string, all?: boolean } = {}): Promise<{ times: Record<string, ClipTimes>, problems: string[] }> {
+  const workspace = o.workspace ?? WORKSPACE
+  const dir = path.join(workspace, 'characters', id)
+  const c = migrateV1(JSON.parse(readFileSync(o.file ?? path.join(dir, 'character.json'), 'utf8'))).character
+  const rigged = c.files.rigged
+  if (rigged === undefined || !existsSync(path.join(dir, rigged))) return { times: {}, problems: [`${c.name} has no rig to measure its clips on`] }
+  const view = new CharacterView((await load(path.join(dir, rigged))).scene)
+  if (view.rest === null) return { times: {}, problems: [`${c.name}'s ${rigged} has no skeleton`] }
+  const ctx = { rest: view.rest, posable: view.root, clips: nodeClipSource(view.rest, workspace), fps: 30, sharedPoses: settings(workspace).handPoses }
+  return await measureClipTimes(c, ctx, { all: o.all })
 }

@@ -1,13 +1,16 @@
 // What tools/migrate.ts --check asserts of a character migrated from v1 (docs/rebuild/DESIGN.md §2.3), as pure
 // functions of the v1 record and the schema 2 document: the effective skeleton is the old one, the detected joints
 // alone still cover the skeleton, and every slot's hands close on the same fist or pose (or none) as v1 closed them.
-// Also the hash list format --hashes reads and writes.
+// Also the hash list format --hashes reads and writes, and what it asserts of a schema 2 character moved to schema 3
+// (docs/motion-plan.md §5): every key, window and picked blow it had maps back to the phase it was at.
 import path from 'node:path'
 import { handAt, handLayers, type HandLayer } from '../../src/engine/hands.ts'
 import { holdFactor } from '../../src/engine/pulls.ts'
-import { DEFAULT_FIST, hierarchyOf, jointsOf } from '../../src/model/select.ts'
-import type { Character, HandPoseRef, Side, Vec3 } from '../../src/model/types.ts'
+import { v2TimeMap, type ClipTimes } from '../../src/model/migrate.ts'
+import { DEFAULT_FIST, hierarchyOf, hitOf, jointsOf } from '../../src/model/select.ts'
+import type { Character, HandPoseRef, Side, Vec3, Window } from '../../src/model/types.ts'
 import type { V1Character, V1GripScript } from '../../src/model/v1.ts'
+import type { V2Adjustment, V2Character, V2Window } from '../../src/model/v2.ts'
 
 const SIDES: Side[] = ['Left', 'Right']
 /** The migration keeps a joint as placed by hand when it moved more than this (src/model/migrate.ts). */
@@ -134,6 +137,61 @@ export function handProblems (v: V1Character, c: Character): string[] {
       }
     }
   })
+  return problems
+}
+
+// ---- schema 2 -> 3 -------------------------------------------------------------------------------------------------
+
+/** How near a phase must come back (it went through one multiply and add each way). */
+const PHASE = 1e-9
+
+/** The phase checks of a schema 2 character moved to schema 3: per slot, every key (bones and gear), every hand pose
+ * and handle hold window, mapped back through the cut schema 2 played it by (`times`, measured), lands where it was;
+ * a blow picked by hand became the hit at the same moment. What is wrong, in plain words (none: it passed). */
+export function phaseProblems (v: V2Character, c: Character, times: Record<string, ClipTimes>): string[] {
+  const problems: string[] = []
+  for (const was of v.clips) {
+    const now = c.clips.find(s => s.id === was.id)
+    if (now === undefined) { problems.push(`clip ${was.name}: gone`); continue }
+    const map = v2TimeMap(was, times[was.id])
+    if (map === null) { problems.push(`clip ${was.name}: its cut couldn't be measured`); continue }
+    const off = (a: number, b: number): boolean => !(Math.abs(map.toPlayed(a) - b) <= PHASE)
+    const keysOff = (what: string, before: Array<{ u: number }> | undefined, after: Array<{ u: number }> | undefined): void => {
+      const n = (before ?? []).length
+      if ((after ?? []).length !== n) { problems.push(`clip ${was.name}: ${what} had ${n} keys, now ${(after ?? []).length}`); return }
+      const bad = (before ?? []).filter((k, i) => off(after![i].u, k.u)).length
+      if (bad > 0) problems.push(`clip ${was.name}: ${bad} of ${what}'s keys moved`)
+    }
+    const windowsOff = (what: string, before: V2Window[] | undefined, after: Window[] | undefined): void => {
+      if (before === undefined && after === undefined) return
+      if (before === undefined || after === undefined || before.length !== after.length) { problems.push(`clip ${was.name}: ${what}'s windows changed in number`); return }
+      if (before.some((w, i) => off(after[i][0], w[0]) || off(after[i][1], w[1]))) problems.push(`clip ${was.name}: ${what}'s windows moved`)
+    }
+    for (const a of was.adjustments) {
+      switch (a.kind) {
+        case 'keys':
+          for (const [b, ks] of Object.entries(a.bones ?? {})) if (ks.length > 0) keysOff(b, ks, now.bones?.[b])
+          for (const [g, ks] of Object.entries(a.gear ?? {})) if (ks.length > 0) keysOff(`gear ${g}`, ks, now.gear?.[g]?.keys)
+          break
+        case 'handPose':
+        case 'handleHold': {
+          const mine = now.adjustments.find(x => x.id === a.id)
+          if (mine === undefined || mine.kind !== a.kind) { problems.push(`clip ${was.name}: ${a.kind} ${a.id} gone`); break }
+          windowsOff(`${a.kind} ${a.id}`, a.windows, (mine as Extract<typeof mine, { kind: 'handPose' | 'handleHold' }>).windows)
+          break
+        }
+        case 'blowTiming':
+          if (now.time?.fit === undefined || now.time.fit.at !== a.at || now.time.fit.enabled !== a.enabled) problems.push(`clip ${was.name}: its blow timing changed`)
+          if (a.blowU !== undefined && hitOf(now)?.u !== a.blowU) problems.push(`clip ${was.name}: its blow picked at ${a.blowU} isn't its hit`)
+          break
+        case 'pace':
+          if (now.time?.pace?.like !== a.like) problems.push(`clip ${was.name}: its pace changed`)
+          break
+        case 'ground':
+          if (!now.adjustments.some(x => x.kind === 'ground' && x.id === a.id && x.lift === (a as Extract<V2Adjustment, { kind: 'ground' }>).lift)) problems.push(`clip ${was.name}: its ground changed`)
+      }
+    }
+  }
   return problems
 }
 

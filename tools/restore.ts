@@ -40,7 +40,7 @@ try {
 
 try {
   if (dry || body.dryRun === true) {
-    console.log(JSON.stringify(dryRun(character(id), body), null, 1))
+    console.log(JSON.stringify(await dryRun(character(id), body), null, 1))
   } else {
     if (!args.includes(IGNORE_SERVER)) {
       const url = await runningServer()

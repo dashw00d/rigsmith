@@ -8,7 +8,10 @@
 // pose model (a person); without one (a creature, or the model not loaded) the hands reach their handles by IK alone.
 import * as THREE from 'three'
 import type { Command } from '../model/command-types.ts'
-import type { Adjustment, Character, ClipKey, ClipRef, Handle, HandPoseRef, Quat, Side, Slot, Vec3, Window } from '../model/types.ts'
+import type { Adjustment, Character, ClipEvent, ClipKey, ClipRef, GearTrack, Handle, HandPoseRef, Quat, Side, Slot, Vec3, Window } from '../model/types.ts'
+import { gearTracksOf } from '../model/select.ts'
+import { windowsToPlayed, type TimeMap } from '../model/timemap.ts'
+import type { BakedEvent } from './bake.ts'
 import { applyBoneKeys, frameTimes, KEY_FPS, sampleKeys } from './keys.ts'
 import { keepOffFloor, reach, setWorldQuaternion, type Leg, type NameOf } from './ik.ts'
 import { bodyBones, FOLLOW, knuckleGrip, type BodySolveOptions, type BodySolver, type BodyState, type HandGoal, type NaturalGoal, type SeedPose } from './posespace.ts'
@@ -830,28 +833,57 @@ export function editNameOf (name: string): string {
  * clip alone (none of them), or a new clip made from one frame. */
 export type EditMode = 'plays' | 'alone' | 'held'
 
+/** How the slot an edit was opened on played (its baked time map and events), what saving it as played needs: the
+ * saved clip IS that played clip, so whatever the slot stored against its old source moves to where it played. */
+export interface PlayedAs { time: TimeMap, events: BakedEvent[] }
+
+/** A slot's hand settings (hand poses, handle holds) and events laid on the clip as it played (`played`): the saved
+ * clip's own time. Copies, with fresh ids when `newId` is given. */
+function asPlayed (slot: Slot, played: PlayedAs | undefined, newId?: () => string): { adjustments: Adjustment[], events: ClipEvent[] } {
+  const map = played?.time
+  const fresh = (id: string): string => (newId === undefined ? id : newId())
+  const adjustments = (JSON.parse(JSON.stringify(slot.adjustments)) as Adjustment[]).flatMap((a): Adjustment[] => {
+    if (!a.enabled || (a.kind !== 'handPose' && a.kind !== 'handleHold')) return []
+    if (a.kind === 'handleHold') {
+      const windows = map === undefined ? a.windows : windowsToPlayed(map, a.windows)
+      return windows.length === 0 ? [] : [{ ...a, id: fresh(a.id), windows }]
+    }
+    if (a.windows === undefined) return [{ ...a, id: fresh(a.id) }]
+    const windows = map === undefined ? a.windows : windowsToPlayed(map, a.windows)
+    return windows.length === 0 ? [] : [{ ...a, id: fresh(a.id), windows }]
+  })
+  // (the events as they played, the blow the fit measured among them: the saved clip has no fit, its hit is an event)
+  const events = (played?.events ?? eventsOfSlot(slot)).filter(e => e.t >= 0 && e.t <= 1).map((e): ClipEvent => ({
+    id: newId !== undefined ? newId() : e.id, name: e.name, u: e.t,
+    ...(e.to !== undefined ? { to: Math.min(1, e.to) } : {}), ...(e.sound !== undefined ? { sound: e.sound } : {}), ...(e.bone !== undefined ? { bone: e.bone } : {}),
+  }))
+  return { adjustments, events }
+}
+
+const eventsOfSlot = (slot: Slot): BakedEvent[] => (slot.events ?? []).map(e => ({ ...e, t: e.u }))
+
 /**
  * The one batch that puts an edit, saved as library clip `clip`, into the slot it was made on (DESIGN.md §6 row 2).
- * Made 'as it plays' the edit has the slot's enabled adjustments in it, so by kind: the speed is baked (the slot plays
- * at 1); blow timing, pace and keys on bones are baked and go; ground stays (the saved frames had its lift taken out);
- * keys on gear are what the edit's gear does now (`gearKeys`, from the edited clip); hand poses and handle holds stay
- * (their windows are phases of the clip as it played, which is the saved clip). A disabled adjustment played no part,
- * so it stays as it is, but a disabled keys adjustment gives way to the edit's gear keys (a slot has one keys). Made on
- * 'the clip alone', the slot keeps its speed and adjustments, and gear the edit moved is keyed on top (merged per gear).
+ * Made 'as it plays' the edit is the slot's clip as it played (`played`: its time map and events), so the saved clip is
+ * played at speed 1 with no time map of its own (its speed, blow fit, pace, markers and holds are in it), its keys on
+ * bones baked in; the ground stays (the saved frames had its lift taken out); keys on gear are what the edit's gear does
+ * now (`gearKeys`, from the edited clip); hand poses, handle holds and events stay, moved to where they played (the
+ * saved clip's own time). Made on 'the clip alone', the slot keeps its speed, time, settings and events (the edited
+ * clip has the source's own time), and gear the edit moved is keyed on top (per gear).
  */
-export function saveToSlotCommands (slot: Slot, mode: Exclude<EditMode, 'held'>, clip: ClipRef, o: { loop: boolean, gearKeys: Record<string, ClipKey[]>, newId: () => string }): Command[] {
-  const moved = Object.keys(o.gearKeys).length > 0
+export function saveToSlotCommands (slot: Slot, mode: Exclude<EditMode, 'held'>, clip: ClipRef, o: { loop: boolean, gearKeys: Record<string, ClipKey[]>, newId: () => string, played?: PlayedAs }): Command[] {
+  const gear = gearTracksOf(o.gearKeys)
   if (mode === 'alone') {
-    const keys: Adjustment[] = moved ? [{ id: o.newId(), kind: 'keys', enabled: true, gear: o.gearKeys }] : []
-    return [{ type: 'slot.fill', id: slot.id, clip, speed: slot.speed, loop: o.loop, inPlace: slot.inPlace, keepAdjustments: true, adjustments: keys }]
+    return [{ type: 'slot.fill', id: slot.id, clip, speed: slot.speed, loop: o.loop, inPlace: slot.inPlace, keepAdjustments: true, ...(Object.keys(gear).length > 0 ? { gear } : {}) }]
   }
-  const baked = (a: Adjustment): boolean => a.enabled && (a.kind === 'blowTiming' || a.kind === 'pace' || a.kind === 'keys')
-  const kept = slot.adjustments.filter(a => !baked(a) && !(a.kind === 'keys' && moved))
-  const was = slot.adjustments.find(a => a.kind === 'keys')
-  const keys: Adjustment[] = moved ? [{ id: was?.id ?? o.newId(), kind: 'keys', enabled: true, gear: o.gearKeys }] : []
-  // (a copy: the slot may be live app state)
-  const copy = JSON.parse(JSON.stringify(kept)) as Adjustment[]
-  return [{ type: 'slot.fill', id: slot.id, clip, speed: 1, loop: o.loop, inPlace: slot.inPlace, keepAdjustments: false, adjustments: [...copy, ...keys] }]
+  const { adjustments, events } = asPlayed(slot, o.played)
+  const ground = slot.adjustments.filter(a => a.kind === 'ground').map(a => JSON.parse(JSON.stringify(a)) as Adjustment)
+  // (switched off, a hand setting played no part, so it stays as it was)
+  const off = slot.adjustments.filter(a => !a.enabled && a.kind !== 'ground').map(a => JSON.parse(JSON.stringify(a)) as Adjustment)
+  return [{
+    type: 'slot.fill', id: slot.id, clip, speed: 1, loop: o.loop, inPlace: slot.inPlace, keepAdjustments: false,
+    adjustments: [...ground, ...adjustments, ...off], ...(Object.keys(gear).length > 0 ? { gear } : {}), ...(events.length > 0 ? { events } : {}),
+  }]
 }
 
 /**
@@ -860,37 +892,40 @@ export function saveToSlotCommands (slot: Slot, mode: Exclude<EditMode, 'held'>,
  * the character as a replacement to attack or run"). The slot it was made on: as saveToSlotCommands puts it there. Any
  * other (a slot the game plays, a trial, or a new one by `target.name`) plays it as it was shown: at speed 1, its own
  * loop and in place kept (a new one: the edit's), what it had for its old clip gone, the ground the edit stood on
- * (`lift`), the gear keys the edit moved, and, made 'as it plays' on a slot, that slot's hand poses and handle holds
- * (copied: their windows are phases of the clip as it played, which is the saved clip).
+ * (`lift`), the gear keys the edit moved, and, made 'as it plays' on a slot, that slot's hand poses, handle holds and
+ * events where they played (`played`).
  */
 export function saveIntoSlotCommands (target: { slot: Slot | null, name: string }, from: { slot: Slot | null, mode: EditMode }, clip: ClipRef,
-  o: { loop: boolean, inPlace: boolean, lift: number, gearKeys: Record<string, ClipKey[]>, newId: () => string }): Command[] {
+  o: { loop: boolean, inPlace: boolean, lift: number, gearKeys: Record<string, ClipKey[]>, newId: () => string, played?: PlayedAs }): Command[] {
   const t = target.slot
-  if (t !== null && from.slot !== null && t.id === from.slot.id && from.mode !== 'held') return saveToSlotCommands(t, from.mode, clip, { loop: t.loop, gearKeys: o.gearKeys, newId: o.newId })
-  const hands = from.mode === 'plays' && from.slot !== null ? from.slot.adjustments.filter(a => a.enabled && (a.kind === 'handPose' || a.kind === 'handleHold')) : []
+  if (t !== null && from.slot !== null && t.id === from.slot.id && from.mode !== 'held') return saveToSlotCommands(t, from.mode, clip, { loop: t.loop, gearKeys: o.gearKeys, newId: o.newId, played: o.played })
+  const hands = from.mode === 'plays' && from.slot !== null ? asPlayed(from.slot, o.played, o.newId) : { adjustments: [], events: [] }
   const lift = Math.round(o.lift * 1e4) / 1e4
   const adjustments: Adjustment[] = [
     ...(Math.abs(lift) >= 1e-4 ? [{ id: o.newId(), kind: 'ground', enabled: true, lift } as Adjustment] : []),
-    // (copies, with ids of their own: the slot they came from may be live app state, and keeps its own)
-    ...(JSON.parse(JSON.stringify(hands)) as Adjustment[]).map(a => ({ ...a, id: o.newId() })),
-    ...(Object.keys(o.gearKeys).length > 0 ? [{ id: o.newId(), kind: 'keys', enabled: true, gear: o.gearKeys } as Adjustment] : []),
+    ...hands.adjustments,
   ]
-  if (t !== null) return [{ type: 'slot.fill', id: t.id, clip, speed: 1, loop: t.loop, inPlace: t.inPlace, keepAdjustments: false, adjustments, note: null }]
-  return [{ type: 'slot.fill', name: target.name, newId: o.newId(), clip, loop: o.loop, inPlace: o.inPlace, adjustments }]
+  const gear = gearTracksOf(o.gearKeys)
+  const tracks = { ...(Object.keys(gear).length > 0 ? { gear } : {}), ...(hands.events.length > 0 ? { events: hands.events } : {}) }
+  if (t !== null) return [{ type: 'slot.fill', id: t.id, clip, speed: 1, loop: t.loop, inPlace: t.inPlace, keepAdjustments: false, adjustments, ...tracks, note: null }]
+  return [{ type: 'slot.fill', name: target.name, newId: o.newId(), clip, loop: o.loop, inPlace: o.inPlace, adjustments, ...tracks }]
 }
 
-/** A slot's adjustments with its keys adjustment's keys on the pieces `gear` (by gear id) taken off, the adjustment
- * gone when nothing is left on it: an edit opened again from its record, whose paths for those pieces make that motion
- * again. Copies; the slot is left as it is. */
-export function withoutGearKeys (adjustments: readonly Adjustment[], gear: readonly string[]): Adjustment[] {
-  if (gear.length === 0) return [...adjustments]
-  return adjustments.flatMap((a): Adjustment[] => {
-    if (a.kind !== 'keys' || a.gear === undefined || !gear.some(g => a.gear![g] !== undefined)) return [a]
-    const left = Object.fromEntries(Object.entries(a.gear).filter(([g]) => !gear.includes(g)))
-    const next: Extract<Adjustment, { kind: 'keys' }> = { ...a, gear: left }
-    if (Object.keys(left).length === 0) delete next.gear
-    return next.bones === undefined && next.gear === undefined ? [] : [next]
-  })
+/** A slot with its keys on the pieces `gear` (by gear id) taken off its gear tracks (a track gone when nothing is left
+ * on it): an edit opened again from its record, whose paths for those pieces make that motion again. A copy; the slot
+ * is left as it is. */
+export function withoutGearKeys (slot: Slot, gear: readonly string[]): Slot {
+  if (gear.length === 0 || slot.gear === undefined) return slot
+  const tracks: Record<string, GearTrack> = {}
+  for (const [id, t] of Object.entries(slot.gear)) {
+    if (!gear.includes(id)) { tracks[id] = t; continue }
+    const rest = { ...t }
+    delete rest.keys
+    if (Object.keys(rest).length > 0) tracks[id] = rest
+  }
+  const out: Slot = { ...slot, gear: tracks }
+  if (Object.keys(tracks).length === 0) delete out.gear
+  return out
 }
 
 /** A handle name for `hand` on a piece not yet taken by its other handles: "Left grip", "Left grip 2"... */

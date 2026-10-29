@@ -1,16 +1,20 @@
-// Migrates the whole workspace to schema 2 (docs/rebuild/DESIGN.md §2.3) with the steps the server takes for a
-// character the first time it reads one (server/store.ts migrationContext and writeMigration): each
-// characters/*/character.json still at v1 is kept as character.v1.json (once), its old textures copied in as layers,
-// the document written and one 'migrate' journal entry made of its notes. settings.json keeps only what schema 2 has
-// (the old file kept as settings.v1.json, once). GLBs and weight_edits.json are only ever read.
+// Migrates the whole workspace to schema 3 (docs/rebuild/DESIGN.md §2.3, docs/motion-plan.md §5) with the steps the
+// server takes for a character the first time it reads one (server/store.ts migrationContext and writeMigration):
+// each characters/*/character.json still at v1 is kept as character.v1.json (once), one at v2 as character.v2.json
+// (once), its old textures copied in as layers, the clips of slots whose phases move into source time measured on the
+// rig (here, in this process), the document written and one 'migrate' journal entry made of its notes. settings.json
+// keeps only what schema 2 has (the old file kept as settings.v1.json, once). GLBs and weight_edits.json are only ever
+// read.
 //
 //   node tools/migrate.ts [--dry-run] [--check] [--hashes <file>] [--ignore-server]
 //
 //   --dry-run   say what it would do, write nothing
 //   --check     then check every character against its v1 record (the file, or the character.v1.json kept): its
 //               effective skeleton is the old one, its detected joints alone cover its skeleton, every slot's hands
-//               close on the same fist or pose (or none) as v1 closed them (tools/lib/migrate_check.ts); and that no
-//               GLB or painted-weights file changed during the run
+//               close on the same fist or pose (or none) as v1 closed them; against its v2 record (the file, or the
+//               character.v2.json kept): migrating it again gives its slots, and every key, window and picked blow
+//               maps back to the phase it played at (tools/lib/migrate_check.ts); and that no GLB or
+//               painted-weights file changed during the run
 //   --hashes    (implies --check) also compare those files with a sha256sum list whose paths are inside the
 //               workspace (`cd workspace && sha256sum characters/*/rigged.glb characters/*/weight_edits.json`); a
 //               list that doesn't exist yet is written, with the hashes from before the run
@@ -22,11 +26,13 @@ import { existsSync } from 'node:fs'
 import { copyFile, readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { stableJson } from '../src/model/entities.ts'
-import { migrate, readCharacter } from '../src/model/migrate.ts'
+import { migrate } from '../src/model/migrate.ts'
 import type { Character } from '../src/model/types.ts'
 import type { V1Character } from '../src/model/v1.ts'
+import type { V2Character } from '../src/model/v2.ts'
 import { CHARACTERS, getSettings, locked, migrationContext, saveSettings, WORKSPACE, writeMigration } from '../server/store.ts'
-import { formatHashes, handProblems, jointProblems, parseHashes } from './lib/migrate_check.ts'
+import { formatHashes, handProblems, jointProblems, parseHashes, phaseProblems } from './lib/migrate_check.ts'
+import { measureCharacter } from './lib/node3d.ts'
 import { IGNORE_SERVER, runningServer } from './lib/offline.ts'
 
 const USAGE = `usage: node tools/migrate.ts [--dry-run] [--check] [--hashes <file>] [${IGNORE_SERVER}]`
@@ -81,29 +87,33 @@ let checked = 0
 
 for (const id of ids) {
   const dir = path.join(CHARACTERS, id)
-  let v1: V1Character
+  // (what to check it against: its v1 record and its v2 one, where there are such)
+  let v1: V1Character | null
+  let v2: V2Character | null = null
   let c: Character
+  const read = async (name: string): Promise<Record<string, unknown> | null> =>
+    existsSync(path.join(dir, name)) ? JSON.parse(await readFile(path.join(dir, name), 'utf8')) as Record<string, unknown> : null
   try {
-    const raw = JSON.parse(await readFile(path.join(dir, 'character.json'), 'utf8')) as Record<string, unknown>
-    if (raw.schema === 2) {
+    const raw = (await read('character.json'))!
+    if (raw.schema === 3) {
       already++
-      const backup = path.join(dir, 'character.v1.json')
-      if (!existsSync(backup)) { console.log(`${id}: schema 2 already${check ? ' (no v1 record kept, nothing to check against)' : ''}`); continue }
-      console.log(`${id}: schema 2 already`)
+      console.log(`${id}: schema 3 already`)
       if (!check) continue
-      // (what the migration made of it: the same function, and the parts checked don't depend on the files)
-      v1 = JSON.parse(await readFile(backup, 'utf8')) as V1Character
-      c = readCharacter(v1)
+      c = raw as unknown as Character
+      v1 = await read('character.v1.json') as V1Character | null
+      v2 = await read('character.v2.json') as V2Character | null
+      if (v1 === null && v2 === null) { console.log('  (no older record kept, nothing to check against)'); continue }
     } else {
-      const { ctx, notes } = await migrationContext(id, raw)
+      const { ctx, notes } = await migrationContext(id, raw, async who => await measureCharacter(who))
       const out = migrate(raw, ctx)
       if (!dry) await locked(id, async () => await writeMigration(id, out, notes, 'migrate'))
       migrated++
-      console.log(`${id}: ${dry ? 'would migrate' : 'migrated'}`)
+      console.log(`${id}: ${dry ? 'would migrate' : 'migrated'} from schema ${out.from}`)
       for (const line of [...out.notes, ...notes]) console.log(`  ${line}`)
       if (dry) for (const op of out.fileOps) console.log(`  (would copy ${op.from} to ${op.to})`)
-      v1 = raw as unknown as V1Character
       c = out.character
+      if (out.from === 1) v1 = raw as unknown as V1Character
+      else { v2 = raw as unknown as V2Character; v1 = await read('character.v1.json') as V1Character | null }
     }
   } catch (error) {
     fail(id, message(error))
@@ -111,9 +121,21 @@ for (const id of ids) {
   }
   if (!check) continue
   try {
-    const joints = jointProblems(v1, c)
-    for (const line of joints.info) console.log(`  ${line}`)
-    for (const problem of [...joints.problems, ...handProblems(v1, c)]) fail(id, problem)
+    if (v1 !== null) {
+      // (what the migration made of the v1 record: the same function; the parts checked don't depend on the files)
+      const fromV1 = migrate(v1, {}, { strict: false }).character
+      const joints = jointProblems(v1, fromV1)
+      for (const line of joints.info) console.log(`  ${line}`)
+      for (const problem of [...joints.problems, ...handProblems(v1, fromV1)]) fail(id, `from v1: ${problem}`)
+    }
+    if (v2 !== null) {
+      const file = existsSync(path.join(dir, 'character.v2.json')) ? path.join(dir, 'character.v2.json') : undefined
+      const times = await measureCharacter(id, { file, all: true })
+      for (const p of times.problems) console.log(`  not measured: ${p}`)
+      const again = migrate(v2, { clipTimes: times.times }).character
+      if (stableJson(again.clips) !== stableJson(c.clips)) fail(id, 'migrating its v2 record again gives other slots')
+      for (const problem of phaseProblems(v2, c, times.times)) fail(id, `from v2: ${problem}`)
+    }
     checked++
   } catch (error) {
     fail(id, `the check failed: ${message(error)}`)
@@ -165,7 +187,7 @@ if (check) {
   }
 }
 
-console.log(`\n${migrated} ${dry ? 'to migrate' : 'migrated'}, ${already} schema 2 already${check ? `; ${checked} checked, ${before.size} files hashed` : ''}`)
+console.log(`\n${migrated} ${dry ? 'to migrate' : 'migrated'}, ${already} schema 3 already${check ? `; ${checked} checked, ${before.size} files hashed` : ''}`)
 if (failures.length > 0) {
   console.error(`\n${failures.length} problem${failures.length === 1 ? '' : 's'}:`)
   for (const line of failures) console.error(`  ${line}`)
