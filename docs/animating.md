@@ -202,9 +202,9 @@ clip playing, with its timing, keys, hands on gear, gear strips and events, is c
 brings it back), and plays from then on. Nothing new is written to the library: the clip stays the library clip it was,
 with your changes on top, exactly as the game will play it.
 
-**+ variant** (beside a game clip's name in Clips) copies it as `Attack 2` (then `Attack 3`...) and plays it to change.
-The game gets it as `Attack_2` and picks one of them at random each time (attacks and deaths); remove the slot to drop
-it.
+**+ variant** (beside Attack and Die in Clips) copies the clip as `Attack 2` (then `Attack 3`...) and plays it to
+change. The game gets it as `Attack_2` and picks one of them at random for each attack (or death); remove the slot to
+drop it.
 
 ## 12. Every shortcut
 

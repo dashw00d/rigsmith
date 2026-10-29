@@ -336,8 +336,10 @@ slot with a blowTiming. Who fills it:
   of the server) when `needsClipTimes(raw)`: an enabled blow fit and keys or windows on that slot.
 - `tools/migrate.ts` measures in its own process (`tools/lib/node3d.ts measureCharacter`).
 - Without it, `readCharacter` (strict: every tool, node3d's `character()`) throws "run node tools/migrate.ts (or open
-  Rigsmith)"; `migrate` without strict keeps that slot's phases unconverted with a note (the server when the measure
-  failed: the clip is missing, so it can't play either).
+  Rigsmith)"; `migrate` without strict keeps that slot's phases unconverted with a note only where the clip doesn't
+  exist (it can't play either). A measure that failed otherwise (the child crashed or timed out, its output unread, the
+  clip not loading) writes nothing: the character stays at v2, the error said, and the next read measures again
+  (`migrate.ts unmeasured`, server/store.ts migrationContext, tools/migrate.ts).
 - A v1 file goes straight to 3: v1 laid hand windows on before its blow cut, so its windows are source time already
   (only its keys move); schema 2 had kept them as they were with a "check them" note.
 - A schema 2 build record (restore, `tools/game_import.py`) is moved the same way, through the cut it records (its
@@ -613,3 +615,19 @@ baked clip), `src/app/motion/pose/**`, the easing UI (per span menu writing `eas
   `src/state/events.svelte.ts` (sounds, the preview on `animator.onTick`, footsteps), `server/routes/sounds.ts`
   (`GET /api/game/sounds`, `/api/game/sounds/file/<file>`, `GET|POST /api/characters/<id>/sounds`). A preview mute is
   the lane's only (the game gets every event); `muted: ['events']` still switches the slot's events off for the game.
+
+- Integration QA (branch motion-timeline, after the C merge): driven in the app on the archer, spearman and knight.
+  Found and fixed: the Events lane's effect wrote the viewer's overlays it read (effect_update_depth_exceeded: every
+  control dead once a slot played); the Events row cut to one 15 px lane (its events hidden), its Add menu inside the
+  scrolling tracks; the gear strips' labels inside the lane (strips 72 px right of the ruler); the ruler 10 px wider than
+  the lanes (the tracks' scrollbar); the pose tools' menus cut by their row; the forearms in the Head group ("ear");
+  `F` taken by both the viewport (frame the character) and the timeline (now: over the timeline only). The areas' items
+  in the selection go through `lanes.ts AreaItems` (src/app/motion/areas.ts: events move, duplicate, copy, paste and
+  delete with keys; the gear strips' items delete), with a nudge (Ctrl+← →); the pose tools' ease is the timeline's
+  `easeKeys`. A hand bar dragged writes only its own window (`windowedit.ts editWindows`). The review's fixes:
+  v1 PATCHes keep what schema 3 adds (legacy.ts), restore keeps variants and converts v1 records' times, a failed measure
+  writes nothing, keys never merge in a hold or a squeeze, keying in a hold replaces the key there, window edits touch
+  their window only, a retime stretch lands where dragged with holds inside, redo is cleared by any edit, a gesture is
+  dropped when the slot changed under it, ridden repeats drop what lies outside the clip (keys, events, holds),
+  resize scales heldBy places, copied sounds and variant names never collide, holders follow their handles, the pony
+  paces a Walk variant, uploads keep a name. GLBs of the five workspace units byte for byte as b281970's.
