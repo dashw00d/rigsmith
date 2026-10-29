@@ -6,7 +6,6 @@
 import * as THREE from 'three'
 import { app } from './app.svelte.ts'
 import { animator } from './animator.svelte.ts'
-import { clipEdit } from './clipedit.svelte.ts'
 import { viewer } from './viewer.svelte.ts'
 import type { Character, HandPose, HandPoseRef, Side } from './api.ts'
 import { newId } from '../model/ids.ts'
@@ -151,7 +150,7 @@ class Hands {
     // (where it came from: the slot, else the library clip's id, else what was shown)
     const from = { clip: slot?.id ?? playing.ref?.id ?? label, at }
     // (a baked clip is read at the playhead; the editor's pose, or a clip shown as it is, off the bones on stage)
-    const pose = playing.baked !== null && !playing.editing ? poseAt(root, side, playing.baked.clip, playing.time, name, from)
+    const pose = playing.baked !== null ? poseAt(root, side, playing.baked.clip, playing.time, name, from)
       : this.view === null ? null : capturePose(this.view.root, side, name, from)
     if (pose === null) { this.noFingers(c, side); return null }
     if (!await this.add(c, pose, false)) return null
@@ -290,11 +289,11 @@ class Hands {
   // ---- on stage ----------------------------------------------------------------------------------------------------
 
   /** Show `pose` on `side`'s hand, the rest of the character at rest (seated when it rides), as a one-frame clip; null
-   * takes it off again. Not while the clip editor is open: its clip is on stage. */
+   * takes it off again. */
   preview (c: Character, side: Side, pose: HandPose | null): void {
     if (pose === null) { this.unshow(); return }
     const root = this.root()
-    if (root === null || clipEdit.active) return
+    if (root === null) return
     const label = `Hand pose: ${pose.name}`
     animator.showClip(this.seated(c, poseClip(root, side, pose)), { label })
     this.showing = label
@@ -304,13 +303,11 @@ class Hands {
    * without playing anything. */
   async showRest (c: Character): Promise<void> {
     const root = this.root(); const clips = this.clips()
-    if (root === null || clips === null || clipEdit.active) return
+    if (root === null || clips === null) return
     app.setBusy('hands', 'Closing the hands…')
     try {
       const label = 'Rest, hands closed'
       const { clip } = await applyHands(root, new THREE.AnimationClip(label, 1, []), c, null, clips, $state.snapshot(this.shared) as HandPose[])
-      // (the clip editor may have opened while the fists were measured)
-      if (clipEdit.active) return
       animator.showClip(this.seated(c, clip), { label })
       this.showing = label
     } catch (error) {
@@ -355,7 +352,7 @@ class Hands {
   /** Takes off the stage what this put there, unless something else has played since. */
   private unshow (): void {
     const p = animator.playing
-    if (this.showing !== null && p !== null && p.kind === 'clip' && !p.editing && p.label === this.showing && !clipEdit.active) void animator.stop()
+    if (this.showing !== null && p !== null && p.kind === 'clip' && p.label === this.showing) void animator.stop()
     this.showing = null
   }
 

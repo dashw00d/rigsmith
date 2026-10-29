@@ -47,7 +47,7 @@ class Adjust {
   /** What plays when it is `slotId` as it bakes (not the editor's edit of it, not still baking). */
   playingSlot (slotId: string): NowPlaying | null {
     const now = animator.playing
-    return now !== null && now.kind === 'slot' && now.slotId === slotId && !now.editing && now.baked !== null ? now : null
+    return now !== null && now.kind === 'slot' && now.slotId === slotId && now.baked !== null ? now : null
   }
 
   /** Frames of `slotId`'s clip as it plays (per ridden cycle), or null when it isn't playing. */

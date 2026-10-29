@@ -1,24 +1,29 @@
 <script lang="ts">
-  // The Motion step (DESIGN.md §5.6): the clip editor; the character's clips (the game unit's slots and the trials),
-  // each with its saved speed, loop and in place; the selected clip's adjustments; what each hand does (the hands
+  // The Motion step (docs/motion-plan.md §9 B): the character's clips (the game unit's slots, their variants and the
+  // trials), each with its saved speed, loop and in place; the clip playing posed in the viewport and edited in the
+  // timeline under it (no editor to open: every edit is a command, Ctrl+Z the journal's undo); the inspector of what is
+  // selected and Save as; the clip's settings (ground, timing, hand poses and holds); what each hand does (the hands
   // area's panel); copying the whole set to other characters. The library opens over the viewport from here.
-  import { untrack } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { ArrowRight, LibraryBig } from '@lucide/svelte'
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { adjust } from '../../state/adjust.svelte.ts'
   import { animator } from '../../state/animator.svelte.ts'
   import { hands } from '../../state/hands.svelte.ts'
+  import { pose } from '../../state/pose.svelte.ts'
+  import { timeline } from '../../state/timeline.svelte.ts'
   import { slots } from '../../state/slots.svelte.ts'
   import { phaseOf, slotById } from '../../model/select.ts'
   import Button from '../../ui/Button.svelte'
   import EmptyState from '../../ui/EmptyState.svelte'
   import Section from '../../ui/Section.svelte'
-  import EditPanel from '../editor/EditPanel.svelte'
   import HandsPanel from '../hands/HandsPanel.svelte'
   import AdjustmentStack from '../motion/AdjustmentStack.svelte'
   import CopySet from '../motion/CopySet.svelte'
+  import SelectionInspector from '../motion/SelectionInspector.svelte'
   import SlotList from '../motion/SlotList.svelte'
+  import { motionAction, motionKeyAllowed } from '../motion/keys.ts'
 
   let { character }: { character: Character } = $props()
 
@@ -27,7 +32,7 @@
   // (another character: nothing keyed or opened of the last one's)
   $effect(() => {
     void character.id
-    untrack(() => { adjust.target = null; adjust.open = null })
+    untrack(() => { adjust.target = null; adjust.open = null; pose.select(null); pose.selectGear(null) })
   })
 
   const phase = $derived(phaseOf(character, app.jobFor(character.id)))
@@ -38,7 +43,7 @@
   // (what plays shows its adjustments: a slot played from anywhere, the timeline or another step)
   $effect(() => {
     const p = animator.playing
-    if (p === null || p.kind !== 'slot' || p.editing || p.characterId !== character.id || p.slotId === null) return
+    if (p === null || p.kind !== 'slot' || p.characterId !== character.id || p.slotId === null) return
     const id = p.slotId
     untrack(() => { if (slots.selectedId !== id) slots.select(id) })
   })
@@ -67,7 +72,50 @@
     }
   })
   const STEP_LABEL = { import: 'Import', skeleton: 'Skeleton', skin: 'Skin' } as const
+
+  // (the joints on stage for the clip playing, while this step shows; taken off when it goes)
+  $effect(() => {
+    void animator.playing; void animator.view; void animator.stage; void pose.shown; void pose.limitsOn
+    const p = animator.playing
+    void p?.baked
+    untrack(() => { pose.sync(character, rigged) })
+  })
+  onDestroy(() => { pose.drop() })
+
+  function onKey (e: KeyboardEvent): void {
+    if (!rigged || !motionKeyAllowed(e)) return
+    const action = motionAction(e)
+    if (action === null) return
+    const playing = timeline.playing?.character.id === character.id
+    // (undo works whatever plays; the rest acts on the clip playing)
+    if (action !== 'undo' && action !== 'redo' && !playing) return
+    if (action === 'deselect' && timeline.selection.length === 0 && pose.selected === null && pose.gear === null) return
+    if ((action === 'copy' || action === 'duplicate') && timeline.keys.length === 0) return
+    if (pose.busy !== null && action !== 'undo' && action !== 'redo') return
+    e.preventDefault()
+    switch (action) {
+      case 'undo': void timeline.undo(character); break
+      case 'redo': void timeline.redo(character); break
+      case 'delete': timeline.remove(); break
+      case 'deselect': if (timeline.selection.length > 0) timeline.clear(); else { pose.select(null); pose.selectGear(null) } break
+      case 'move': pose.setGizmo('move'); break
+      case 'rotate': pose.setGizmo('rotate'); break
+      case 'duplicate': timeline.duplicate(); break
+      case 'copy': { const n = timeline.copy(); if (n > 0) app.toast('info', `${n} ${n === 1 ? 'key' : 'keys'} copied: Ctrl+V puts them at the playhead`, 2500) } break
+      case 'paste': timeline.paste(); break
+      case 'all': timeline.selectAll(); break
+      case 'key': void pose.keyHere(); break
+      case 'solve': void pose.solveBody(); break
+      case 'fit': timeline.fit(); break
+      case 'fitSelection': timeline.fitSelection(); break
+      case 'regionStart': timeline.regionAt('start'); break
+      case 'regionEnd': timeline.regionAt('end'); break
+      case 'regionClear': timeline.clearRegion(); break
+    }
+  }
 </script>
+
+<svelte:window onkeydown={onKey} />
 
 {#if !rigged && blocked !== null}
   <Section>
@@ -76,8 +124,6 @@
     </EmptyState>
   </Section>
 {:else}
-  <EditPanel {character} />
-
   <Section title="Clips">
     {#snippet action()}
       <Button size="sm" variant={libraryOpen ? 'secondary' : 'ghost'} aria-pressed={libraryOpen} onclick={() => app.toggleDrawer('library')}>
@@ -87,8 +133,12 @@
     <SlotList {character} />
   </Section>
 
+  <Section title={timeline.playing?.character.id === character.id ? `Editing ${timeline.playing.slot.name}` : 'Editing'}>
+    <SelectionInspector {character} />
+  </Section>
+
   {#if selected !== undefined}
-    <Section title="Changes to {selected.name}">
+    <Section title="{selected.name}: ground, timing and hands">
       <AdjustmentStack {character} clipSlot={selected} />
     </Section>
   {/if}

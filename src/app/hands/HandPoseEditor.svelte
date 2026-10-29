@@ -5,7 +5,6 @@
   // a moment after, as a command.
   import { untrack } from 'svelte'
   import type { Character, HandPose, Side } from '../../state/api.ts'
-  import { clipEdit } from '../../state/clipedit.svelte.ts'
   import { hands } from '../../state/hands.svelte.ts'
   import { viewer } from '../../state/viewer.svelte.ts'
   import { FINGERS, type Finger } from '../../engine/handposes.ts'
@@ -20,7 +19,6 @@
 
   const sides: Array<{ value: Side, label: string }> = [{ value: 'Left', label: 'Left hand' }, { value: 'Right', label: 'Right hand' }]
   // (the clip editor's clip is on stage: the pose can be shaped by its sliders, not seen or dragged)
-  const blocked = $derived(clipEdit.active)
   const shared = $derived(hands.isShared(pose.id))
 
   // The reference grip and the natural ranges, for the rig on stage.
@@ -30,7 +28,7 @@
   const shown = $derived(`${pose.id}|${pose.side}|${hands.side}|${JSON.stringify(pose.joints)}`)
   $effect(() => {
     void shown; void hands.view
-    if (!blocked) untrack(() => { hands.preview(character, hands.side, pose) })
+    untrack(() => { hands.preview(character, hands.side, pose) })
   })
   // (closed: what is being shaped saved now, the character back as it was)
   $effect(() => () => { untrack(() => { hands.flush(); hands.preview(character, hands.side, null) }) })
@@ -38,7 +36,7 @@
   // Rings on the shown hand's finger joints while it is open; a drag let go saves at once.
   $effect(() => {
     const view = hands.view; const stage = viewer.stage; const side = hands.side
-    if (view === null || stage === null || blocked) return
+    if (view === null || stage === null) return
     const dots = untrack(() => new HandDots(stage, view.root, side, {
       turn: (bone, local) => { hands.turnJoint(character, bone, local) },
       end: () => { hands.flush() },
@@ -59,12 +57,8 @@
   </Field>
   <Toggle label="Natural limits" hint="Each joint held within what a person's finger reaches (measured on the library's captures)" bind:checked={hands.natural} />
 
-  {#if blocked}
-    <p class="faint small">Close the clip editor to see it on {character.name} and drag its fingers.</p>
-  {:else}
-    <p class="faint small">Drag the rings on the {hands.side.toLowerCase()} hand to bend its fingers: in, out, or spread a little. A slider
-      closes a whole finger at once.</p>
-  {/if}
+  <p class="faint small">Drag the rings on the {hands.side.toLowerCase()} hand to bend its fingers: in, out, or spread a little. A slider
+    closes a whole finger at once.</p>
 
   <datalist id="hand-fist"><option value="1"></option></datalist>
   <label class="slider all">

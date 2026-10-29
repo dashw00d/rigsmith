@@ -3,7 +3,6 @@
   // One that belongs to a carried piece's handle (a bow let go of) is that hand's, and only while it carries the piece.
   import type { Adjustment, Character, HandPoseRef, Side, Slot, Window } from '../../../state/api.ts'
   import { adjust } from '../../../state/adjust.svelte.ts'
-  import { animator } from '../../../state/animator.svelte.ts'
   import { carriedBy, gearById } from '../../../model/select.ts'
   import Field from '../../../ui/Field.svelte'
   import Segmented from '../../../ui/Segmented.svelte'
@@ -17,7 +16,6 @@
   const tied = $derived(a.gear === undefined ? undefined : gearById(character, a.gear))
   const carried = $derived(carriedBy(character, a.hand))
   const others = $derived(adjust.shown(slot.id, handWindows(slot, a.hand, a.id)))
-  const editing = $derived(animator.playing?.editing === true)
   const set = (patch: Record<string, unknown>): void => { void adjust.update(character, slot.id, a.id, patch) }
 </script>
 
@@ -38,8 +36,8 @@
       hint={tied !== undefined ? 'It goes with that piece: off its hand, or removed, it goes too' : undefined}
       onchange={(on) => set({ gear: on ? carried?.id ?? null : null })} />
   {/if}
-  <Field label="When" stack hint={editing ? 'Finish editing the clip to change when' : undefined}>
-    <Windows windows={a.windows === undefined ? undefined : adjust.shown(slot.id, a.windows)} whole frames={adjust.frames(slot.id)} playhead={adjust.playhead(slot.id)} {others} disabled={editing}
+  <Field label="When" stack>
+    <Windows windows={a.windows === undefined ? undefined : adjust.shown(slot.id, a.windows)} whole frames={adjust.frames(slot.id)} playhead={adjust.playhead(slot.id)} {others}
       onchange={(next: Window[] | undefined) => set({ windows: next ?? null })} />
   </Field>
 </div>

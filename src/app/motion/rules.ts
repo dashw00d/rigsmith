@@ -45,8 +45,15 @@ export function defaultInPlace (clip: { inPlace: boolean, category?: string }): 
   return clip.inPlace || clip.category === 'locomotion'
 }
 
-/** A trial: a slot whose name the game doesn't play (kept here to compare). */
-export const isTrial = (s: Pick<Slot, 'name'>, gameNames: readonly string[]): boolean => !gameNames.includes(s.name)
+/** The game clip a slot named `<Clip> <n>` (n >= 2: "Attack 2") is a variant of, or null. The game picks one of a clip
+ * and its variants at random. TODO: use src/model/variants.ts variantOf (C2's) once merged. */
+export function variantOf (name: string, gameNames: readonly string[]): string | null {
+  const m = /^(.+) (\d+)$/.exec(name)
+  return m !== null && Number(m[2]) >= 2 && gameNames.includes(m[1]) ? m[1] : null
+}
+
+/** A trial: a slot whose name the game doesn't play (kept here to compare), nor a variant of one it does. */
+export const isTrial = (s: Pick<Slot, 'name'>, gameNames: readonly string[]): boolean => !gameNames.includes(s.name) && variantOf(s.name, gameNames) === null
 
 /** What a slot is armed to receive: a slot by id, or a game clip name with no slot yet. */
 export interface Target { slotId: string | null, name: string }

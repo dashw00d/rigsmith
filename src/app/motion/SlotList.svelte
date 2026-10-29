@@ -13,14 +13,17 @@
   import IconButton from '../../ui/IconButton.svelte'
   import TextField from '../../ui/TextField.svelte'
   import { tooltip } from '../../ui/tooltip.ts'
-  import { clipLabel, isTrial, speedOptions, type Target } from './rules.ts'
+  import { clipLabel, isTrial, speedOptions, variantOf, type Target } from './rules.ts'
+  import AddVariant from './variants/AddVariant.svelte'
 
   let { character }: { character: Character } = $props()
 
   const game = $derived(slots.game)
   const names = $derived(slots.names)
   const trials = $derived(character.clips.filter(s => isTrial(s, names)))
-  const playingId = $derived(animator.playing?.kind === 'slot' && !animator.playing.editing ? animator.playing.slotId : null)
+  // (a game clip's variants, "Attack 2": listed under it; the game picks one of them at random)
+  const variants = (name: string): Slot[] => character.clips.filter(s => variantOf(s.name, names) === name)
+  const playingId = $derived(animator.playing?.kind === 'slot' ? animator.playing.slotId : null)
   // (a library clip previewed now: a slot can take it)
   const previewing = $derived(animator.playing?.kind === 'library' && animator.playing.library !== null ? animator.playing : null)
   let problems = $state<Record<string, string>>({})
@@ -86,7 +89,19 @@
             {#if s !== undefined}<IconButton label="Empty {name}" size="sm" variant="danger" onclick={() => slots.remove(character, s.id)}><X size={13} /></IconButton>{/if}
           </div>
           <span class="clip" use:tooltip={s?.note ?? s?.clip.id ?? 'No clip yet'}>{s !== undefined ? clipLabel(s.clip) : 'empty'}</span>
+          {#if s !== undefined}<AddVariant {character} {name} {names} />{/if}
         </li>
+        {#each variants(name) as v (v.id)}
+          <li class="slot-row variant" class:playing={playingId === v.id} class:selected={slots.selectedId === v.id}>
+            <div class="line">
+              <IconButton label="Play {v.name}" size="sm" onclick={() => { void slots.play(character, v.id) }}><Play size={12} /></IconButton>
+              <button class="slot" onclick={() => { void slots.play(character, v.id) }} use:tooltip={`A variant of ${name}: the game picks one of them at random`}>{v.name}</button>
+              {@render controls(v)}
+              <IconButton label="Remove {v.name}" size="sm" variant="danger" onclick={() => slots.remove(character, v.id)}><Trash2 size={13} /></IconButton>
+            </div>
+            <span class="clip" use:tooltip={v.note ?? v.clip.id}>{clipLabel(v.clip)}</span>
+          </li>
+        {/each}
       {/each}
     </ul>
   </div>
@@ -145,6 +160,7 @@
   .slot { flex: 1; min-width: 0; text-align: left; border: 0; background: transparent; padding: 0 4px; font-weight: 600; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .slot:disabled { color: var(--text-2); cursor: default; }
   li.empty .slot { color: var(--text-2); }
+  li.variant { margin-left: 14px; }
   .name { flex: 1; min-width: 0; }
   .clip { padding-left: 28px; font-size: 11px; color: var(--text-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   li.empty .clip { color: var(--text-4); font-style: italic; }

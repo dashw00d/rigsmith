@@ -1,6 +1,6 @@
 <script lang="ts">
-  // A slot's adjustments, in the order the bake applies them (src/engine/bake.ts: speed, blow timing, pace, hands,
-  // ground, keys), whatever order they were added in. Each can be switched off (kept, not played), opened to edit, or
+  // A slot's settings over its clip, in the order the bake applies them (src/engine/bake.ts: speed, blow timing, pace,
+  // hands, ground), whatever order they were added in (its keys are the timeline's). Each can be switched off (kept, not played), opened to edit, or
   // removed; Add offers what the slot can take one more of. Every change is one command, undoable in Activity.
   import { ArrowDownToLine, ChevronDown, ChevronRight, Footprints, Hand, KeyRound, Plus, Swords, Trash2, Waypoints } from '@lucide/svelte'
   import type { Component } from 'svelte'
@@ -17,18 +17,17 @@
   import Ground from './adjust/Ground.svelte'
   import HandPose from './adjust/HandPose.svelte'
   import Hold from './adjust/Hold.svelte'
-  import Keys from './adjust/Keys.svelte'
   import Pace from './adjust/Pace.svelte'
 
   let { character, clipSlot: slot }: { character: Character, clipSlot: Slot } = $props()
 
   const ICON: Record<RowKind, Component> = { blowTiming: Swords, pace: Footprints, handPose: Hand, handleHold: Waypoints, ground: ArrowDownToLine, keys: KeyRound }
 
-  const items = $derived(inBakeOrder(rowsOf(slot)))
+  const items = $derived(inBakeOrder(rowsOf(slot)).filter(a => a.kind !== 'keys'))
   const frames = $derived(adjust.frames(slot.id))
   const height = $derived(heightOf(character))
   const perCm = $derived(cmPerUnit(slots.game?.height, height))
-  const addable = $derived(addableKinds(slot, { otherSlots: character.clips.length - 1, pulls: pullHandles(character).length }))
+  const addable = $derived(addableKinds(slot, { otherSlots: character.clips.length - 1, pulls: pullHandles(character).length }).filter(k => k !== 'keys'))
   const report = $derived(adjust.playingSlot(slot.id)?.baked?.report ?? null)
 
   const lift = (v: number): string => `lift ${liftShown(v, perCm, height)} ${perCm !== null ? 'cm' : '%'}`
@@ -67,8 +66,7 @@
               {:else if a.kind === 'blowTiming'}<Blow {character} clipSlot={slot} adjustment={a} />
               {:else if a.kind === 'pace'}<Pace {character} clipSlot={slot} adjustment={a} />
               {:else if a.kind === 'handPose'}<HandPose {character} clipSlot={slot} adjustment={a} />
-              {:else if a.kind === 'handleHold'}<Hold {character} clipSlot={slot} adjustment={a} />
-              {:else if a.kind === 'keys'}<Keys {character} clipSlot={slot} adjustment={a} />{/if}
+              {:else if a.kind === 'handleHold'}<Hold {character} clipSlot={slot} adjustment={a} />{/if}
             </div>
           {/if}
         </li>

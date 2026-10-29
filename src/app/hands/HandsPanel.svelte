@@ -31,12 +31,11 @@
   const playing = $derived(animator.playing?.characterId === character.id ? animator.playing : null)
   const slotId = $derived(playing?.slotId ?? null)
   const baked = $derived(playing?.baked ?? null)
-  const editing = $derived(playing?.editing === true)
   const shownLabel = $derived(playing === null ? null : playing.label)
   const slot = $derived(slotId === null ? undefined : slotById(character, slotId))
   /** A clip with a playhead to follow (else every clip: the layers that hold throughout). */
   const timed = $derived(slot !== undefined || baked !== null)
-  const context = $derived(editing ? 'The clip being edited' : slot !== undefined ? `Playing ${slot.name}` : baked !== null
+  const context = $derived(slot !== undefined ? `Playing ${slot.name}` : baked !== null
     ? `Previewing ${shownLabel ?? 'a clip'}` : shownLabel !== null ? `${shownLabel} · what every clip starts from`
       : 'Nothing playing: what every clip starts from')
 
@@ -51,7 +50,7 @@
   const keyed = $derived({ Left: fingerKeys(slot, 'Left'), Right: fingerKeys(slot, 'Right') })
   // Windows in frames of the clip as it plays (within one ridden cycle, as the timeline counts them) once it is baked;
   // else as parts of the clip (nothing playing, still baking, or the editor's clip, whose frames may not be the slot's).
-  const frames = $derived(baked !== null && !editing && animator.duration > 0 ? framesOf(animator.duration, playing?.cycles ?? 1) : null)
+  const frames = $derived(baked !== null && animator.duration > 0 ? framesOf(animator.duration, playing?.cycles ?? 1) : null)
 
   interface Won { index: number, weight: number }
   const winner = (list: HandLayer[], u: number): Won => {

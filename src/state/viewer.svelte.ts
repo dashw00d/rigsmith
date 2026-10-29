@@ -439,7 +439,7 @@ class Viewer {
     return true
   }
 
-  /** While a clip is edited (src/state/clipedit.svelte.ts) the rider stands in his own space, as the editor's working
+  /** While a clip is edited the rider stands in his own space, as the editor's working
    * copy does, so its goals, keys and gizmo are all in one frame (seated, everything the gizmo moved landed off by the
    * seat, which the horse's animation moves: a dragged spear keyed a seat's height up, the hand flung after it; the
    * designer, 2026-10-28). The horse is shown under him where it was. Off: back in the saddle. */
