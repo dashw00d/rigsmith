@@ -81,8 +81,10 @@ function sameBake (was: BakedV2, now: BakedSlot, what: string): number {
   expect(now.cut === undefined, `${what}: cut`).toBe(was.cut === undefined)
   if (was.cut !== undefined) for (const k of ['start', 'end', 'uncut', 'blow'] as const) expect(now.cut![k], `${what}: cut ${k}`).toBeCloseTo(was.cut[k], 9)
   expect(Object.keys(now.gearKeys).sort(), `${what}: keyed gear`).toEqual(Object.keys(was.gearKeys).sort())
-  // (the gear nodes hung on the posable: every placed piece's tracks are among those compared)
-  expect(now.clip.tracks.some(t => t.name.endsWith('_place.quaternion')), `${what}: gear tracks`).toBe(true)
+  // (the gear nodes hung on the posable: every placed piece's tracks are among those compared; a character without gear
+  // has none in either)
+  const placed = (c: THREE.AnimationClip): boolean => c.tracks.some(t => t.name.endsWith('_place.quaternion'))
+  expect(placed(now.clip), `${what}: gear tracks`).toBe(placed(was.clip))
   for (const [g, ks] of Object.entries(was.gearKeys)) {
     expect(now.gearKeys[g].length, `${what}: ${g} keys`).toBe(ks.length)
     ks.forEach((k, i) => {
