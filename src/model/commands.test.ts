@@ -538,6 +538,16 @@ describe('slot time, keys, events and gear tracks (schema 3)', () => {
     expect(removed.character.clips[1].events).toBeUndefined()
   })
 
+  it("keeps an event's sound volume and pitch in range, and takes them off with null", () => {
+    const loud = applyCommand(base(), { type: 'slot.event.add', slot: 'atk', event: { id: 'e1', name: 'release', u: 0.5, sound: 'mix:bowshot', volume: 0.5, pitch: 1.2 } })
+    expect(loud.character.clips[1].events).toEqual([{ id: 'e1', name: 'release', u: 0.5, sound: 'mix:bowshot', volume: 0.5, pitch: 1.2 }])
+    const plain = applyCommand(loud.character, { type: 'slot.event.update', slot: 'atk', id: 'e1', patch: { volume: null, pitch: 2 } })
+    expect(plain.character.clips[1].events![0]).toEqual({ id: 'e1', name: 'release', u: 0.5, sound: 'mix:bowshot', pitch: 2 })
+    for (const bad of [{ volume: 0 }, { volume: 5 }, { pitch: 0.1 }, { pitch: 8 }]) {
+      expect(failure(() => applyCommand(loud.character, { type: 'slot.event.update', slot: 'atk', id: 'e1', patch: bad })).status).toBe(400)
+    }
+  })
+
   it('sets who holds a piece and when it shows, kept beside its keys', () => {
     const keyed = applyCommand(base(), { type: 'slot.keys.set', slot: 'atk', tracks: [{ gear: 'bow', keys: [{ u: 0.5, q: q(0) }] }] }).character
     const r = applyCommand(keyed, { type: 'slot.gear.update', slot: 'atk', gear: 'bow', patch: { heldBy: [{ u: 0.4, bone: 'RightHand' }, { u: 0.1, bone: 'LeftHand', place: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 } }], shown: [{ u: 0.9, shown: false }] } })

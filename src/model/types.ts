@@ -369,6 +369,10 @@ export interface ClipEvent {
   sound?: string
   /** Where it happens (an arrow leaves the hand): a bone of the skeleton. */
   bone?: string
+  /** The sound's loudness, a gain on top of its own level (1 as it is; 0.5 about 6 dB down). Above 0, at most 4. */
+  volume?: number
+  /** The sound's playback rate (1 as it is; 2 an octave up). 0.25 to 4. */
+  pitch?: number
 }
 
 // ---- look (Look) ------------------------------------------------------------------------------------------------

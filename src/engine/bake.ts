@@ -60,7 +60,7 @@ export interface BakedSlot {
 }
 
 /** An event where the final clip plays it: `t` (and a span's `to`) phases of it. */
-export interface BakedEvent { id: string, name: string, t: number, to?: number, sound?: string, bone?: string }
+export interface BakedEvent { id: string, name: string, t: number, to?: number, sound?: string, bone?: string, volume?: number, pitch?: number }
 
 /** A pull handle held in the slot: gear's pulls.ts tickPulls draws it toward `bone` in these windows. */
 export interface PullPlan { gear: string, handle: string, bone: string, windows: Window[] }
@@ -224,6 +224,7 @@ function baked (e: ClipEvent, at: { t: number, to?: number }): BakedEvent {
   return {
     id: e.id, name: e.name, t: at.t, ...(at.to !== undefined ? { to: at.to } : {}),
     ...(e.sound !== undefined ? { sound: e.sound } : {}), ...(e.bone !== undefined ? { bone: e.bone } : {}),
+    ...(e.volume !== undefined ? { volume: e.volume } : {}), ...(e.pitch !== undefined ? { pitch: e.pitch } : {}),
   }
 }
 
@@ -249,15 +250,19 @@ export function pullPlans (c: Character, slot: Slot): PullPlan[] {
  * cycles (they stay phases of his clip); his hand layers and time map keep the slot's (one cycle's). `rest`: the rider's
  * rest skeleton. `horse` null: the horse has no such slot and no Idle. */
 export async function bakeRide (rider: BakedSlot, horse: { c: Character, ctx: BakeContext, slotName: string }, mount: Mount,
-  o: { loop: boolean, attack: boolean, rest: RestSkeleton, mirror?: boolean }): Promise<{ rider: BakedSlot, horse: THREE.AnimationClip | null, cycles: number, report: Record<string, unknown> }> {
+  o: { loop: boolean, attack: boolean, rest: RestSkeleton, mirror?: boolean }): Promise<{ rider: BakedSlot, horse: THREE.AnimationClip | null, horseEvents?: BakedEvent[], cycles: number, report: Record<string, unknown> }> {
   const rest = boneRest(o.rest)
   const clip = freezeClip(rider.clip, mount, rest)
   const unkeyed = freezeClip(rider.unkeyed, mount, rest)
   const hs = slotByName(horse.c, horse.slotName) ?? slotByName(horse.c, 'Idle')
   if (hs === undefined) return { rider: { ...rider, clip, unkeyed }, horse: null, cycles: 1, report: { horse: null } }
-  const hb = (await bakeSlot(horse.c, hs, horse.ctx, { mirror: o.mirror })).clip
+  const hbaked = await bakeSlot(horse.c, hs, horse.ctx, { mirror: o.mirror })
+  const hb = hbaked.clip
   const fit = fitRide(clip, hb, o.loop, o.attack)
   const cycles = Array.isArray(fit.report.cycles) ? (fit.report.cycles as number[])[0] : 1
+  // (the horse's events as its fitted clip plays them: a loop's repeated over its n cycles, a clip played once stretched
+  // to the rider's whole, so its phases stay)
+  const horseCycles = Array.isArray(fit.report.cycles) ? (fit.report.cycles as number[])[1] : 1
   const again = (w: Window[]): Window[] => Array.from({ length: cycles }, (_, k) => w.map(([a, b]): Window => [(a + k) / cycles, (b + k) / cycles])).flat()
   const keysAgain = (ks: ClipKey[]): ClipKey[] => Array.from({ length: cycles }, (_, k) => ks.map(x => ({ ...x, u: (x.u + k) / cycles }))).flat()
   const eventsAgain = (es: BakedEvent[]): BakedEvent[] => Array.from({ length: cycles }, (_, k) => es.map(e => ({ ...e, t: (e.t + k) / cycles, ...(e.to !== undefined ? { to: (e.to + k) / cycles } : {}) }))).flat()
@@ -272,6 +277,7 @@ export async function bakeRide (rider: BakedSlot, horse: { c: Character, ctx: Ba
       events: cycles === 1 ? rider.events : eventsAgain(rider.events),
     },
     horse: fit.horse,
+    horseEvents: horseCycles === 1 ? hbaked.events : Array.from({ length: horseCycles }, (_, k) => hbaked.events.map(e => ({ ...e, t: (e.t + k) / horseCycles, ...(e.to !== undefined ? { to: (e.to + k) / horseCycles } : {}) }))).flat(),
     cycles,
     report: { horse: hs.name, ...fit.report },
   }

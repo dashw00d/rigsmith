@@ -111,6 +111,6 @@ export type HandlePatch = Partial<Pick<Handle, 'name' | 'pull'>> &
   { hand?: Side | null, place?: Handle['place'] | null, exact?: boolean | null, pose?: HandPoseRef | null }
 /** One track's keys: `bone` (the Body track's row) or `gear` (a piece's keys, by gear id). */
 export type KeyTrack = { bone: string, keys: ClipKey[] } | { gear: string, keys: ClipKey[] }
-export type EventPatch = Partial<Pick<ClipEvent, 'name' | 'u'>> & { to?: number | null, sound?: string | null, bone?: string | null }
+export type EventPatch = Partial<Pick<ClipEvent, 'name' | 'u'>> & { to?: number | null, sound?: string | null, bone?: string | null, volume?: number | null, pitch?: number | null }
 export type MountPatch = Partial<Omit<Mount, 'scale' | 'hips' | 'skin' | 'gear'>> &
   { scale?: number | null, hips?: Vec3 | null, skin?: string | null, gear?: string[] | null }
