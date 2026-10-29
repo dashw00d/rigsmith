@@ -183,7 +183,7 @@ gearIdByName)`, `holdsFromV1(scripts)`, `gearFromV1(garment)`.
 attach.place.position (not for `legacyFrame: 'grip'` catalog places, which are in grip-frame units), spot anchor.
 Lengths get `×s`: attach.place.scale, handle `pull.grip`, ground lift, the `p` of every bone's keys (a horse moves
 'hips' or 'root', not 'Hips'), mount.hips, source.scale, source.stats.height. Unchanged: grip handle places and gear
-key `p` (in the gear's placed, scaled frame), mount.position (horse space: resizing a horse updates its riders'
+key `p` (in the gear's placed, scaled frame), a gear's `origin` (its model's own space), mount.position (horse space: resizing a horse updates its riders'
 `mount.position` through a server effect journaled on each rider). Whoever adds a length field extends this file.
 
 ## 3. Areas and file ownership
@@ -389,7 +389,8 @@ export function v1PatchToCommands (c: Character, patch: { animations?, scripts?,
   character as the viewer does, then: scales and grounds positions into game units; adds `root` above Hips; names the
   mesh after the unit and its LODs `_LOD1/_LOD2` (lock-aware `simplify`); one material `Main`; gear: the set of keyed
   gear is the union of `gearKeys` over the exported slots, each keyed gear gets a `Prop_<safeName>` bone under its
-  bone (tracks from `gearTracks` with bone-local game rest, `place.scale`, `moveScale = s`), pull bones
+  bone (tracks from `gearTracks` with bone-local game rest, `place.scale`, `moveScale = s`; a gear model is loaded with
+  its `origin` at zero, as the viewer loads it, so the bone sits on the piece's origin), pull bones
   `Prop_<gear>_<handle>` under the riding bone (or under the Prop_ bone when keyed) with tracks from `pulls`; strips
   `_place` tracks; companions the same way with their prefix. Mesh names of game gear come from its `from` part.
 - **Build record** (`<work>/<unit>/rigsmith.json`), read by the game (`emb_rigsmith.py`: `texture.file`,

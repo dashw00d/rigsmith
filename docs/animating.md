@@ -13,7 +13,18 @@ clip the game plays.
 3. **Pose:** look at it at Rest, "Rest, fists closed", or in one of the character's clips paused on a frame (Space
    plays and pauses; `,` and `.` step).
 4. **Place it in the hand** with the gizmo, or type the position, rotation and scale. Turn it so the shaft runs
-   through the closed fist.
+   through the closed fist. **Fit to hand** does it for you: the grip in the fist (its origin, when that is on its
+   shaft, else the middle of its thinner end), its long axis along the fist's grip line, its widest way (an axe's
+   blade, a sword's edge) forward along the knuckles. One undo.
+5. **Its origin** is what it turns about, where the gizmo sits and what its keys turn round in clips (the yellow dot).
+   A piece modelled in place on a character has it at the character's feet: **Origin → Middle**, **Grip** (where the
+   hand holds it), **Base** (the middle of its bottom) or **Drag** (move the dot with the gizmo, Enter when done) put
+   it on the piece. Nothing moves: its placement, handles, pulls and every clip's keys and holders of it are carried
+   over (one undo); between two of its keys that turn it, it now turns about the new origin.
+
+An upload is settled when it has imported: an origin farther off it than a twentieth of the body's height goes onto it
+(a hand piece's grip, else its middle), and a piece on a hand goes into the fist (Fit to hand) unless it was modelled
+in the hand already. The toast says what was done; its **Undo** takes it back.
 
 This placement is the gear in every clip and in the game: the export attaches it to that bone exactly as it sits here.
 Only parts the game built go into the game (brought in by `tools/game_import.py`); catalog gear and your uploads show

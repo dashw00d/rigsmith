@@ -143,7 +143,7 @@ export interface ClipKey {
 ```
 
 Body keys are `slot.bones[bone]`, gear keys `slot.gear[id].keys` (moves and turns from where the piece is placed, in
-its placed frame, as before). Within a track keys are sorted by `u` and no two share a moment (|Δu| < 1e-6 is the same
+its placed frame, as before: about its origin, `Gear.origin`; moving the origin carries them over, `src/model/origin.ts`). Within a track keys are sorted by `u` and no two share a moment (|Δu| < 1e-6 is the same
 moment; the reducer refuses it). A key's turn is on top of the clip's (q_clip · q_key), its move adds to the Hips'
 position, as before. Keys sit on moments of the source; between them the tween runs in played time (a retimed span
 plays its tween at the new rate; inside an interior hold a tween keeps moving unless its span is 'hold' or 'step').
@@ -188,6 +188,16 @@ export interface GearTrack {
 
 The bake plays them (`src/engine/geartracks.ts`, §10 C2); the commands keep them valid (a handle one of the piece's carry
 or grip handles on the hand it is for, `placed` only on its attach bone, one of place, handle, placed).
+
+**A piece's origin.** Its placement, its handles' places, its pulls' rest points and its keys are in its own frame, whose
+zero is `Gear.origin` (a point of its model file's space; unset: the file's own). `gear.origin` moves it and carries
+each of those over so nothing moves (`src/model/origin.ts`): P' = P·T(o), a handle's or pull's point -o, a key
+K' = T(-o)·K·T(o), a held-by `place` by its turn applied to o times the Gear size. At rest, on a holder and at every
+key the piece is exactly where it was; between two keys that turn it, the key tween now turns about the new origin
+(keys tween their move and turn separately). A leading piece's keys (world moves and turns about its origin from where
+it rode) are carried by the caller, who bakes the slot for where it rode at each key (`geartracks.ts
+leadKeysMoved`), and given to the command (`lead`). Library clips' `propPaths` are kept by gear name for any character
+and are left as they are.
 
 ### 2.6 The editor's build in the one bake (Phase B adds `ik`)
 
