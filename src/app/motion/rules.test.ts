@@ -5,7 +5,7 @@ import {
   addableKinds, addWindow, adjustmentText, blowFrame, blowPhase, blowUAt, blowUAtPhase, cardAction, cycleAt, inBakeOrder, overCycles,
   phasesOverCycles, timeAt, clipRefOf, cmPerUnit, defaultInPlace, framesOf, freeWindows, frameOf, handWindows,
   holdFromDistances, keysOf, keysWith, keyText, lateness, liftFromShown, liftShown, moveBefore, moveEdge, nameProblem, phaseIn,
-  resolveTarget, snapPhase, speedOptions, trialName, usesOf, windowsText, windowText,
+  resolveTarget, rowsOf, snapPhase, speedOptions, trialName, usesOf, windowsText, windowText, type Row,
 } from './rules.ts'
 
 const GAME = ['Idle', 'Walk', 'Attack']
@@ -134,11 +134,13 @@ describe('windows', () => {
 
 describe('keys', () => {
   const k = (u: number, deg = 0): ClipKey => ({ u, q: [Math.sin(deg * Math.PI / 360), 0, 0, Math.cos(deg * Math.PI / 360)] })
-  const a: Extract<Adjustment, { kind: 'keys' }> = { id: 'k', kind: 'keys', enabled: true, bones: { Hips: [k(0)] }, gear: { g1: [k(0.5)] } }
+  const a: Extract<Row, { kind: 'keys' }> = { id: 'k', kind: 'keys', enabled: true, bones: { Hips: [k(0)] }, gear: { g1: [k(0.5)] } }
 
   it('reads and sets one target\'s keys', () => {
-    expect(keysOf(a, 'bone:Hips')).toHaveLength(1)
-    expect(keysOf(a, 'gear:g1')).toHaveLength(1)
+    const slot = makeSlot({ bones: { Hips: [k(0)] }, gear: { g1: { keys: [{ ...k(0.5), ease: 'step' }] } } })
+    expect(keysOf(slot, 'bone:Hips')).toHaveLength(1)
+    // (as stored, eases and all)
+    expect(keysOf(slot, 'gear:g1')).toEqual([{ ...k(0.5), ease: 'step' }])
     expect(keysOf(undefined, 'bone:Hips')).toEqual([])
     expect(keysWith(a, 'bone:Spine', [k(0.2)])).toEqual({ bones: { Hips: [k(0)], Spine: [k(0.2)] }, gear: { g1: [k(0.5)] } })
     expect(keysWith(a, 'gear:g1', [])).toEqual({ bones: { Hips: [k(0)] } })
@@ -220,8 +222,8 @@ describe('ridden cycles', () => {
 
 describe('the adjustments stack', () => {
   const ground: Adjustment = { id: 'g', kind: 'ground', enabled: true, lift: 0.01 }
-  const keys: Adjustment = { id: 'k', kind: 'keys', enabled: true, bones: { Spine: [{ u: 0, q: [0, 0, 0, 1] }] } }
-  const blow: Adjustment = { id: 'b', kind: 'blowTiming', enabled: true, at: 0.45 }
+  const keys: Row = { id: 'k', kind: 'keys', enabled: true, bones: { Spine: [{ u: 0, q: [0, 0, 0, 1] }] } }
+  const blow: Row = { id: 'b', kind: 'blowTiming', enabled: true, at: 0.45 }
   const hold: Adjustment = { id: 'h', kind: 'handleHold', enabled: true, gear: 'bow', handle: 'string', windows: [[0.2, 0.5]] }
 
   it('lists them in the order the bake applies them', () => {
@@ -230,8 +232,13 @@ describe('the adjustments stack', () => {
 
   it('offers only what the slot can take one more of', () => {
     const slot = makeSlot({ id: 's', adjustments: [ground, hold] })
-    expect(addableKinds(slot, { otherSlots: 0, pulls: 1 })).toEqual(['blowTiming', 'handPose', 'keys'])
-    expect(addableKinds(slot, { otherSlots: 2, pulls: 2 })).toEqual(['blowTiming', 'pace', 'handPose', 'handleHold', 'keys'])
+    // (keys always have their row: keying starts there)
+    expect(addableKinds(slot, { otherSlots: 0, pulls: 1 })).toEqual(['blowTiming', 'handPose'])
+    expect(addableKinds(slot, { otherSlots: 2, pulls: 2 })).toEqual(['blowTiming', 'pace', 'handPose', 'handleHold'])
+    expect(addableKinds({ ...slot, time: { fit: { enabled: true, at: 0.45 } } }, { otherSlots: 2, pulls: 2 })).toEqual(['pace', 'handPose', 'handleHold'])
+    expect(rowsOf({ ...slot, time: { fit: { enabled: false, at: 0.4 } }, events: [{ id: 'e', name: 'hit', u: 0.6 }] }).map(r => [r.id, r.kind])).toEqual([
+      ['g', 'ground'], ['h', 'handleHold'], ['fit', 'blowTiming'], ['keys', 'keys'],
+    ])
   })
 
   it('says each in a few words', () => {

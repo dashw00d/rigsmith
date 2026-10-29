@@ -14,7 +14,7 @@
   import { tooltip } from '../../ui/tooltip.ts'
   import { allowsShortcut } from '../../ui/shortcuts.ts'
   import {
-    blowPhase, cycleAt, frameOf, framesOf, keysOf, lateness, overCycles, phasesOverCycles, speedOptions, targetOf, timeAt, windowsText,
+    blowPhase, cycleAt, FIT, frameOf, framesOf, KEYS, lateness, overCycles, phasesOverCycles, rowsOf, speedOptions, targetOf, timeAt, windowsText,
   } from './rules.ts'
 
   let scrubbing = $state(false)
@@ -52,34 +52,32 @@
         }))),
       })
     }
-    for (const a of slot.adjustments) {
-      if (!a.enabled || a.kind !== 'handleHold') continue
-      const g = character.gear.find(x => x.id === a.gear)
-      const h = g?.handles.find(x => x.id === a.handle)
+    // (the pulls, keys and blow as baked: played phases of one cycle)
+    for (const p of baked.pulls) {
+      const a = slot.adjustments.find(x => x.kind === 'handleHold' && x.gear === p.gear && x.handle === p.handle)
+      const g = character.gear.find(x => x.id === p.gear)
+      const h = g?.handles.find(x => x.id === p.handle)
       const label = `${g?.name ?? 'Gear'} · ${h?.name ?? 'handle'}`
       out.push({
-        key: `hold-${a.id}`, label, marks: [],
-        bars: overCycles(a.windows, cycles).map(([from, to]) => ({ from, to, title: `Held: ${windowsText(a.windows, frames)}`, adjustment: a.id })),
+        key: `hold-${a?.id ?? p.handle}`, label, marks: [],
+        bars: overCycles(p.windows, cycles).map(([from, to]) => ({ from, to, title: `Held: ${windowsText(p.windows, frames)}`, adjustment: a?.id })),
       })
     }
-    const keys = slot.adjustments.find(a => a.enabled && a.kind === 'keys')
-    if (keys?.kind === 'keys') {
-      const targets = [
-        ...Object.keys(keys.bones ?? {}).map(n => ({ target: `bone:${n}`, name: n })),
-        ...Object.keys(keys.gear ?? {}).map(id => ({ target: `gear:${id}`, name: character.gear.find(g => g.id === id)?.name ?? 'gear' })),
-      ]
-      const marks = targets.flatMap(t => keysOf(keys, t.target).flatMap(k => phasesOverCycles([k.u], cycles).map(u => ({
-        at: u, title: `${t.name}: key at frame ${frameOf(k.u, frames)}`, target: t.target, adjustment: keys.id,
-      }))))
-      if (marks.length > 0) out.push({ key: 'keys', label: 'Keys', bars: [], marks })
-    }
-    const blow = slot.adjustments.find(a => a.enabled && a.kind === 'blowTiming')
+    const targets = [
+      ...Object.entries(baked.boneKeys).map(([n, ks]) => ({ target: `bone:${n}`, name: n, keys: ks })),
+      ...Object.entries(baked.gearKeys).map(([id, ks]) => ({ target: `gear:${id}`, name: character.gear.find(g => g.id === id)?.name ?? 'gear', keys: ks })),
+    ]
+    const marks = targets.flatMap(t => t.keys.filter(k => k.u >= -1e-9 && k.u <= 1 + 1e-9).flatMap(k => phasesOverCycles([k.u], cycles).map(u => ({
+      at: u, title: `${t.name}: key at frame ${frameOf(k.u, frames)}`, target: t.target, adjustment: KEYS,
+    }))))
+    if (marks.length > 0) out.push({ key: 'keys', label: 'Keys', bars: [], marks })
+    const blow = rowsOf(slot).find(a => a.enabled && a.kind === 'blowTiming')
     if (baked.cut !== undefined && blow?.kind === 'blowTiming') {
       const u = blowPhase(baked.cut)
       const late = lateness(blow, baked.cut)
       out.push({
         key: 'blow', label: 'Blow', bars: [], blow: true,
-        marks: phasesOverCycles([u], cycles).map(x => ({ at: x, title: `The blow, at frame ${frameOf(u, frames)}${late === null ? '' : ` · ${late}`}`, adjustment: blow.id })),
+        marks: phasesOverCycles([u], cycles).map(x => ({ at: x, title: `The blow, at frame ${frameOf(u, frames)}${late === null ? '' : ` · ${late}`}`, adjustment: FIT })),
       })
     }
     return out

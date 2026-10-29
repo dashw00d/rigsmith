@@ -16,7 +16,7 @@
 
   const tied = $derived(a.gear === undefined ? undefined : gearById(character, a.gear))
   const carried = $derived(carriedBy(character, a.hand))
-  const others = $derived(handWindows(slot, a.hand, a.id))
+  const others = $derived(adjust.shown(slot.id, handWindows(slot, a.hand, a.id)))
   const editing = $derived(animator.playing?.editing === true)
   const set = (patch: Record<string, unknown>): void => { void adjust.update(character, slot.id, a.id, patch) }
 </script>
@@ -39,7 +39,7 @@
       onchange={(on) => set({ gear: on ? carried?.id ?? null : null })} />
   {/if}
   <Field label="When" stack hint={editing ? 'Finish editing the clip to change when' : undefined}>
-    <Windows windows={a.windows} whole frames={adjust.frames(slot.id)} playhead={adjust.playhead(slot.id)} {others} disabled={editing}
+    <Windows windows={a.windows === undefined ? undefined : adjust.shown(slot.id, a.windows)} whole frames={adjust.frames(slot.id)} playhead={adjust.playhead(slot.id)} {others} disabled={editing}
       onchange={(next: Window[] | undefined) => set({ windows: next ?? null })} />
   </Field>
 </div>

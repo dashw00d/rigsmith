@@ -4,7 +4,7 @@
   // blends; a loop's keys wrap round, a one-shot's hold before the first and after the last.
   import { onDestroy } from 'svelte'
   import { Anchor, KeyRound, Move3d, Rotate3d, Trash2 } from '@lucide/svelte'
-  import type { Adjustment, Character, ClipKey, Slot } from '../../../state/api.ts'
+  import type { Character, ClipKey, Slot } from '../../../state/api.ts'
   import { app } from '../../../state/app.svelte.ts'
   import { adjust } from '../../../state/adjust.svelte.ts'
   import { animator } from '../../../state/animator.svelte.ts'
@@ -13,9 +13,9 @@
   import Field from '../../../ui/Field.svelte'
   import IconButton from '../../../ui/IconButton.svelte'
   import Select from '../../../ui/Select.svelte'
-  import { frameOf, keysOf, keyText, targetOf } from '../rules.ts'
+  import { frameOf, keysOf, keyText, targetOf, type Row } from '../rules.ts'
 
-  let { character, clipSlot: slot, adjustment: a }: { character: Character, clipSlot: Slot, adjustment: Extract<Adjustment, { kind: 'keys' }> } = $props()
+  let { character, clipSlot: slot, adjustment: a }: { character: Character, clipSlot: Slot, adjustment: Extract<Row, { kind: 'keys' }> } = $props()
 
   const view = $derived(animator.view)
   const playing = $derived(adjust.playingSlot(slot.id))
@@ -30,7 +30,8 @@
     ...pieces.map(g => ({ value: `gear:${g.id}`, label: g.name, group: 'Gear' })),
     ...bones.map(b => ({ value: `bone:${b}`, label: b, group: 'Bones' })),
   ])
-  const keys = $derived(adjust.target === null ? [] : keysOf(a, adjust.target))
+  // (stored against the source clip; shown and sought where the clip plays them)
+  const keys = $derived(adjust.target === null ? [] : keysOf(slot, adjust.target))
   const keyed = $derived([
     ...pieces.filter(g => (a.gear?.[g.id]?.length ?? 0) > 0).map(g => ({ target: `gear:${g.id}`, name: g.name, count: a.gear![g.id].length })),
     ...Object.entries(a.bones ?? {}).filter(([, k]) => k.length > 0).map(([n, k]) => ({ target: `bone:${n}`, name: n, count: k.length })),
@@ -49,7 +50,7 @@
   })
   onDestroy(() => { adjust.hide() })
 
-  function go (k: ClipKey): void { adjust.seekPhase(k.u) }
+  function go (k: ClipKey): void { adjust.seekPhase(adjust.played(slot.id, k.u)) }
 </script>
 
 <div class="keys">
@@ -78,7 +79,7 @@
       <ul class="list">
         {#each keys as k (k.u)}
           <li>
-            <button class="go mono" disabled={playing === null} onclick={() => go(k)}>{frames !== null ? `frame ${frameOf(k.u, frames)}` : `${Math.round(k.u * 100)}%`}</button>
+            <button class="go mono" disabled={playing === null} onclick={() => go(k)}>{frames !== null ? `frame ${frameOf(adjust.played(slot.id, k.u), frames)}` : `${Math.round(k.u * 100)}%`}</button>
             <span class="faint">{keyText(k)}</span>
             <IconButton label="Delete this key" size="sm" variant="danger" onclick={() => adjust.setKeys(character, slot.id, adjust.target!, ks => ks.filter(x => x.u !== k.u))}><Trash2 size={12} /></IconButton>
           </li>

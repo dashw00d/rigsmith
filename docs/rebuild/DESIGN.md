@@ -4,7 +4,8 @@ PLAN.md says what and why. This file says exactly how, so that many people (or a
 stepping on each other. Where this file and PLAN.md disagree, this file wins; where this file is silent, follow
 PLAN.md §5–§6.
 
-The contract in code: `src/model/types.ts` (the character document, schema 2), `src/model/command-types.ts` (every
+The contract in code: `src/model/types.ts` (the character document, schema 3 since the Motion timeline: a slot's
+times are source time, its blow timing, pace and keys its time map and tracks; `docs/motion-plan.md` wins for slots), `src/model/command-types.ts` (every
 user action), `src/model/unit.ts` (a game unit). They are the interface between all areas; change them only
 additively, noting the change in §11.
 
@@ -578,6 +579,13 @@ PUT/DELETE `/weights` (body and gear) run as `lock: 'files'` jobs (or answer 409
 - The game repo's scripts use the deprecated v1 layer (§4.2); port them to `/commands` when convenient.
 
 ## 11. Change log of the contract
+
+- Schema 3 (docs/motion-plan.md): slots are source clip + time map + tracks, every time stored against the source
+  clip; `blowTiming`, `pace` and `keys` adjustments became `slot.time.fit` (its picked blow the `hit` event),
+  `slot.time.pace`, `slot.bones` and `slot.gear[id].keys`; events, retime markers, holds, per-span eases, gear held-by
+  and shown segments, muted tracks; `slot.time`, `slot.keys.set`, `slot.event.*`, `slot.gear.update`, `slot.copy`;
+  `BakedSlot.time`, `boneKeys`, `events`; v2 files migrate to 3 (character.v2.json kept), their phases moved through
+  the measured blow cut; the export writes `<unit>.events.json` and a schema 3 build record.
 
 - Rev 2 (design review): skeleton migration by `jointsEdited`; generator/override policies (§2.2); `imported`,
   `converted`, stale `template`/`level`; hierarchies made synchronous (`skeletons.ts`); hand layer rules (carry from

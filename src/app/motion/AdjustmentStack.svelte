@@ -4,7 +4,7 @@
   // removed; Add offers what the slot can take one more of. Every change is one command, undoable in Activity.
   import { ArrowDownToLine, ChevronDown, ChevronRight, Footprints, Hand, KeyRound, Plus, Swords, Trash2, Waypoints } from '@lucide/svelte'
   import type { Component } from 'svelte'
-  import type { AdjustmentKind, Character, Slot } from '../../state/api.ts'
+  import type { Character, Slot } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { adjust, pullHandles } from '../../state/adjust.svelte.ts'
   import { slots } from '../../state/slots.svelte.ts'
@@ -12,7 +12,7 @@
   import { refLabel } from '../../engine/hands.ts'
   import IconButton from '../../ui/IconButton.svelte'
   import { tooltip } from '../../ui/tooltip.ts'
-  import { addableKinds, adjustmentText, cmPerUnit, inBakeOrder, KIND_HINT, KIND_LABEL, liftShown } from './rules.ts'
+  import { addableKinds, adjustmentText, cmPerUnit, inBakeOrder, KIND_HINT, KIND_LABEL, liftShown, rowsOf, type RowKind } from './rules.ts'
   import Blow from './adjust/Blow.svelte'
   import Ground from './adjust/Ground.svelte'
   import HandPose from './adjust/HandPose.svelte'
@@ -22,9 +22,9 @@
 
   let { character, clipSlot: slot }: { character: Character, clipSlot: Slot } = $props()
 
-  const ICON: Record<AdjustmentKind, Component> = { blowTiming: Swords, pace: Footprints, handPose: Hand, handleHold: Waypoints, ground: ArrowDownToLine, keys: KeyRound }
+  const ICON: Record<RowKind, Component> = { blowTiming: Swords, pace: Footprints, handPose: Hand, handleHold: Waypoints, ground: ArrowDownToLine, keys: KeyRound }
 
-  const items = $derived(inBakeOrder(slot.adjustments))
+  const items = $derived(inBakeOrder(rowsOf(slot)))
   const frames = $derived(adjust.frames(slot.id))
   const height = $derived(heightOf(character))
   const perCm = $derived(cmPerUnit(slots.game?.height, height))

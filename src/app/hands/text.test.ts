@@ -67,13 +67,12 @@ describe('layer rows', () => {
 
   it('names the fingers a slot keys on top of every layer', () => {
     const k = { u: 0, q: [0, 0, 0, 1] as [number, number, number, number] }
-    const slot = makeSlot({
-      adjustments: [{ id: 'k', kind: 'keys', enabled: true, bones: { RightHandPinky2: [k], RightHandIndex1: [k], RightHandIndex3: [k], LeftHandThumb1: [], Spine: [k] } }],
-    })
-    expect(fingerKeys(slot, 'Right')).toEqual({ adjustment: 'k', fingers: ['Index', 'Pinky'] })
-    // (a finger with no keys left, and a disabled adjustment, turn nothing)
+    const slot = makeSlot({ bones: { RightHandPinky2: [k], RightHandIndex1: [k], RightHandIndex3: [k], LeftHandThumb1: [], Spine: [k] } })
+    expect(fingerKeys(slot, 'Right')).toEqual({ adjustment: 'keys', fingers: ['Index', 'Pinky'] })
+    // (a finger with no keys left, and keys switched off, turn nothing)
     expect(fingerKeys(slot, 'Left')).toBeNull()
-    slot.adjustments[0].enabled = false
+    expect(fingerKeys({ ...slot, muted: ['bone:RightHandIndex1', 'bone:RightHandIndex3'] }, 'Right')).toEqual({ adjustment: 'keys', fingers: ['Pinky'] })
+    slot.muted = ['bones']
     expect(fingerKeys(slot, 'Right')).toBeNull()
     expect(fingerKeys(null, 'Right')).toBeNull()
   })

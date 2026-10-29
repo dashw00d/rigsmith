@@ -638,7 +638,7 @@ class GearState {
       if (animator.playing?.slotId !== slotId || animator.duration <= 0) return []
       animator.setPlaying(false)
       const duration = animator.duration
-      const blow = slot.adjustments.find((a): a is Extract<typeof a, { kind: 'blowTiming' }> => a.enabled && a.kind === 'blowTiming')
+      const blow = slot.time?.fit?.enabled === true ? slot.time.fit : undefined
       const node = worn.node
       const windows = holdsOf({
         seek: u => { animator.seek(u * duration); view.root.updateMatrixWorld(true) },

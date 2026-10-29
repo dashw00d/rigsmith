@@ -15,7 +15,7 @@ import { app, type Step } from './app.svelte.ts'
 import { viewer, type MountView } from './viewer.svelte.ts'
 import { gizmo } from './gizmo.svelte.ts'
 import { stableJson } from '../model/entities.ts'
-import { gearKeysFromPaths, slotById } from '../model/select.ts'
+import { gearKeysFromPaths, gearTracksOf, slotById } from '../model/select.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
 import { forgetClip, RetargetCache, type ClipSource } from '../engine/clips.ts'
 import { bakeRide, bakeSlot, boneRest, type BakeContext, type BakedSlot, type BakeSkip, type PullPlan } from '../engine/bake.ts'
@@ -280,8 +280,7 @@ class Animator {
   /** What a bake of `now` depends on in the character, as one string. */
   private inputs (now: NowPlaying, c: Character): string {
     const slot = now.kind === 'slot' ? slotById(c, now.slotId ?? '') : undefined
-    const pace = slot?.adjustments.find(a => a.kind === 'pace')
-    const like = pace?.kind === 'pace' ? slotById(c, pace.like) : undefined
+    const like = slot?.time?.pace === undefined ? undefined : slotById(c, slot.time.pace.like)
     return stableJson({ slot, like, gear: c.gear, hands: c.hands, mount: c.mount, shared: app.settings?.handPoses ?? null })
   }
 
@@ -544,7 +543,7 @@ class Animator {
       const gear = gearKeysFromPaths(c, now.library.propPaths ?? {})
       slot = {
         id: 'preview', name: now.label, clip: now.ref, speed: 1, loop: now.library.loop, inPlace: now.inPlace,
-        adjustments: Object.keys(gear).length > 0 ? [{ id: 'preview-keys', kind: 'keys', enabled: true, gear }] : [],
+        adjustments: [], gear: gearTracksOf(gear),
       }
       o = { autoGround: ride === null }
     } else if (now.kind === 'test' && now.ref !== null) {
@@ -556,7 +555,7 @@ class Animator {
     const baked = await bakeSlot(c, slot, ctx, { ...o, mirror: this.mirror })
     const loop = now.kind === 'slot' ? slot.loop : null
     if (ride === null || c.mount === undefined) return { clip: baked.clip, baked, horse: null, cycles: 1, signature, loop }
-    const attack = now.kind === 'slot' && slot.adjustments.some(a => a.enabled && a.kind === 'blowTiming')
+    const attack = now.kind === 'slot' && slot.time?.fit?.enabled === true
     const r = await bakeRide(baked, { c: ride.c, ctx: ride.ctx, slotName: now.kind === 'slot' ? slot.name : 'Idle' }, c.mount,
       { loop: slot.loop, attack, rest: ctx.rest, mirror: this.mirror })
     return { clip: r.rider.clip, baked: r.rider, horse: r.horse, cycles: r.cycles, signature, loop }

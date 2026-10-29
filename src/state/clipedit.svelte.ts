@@ -20,8 +20,9 @@ import * as THREE from 'three'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { Command } from '../model/command-types.ts'
 import { newId } from '../model/ids.ts'
-import { carryHandle, gearById, gearKeysFromPaths, handSide, slotById, slotByName } from '../model/select.ts'
+import { carryHandle, gearById, gearKeysFromPaths, gearTracksOf, handSide, slotById, slotByName } from '../model/select.ts'
 import type { Adjustment, Character, ClipKey, ClipRef, Gear, Handle, HandPose, HandPoseRef, Placement, Quat, Side, Slot, Vec3, Window } from '../model/types.ts'
+import { IDENTITY as AS_STORED, windowsToPlayed, windowsToSource, type TimeMap } from '../model/timemap.ts'
 import { api, type LibraryClip } from './api.ts'
 import { app } from './app.svelte.ts'
 import { viewer } from './viewer.svelte.ts'
@@ -231,6 +232,9 @@ class ClipEdit {
   private rebuilds = 0
   private saving = false
   private baseClip: THREE.AnimationClip | null = null
+  /** How the slot opened plays (its baked time map): its windows are source time, shown and set where this clip has
+   * them. */
+  private played: TimeMap = AS_STORED
   private edited: THREE.AnimationClip | null = null
   /** The pulls held in the clip as it plays (drawn while it shows). */
   private pulls: PullPlan[] | null = null
@@ -425,15 +429,17 @@ class ClipEdit {
       if (had === undefined) return null
       // (opened again from its record: the slot on the clip the edit was made from, without the keys on gear its save
       // gave the slot for the pieces whose paths the edit has: those paths make that motion again)
-      const slot = b.made === undefined ? had : { ...had, clip: b.clip, adjustments: withoutGearKeys(had.adjustments, b.made.gear) }
+      const slot = b.made === undefined ? had : withoutGearKeys({ ...had, clip: b.clip }, b.made.gear)
       const baked = await animator.bake(c, slot, this.mode === 'alone' ? { skip: 'all' } : {})
+      // (the slot's windows are source time; the editor shows and sets them where this clip plays them)
+      this.played = baked === null || this.mode === 'alone' ? AS_STORED : baked.time
       return baked === null ? null : { clip: baked.clip, lift: baked.lift, pulls: this.mode === 'alone' ? null : baked.pulls }
     }
     // (a library clip or a rig test, as it previews: a slot made of it, its gear paths played, stood on the floor)
     const gear = gearKeysFromPaths(c, b.paths)
     const preview: Slot = {
       id: 'preview', name: b.label, clip: b.clip, speed: 1, loop: b.loop, inPlace: b.inPlace,
-      adjustments: Object.keys(gear).length > 0 ? [{ id: 'preview-keys', kind: 'keys', enabled: true, gear }] : [],
+      adjustments: [], gear: gearTracksOf(gear),
     }
     const baked = await animator.bake(c, preview, { autoGround: c.mount === undefined, ...(b.test ? { skip: 'all' as const } : {}) })
     return baked === null ? null : { clip: baked.clip, lift: baked.lift, pulls: baked.pulls }
@@ -1197,7 +1203,7 @@ class ClipEdit {
 
   /** Where in this slot the hand carrying piece `id` opens (its handPose 'clip' adjustment for that gear). */
   openWindows (id: string): Window[] {
-    return this.openOf(id)?.windows ?? []
+    return windowsToPlayed(this.played, this.openOf(id)?.windows ?? [])
   }
 
   private openOf (id: string): Extract<Adjustment, { kind: 'handPose' }> | undefined {
@@ -1208,6 +1214,7 @@ class ClipEdit {
     const slot = this.slot; const p = this.pieceOf(id)
     const hand = p === undefined ? null : handSide(p.bone)
     if (!this.active || !this.windowsEditable || slot === null || hand === null) return
+    windows = windowsToSource(this.played, windows)
     const was = this.openOf(id)
     if (windows.length === 0) { if (was !== undefined) this.issue([{ type: 'slot.adjust.remove', slot: slot.id, id: was.id }]) }
     else if (was !== undefined) this.issue([{ type: 'slot.adjust.update', slot: slot.id, id: was.id, patch: { windows } }])
@@ -1222,7 +1229,7 @@ class ClipEdit {
 
   /** Where in this slot a pull is held (its handleHold adjustment). */
   pullHolds (id: string, handle: string): Window[] {
-    return this.holdOf(id, handle)?.windows ?? []
+    return windowsToPlayed(this.played, this.holdOf(id, handle)?.windows ?? [])
   }
 
   private holdOf (id: string, handle: string): Extract<Adjustment, { kind: 'handleHold' }> | undefined {
@@ -1232,6 +1239,7 @@ class ClipEdit {
   setPullHolds (id: string, handle: string, windows: Window[]): void {
     const slot = this.slot
     if (!this.active || !this.windowsEditable || slot === null) return
+    windows = windowsToSource(this.played, windows)
     const was = this.holdOf(id, handle)
     if (windows.length === 0) { if (was !== undefined) this.issue([{ type: 'slot.adjust.remove', slot: slot.id, id: was.id }]) }
     else if (was !== undefined) this.issue([{ type: 'slot.adjust.update', slot: slot.id, id: was.id, patch: { windows } }])
@@ -1915,8 +1923,11 @@ class ClipEdit {
     const now = this.character
     if (saved === null || now === null || !this.active) return
     const slot = into(now)
+    // (how the slot it was opened on played: what it stored against its source moves to where it played in the clip saved)
+    const shown = this.slot !== null && this.mode === 'plays' ? await animator.bake(now, this.slot) : null
     const commands = saveIntoSlotCommands({ slot, name: slot?.name ?? name }, { slot: this.slot, mode: this.mode }, saved.ref, {
       loop: this.loop, inPlace: b.inPlace, lift: now.mount === undefined ? this.lift : 0, gearKeys: saved.gearKeys, newId,
+      played: shown === null ? undefined : { time: shown.time, events: shown.events },
     })
     const entry = await app.do(now.id, commands, `save as ${name}`)
     // (refused: the reason is toasted; the clip is in the library, the edit still open)

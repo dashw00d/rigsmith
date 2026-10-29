@@ -1,6 +1,7 @@
 // The words and keys the Hands panel shows: what a hand layer is, when it applies and where it is changed; where a pose
 // came from and what uses it; the hand pose picker's keys. Pure (no app state), so it is tested on its own.
-import type { Adjustment, Character, HandPose, HandPoseRef, Side, Slot } from '../../model/types.ts'
+import type { Character, HandPose, HandPoseRef, Side, Slot } from '../../model/types.ts'
+import { isMuted } from '../../model/select.ts'
 import { FISTS, refLabel, type HandLayer } from '../../engine/hands.ts'
 import { windowsText } from '../motion/rules.ts'
 
@@ -60,18 +61,18 @@ export function layerLinks (layer: HandLayer, slotId: string | null): Array<{ la
 const FINGER_ORDER = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']
 const FINGER_BONE = /^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)\d$/
 
-/** The fingers of `side`'s hand a slot's enabled keys adjustment turns (keys come after every hand layer in the bake,
- * so they win over all of them), in finger order; null when it keys none. */
-export function fingerKeys (slot: Pick<Slot, 'adjustments'> | null | undefined, side: Side): { adjustment: string, fingers: string[] } | null {
-  const keys = slot?.adjustments.find((a): a is Extract<Adjustment, { kind: 'keys' }> => a.kind === 'keys' && a.enabled)
-  if (keys === undefined) return null
+/** The fingers of `side`'s hand a slot's keys turn (keys come after every hand layer in the bake, so they win over all
+ * of them), in finger order; null when it keys none (or its keys are switched off). `adjustment`: the Motion stack's
+ * keys row. */
+export function fingerKeys (slot: Pick<Slot, 'bones' | 'muted'> | null | undefined, side: Side): { adjustment: string, fingers: string[] } | null {
+  if (slot === null || slot === undefined) return null
   const keyed = new Set<string>()
-  for (const [bone, ks] of Object.entries(keys.bones ?? {})) {
+  for (const [bone, ks] of Object.entries(slot.bones ?? {})) {
     const m = FINGER_BONE.exec(bone)
-    if (m !== null && m[1] === side && ks.length > 0) keyed.add(m[2])
+    if (m !== null && m[1] === side && ks.length > 0 && !isMuted(slot, 'bones', bone)) keyed.add(m[2])
   }
   const fingers = FINGER_ORDER.filter(f => keyed.has(f))
-  return fingers.length === 0 ? null : { adjustment: keys.id, fingers }
+  return fingers.length === 0 ? null : { adjustment: 'keys', fingers }
 }
 
 /** `base`, or `base 2`, `base 3`… : the first no pose is called. */

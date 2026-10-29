@@ -29,7 +29,7 @@
     <Select size="sm" label="Handle" value={`${a.gear}/${a.handle}`} {options} onchange={pick} />
   </Field>
   <Field label="Held" stack hint={editing ? 'Finish editing the clip to change when' : undefined}>
-    <Windows windows={a.windows} frames={adjust.frames(slot.id)} playhead={adjust.playhead(slot.id)} disabled={editing}
+    <Windows windows={adjust.shown(slot.id, a.windows)} frames={adjust.frames(slot.id)} playhead={adjust.playhead(slot.id)} disabled={editing}
       onchange={(next: Window[] | undefined) => set({ windows: next ?? [] })} />
   </Field>
   <div class="row">

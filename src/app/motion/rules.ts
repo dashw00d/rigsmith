@@ -1,9 +1,26 @@
 // Motion's rules as plain functions (no Svelte state, no stage): which of a character's clips are the game's slots and
 // which are trials, what a library card's round button does, frames and phases (one numbering: frames of the clip as
 // it plays, 30 a second), hand pose and hold windows, keys, the ground lift in the units it is shown in, the blow.
-import type { Adjustment, AdjustmentKind, Character, ClipKey, ClipRef, HandPoseRef, Slot, Window } from '../../model/types.ts'
+import type { Character, ClipKey, ClipRef, HandPoseRef, Slot, Window } from '../../model/types.ts'
+import { slotToV2 } from '../../model/migrate.ts'
+import type { V2Adjustment, V2AdjustmentKind } from '../../model/v2.ts'
 import { clipUrl } from '../../engine/clips.ts'
 import { KEY_FPS } from '../../engine/keys.ts'
+
+/** A row of the adjustments stack: a setting the slot keeps (ground, a hand pose, a handle hold), or its blow fit, its
+ * pace or its keys shown as one (ids FIT, PACE, KEYS), in the shape the stack has always shown (src/model/migrate.ts
+ * slotToV2), until the track timeline replaces the stack (docs/motion-plan.md §9 B). Its times are source time. */
+export type Row = V2Adjustment
+export type RowKind = V2AdjustmentKind
+export const FIT = 'fit'
+export const PACE = 'pace'
+export const KEYS = 'keys'
+
+/** The slot's rows; always a keys row (keying starts there). */
+export function rowsOf (slot: Slot): Row[] {
+  const rows = slotToV2(slot, { rowIds: true }).adjustments
+  return rows.some(a => a.kind === 'keys') ? rows : [...rows, { id: KEYS, kind: 'keys', enabled: true }]
+}
 
 /** Frames a second, everywhere a frame is shown (the timeline, key lists, the blow, windows). */
 export const FPS = KEY_FPS
@@ -194,14 +211,14 @@ export function windowsText (windows: readonly Window[] | undefined, frames: num
   return windows.map(w => windowText(w, frames)).join(', ')
 }
 
-/** Windows a hand's other hand poses in the slot take (they may not overlap a new one). */
+/** Windows a hand's other hand poses in the slot take (they may not overlap a new one; source time). */
 export function handWindows (slot: Pick<Slot, 'adjustments'>, hand: string, except?: string): Window[] {
   return slot.adjustments.flatMap(a => (a.kind === 'handPose' && a.hand === hand && a.id !== except ? a.windows ?? [WHOLE] : []))
 }
 
 // ---- keys ----------------------------------------------------------------------------------------------------------
 
-type KeysAdjustment = Extract<Adjustment, { kind: 'keys' }>
+type KeysAdjustment = Extract<Row, { kind: 'keys' }>
 
 /** A key target: 'bone:<name>' or 'gear:<gear id>'. */
 export function targetOf (target: string): { kind: 'bones' | 'gear', name: string } | null {
@@ -210,9 +227,11 @@ export function targetOf (target: string): { kind: 'bones' | 'gear', name: strin
   return null
 }
 
-export function keysOf (a: KeysAdjustment | undefined, target: string): ClipKey[] {
+/** A target's keys on the slot (source time, eases kept). */
+export function keysOf (slot: Pick<Slot, 'bones' | 'gear'> | undefined, target: string): ClipKey[] {
   const t = targetOf(target)
-  return t === null ? [] : a?.[t.kind]?.[t.name] ?? []
+  if (t === null || slot === undefined) return []
+  return t.kind === 'bones' ? slot.bones?.[t.name] ?? [] : slot.gear?.[t.name]?.keys ?? []
 }
 
 /** `keys` with `key` in it (replacing one on the same frame), in order. */
@@ -328,13 +347,13 @@ const round4 = (v: number): number => Math.round(v * 1e4) / 1e4
 // ---- the adjustments stack -------------------------------------------------------------------------------------------
 
 /** The kinds in the order the bake applies them (src/engine/bake.ts): the stack lists them so. */
-export const KIND_ORDER: readonly AdjustmentKind[] = ['blowTiming', 'pace', 'handPose', 'handleHold', 'ground', 'keys']
+export const KIND_ORDER: readonly RowKind[] = ['blowTiming', 'pace', 'handPose', 'handleHold', 'ground', 'keys']
 
-export const KIND_LABEL: Record<AdjustmentKind, string> = {
+export const KIND_LABEL: Record<RowKind, string> = {
   blowTiming: 'Blow timing', pace: 'Pace', handPose: 'Hand pose', handleHold: 'Handle hold', ground: 'Ground', keys: 'Keys',
 }
 
-export const KIND_HINT: Record<AdjustmentKind, string> = {
+export const KIND_HINT: Record<RowKind, string> = {
   blowTiming: 'Cut an attack so its blow lands where the game times hits',
   pace: 'Retime it so its planted foot covers ground as fast as another clip\'s',
   handPose: 'Pose a hand in this clip (all of it, or in windows)',
@@ -343,20 +362,21 @@ export const KIND_HINT: Record<AdjustmentKind, string> = {
   keys: 'Keyed turns on bones, and moves and turns of gear',
 }
 
-/** The slot's adjustments in the bake's order (same kind: as listed). */
-export function inBakeOrder (adjustments: readonly Adjustment[]): Adjustment[] {
+/** The slot's rows in the bake's order (same kind: as listed). */
+export function inBakeOrder (adjustments: readonly Row[]): Row[] {
   return [...adjustments].sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind))
 }
 
 /** One of these at most per slot (the commands refuse a second). */
-export const ONE_PER_SLOT: readonly AdjustmentKind[] = ['ground', 'blowTiming', 'pace', 'keys']
+export const ONE_PER_SLOT: readonly RowKind[] = ['ground', 'blowTiming', 'pace', 'keys']
 
 /** The kinds a slot can take one more of: those it has none of yet (for one-per-slot kinds), a pace when there is
  * another clip to follow, a hold while a pull handle is left unheld. */
-export function addableKinds (slot: Pick<Slot, 'id' | 'adjustments'>, o: { otherSlots: number, pulls: number }): AdjustmentKind[] {
-  const holds = slot.adjustments.filter(a => a.kind === 'handleHold').length
+export function addableKinds (slot: Slot, o: { otherSlots: number, pulls: number }): RowKind[] {
+  const rows = rowsOf(slot)
+  const holds = rows.filter(a => a.kind === 'handleHold').length
   return KIND_ORDER.filter(k => {
-    if (ONE_PER_SLOT.includes(k) && slot.adjustments.some(a => a.kind === k)) return false
+    if (ONE_PER_SLOT.includes(k) && rows.some(a => a.kind === k)) return false
     if (k === 'pace') return o.otherSlots > 0
     if (k === 'handleHold') return holds < o.pulls
     return true
@@ -364,7 +384,7 @@ export function addableKinds (slot: Pick<Slot, 'id' | 'adjustments'>, o: { other
 }
 
 /** An adjustment in a few words, for the stack's header line. `frames`: of the clip as it plays (null: not playing). */
-export function adjustmentText (c: Pick<Character, 'clips' | 'gear'>, a: Adjustment, o: { frames: number | null, lift?: (lift: number) => string, pose?: (ref: HandPoseRef) => string }): string {
+export function adjustmentText (c: Pick<Character, 'clips' | 'gear'>, a: Row, o: { frames: number | null, lift?: (lift: number) => string, pose?: (ref: HandPoseRef) => string }): string {
   switch (a.kind) {
     case 'ground': return o.lift?.(a.lift) ?? `lift ${Math.round(a.lift * 1000) / 1000}`
     case 'blowTiming': return `lands at ${Math.round(a.at * 100)}%${a.window !== undefined ? `, ${a.window} s round it` : ''}${a.blowU !== undefined ? ', blow set by hand' : ''}`

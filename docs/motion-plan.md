@@ -260,24 +260,26 @@ export interface BakedEvent { id: string, name: string, t: number, to?: number, 
 
 ```ts
 export interface TimeMap {
-  /** Seconds of the played clip. */
-  duration: number
-  /** Played phase of a source moment, and back (inside an interior hold: its u; in the held end: past 1). */
-  toPlayed (u: SourceU): number
-  toSource (v: number): SourceU
-  /** The played part of the source: toSource(0), toSource(1). */
-  range: [SourceU, SourceU]
+  duration: number                 // seconds of the played clip
+  uncut: number                    // seconds after speed (and markers and holds), before the fit: `kept` is in these
+  kept: [number, number]           // the fit's kept range ([0, uncut] without one)
+  toPlayed (u: SourceU): number    // a played phase (outside 0..1: played before or after)
+  toSource (v: number): SourceU    // inside an interior hold: its u; in the held end: past 1
+  range: [SourceU, SourceU]        // toSource(0), toSource(1)
 }
+export interface TimeInput { seconds: number, speed: number, time?: SlotTime, kept?: [number, number], pace?: number }
 export function resolveTime (s: TimeInput): TimeMap
-export function windowsToPlayed (map, w: Window[]): Window[]   // clipped to [0, 1]; empty spans dropped
-export function windowsToSource (map, w: Window[]): Window[]
-export function keysToPlayed (map, keys: ClipKey[]): ClipKey[]
+export const IDENTITY: TimeMap                                  // as stored (a slot not playing)
+export function windowsToPlayed (map, w), windowsToSource (map, w), keysToPlayed (map, keys), eventToPlayed (map, e), sourceAt (map, v)
 export function fitRange (blow, duration, fit): [start, end]    // blowCut's range, shared
-export function fitBlow (u, duration): number                   // blowCut's clamp of a picked blow, shared
+export function fitBlow (phase, duration): number               // blowCut's clamp of a picked blow, shared
+export function phaseBeforeFit (u, s): number                   // a hit's phase of the clip before the fit (u itself when plain)
 ```
 
-`TimeInput` = `{ seconds (D), speed, time?: SlotTime, hit?: SourceU, measuredHit?: number (T1 seconds), pace?: number
-(factor) }`. The engine measures (hit, pace) and resolves once per bake; the UI only ever uses `baked.time`.
+The engine does the measuring (the blow, when the slot has no hit; the pace's stride ratio) in `bake.ts timeSlot`,
+then resolves the map from the kept range blowCut returned, so the map is exactly what was played. With neither
+markers nor holds the map is schema 2's arithmetic (and with no fit, `v = S` bit for bit). The UI only ever uses
+`baked.time` (or `IDENTITY` when the slot isn't playing).
 
 ---
 
@@ -329,11 +331,15 @@ The cut needs the source's length (and, for a measured blow, the blow): `Migrate
 slot with a blowTiming. Who fills it:
 
 - `server/store.ts migrationContext` runs `node tools/measure_clips.ts <id>` (a child: three's headless shims stay out
-  of the server) for a rigged character with any enabled blow fit and keys or windows on that slot.
-- `tools/migrate.ts` measures in its own process.
-- Without it (a pure read of an old file: `readCharacter`), a slot that needs it throws ("run node tools/migrate.ts
-  or open Rigsmith") under `{ strict: true }` (node3d's `character()`), and is kept unconverted with a note otherwise
-  (the server when the measure failed: the clip is missing, so it can't play either).
+  of the server) when `needsClipTimes(raw)`: an enabled blow fit and keys or windows on that slot.
+- `tools/migrate.ts` measures in its own process (`tools/lib/node3d.ts measureCharacter`).
+- Without it, `readCharacter` (strict: every tool, node3d's `character()`) throws "run node tools/migrate.ts (or open
+  Rigsmith)"; `migrate` without strict keeps that slot's phases unconverted with a note (the server when the measure
+  failed: the clip is missing, so it can't play either).
+- A v1 file goes straight to 3: v1 laid hand windows on before its blow cut, so its windows are source time already
+  (only its keys move); schema 2 had kept them as they were with a "check them" note.
+- A schema 2 build record (restore, `tools/game_import.py`) is moved the same way, through the cut it records (its
+  clips' `blow`) and the library clip's length from the manifest; without the length, unconverted with a note.
 
 The measured blow is used for the conversion only; the fit stays "measured" (no hit event), so the bake measures it
 again, the same way, and a migrated slot bakes to the same frames (the test: §8).
@@ -341,8 +347,10 @@ again, the same way, and a migrated slot bakes to the same frames (the test: §8
 Files: `character.v2.json` keeps the schema 2 file (once), as `character.v1.json` kept v1 (a v1 file goes straight to
 3 and keeps only its v1 copy). One journal entry `what: 'migrate'` with the notes. `tools/migrate.ts --check` also
 checks, for each character with a `character.v2.json`: migrating it again gives the current slots; every converted
-key, window and hit maps back (`toPlayed`) to its v2 phase within 1e-9; Python readers accept schema 2 or 3
-(`tools/verify_autorig.py`, `tools/game_import.py`).
+key, window and hit maps back (`toPlayed`) to its v2 phase within 1e-9. Python readers of character files require
+schema 3 (`tools/verify_autorig.py`, `tools/game_import.py`); `game_import.py` sends build records of schema 2 or 3 to
+restore, which reads either. The `x-rigsmith-schema` header takes 2 or 3 (the document either way; the app and tools
+send 3).
 
 Settings are unchanged (schema 2).
 
@@ -369,8 +377,8 @@ Settings are unchanged (schema 2).
 - `t` is a phase 0-1 of the FINAL clip (as exported: a rider's after the ride fit; a loop's repeated per cycle), `to`
   a span's end, `sound` as stored ('mix:<id>' or 'file:<path>'; C1 decides how a file reaches the game), `bone` the
   game bone (Mixamo names; `root` above Hips). Sorted by `t`.
-- Every clip the unit exports is listed; a companion's clips are under `"companion": {"clips": {...}}` with its
-  prefix's names.
+- Every clip the unit exports is listed (`tools/lib/unit_export.ts eventsFile`, times rounded to 1e-4). A companion's
+  clips aren't in it yet (a horse's events are C1's: `"companion": {"clips": {...}}` under its prefix's names).
 - The record (`rigsmith.json`) gets `schema: 3`, `slots` as stored (v3, gear by name), and `events` (this object).
 
 The GLB itself does not change (§8 checks it byte for byte for the workspace units).
@@ -383,6 +391,8 @@ The GLB itself does not change (§8 checks it byte for byte for the workspace un
 |---|---|
 | `src/model/types.ts` | Slot, SlotTime, ClipKey (ease), ClipEvent, GearTrack, Adjustment (3 kinds), SCHEMA 3, MAX_U |
 | `src/model/v2.ts` | the schema 2 slot shapes (what migration and the v2 build records read) |
+| `src/model/migrate.ts` also | `slotToV2` (a slot in schema 2's shape, times as they are: the v1 view, `rig.ts show`, the Motion stack's rows) |
+| `src/app/motion/rules.ts rowsOf`, `src/state/adjust.svelte.ts` | the transitional Motion stack: fit, pace and keys as rows (ids 'fit', 'pace', 'keys'), every edit routed to the schema 3 commands, windows shown and written through `baked.time` (B replaces them) |
 | `src/model/timemap.ts` | resolveTime, TimeMap, fitRange/fitBlow, window/key/event conversions, warp and holds math |
 | `src/model/migrate.ts` | v1 -> v2 -> v3, `slotFromV2`, MigrateContext.clipTimes, strict |
 | `src/model/commands/clips.ts` | every slot command (§4) |
@@ -475,4 +485,9 @@ baked clip), `src/app/motion/pose/**`, the easing UI (per span menu writing `eas
 
 ## 10. Change log
 
-- Foundation (this branch): schema 3 as above.
+- Foundation (this branch): schema 3 as above. Built as planned, except: the pure `TimeInput` takes the fit's kept
+  range rather than the hit (§3.3); `ik` (§2.6) is a design for B, not in `types.ts`; the events file has no
+  companion clips yet (§6); v1 windows count as source time (§5); `readCharacter` is strict. Proven on the workspace:
+  every slot of the six characters bakes to the same tracks (largest difference 0, `tests/equivalence/bake.test.ts`),
+  riders ridden too, and the five units' GLBs export byte for byte the same as before the change (checked by hand
+  against a build of b281970); the build records differ only in the last digit of a few converted keyData phases.

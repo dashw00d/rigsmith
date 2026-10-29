@@ -2,15 +2,16 @@
   // Blow timing: an attack cut so its blow lands where the game times hits (0.45 of it). The blow is found (a hand's
   // fastest moment) or set to the frame shown; a blow later than where it must land costs its start (cut) or its end
   // is held. A window keeps only that many seconds round the blow.
-  import type { Adjustment, Character, Slot } from '../../../state/api.ts'
+  import type { Character, Slot } from '../../../state/api.ts'
   import { adjust } from '../../../state/adjust.svelte.ts'
   import Button from '../../../ui/Button.svelte'
   import Field from '../../../ui/Field.svelte'
   import NumberField from '../../../ui/NumberField.svelte'
   import Select from '../../../ui/Select.svelte'
-  import { blowPhase, frameOf, lateness } from '../rules.ts'
+  import { blowPhase, frameOf, lateness, type Row } from '../rules.ts'
 
-  type Blow = Extract<Adjustment, { kind: 'blowTiming' }>
+  // (the slot's fit as its stack row: its blow picked by hand is the slot's hit event)
+  type Blow = Extract<Row, { kind: 'blowTiming' }>
   let { character, clipSlot: slot, adjustment: a }: { character: Character, clipSlot: Slot, adjustment: Blow } = $props()
 
   const playing = $derived(adjust.playingSlot(slot.id))

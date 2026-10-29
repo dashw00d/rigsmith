@@ -7,7 +7,7 @@ import { app } from './app.svelte.ts'
 import { animator } from './animator.svelte.ts'
 import { api } from './api.ts'
 import { newId } from '../model/ids.ts'
-import { freshSet, gearKeysFromPaths, slotById } from '../model/select.ts'
+import { freshSet, gearKeysFromPaths, gearTracksOf, slotById } from '../model/select.ts'
 import { clipRefOf, defaultInPlace, isTrial, moveBefore, nameProblem, resolveTarget, trialName, type Target } from '../app/motion/rules.ts'
 
 class Slots {
@@ -71,16 +71,16 @@ class Slots {
     const loop = slot?.loop ?? clip.loop
     const inPlace = slot?.inPlace ?? o.inPlace ?? defaultInPlace(clip)
     app.setBusy('slots', `Filling ${name}`)
-    let adjustments: Adjustment[]
+    let made: Pick<Slot, 'adjustments' | 'gear'>
     try {
-      adjustments = await this.madeFor(c, { id: 'probe', name, clip: ref, speed: 1, loop, inPlace, adjustments: [] }, clip)
+      made = await this.madeFor(c, { id: 'probe', name, clip: ref, speed: 1, loop, inPlace, adjustments: [] }, clip)
     } finally {
       app.setBusy('slots', null)
     }
     const id = slot?.id ?? newId()
     const entry = await app.do(c.id, slot !== null
-      ? { type: 'slot.fill', id: slot.id, clip: ref, adjustments, note: null }
-      : { type: 'slot.fill', name, newId: id, clip: ref, loop, inPlace, adjustments }, `fill ${name}`)
+      ? { type: 'slot.fill', id: slot.id, clip: ref, ...made, note: null }
+      : { type: 'slot.fill', name, newId: id, clip: ref, loop, inPlace, ...made }, `fill ${name}`)
     if (entry === null) return false
     this.armed = null
     await this.play(app.byId(c.id) ?? c, id)
@@ -93,7 +93,7 @@ class Slots {
     const slot: Slot = { id: newId(), name, clip: clipRefOf(clip), speed: 1, loop: clip.loop, inPlace: defaultInPlace(clip), adjustments: [] }
     app.setBusy('slots', `Adding ${name}`)
     try {
-      slot.adjustments = await this.madeFor(c, slot, clip)
+      Object.assign(slot, await this.madeFor(c, slot, clip))
     } finally {
       app.setBusy('slots', null)
     }
@@ -179,17 +179,18 @@ class Slots {
     return done
   }
 
-  /** What a slot of a library clip starts with: its gear paths as keys, and the ground its feet stand on (not a
-   * rider's: he sits on his horse). */
-  private async madeFor (c: Character, slot: Slot, clip: LibraryClip): Promise<Adjustment[]> {
-    const out: Adjustment[] = []
-    const gear = gearKeysFromPaths(c, clip.propPaths ?? {})
-    if (Object.keys(gear).length > 0) out.push({ id: newId(), kind: 'keys', enabled: true, gear })
+  /** What a slot of a library clip starts with: its gear paths as its gear tracks' keys (the library clip's own time
+   * is the source's), and the ground its feet stand on (not a rider's: he sits on his horse). */
+  private async madeFor (c: Character, slot: Slot, clip: LibraryClip): Promise<Pick<Slot, 'adjustments' | 'gear'>> {
+    const adjustments: Adjustment[] = []
+    const keys = gearKeysFromPaths(c, clip.propPaths ?? {})
+    const gear = Object.keys(keys).length > 0 ? gearTracksOf(keys) : undefined
+    const out = { adjustments, ...(gear !== undefined ? { gear } : {}) }
     if (c.mount !== undefined) return out
     try {
-      const baked = await animator.bake(c, { ...slot, adjustments: out }, { autoGround: true })
+      const baked = await animator.bake(c, { ...slot, ...out }, { autoGround: true })
       const lift = baked === null ? 0 : Math.round(baked.lift * 1e4) / 1e4
-      if (Math.abs(lift) >= 1e-4) out.unshift({ id: newId(), kind: 'ground', enabled: true, lift })
+      if (Math.abs(lift) >= 1e-4) adjustments.unshift({ id: newId(), kind: 'ground', enabled: true, lift })
     } catch (error) {
       // (a clip that doesn't bake here keeps no ground: it says why when it plays)
       console.warn('Ground fit failed', error)

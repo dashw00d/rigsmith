@@ -11,7 +11,7 @@
   import { animator } from '../../state/animator.svelte.ts'
   import { clipEdit } from '../../state/clipedit.svelte.ts'
   import { slots } from '../../state/slots.svelte.ts'
-  import { handSide, slotById, slotByName } from '../../model/select.ts'
+  import { handSide, hasKeys, slotById, slotByName } from '../../model/select.ts'
   import { prettyBone } from '../../engine/mixamo.ts'
   import HandPoseSelect from '../hands/HandPoseSelect.svelte'
   import WindowsField from './WindowsField.svelte'
@@ -45,7 +45,7 @@
   const here = $derived(now !== null && now.characterId === character.id && !now.editing && now.kind !== 'clip')
   const playingSlot = $derived(here && now?.kind === 'slot' ? slotById(character, now.slotId ?? '') ?? null : null)
   const canOpen = $derived(here && !animator.loading && !busy)
-  const adjusted = $derived(playingSlot !== null && (playingSlot.speed !== 1 || playingSlot.adjustments.some(a => a.enabled)))
+  const adjusted = $derived(playingSlot !== null && (playingSlot.speed !== 1 || playingSlot.time !== undefined || hasKeys(playingSlot) || playingSlot.adjustments.some(a => a.enabled)))
   // (a clip made here plays: the edit it was made from opens again when its record is there and isn't a held frame's)
   const madeId = $derived.by(() => {
     const ref = here ? playingSlot?.clip ?? now?.ref ?? null : null
