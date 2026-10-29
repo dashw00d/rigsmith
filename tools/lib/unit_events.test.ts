@@ -89,6 +89,15 @@ const CHARS = ['archer-b8157d', 'knight-3076bf', 'horse-31ad32']
 const have = CHARS.every(id => existsSync(path.join(WORKSPACE, 'characters', id, 'character.json')))
 
 /** A workspace whose characters are the real ones, files linked, each record copied for `edit` to change. */
+/** What every scratch copy starts from, whatever the workspace holds now: the archer's Attack with its blow fit off and
+ * no events of its own (its fit pins to its hit event, which the events copy replaces: the clip would change with it). */
+function baseline (c: Character): void {
+  const attack = c.id === 'archer-b8157d' ? c.clips.find(x => x.name === 'Attack') : undefined
+  if (attack === undefined) return
+  attack.events = []
+  if (attack.time?.fit !== undefined) attack.time.fit.enabled = false
+}
+
 function scratchWorkspace (dir: string, edit: (c: Character) => void): string {
   mkdirSync(path.join(dir, 'characters'), { recursive: true })
   symlinkSync(path.join(WORKSPACE, 'library'), path.join(dir, 'library'))
@@ -99,6 +108,7 @@ function scratchWorkspace (dir: string, edit: (c: Character) => void): string {
     mkdirSync(to)
     for (const f of readdirSync(from)) if (f !== 'character.json') symlinkSync(path.join(from, f), path.join(to, f))
     const c = JSON.parse(readFileSync(path.join(from, 'character.json'), 'utf8')) as Character
+    baseline(c)
     edit(c)
     writeFileSync(path.join(to, 'character.json'), JSON.stringify(c))
   }
