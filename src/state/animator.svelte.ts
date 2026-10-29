@@ -1,16 +1,18 @@
 // Playback in the viewport (DESIGN.md §4.6): a slot as the game plays it (src/engine/bake.ts bakeSlot, the bake the unit
 // export runs too), a library clip previewed on the character (an ephemeral slot stood on the floor by its feet), a
-// rig test, or a clip another area shows (the editor's edit, a hand pose). It sets itself up on the viewer's character
-// as it loads (viewer.onLoad, after the gear, whose nodes the bake gives tracks), plays a rider's horse under him
-// (its slot of the same name, else its Idle: bakeRide), replays what plays when the character it is baked from
-// changes, and stops when the step has no use for it. The timeline is docked under the viewport while anything plays.
-// An edit open when the character's model is loaded again isn't lost unasked: the editor's guard decides, and a kept
-// edit is shown again on the new view. Also the library cards' sprite previews.
+// rig test, or a clip another area shows (a hand pose). It sets itself up on the viewer's character as it loads
+// (viewer.onLoad, after the gear, whose nodes the bake gives tracks), plays a rider's horse under him (its slot of the
+// same name, else its Idle: bakeRide), replays what plays when the character it is baked from changes (a pose edit is
+// a command like any other: the slot is baked again, the pose dragged held on stage until it plays), and stops when the
+// step has no use for it. The timeline is docked under the viewport while anything plays; its loop region and its
+// preview into Idle (the clip, then the character's Idle blended in as the game blends) are the player's. Also the
+// library cards' sprite previews.
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { untrack } from 'svelte'
 import type { Character, ClipRef, HandPose, LibraryClip, Slot } from './api.ts'
+import type { Rom } from '../engine/limits.ts'
 import { app, type Step } from './app.svelte.ts'
 import { viewer, type MountView } from './viewer.svelte.ts'
 import { gizmo } from './gizmo.svelte.ts'
@@ -30,20 +32,36 @@ import Timeline from '../app/motion/Timeline.svelte'
 
 const MANNEQUIN = '/files/library/mannequin/ybot.glb'
 
+/** Seconds the game blends one clip into the next (Emberhold's AnimationPlayer blend): the preview into Idle's. */
+export const BLEND = 0.2
+/** How long the preview into Idle plays the Idle before the clip again. */
+const IDLE_FOR = 1.2
+
+/** The joints' ranges by rig ('human', a creature template), fetched once a page: the bake's build keeps to them
+ * (BakeContext.rom), as the export's does (tools/lib/node3d.ts nodeRom reads the same files). */
+const roms = new Map<string, Promise<Rom | null>>()
+function romOf (rig: string): Promise<Rom | null> {
+  let p = roms.get(rig)
+  if (p === undefined) {
+    p = fetch(`/templates/rom/${rig}.json`).then(async r => (r.ok ? await r.json() as Rom : null)).catch(() => null)
+    roms.set(rig, p)
+    void p.then(v => { if (v === null) roms.delete(rig) })
+  }
+  return p
+}
+
 /** What plays: one of the character's slots, a library clip previewed, a rig test, or a clip shown by another area. */
 export type PlayKind = 'slot' | 'library' | 'test' | 'clip'
 
 export class NowPlaying {
   readonly kind: PlayKind
   readonly characterId: string
-  /** The slot (kind 'slot'; or the slot another area's clip is an edit of). */
+  /** The slot (kind 'slot'). */
   readonly slotId: string | null
   /** A library preview's clip. */
   readonly library: LibraryClip | null
   /** A preview's or a test's clip. */
   readonly ref: ClipRef | null
-  /** The animation editor's clip: no slot can take it, and it isn't baked here. */
-  readonly editing: boolean
   label = $state('')
   /** As baked (null while it bakes, and for another area's clip). */
   baked = $state.raw<BakedSlot | null>(null)
@@ -59,13 +77,12 @@ export class NowPlaying {
   /** The slot's saved loop when it was last baked: the preview's loop follows it when it changes. */
   savedLoop: boolean | null = null
 
-  constructor (o: { kind: PlayKind, characterId: string, label: string, slotId?: string | null, library?: LibraryClip | null, ref?: ClipRef | null, editing?: boolean }) {
+  constructor (o: { kind: PlayKind, characterId: string, label: string, slotId?: string | null, library?: LibraryClip | null, ref?: ClipRef | null }) {
     this.kind = o.kind
     this.characterId = o.characterId
     this.slotId = o.slotId ?? null
     this.library = o.library ?? null
     this.ref = o.ref ?? null
-    this.editing = o.editing ?? false
     this.label = o.label
   }
 }
@@ -95,16 +112,16 @@ class Animator {
   /** Bumped when previews are rendered for another subject; cards ask for their sheet again. */
   previewVersion = $state(0)
 
-  /** Asked before anything else plays or it stops, and when the view goes under an open edit (the editor, with unsaved
-   * edits); false keeps it as it is. */
-  guard: (() => Promise<boolean>) | null = null
-  /** Called before anything else plays: the editor ends itself. */
-  leaveEditor: (() => void) | null = null
-  /** Called on refresh() while the editor's clip shows, and on the character's next view after its model was loaded
-   * again under the edit: it builds it again. */
-  editorRefresh: (() => void) | null = null
-  /** While a gizmo is dragged the clip stops driving the bones (the gizmo does). */
+  /** While a joint or a piece is dragged, and until the slot baked with its keys plays, the clip doesn't drive the
+   * bones (the drag's pose stays on stage). */
   holding = false
+  /** A loop region of the timeline (phases of one cycle of what plays): playing, it runs round inside it. */
+  region = $state.raw<[number, number] | null>(null)
+  /** The preview into Idle: a clip that plays once is followed by the character's Idle, blended in over BLEND seconds
+   * as the game does, and then plays again. */
+  intoIdle = $state(false)
+  /** Playing the Idle after the clip (the preview into Idle). */
+  inIdle = $state(false)
 
   private shown: CharacterView | null = null
   private stageRef: Stage | null = null
@@ -124,17 +141,17 @@ class Animator {
   private previews: PreviewRenderer | null = null
   private mannequin: Promise<THREE.Object3D | null> | null = null
   private lastKey = ''
-  // (an open edit whose view went (its model loaded again: a job changed it), kept for the character's next view, where
-  // it was; whether the editor's guard is being asked about it; and unhooking, when nothing is asked)
-  private parked: { characterId: string, time: number } | null = null
-  private asking = false
   private closing = false
+  /** The Idle the preview into Idle blends to (baked once a slot set: by the Idle slot's bake inputs). */
+  private idle: { key: string, clip: THREE.AnimationClip } | null = null
+  private idleAction: THREE.AnimationAction | null = null
+  private idleTime = 0
 
   /** Hook into the viewer (once, at start). */
   install (): void {
     if (this.installed.length > 0) return
     this.installed = [
-      viewer.onLoad((view, c) => { this.attach(view, c); return () => { this.park(); this.detach() } }, 20),
+      viewer.onLoad((view, c) => { this.attach(view, c); return () => { this.detach() } }, 20),
       viewer.onSync((_view, c, step) => { untrack(() => { this.sync(c, step) }) }),
     ]
   }
@@ -167,7 +184,6 @@ class Animator {
     this.detach()
     const stage = viewer.stage
     if (view.rest === null || stage === null) {
-      if (this.parked?.characterId === c.id && this.leaveEditor !== null) app.toast('info', `The edit is kept, but ${c.name}'s model has no skeleton now to show it on`)
       this.usePreviewSubject()
       return
     }
@@ -186,12 +202,9 @@ class Animator {
       viewer.onMountLoad(mount => { this.useHorse(mount); return () => { this.dropHorse() } }),
     ]
     this.usePreviewSubject()
-    this.unpark(view, c)
   }
 
   private detach (): void {
-    // (an open edit is left with its view, unless it waits for the character's next one)
-    if (this.parked === null) this.leave()
     this.token++
     for (const off of this.offs.splice(0)) off()
     this.dropHorse(false)
@@ -211,68 +224,14 @@ class Animator {
     this.usePreviewSubject()
   }
 
-  /** The view goes (the character's model loaded again, or another shown) under an open edit: rather than lose it
-   * unasked, the edit waits for the character's next view while the editor's guard is asked. Let go (nothing unsaved,
-   * or the user discards it), the editor ends; kept, it is shown again on that view (unpark). Nothing is kept for a
-   * character that is gone, or when the animator unhooks. */
-  private park (): void {
-    if (this.leaveEditor === null || this.closing) { this.parked = null; return }
-    // (an edit kept for a character that is gone has nothing to wait for)
-    if (this.parked !== null && app.byId(this.parked.characterId) === null) this.parked = null
-    // (no view of ours goes (it had no skeleton), or a gone character's: nothing new to keep)
-    const c = app.byId(this.characterId)
-    if (c === null) return
-    // (parked already: the view it waited for went too before it was shown again; it is still where it was)
-    const kept = this.parked ??= { characterId: c.id, time: this.time }
-    if (this.asking) return
-    this.asking = true
-    app.toast('info', `${app.byId(kept.characterId)?.name ?? c.name}'s model changed and was loaded again under the edit`)
-    void this.allowed().then(go => {
-      this.asking = false
-      // (the editor ended meanwhile: nothing left to keep)
-      if (this.leaveEditor === null) { this.parked = null; return }
-      if (!go) return
-      const now = untrack(() => this.playing)
-      // (the edit shown again meanwhile goes with the editor; something else playing now stays)
-      if (now === null || now.editing) this.halt()
-      else this.leave()
-    })
-  }
-
-  /** An edit kept for this character's view shown again on it, where it was: the editor's handles made again on this
-   * view (they were on the one that went), then its clip built again here. */
-  private unpark (view: CharacterView, c: Character): void {
-    const kept = this.parked
-    if (kept === null || kept.characterId !== c.id) return
-    // (the editor's only way to put its handles on another view is making them again, as a change of its limits
-    // does; it is loaded already, as it has an edit open)
-    void import('./clipedit.svelte.ts').then(({ clipEdit }) => {
-      if (this.parked !== kept || this.shown !== view) return
-      this.parked = null
-      if (this.leaveEditor === null || !clipEdit.active || clipEdit.characterId !== c.id) return
-      clipEdit.setLimits(clipEdit.limitsOn)
-      // (the editor builds again from the time the animator has: where the edit was)
-      this.time = kept.time
-      this.editorRefresh?.()
-    }, (error: unknown) => {
-      console.error('animator: the edit could not be shown again', error)
-      if (this.parked === kept) app.toast('error', `The edit is kept, but it could not be shown again on ${c.name}'s model`)
-    })
-  }
-
   /** The step or the character changed: stop when the step has no use for what plays; replay it where it was when what
    * it is baked from changed (a slot's adjustments, its gear, its hands). */
   private sync (c: Character, step: Step): void {
     if (c.id !== this.characterId || this.shown === null) return
     const now = untrack(() => this.playing)
-    if (now !== null && !keeps(step, now)) {
-      // (the editor's clip: its unsaved edit is asked about first, as before anything else plays)
-      if (now.editing) void this.allowed().then(go => { if (go && untrack(() => this.playing) === now) this.halt() })
-      else this.halt()
-      return
-    }
+    if (now !== null && !keeps(step, now)) { this.halt(); return }
     if (stableJson(c.skeleton.boneMap ?? null) !== this.boneMap) { this.rebind(); return }
-    if (now === null || now.editing || now.kind === 'clip' || now.baked === null) return
+    if (now === null || now.kind === 'clip' || now.baked === null) return
     if (now.kind === 'slot' && slotById(c, now.slotId ?? '') === undefined) { this.halt(); return }
     if (this.inputs(now, c) !== this.signature) void this.run(now, true)
   }
@@ -289,10 +248,10 @@ class Animator {
   /** Play one of the character's slots as the game plays it. `keepTime`: from where the slot playing is now. */
   async playSlot (character: Character, slotId: string, o: { keepTime?: boolean } = {}): Promise<boolean> {
     const slot = slotById(character, slotId)
-    if (slot === undefined || character.id !== this.characterId || !await this.allowed()) return false
+    if (slot === undefined || character.id !== this.characterId) return false
     const was = untrack(() => this.playing)
-    const again = o.keepTime === true && was?.kind === 'slot' && was.slotId === slotId && !was.editing
-    if (!again) this.resetPreview(slot.loop)
+    const again = o.keepTime === true && was?.kind === 'slot' && was.slotId === slotId
+    if (!again) { this.resetPreview(slot.loop); this.region = null }
     const now = again ? was : new NowPlaying({ kind: 'slot', characterId: character.id, slotId, label: slot.name })
     if (!again) now.savedLoop = slot.loop
     return await this.run(now, again)
@@ -301,8 +260,9 @@ class Animator {
   /** Preview a library clip on the character (stood on the floor by its feet; its gear paths played). */
   async playLibrary (clip: LibraryClip): Promise<boolean> {
     const id = this.characterId
-    if (id === null || !await this.allowed()) return false
+    if (id === null) return false
     this.resetPreview(clip.loop)
+    this.region = null
     const now = new NowPlaying({ kind: 'library', characterId: id, label: clip.name, library: clip, ref: clipRefOf(clip) })
     now.inPlace = defaultInPlace(clip)
     return await this.run(now, false)
@@ -311,24 +271,25 @@ class Animator {
   /** A test of the rig (static/templates/tests.json): a library clip that works its joints hard, in place, looped. */
   async playTest (test: { id: string, name: string, url?: string }): Promise<boolean> {
     const id = this.characterId
-    if (id === null || !await this.allowed()) return false
+    if (id === null) return false
     this.resetPreview(true)
+    this.region = null
     const now = new NowPlaying({ kind: 'test', characterId: id, label: test.name, ref: test.url === undefined ? { id: test.id } : { id: test.id, url: test.url } })
     now.inPlace = true
     return await this.run(now, false)
   }
 
-  /** Show a clip made elsewhere (the editor's edit, a hand pose's frame), paused at `time`. Not baked here: what it
-   * holds of pulls comes with it. `slotId`: the slot it is an edit of. */
-  showClip (clip: THREE.AnimationClip, o: { label: string, pulls?: PullPlan[] | null, time?: number, slotId?: string | null, editing?: boolean }): void {
+  /** Show a clip made elsewhere (a hand pose's frame), paused at `time`. Not baked here: what it holds of pulls comes
+   * with it. */
+  showClip (clip: THREE.AnimationClip, o: { label: string, pulls?: PullPlan[] | null, time?: number }): void {
     const id = this.characterId
     if (this.player === null || id === null) return
     this.token++
     this.holding = false
     this.setLoading(false)
     const was = untrack(() => this.playing)
-    const same = was !== null && was.kind === 'clip' && was.editing === (o.editing ?? false) && was.slotId === (o.slotId ?? null)
-    const now = same ? was : new NowPlaying({ kind: 'clip', characterId: id, label: o.label, slotId: o.slotId, editing: o.editing })
+    const same = was !== null && was.kind === 'clip'
+    const now = same ? was : new NowPlaying({ kind: 'clip', characterId: id, label: o.label })
     now.label = o.label
     now.baked = null
     now.cycles = 1
@@ -343,15 +304,12 @@ class Animator {
   /** Bake again what plays (the character changed under it), from where it is. */
   async refresh (keepTime = true): Promise<boolean> {
     const now = untrack(() => this.playing)
-    if (now === null) return false
-    if (now.editing) { this.editorRefresh?.(); return true }
-    if (now.kind === 'clip' || !await this.allowed()) return false
+    if (now === null || now.kind === 'clip') return false
     return await this.run(now, keepTime)
   }
 
   /** Stop playing (the character back at rest; a rider seated). */
   async stop (): Promise<boolean> {
-    if (!await this.allowed()) return false
     this.halt()
     return true
   }
@@ -359,7 +317,7 @@ class Animator {
   /** A slot of `c` baked as it plays here (the context of the character on stage), without playing it: what the ground
    * fit, the blow and the holds are measured on. Null when `c` isn't the character on stage. */
   async bake (c: Character, slot: Slot, o: { skip?: BakeSkip, autoGround?: boolean } = {}): Promise<BakedSlot | null> {
-    const ctx = c.id === this.characterId ? this.context() : null
+    const ctx = c.id === this.characterId ? this.bakeContext() : null
     return ctx === null ? null : await bakeSlot(c, slot, ctx, o)
   }
 
@@ -433,26 +391,13 @@ class Animator {
   }
 
   seek (time: number): void {
+    this.endIdle()
     this.player?.seek(time)
     this.horse?.player.seek(time)
     this.track()
   }
 
   // ---- inside --------------------------------------------------------------------------------------------------------
-
-  private async allowed (): Promise<boolean> {
-    const guard = this.guard
-    if (guard === null) return true
-    try { return await guard() } catch { return true }
-  }
-
-  private leave (): void {
-    const leave = this.leaveEditor
-    this.leaveEditor = null
-    this.editorRefresh = null
-    this.parked = null
-    leave?.()
-  }
 
   /** A new thing plays: the preview's speed and mirror back to normal, its loop its own. */
   private resetPreview (loop: boolean): void {
@@ -473,7 +418,6 @@ class Animator {
   }
 
   private halt (): void {
-    this.leave()
     this.token++
     this.holding = false
     this.player?.stop()
@@ -483,22 +427,25 @@ class Animator {
     this.time = 0
     this.setLoading(false)
     this.seat()
+    this.endIdle()
+    this.region = null
     tickPulls(null, 0)
   }
 
   /** Bake `now` and play it (`keepTime`: from the phase playing). */
   private async run (now: NowPlaying, keepTime: boolean): Promise<boolean> {
     if (this.player === null) return false
-    this.leave()
     const token = ++this.token
-    this.holding = false
     this.setNow(now)
     this.setLoading(true)
     this.error = null
     try {
       const built = await this.build(now)
       if (token !== this.token || this.player === null) return false
+      this.endIdle()
       this.player.play(built.clip, keepTime)
+      // (a pose dragged was held on stage until this bake of its keys plays)
+      this.holding = false
       const horse = this.horse
       if (horse !== null) {
         if (built.horse === null) horse.player.stop()
@@ -520,6 +467,7 @@ class Animator {
       const message = error instanceof Error ? error.message : String(error)
       this.error = message
       app.toast('error', `${now.label} didn't play: ${message}`)
+      this.holding = false
       this.halt()
       return false
     } finally {
@@ -529,7 +477,7 @@ class Animator {
 
   private async build (now: NowPlaying): Promise<{ clip: THREE.AnimationClip, baked: BakedSlot, horse: THREE.AnimationClip | null, cycles: number, signature: string, loop: boolean | null }> {
     const c = app.byId(now.characterId)
-    const ctx = this.context()
+    const ctx = this.bakeContext()
     if (c === null || ctx === null) throw new Error('The character is not on stage')
     const signature = this.inputs(now, c)
     const ride = this.riding(c)
@@ -561,11 +509,12 @@ class Animator {
     return { clip: r.rider.clip, baked: r.rider, horse: r.horse, cycles: r.cycles, signature, loop }
   }
 
-  private context (): BakeContext | null {
+  /** What the character on stage bakes with (the export's own is the same: the joints' ranges, the shared poses). */
+  bakeContext (): BakeContext | null {
     const view = this.shown
     const posable = this.posableCopy()
     if (view === null || view.rest === null || posable === null || this.cache === null) return null
-    return { rest: view.rest, posable, clips: this.cache, fps: FPS, sharedPoses: this.sharedPoses() }
+    return { rest: view.rest, posable, clips: this.cache, fps: FPS, sharedPoses: this.sharedPoses(), rom: romOf }
   }
 
   private sharedPoses (): HandPose[] {
@@ -580,7 +529,7 @@ class Animator {
     horse.posable ??= cloneSkinned(horse.mount.view.root)
     return {
       c: app.byId(m.character) ?? horse.mount.character,
-      ctx: { rest: horse.mount.view.rest, posable: horse.posable, clips: horse.cache, fps: FPS, sharedPoses: this.sharedPoses() },
+      ctx: { rest: horse.mount.view.rest, posable: horse.posable, clips: horse.cache, fps: FPS, sharedPoses: this.sharedPoses(), rom: romOf },
     }
   }
 
@@ -609,7 +558,7 @@ class Animator {
     queueMicrotask(() => {
       if (this.player === null) return
       const now = untrack(() => this.playing)
-      if (now !== null && !now.editing && now.kind !== 'clip') void this.run(now, true)
+      if (now !== null && now.kind !== 'clip') void this.run(now, true)
       else if (now === null) { this.player.stop(); this.seat() }
     })
   }
@@ -626,10 +575,90 @@ class Animator {
     if (this.player === null) return
     // (while a gizmo drags a bone or a piece the clip doesn't drive it: paused, it would still set the frame's pose)
     if (!this.holding && !gizmo.dragging && this.player.clip !== null) {
-      this.player.update(dt)
-      if (this.horse?.player.clip != null) this.horse.player.update(dt)
+      if (this.idleAction !== null) this.tickIdle(dt)
+      else {
+        const was = this.player.time
+        this.player.update(dt)
+        if (this.horse?.player.clip != null) this.horse.player.update(dt)
+        this.keepInRegion(was)
+        this.maybeIdle()
+      }
     }
     this.track()
+  }
+
+  /** Playing with a loop region: past its end (or wrapped round past it), back to its start. */
+  private keepInRegion (was: number): void {
+    const r = this.region; const now = untrack(() => this.playing)
+    if (r === null || now === null || !this.running || this.duration <= 0) return
+    const cycles = Math.max(1, now.cycles)
+    const own = this.duration / cycles
+    const cycle = Math.floor(Math.min(was, this.duration - 1e-9) / own)
+    const t = this.player!.time
+    const end = (cycle + r[1]) * own
+    const ended = !this.loop && t >= this.duration - 1e-4
+    if (t > end + 1e-6 || t < was - 1e-6 || t < (cycle + r[0]) * own - 1e-6 || ended) {
+      this.seek((cycle + r[0]) * own)
+      this.player!.setPlaying(true)
+    }
+  }
+
+  // ---- the preview into Idle -----------------------------------------------------------------------------------------
+
+  /** Turn the preview into Idle on or off (the character's Idle baked for it once). */
+  setIntoIdle (on: boolean): void {
+    this.intoIdle = on
+    if (!on) this.endIdle()
+    else void this.idleClip()
+  }
+
+  /** The character's Idle as it plays (baked once for what it is made of), or null: it has none (or is the clip). */
+  private async idleClip (): Promise<THREE.AnimationClip | null> {
+    const now = untrack(() => this.playing)
+    const c = now === null ? null : app.byId(now.characterId)
+    const idle = c?.clips.find(s => s.name === 'Idle')
+    const ctx = this.bakeContext()
+    if (c === null || idle === undefined || ctx === null || now?.slotId === idle.id) return null
+    const key = this.inputs(new NowPlaying({ kind: 'slot', characterId: c.id, slotId: idle.id, label: 'Idle' }), c)
+    if (this.idle?.key === key) return this.idle.clip
+    const clip = (await bakeSlot(c, idle, ctx)).clip
+    this.idle = { key, clip }
+    return clip
+  }
+
+  /** The clip played once has ended: the Idle blended in over BLEND seconds (as the game does). */
+  private maybeIdle (): void {
+    const now = untrack(() => this.playing)
+    if (!this.intoIdle || !this.running || this.loop || now === null || now.kind === 'clip' || this.horse !== null || this.region !== null) return
+    if (this.player === null || this.player.time < this.duration - 1e-4) return
+    const idle = this.idle?.clip
+    if (idle === undefined) { void this.idleClip(); return }
+    const main = this.player.mixer.existingAction(this.player.clip!)
+    if (main === null) return
+    const action = this.player.mixer.clipAction(idle)
+    action.reset(); action.setLoop(THREE.LoopRepeat, Infinity); action.timeScale = this.speed; action.play()
+    main.crossFadeTo(action, BLEND, false)
+    this.idleAction = action
+    this.idleTime = 0
+    this.inIdle = true
+  }
+
+  private tickIdle (dt: number): void {
+    if (!this.running || this.player === null) return
+    this.player.update(dt)
+    this.idleTime += dt * this.speed
+    if (this.idleTime >= IDLE_FOR) { this.endIdle(); this.seek(0) }
+  }
+
+  /** The Idle after the clip stopped: the clip alone again. */
+  private endIdle (): void {
+    const a = this.idleAction
+    if (a === null) return
+    this.idleAction = null
+    this.inIdle = false
+    a.stop()
+    const main = this.player?.clip == null ? null : this.player.mixer.existingAction(this.player.clip)
+    if (main !== null && main !== undefined) { main.stopFading(); main.setEffectiveWeight(1); main.enabled = true; main.paused = !this.running; main.play() }
   }
 
   /** The time and phase where the player is, mirrored into the state; the pulls drawn there; the tick hooks told. */
@@ -666,7 +695,7 @@ class Animator {
     this.lastKey = ''
     this.usePreviewSubject()
     const now = untrack(() => this.playing)
-    if (now !== null && !now.editing && now.kind !== 'clip') void this.run(now, true)
+    if (now !== null && now.kind !== 'clip') void this.run(now, true)
   }
 
   /** A clip file written again (an edit saved over it): loaded and retargeted afresh next time it plays. */
