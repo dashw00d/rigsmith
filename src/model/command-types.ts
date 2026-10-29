@@ -9,8 +9,8 @@
 // Long work (import, rig, finger trace, template fit, texture compose, export) runs as server jobs, which write the
 // document through the same journal (server/store.ts updateCharacter) without being commands.
 import type {
-  Adjustment, ClipRef, Gear, GearAttach, Handle, HandPose, HandPoseRef, Joints, MarkerBoardState, Mount, Placement,
-  Side, Slot, Vec3,
+  Adjustment, BlowFit, ClipEvent, ClipKey, ClipRef, Gear, GearAttach, GearTrack, Handle, HandPose, HandPoseRef, Joints,
+  MarkerBoardState, Mount, Placement, RetimeMarker, Side, Slot, SlotTime, TimeHold, Vec3,
 } from './types.ts'
 
 export type Command =
@@ -56,28 +56,45 @@ export type Command =
   | { type: 'gear.handle.update', gear: string, id: string, patch: HandlePatch }
   /** Also takes out handleHold adjustments on it. A carry handle can't be removed (move the gear off the hand). */
   | { type: 'gear.handle.remove', gear: string, id: string }
-  // clips (owner: Motion)
+  // clips (owner: Motion; docs/motion-plan.md §4). Every time given is source time (types.ts SourceU).
   /** A new slot (a trial, or a game clip name not yet filled). Its name must be free. */
   | { type: 'slot.add', slot: Slot, index?: number }
-  | { type: 'slot.update', id: string, patch: { name?: string, speed?: number, loop?: boolean, inPlace?: boolean, note?: string | null } }
+  /** `muted`: the tracks switched off (types.ts Slot.muted); null: none. */
+  | { type: 'slot.update', id: string, patch: { name?: string, speed?: number, loop?: boolean, inPlace?: boolean, note?: string | null, muted?: string[] | null } }
   /** Put a clip in a slot (by `id`), or in a new slot named `name` with id `newId`. Speed (default 1), loop and in
-   * place are the given ones; the old clip's adjustments go (they were tuned for other motion) unless
-   * `keepAdjustments`; `adjustments` are added (merged by the cardinality rules: a keys adjustment merges into the
-   * existing one per bone/gear). */
-  | { type: 'slot.fill', id?: string, name?: string, newId?: string, clip: ClipRef, speed?: number, loop?: boolean, inPlace?: boolean, keepAdjustments?: boolean, adjustments?: Adjustment[], note?: string | null }
-  /** Also takes out pace adjustments of other slots that followed it. */
+   * place are the given ones; what was tuned for the old clip (adjustments, time, keys, gear tracks, events) goes
+   * unless `keepAdjustments`; the parts given are added (adjustments by the cardinality rules, time parts replaced,
+   * tracks merged per bone and gear, events added). */
+  | { type: 'slot.fill', id?: string, name?: string, newId?: string, clip: ClipRef, speed?: number, loop?: boolean, inPlace?: boolean, keepAdjustments?: boolean, adjustments?: Adjustment[], time?: SlotTime, bones?: Record<string, ClipKey[]>, gear?: Record<string, GearTrack>, events?: ClipEvent[], note?: string | null }
+  /** "Save as <clip>": `from`'s setup (its clip, speed, time, adjustments, tracks, events, muted) copied over slot `to`,
+   * which keeps its id, name, loop and in place, or into a new slot `name` with id `newId` (taking `from`'s loop and
+   * in place). A pace following the slot itself goes. */
+  | { type: 'slot.copy', from: string, to?: string, name?: string, newId?: string }
+  /** Also takes out pace of other slots that followed it. */
   | { type: 'slot.remove', id: string }
   | { type: 'slot.reorder', ids: string[] }
+  /** Adjustments are ground, handPose and handleHold (the blow fit and pace are slot.time, keys slot.keys.set). */
   | { type: 'slot.adjust.add', slot: string, adjustment: Adjustment }
   | { type: 'slot.adjust.update', slot: string, id: string, patch: Record<string, unknown> }
   | { type: 'slot.adjust.remove', slot: string, id: string }
-  /** The slot's adjustments replaced (the editor baking them into a new clip). */
+  /** The slot's adjustments replaced. */
   | { type: 'slot.adjust.set', slot: string, adjustments: Adjustment[] }
+  /** The slot's time map: each part given replaced whole, null removes it. */
+  | { type: 'slot.time', slot: string, patch: { fit?: BlowFit | null, pace?: { enabled: boolean, like: string } | null, markers?: RetimeMarker[] | null, holds?: TimeHold[] | null } }
+  /** Keys: each track named (a bone, or a gear piece by id) replaced by these keys (none: the track goes). Every key
+   * operation of the timeline (insert, delete, drag, stretch, duplicate, paste, mirror, tween, easing) is one of these. */
+  | { type: 'slot.keys.set', slot: string, tracks: KeyTrack[] }
+  | { type: 'slot.event.add', slot: string, event: ClipEvent }
+  /** null unsets an optional field (a span back to a point, the sound, the bone). */
+  | { type: 'slot.event.update', slot: string, id: string, patch: EventPatch }
+  | { type: 'slot.event.remove', slot: string, id: string }
+  /** Who holds a piece over the clip and when it shows (null clears). */
+  | { type: 'slot.gear.update', slot: string, gear: string, patch: { heldBy?: GearTrack['heldBy'] | null, shown?: GearTrack['shown'] | null } }
   /** The whole set replaced (another character's set copied here, or a game build restored). The caller gives the
-   * slots fresh ids (select.freshSet, which also remaps pace.like). `gearNames` (source gear id -> name): gear
-   * references (keys.gear, handleHold, handPose.gear) are mapped onto this character's gear of the same name and
-   * handles of the same name (`handleNames`: '<source gear id>/<source handle id>' -> handle name; a handle not named
-   * there keeps its id if the gear here has it); what doesn't resolve is dropped and reported. */
+   * slots fresh ids (select.freshSet, which also remaps time.pace.like). `gearNames` (source gear id -> name): gear
+   * references (gear tracks, handleHold, handPose.gear, muted 'gear:<id>') are mapped onto this character's gear of the
+   * same name and handles of the same name (`handleNames`: '<source gear id>/<source handle id>' -> handle name; a
+   * handle not named there keeps its id if the gear here has it); what doesn't resolve is dropped and reported. */
   | { type: 'clips.replace', slots: Slot[], gearNames?: Record<string, string>, handleNames?: Record<string, string> }
   // look (owner: Look; the server recomposes the texture after these)
   | { type: 'look.layer.update', id: string, patch: { enabled?: boolean, note?: string } }
@@ -92,5 +109,8 @@ export type CommandType = Command['type']
 
 export type HandlePatch = Partial<Pick<Handle, 'name' | 'pull'>> &
   { hand?: Side | null, place?: Handle['place'] | null, exact?: boolean | null, pose?: HandPoseRef | null }
+/** One track's keys: `bone` (the Body track's row) or `gear` (a piece's keys, by gear id). */
+export type KeyTrack = { bone: string, keys: ClipKey[] } | { gear: string, keys: ClipKey[] }
+export type EventPatch = Partial<Pick<ClipEvent, 'name' | 'u'>> & { to?: number | null, sound?: string | null, bone?: string | null }
 export type MountPatch = Partial<Omit<Mount, 'scale' | 'hips' | 'skin' | 'gear'>> &
   { scale?: number | null, hips?: Vec3 | null, skin?: string | null, gear?: string[] | null }

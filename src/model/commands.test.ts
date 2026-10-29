@@ -244,28 +244,27 @@ describe('gear', () => {
     const c = makeCharacter({
       gear: [bow()],
       clips: [
-        makeSlot({ id: 's1', name: 'Shoot', adjustments: [
-          adj({ id: 'k', kind: 'keys', bones: { Hips: [key] }, gear: { bow: [key] } }),
+        makeSlot({ id: 's1', name: 'Shoot', bones: { Hips: [key] }, gear: { bow: { keys: [key] } }, muted: ['gear:bow'], adjustments: [
           adj({ id: 'h', kind: 'handleHold', gear: 'bow', handle: 'draw', windows: [[0.5, 1]] }),
           adj({ id: 'p', kind: 'handPose', hand: 'Left', pose: 'clip', gear: 'bow' }),
           adj({ id: 'g', kind: 'ground', lift: 0.01 }),
         ] }),
-        makeSlot({ id: 's2', name: 'Walk', adjustments: [adj({ id: 'k', kind: 'keys', gear: { bow: [key] } })] }),
+        makeSlot({ id: 's2', name: 'Walk', gear: { bow: { keys: [key] } } }),
       ],
     })
     const r = applyCommand(c, { type: 'gear.attach', id: 'bow', attach: { kind: 'skin', policy: 'body', place } })
     expect(r.character.gear[0].handles).toEqual([])
-    expect(r.character.clips[0].adjustments).toEqual([adj({ id: 'k', kind: 'keys', bones: { Hips: [key] } }), adj({ id: 'g', kind: 'ground', lift: 0.01 })])
-    expect(r.character.clips[1].adjustments).toEqual([])
+    expect(r.character.clips[0]).toEqual(makeSlot({ id: 's1', name: 'Shoot', bones: { Hips: [key] }, adjustments: [adj({ id: 'g', kind: 'ground', lift: 0.01 })] }))
+    expect(r.character.clips[1]).toEqual(makeSlot({ id: 's2', name: 'Walk' }))
     expect(r.changes).toEqual([
       'gear Bow: worn on the skin (follows body)',
       'gear Bow: no longer carried (its carry handle removed)',
       "clip Shoot: hand pose letting go of Bow removed (it isn't carried)",
       "gear Bow: pull Draw (drawn by RightHand) removed (it isn't on a bone)",
       "gear Bow: grip Other hand (Right hand) removed (it isn't on a bone)",
-      "clip Shoot: keys on Bow removed (it isn't on a bone)",
+      "clip Shoot: the track of Bow removed (it isn't on a bone)",
       "clip Shoot: hold of Bow · Draw removed (it isn't on a bone)",
-      "clip Walk: keys on Bow removed (it isn't on a bone)",
+      "clip Walk: the track of Bow removed (it isn't on a bone)",
     ])
     // (the piece and its slots are the entities the write touched)
     const undo = undoRecord(c, r.character)
@@ -277,8 +276,8 @@ describe('gear', () => {
     // from one bone to another they stay
     const moved = applyCommand(c, { type: 'gear.attach', id: 'bow', attach: { kind: 'bone', bone: 'Spine2', place } })
     expect(moved.character.gear[0].handles.map(h => h.id)).toEqual(['draw', 'grip'])
-    expect(moved.character.clips[0].adjustments.map(a => a.id)).toEqual(['k', 'h', 'g'])
-    expect(moved.character.clips[1].adjustments.map(a => a.id)).toEqual(['k'])
+    expect(moved.character.clips[0].adjustments.map(a => a.id)).toEqual(['h', 'g'])
+    expect(moved.character.clips.map(s => s.gear)).toEqual([{ bow: { keys: [key] } }, { bow: { keys: [key] } }])
   })
 
   it('gives grips and pulls only to a piece on a bone', () => {
@@ -306,25 +305,25 @@ describe('gear', () => {
     const c = makeCharacter({
       gear: [bow()],
       clips: [
-        makeSlot({ id: 's1', name: 'Shoot', adjustments: [
-          adj({ id: 'k', kind: 'keys', gear: { bow: [key] } }),
+        makeSlot({ id: 's1', name: 'Shoot', gear: { bow: { keys: [key], shown: [{ u: 0.5, shown: false }] } }, adjustments: [
           adj({ id: 'h', kind: 'handleHold', gear: 'bow', handle: 'draw', windows: [[0.5, 1]] }),
           adj({ id: 'p', kind: 'handPose', hand: 'Left', pose: 'clip', gear: 'bow' }),
           adj({ id: 'g', kind: 'ground', lift: 0.01 }),
         ] }),
-        makeSlot({ id: 's2', name: 'Walk', adjustments: [adj({ id: 'k', kind: 'keys', bones: { Hips: [key] }, gear: { bow: [key] } })] }),
+        makeSlot({ id: 's2', name: 'Walk', bones: { Hips: [key] }, gear: { bow: { keys: [key] } } }),
       ],
     })
     const r = applyCommand(c, { type: 'gear.remove', id: 'bow' })
     expect(r.character.gear).toEqual([])
     expect(r.character.clips[0].adjustments.map(a => a.id)).toEqual(['g'])
-    expect(r.character.clips[1].adjustments).toEqual([adj({ id: 'k', kind: 'keys', bones: { Hips: [key] } })])
+    expect(r.character.clips[0].gear).toBeUndefined()
+    expect(r.character.clips[1]).toEqual(makeSlot({ id: 's2', name: 'Walk', bones: { Hips: [key] } }))
     expect(r.changes).toEqual([
       'gear Bow: removed',
-      'clip Shoot: keys on Bow removed',
+      'clip Shoot: the track of Bow removed',
       'clip Shoot: hold of Bow · Draw removed',
       'clip Shoot: hand pose letting go of Bow removed',
-      'clip Walk: keys on Bow removed',
+      'clip Walk: the track of Bow removed',
     ])
   })
 
@@ -361,13 +360,21 @@ describe('clips', () => {
     expect(failure(() => applyCommand(c, { type: 'slot.add', slot: makeSlot({ id: 'walk', name: 'Other' }) })).status).toBe(409)
   })
 
-  it('fills a slot: the old clip’s adjustments go unless kept, keys merge', () => {
-    const c = makeCharacter({ clips: [makeSlot({ id: 'atk', name: 'Attack', speed: 1.3, adjustments: [adj({ id: 'k', kind: 'keys', bones: { Hips: [key] } }), adj({ id: 'g', kind: 'ground', lift: 0.02 })] })] })
+  it('fills a slot: what was made for the old clip goes unless kept, keys merge per track', () => {
+    const c = makeCharacter({ clips: [makeSlot({
+      id: 'atk', name: 'Attack', speed: 1.3, bones: { Hips: [key] }, time: { fit: { enabled: true, at: 0.45 } }, events: [{ id: 'e', name: 'hit', u: 0.5 }],
+      adjustments: [adj({ id: 'g', kind: 'ground', lift: 0.02 })],
+    })] })
     const r = applyCommand(c, { type: 'slot.fill', id: 'atk', clip: { id: 'custom-1' }, loop: false })
-    expect(r.character.clips[0]).toMatchObject({ clip: { id: 'custom-1' }, speed: 1, loop: false, adjustments: [] })
-    expect(r.changes).toEqual(['clip Attack: mixamo-Idle -> custom-1', 'clip Attack: speed 1.3 -> 1', 'clip Attack: plays once', 'clip Attack: keys on Hips and ground lift 0.02 dropped (made for the clip it had)'])
-    const kept = applyCommand(c, { type: 'slot.fill', id: 'atk', clip: { id: 'custom-1' }, keepAdjustments: true, adjustments: [adj({ id: 'k2', kind: 'keys', bones: { Spine: [key] } })] })
-    expect(kept.character.clips[0].adjustments[0]).toEqual(adj({ id: 'k', kind: 'keys', bones: { Hips: [key], Spine: [key] } }))
+    expect(r.character.clips[0]).toEqual(makeSlot({ id: 'atk', name: 'Attack', clip: { id: 'custom-1' }, speed: 1, loop: false }))
+    expect(r.changes).toEqual(['clip Attack: mixamo-Idle -> custom-1', 'clip Attack: speed 1.3 -> 1', 'clip Attack: plays once',
+      'clip Attack: ground lift 0.02, blow at 45%, keys and gear tracks and 1 event dropped (made for the clip it had)'])
+    const kept = applyCommand(c, { type: 'slot.fill', id: 'atk', clip: { id: 'custom-1' }, keepAdjustments: true, bones: { Spine: [key] } })
+    expect(kept.character.clips[0].bones).toEqual({ Hips: [key], Spine: [key] })
+    expect(kept.character.clips[0].time).toEqual({ fit: { enabled: true, at: 0.45 } })
+    expect(kept.character.clips[0].events).toEqual([{ id: 'e', name: 'hit', u: 0.5 }])
+    // (a second hit is refused: one blow per slot)
+    expect(failure(() => applyCommand(c, { type: 'slot.fill', id: 'atk', clip: { id: 'x' }, keepAdjustments: true, events: [{ id: 'e2', name: 'hit', u: 0.6 }] })).status).toBe(409)
     expect(failure(() => applyCommand(c, { type: 'slot.fill', id: 'atk', clip: { id: 'x' }, keepAdjustments: true, adjustments: [adj({ id: 'g2', kind: 'ground', lift: 0 })] })).status).toBe(409)
   })
 
@@ -380,7 +387,7 @@ describe('clips', () => {
   })
 
   it('takes out the paces that followed a removed slot', () => {
-    const c = makeCharacter({ clips: [walk, makeSlot({ id: 'carry', name: 'Carry', adjustments: [adj({ kind: 'pace', like: 'walk' })] })] })
+    const c = makeCharacter({ clips: [walk, makeSlot({ id: 'carry', name: 'Carry', time: { pace: { enabled: true, like: 'walk' } } })] })
     const r = applyCommand(c, { type: 'slot.remove', id: 'walk' })
     expect(r.character.clips).toEqual([makeSlot({ id: 'carry', name: 'Carry' })])
     expect(r.changes).toEqual(['clip Walk: removed', 'clip Carry: pace of Walk removed (that clip is gone)'])
@@ -404,52 +411,175 @@ describe('clips', () => {
     expect(failure(() => applyCommand(c, add(adj({ id: 'x', kind: 'handleHold', gear: 'bow', handle: 'grip', windows: [[0, 1]] })))).status).toBe(400)
     expect(failure(() => applyCommand(c, add(adj({ id: 'x', kind: 'handleHold', gear: 'nope', handle: 'draw', windows: [[0, 1]] })))).status).toBe(404)
     expect(failure(() => applyCommand(c, add(adj({ id: 'x', kind: 'handPose', hand: 'Right', pose: 'clip', gear: 'bow', windows: [[0.8, 0.9]] })))).status).toBe(400)
-    expect(failure(() => applyCommand(c, add(adj({ id: 'x', kind: 'pace', like: 's' })))).status).toBe(400)
-    expect(applyCommand(c, add(adj({ id: 'x', kind: 'pace', like: 'walk' }))).changes).toEqual(['clip Shoot: pace of Walk added'])
+    // (blow timing, pace and keys are the slot's time and tracks now)
+    expect(failure(() => applyCommand(c, add({ id: 'x', kind: 'pace', like: 'walk', enabled: true } as unknown as Adjustment))).message).toMatch(/slot.time/)
   })
 
   it('updates an adjustment, null unsetting a field', () => {
-    const c = makeCharacter({ clips: [makeSlot({ id: 's', name: 'Shoot', adjustments: [adj({ kind: 'handPose', hand: 'Left', pose: 'clip', windows: [[0.2, 0.4]] }), adj({ id: 'b', kind: 'blowTiming', at: 0.45 })] })] })
+    const c = makeCharacter({ clips: [makeSlot({ id: 's', name: 'Shoot', adjustments: [adj({ kind: 'handPose', hand: 'Left', pose: 'clip', windows: [[0.2, 0.4]] }), adj({ id: 'g', kind: 'ground', lift: 0.1 })] })] })
     const r = applyCommand(c, { type: 'slot.adjust.update', slot: 's', id: 'a1', patch: { windows: null } })
     expect(r.character.clips[0].adjustments[0]).toEqual(adj({ kind: 'handPose', hand: 'Left', pose: 'clip' }))
     expect(r.changes).toEqual(['clip Shoot: Left hand as the clip has it in 20%-40% -> Left hand as the clip has it in the whole clip'])
-    expect(applyCommand(c, { type: 'slot.adjust.update', slot: 's', id: 'b', patch: { enabled: false } }).changes).toEqual(['clip Shoot: blow at 45% off'])
-    expect(failure(() => applyCommand(c, { type: 'slot.adjust.update', slot: 's', id: 'b', patch: { kind: 'ground' } })).status).toBe(400)
-    expect(failure(() => applyCommand(c, { type: 'slot.adjust.update', slot: 's', id: 'b', patch: { lift: 1 } })).status).toBe(400)
-    expect(failure(() => applyCommand(c, { type: 'slot.adjust.update', slot: 's', id: 'b', patch: { at: 2 } })).status).toBe(400)
+    expect(applyCommand(c, { type: 'slot.adjust.update', slot: 's', id: 'g', patch: { enabled: false } }).changes).toEqual(['clip Shoot: ground lift 0.1 off'])
+    expect(failure(() => applyCommand(c, { type: 'slot.adjust.update', slot: 's', id: 'g', patch: { kind: 'handPose' } })).status).toBe(400)
+    expect(failure(() => applyCommand(c, { type: 'slot.adjust.update', slot: 's', id: 'g', patch: { at: 1 } })).status).toBe(400)
+    // (windows are source time: past 1 is the held end, up to MAX_U)
+    expect(applyCommand(c, { type: 'slot.adjust.update', slot: 's', id: 'a1', patch: { windows: [[1.2, 2]] } }).character.clips[0].adjustments[0]).toMatchObject({ windows: [[1.2, 2]] })
+    expect(failure(() => applyCommand(c, { type: 'slot.adjust.update', slot: 's', id: 'a1', patch: { windows: [[1, 17]] } })).status).toBe(400)
   })
 
   it('removes and sets adjustments', () => {
     const c = makeCharacter({ clips: [makeSlot({ id: 's', name: 'Shoot', adjustments: [adj({ kind: 'ground', lift: 0.1 })] })] })
     expect(applyCommand(c, { type: 'slot.adjust.remove', slot: 's', id: 'a1' }).changes).toEqual(['clip Shoot: ground lift 0.1 removed'])
-    const set = applyCommand(c, { type: 'slot.adjust.set', slot: 's', adjustments: [adj({ id: 'b', kind: 'blowTiming', at: 0.45, late: 'hold' })] })
-    expect(set.character.clips[0].adjustments).toEqual([adj({ id: 'b', kind: 'blowTiming', at: 0.45, late: 'hold' })])
-    expect(set.changes).toEqual(['clip Shoot: adjustments now blow at 45%'])
+    const set = applyCommand(c, { type: 'slot.adjust.set', slot: 's', adjustments: [adj({ id: 'g', kind: 'ground', lift: 0.2 })] })
+    expect(set.character.clips[0].adjustments).toEqual([adj({ id: 'g', kind: 'ground', lift: 0.2 })])
+    expect(set.changes).toEqual(['clip Shoot: adjustments now ground lift 0.2'])
   })
 
   it("replaces the set, mapping another character's gear by name and dropping what doesn't resolve", () => {
     const c = makeCharacter({ gear: [bow({ id: 'mine' })], clips: [walk] })
     const slots = [
-      makeSlot({ id: 'n1', name: 'Shoot', adjustments: [
-        adj({ id: 'k', kind: 'keys', gear: { theirs: [key], gone: [key] } }),
+      makeSlot({ id: 'n1', name: 'Shoot', time: { pace: { enabled: true, like: 'elsewhere' } }, gear: { theirs: { keys: [key] }, gone: { keys: [key] } }, muted: ['gear:theirs', 'gear:gone'], adjustments: [
         adj({ id: 'h', kind: 'handleHold', gear: 'theirs', handle: 'p9', windows: [[0.5, 1]] }),
         adj({ id: 'p', kind: 'handPose', hand: 'Right', pose: 'clip', gear: 'theirs', windows: [[0.1, 0.2]] }),
-        adj({ id: 'c', kind: 'pace', like: 'elsewhere' }),
       ] }),
     ]
     const r = applyCommand(c, { type: 'clips.replace', slots, gearNames: { theirs: 'Bow', gone: 'Lute' }, handleNames: { 'theirs/p9': 'Draw' } })
     expect(r.character.clips.map(s => s.id)).toEqual(['n1'])
-    expect(r.character.clips[0].adjustments).toEqual([
-      adj({ id: 'k', kind: 'keys', gear: { mine: [key] } }),
-      adj({ id: 'h', kind: 'handleHold', gear: 'mine', handle: 'draw', windows: [[0.5, 1]] }),
-      adj({ id: 'p', kind: 'handPose', hand: 'Left', pose: 'clip', gear: 'mine', windows: [[0.1, 0.2]] }),
-    ])
+    expect(r.character.clips[0]).toEqual(makeSlot({
+      id: 'n1', name: 'Shoot', gear: { mine: { keys: [key] } }, muted: ['gear:mine'], adjustments: [
+        adj({ id: 'h', kind: 'handleHold', gear: 'mine', handle: 'draw', windows: [[0.5, 1]] }),
+        adj({ id: 'p', kind: 'handPose', hand: 'Left', pose: 'clip', gear: 'mine', windows: [[0.1, 0.2]] }),
+      ],
+    }))
     expect(r.changes).toEqual([
       'clips replaced: Shoot',
-      "clip Shoot: keys on Lute dropped (no such gear here)",
       "clip Shoot: pace dropped (the clip it followed isn't in the set)",
+      'clip Shoot: the track of Lute dropped (no such gear here)',
     ])
     expect(failure(() => applyCommand(c, { type: 'clips.replace', slots: [walk, { ...walk, id: 'w2' }] })).status).toBe(400)
+  })
+})
+
+describe('slot time, keys, events and gear tracks (schema 3)', () => {
+  const walk = makeSlot({ id: 'walk', name: 'Walk' })
+  const atk = makeSlot({ id: 'atk', name: 'Attack', loop: false })
+  const q = (z: number): [number, number, number, number] => [0, 0, z, Math.sqrt(1 - z * z)]
+  const base = (): Character => makeCharacter({ gear: [makeGear({ id: 'bow', name: 'Bow' })], clips: [walk, atk] })
+
+  it('sets the blow fit, pace, markers and holds, each part whole, null taking it out', () => {
+    const r = applyCommand(base(), { type: 'slot.time', slot: 'atk', patch: { fit: { enabled: true, at: 0.45, late: 'hold' }, pace: { enabled: true, like: 'walk' } } })
+    expect(r.character.clips[1].time).toEqual({ fit: { enabled: true, at: 0.45, late: 'hold' }, pace: { enabled: true, like: 'walk' } })
+    expect(r.changes).toEqual(['clip Attack: blow at 45%, a late one held added', 'clip Attack: pace of Walk'])
+    const m = applyCommand(r.character, { type: 'slot.time', slot: 'atk', patch: { markers: [{ id: 'm', u: 0.4, to: 0.3 }], holds: [{ id: 'h', u: 0.5, seconds: 0.2 }], pace: null } })
+    expect(m.character.clips[1].time).toEqual({ fit: { enabled: true, at: 0.45, late: 'hold' }, markers: [{ id: 'm', u: 0.4, to: 0.3 }], holds: [{ id: 'h', u: 0.5, seconds: 0.2 }] })
+    expect(m.changes).toEqual(['clip Attack: pace removed', 'clip Attack: retimed by 1 marker', 'clip Attack: held 0.2 s at 50%'])
+    const off = applyCommand(m.character, { type: 'slot.time', slot: 'atk', patch: { fit: null, markers: null, holds: [] } })
+    expect(off.character.clips[1].time).toBeUndefined()
+  })
+
+  it('keeps a slot\'s time valid', () => {
+    const c = base()
+    const time = (patch: Record<string, unknown>): Command => ({ type: 'slot.time', slot: 'atk', patch } as Command)
+    expect(failure(() => applyCommand(c, time({ pace: { enabled: true, like: 'atk' } }))).status).toBe(400)
+    expect(failure(() => applyCommand(c, time({ pace: { enabled: true, like: 'gone' } }))).status).toBe(404)
+    expect(failure(() => applyCommand(c, time({ fit: { enabled: true, at: 1.2 } }))).status).toBe(400)
+    expect(failure(() => applyCommand(c, time({ markers: [{ id: 'a', u: 0.3, to: 0.5 }, { id: 'b', u: 0.6, to: 0.4 }] }))).status).toBe(400)
+    expect(failure(() => applyCommand(c, time({ markers: [{ id: 'a', u: 1, to: 0.5 }] }))).status).toBe(400)
+    expect(failure(() => applyCommand(c, time({ holds: [{ id: 'a', u: 0.3, seconds: 0 }] }))).status).toBe(400)
+    expect(failure(() => applyCommand(c, time({ holds: [{ id: 'a', u: 0.3, seconds: 1 }, { id: 'b', u: 0.3, seconds: 1 }] }))).status).toBe(400)
+    expect(failure(() => applyCommand(c, time({ speed: 2 }))).status).toBe(400)
+  })
+
+  it('replaces a track\'s keys, sorted, with their eases, a track with none going', () => {
+    const r = applyCommand(base(), { type: 'slot.keys.set', slot: 'atk', tracks: [
+      { bone: 'RightArm', keys: [{ u: 0.6, q: q(0.2), ease: 'step' }, { u: 0.2, q: q(0.1), ease: 'smooth' }] },
+      { gear: 'bow', keys: [{ u: 1.4, q: q(0), p: [0, 0.1, 0] }] },
+    ] })
+    const slot = r.character.clips[1]
+    expect(slot.bones).toEqual({ RightArm: [{ u: 0.2, q: q(0.1) }, { u: 0.6, q: q(0.2), ease: 'step' }] })
+    expect(slot.gear).toEqual({ bow: { keys: [{ u: 1.4, q: q(0), p: [0, 0.1, 0] }] } })
+    expect(r.changes).toEqual(['clip Attack: 2 keys on RightArm', 'clip Attack: 1 key on Bow'])
+    const gone = applyCommand(r.character, { type: 'slot.keys.set', slot: 'atk', tracks: [{ bone: 'RightArm', keys: [] }, { gear: 'bow', keys: [] }] })
+    expect(gone.character.clips[1]).toEqual(atk)
+    expect(gone.changes).toEqual(['clip Attack: keys on RightArm removed', 'clip Attack: keys on Bow removed'])
+  })
+
+  it('refuses keys at the same moment, past MAX_U, on a bone or gear that isn\'t there', () => {
+    const c = base()
+    const set = (tracks: unknown[]): Command => ({ type: 'slot.keys.set', slot: 'atk', tracks } as Command)
+    expect(failure(() => applyCommand(c, set([{ bone: 'Hips', keys: [{ u: 0.5, q: q(0) }, { u: 0.5 + 1e-8, q: q(0.1) }] }]))).status).toBe(400)
+    expect(failure(() => applyCommand(c, set([{ bone: 'Hips', keys: [{ u: 17, q: q(0) }] }]))).status).toBe(400)
+    expect(failure(() => applyCommand(c, set([{ bone: 'Hips', keys: [{ u: 0.5, q: q(0), ease: 'bouncy' }] }]))).status).toBe(400)
+    expect(failure(() => applyCommand(c, set([{ bone: 'Tail', keys: [] }]))).status).toBe(400)
+    expect(failure(() => applyCommand(c, set([{ gear: 'nope', keys: [] }]))).status).toBe(404)
+    expect(failure(() => applyCommand(c, set([{ bone: 'Hips', keys: [] }, { bone: 'Hips', keys: [] }]))).status).toBe(400)
+    expect(failure(() => applyCommand(c, set([{ bone: 'Hips', gear: 'bow', keys: [] }]))).status).toBe(400)
+  })
+
+  it('adds, changes and removes events: one hit, spans forward', () => {
+    const add = applyCommand(base(), { type: 'slot.event.add', slot: 'atk', event: { id: 'e1', name: 'hit', u: 0.5 } })
+    expect(add.character.clips[1].events).toEqual([{ id: 'e1', name: 'hit', u: 0.5 }])
+    expect(add.changes).toEqual(['clip Attack: hit at 50% added'])
+    const two = applyCommand(add.character, { type: 'slot.event.add', slot: 'atk', event: { id: 'e2', name: 'swing', u: 0.2, to: 0.45, sound: 'mix:sword_swing', bone: 'RightHand' } })
+    expect(two.character.clips[1].events!.map(e => e.id)).toEqual(['e2', 'e1'])
+    expect(failure(() => applyCommand(two.character, { type: 'slot.event.add', slot: 'atk', event: { id: 'e3', name: 'hit', u: 0.7 } })).status).toBe(409)
+    expect(failure(() => applyCommand(two.character, { type: 'slot.event.add', slot: 'atk', event: { id: 'e1', name: 'draw', u: 0.7 } })).status).toBe(409)
+    expect(failure(() => applyCommand(base(), { type: 'slot.event.add', slot: 'atk', event: { id: 'x', name: 'swing', u: 0.5, to: 0.4 } })).status).toBe(400)
+    expect(failure(() => applyCommand(base(), { type: 'slot.event.add', slot: 'atk', event: { id: 'x', name: '9lives', u: 0.5 } })).status).toBe(400)
+    expect(failure(() => applyCommand(base(), { type: 'slot.event.add', slot: 'atk', event: { id: 'x', name: 'step.L', u: 0.5, sound: 'boom.wav' } })).status).toBe(400)
+    expect(failure(() => applyCommand(base(), { type: 'slot.event.add', slot: 'atk', event: { id: 'x', name: 'hit', u: 0.2, to: 0.4 } })).status).toBe(400)
+    const moved = applyCommand(two.character, { type: 'slot.event.update', slot: 'atk', id: 'e2', patch: { to: null, sound: null, u: 0.25 } })
+    expect(moved.character.clips[1].events![0]).toEqual({ id: 'e2', name: 'swing', u: 0.25, bone: 'RightHand' })
+    expect(moved.changes).toEqual(['clip Attack: swing at 20%-45% (mix:sword_swing) -> swing at 25%'])
+    expect(failure(() => applyCommand(two.character, { type: 'slot.event.update', slot: 'atk', id: 'e2', patch: { name: 'hit', to: null } })).status).toBe(409)
+    expect(failure(() => applyCommand(two.character, { type: 'slot.event.update', slot: 'atk', id: 'e2', patch: { name: 'hit' } })).status).toBe(400)
+    const removed = applyCommand(add.character, { type: 'slot.event.remove', slot: 'atk', id: 'e1' })
+    expect(removed.character.clips[1].events).toBeUndefined()
+  })
+
+  it('sets who holds a piece and when it shows, kept beside its keys', () => {
+    const keyed = applyCommand(base(), { type: 'slot.keys.set', slot: 'atk', tracks: [{ gear: 'bow', keys: [{ u: 0.5, q: q(0) }] }] }).character
+    const r = applyCommand(keyed, { type: 'slot.gear.update', slot: 'atk', gear: 'bow', patch: { heldBy: [{ u: 0.4, bone: 'RightHand' }, { u: 0.1, bone: 'LeftHand', place: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 } }], shown: [{ u: 0.9, shown: false }] } })
+    expect(r.character.clips[1].gear!.bow).toEqual({
+      keys: [{ u: 0.5, q: q(0) }],
+      heldBy: [{ u: 0.1, bone: 'LeftHand', place: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 } }, { u: 0.4, bone: 'RightHand' }],
+      shown: [{ u: 0.9, shown: false }],
+    })
+    expect(r.changes).toEqual(['clip Attack: Bow held by LeftHand from 10% and RightHand from 40%', 'clip Attack: Bow hidden from 90%'])
+    expect(failure(() => applyCommand(keyed, { type: 'slot.gear.update', slot: 'atk', gear: 'bow', patch: { heldBy: [{ u: 0.4, bone: 'Wing' }] } })).status).toBe(400)
+    expect(failure(() => applyCommand(keyed, { type: 'slot.gear.update', slot: 'atk', gear: 'bow', patch: { shown: [{ u: 0.4, shown: true }, { u: 0.4, shown: false }] } })).status).toBe(400)
+    const cleared = applyCommand(r.character, { type: 'slot.gear.update', slot: 'atk', gear: 'bow', patch: { heldBy: null, shown: null } })
+    expect(cleared.character.clips[1].gear).toEqual({ bow: { keys: [{ u: 0.5, q: q(0) }] } })
+  })
+
+  it('switches tracks off and on', () => {
+    const r = applyCommand(base(), { type: 'slot.update', id: 'atk', patch: { muted: ['bones', 'gear:bow', 'bones'] } })
+    expect(r.character.clips[1].muted).toEqual(['bones', 'gear:bow'])
+    expect(r.changes).toEqual(['clip Attack: bones and gear:bow switched off'])
+    expect(applyCommand(r.character, { type: 'slot.update', id: 'atk', patch: { muted: null } }).character.clips[1].muted).toBeUndefined()
+    expect(failure(() => applyCommand(base(), { type: 'slot.update', id: 'atk', patch: { muted: ['everything'] } })).status).toBe(400)
+  })
+
+  it('copies a slot\'s setup over another (Save as), which keeps its own id, name, loop and in place', () => {
+    const made = makeSlot({
+      id: 'edit', name: 'Attack edit', clip: { id: 'mixamo-Thrust' }, speed: 1.2, loop: true, inPlace: false,
+      time: { fit: { enabled: true, at: 0.45 }, pace: { enabled: true, like: 'atk' } }, bones: { Hips: [key] }, events: [{ id: 'h', name: 'hit', u: 0.5 }],
+      adjustments: [adj({ id: 'g', kind: 'ground', lift: 0.01 })],
+    })
+    const c = makeCharacter({ clips: [walk, atk, made] })
+    const r = applyCommand(c, { type: 'slot.copy', from: 'edit', to: 'atk' })
+    expect(r.character.clips[1]).toEqual({ ...made, id: 'atk', name: 'Attack', loop: false, inPlace: true, time: { fit: { enabled: true, at: 0.45 } } })
+    expect(r.changes).toEqual(["clip Attack: now Attack edit's (mixamo-Thrust, speed 1.2), what it had gone", 'clip Attack: pace dropped (it would follow itself)'])
+    const fresh = applyCommand(c, { type: 'slot.copy', from: 'edit', name: 'Lunge', newId: 'lunge' })
+    expect(fresh.character.clips[3]).toEqual({ ...made, id: 'lunge', name: 'Lunge' })
+    expect(failure(() => applyCommand(c, { type: 'slot.copy', from: 'edit', to: 'edit' })).status).toBe(400)
+    expect(failure(() => applyCommand(c, { type: 'slot.copy', from: 'edit', name: 'Walk', newId: 'w2' })).status).toBe(409)
+  })
+
+  it('takes pace off the slots that followed a removed one, in their time', () => {
+    const c = makeCharacter({ clips: [walk, makeSlot({ id: 'carry', name: 'Carry', time: { pace: { enabled: true, like: 'walk' }, fit: { enabled: false, at: 0.45 } } })] })
+    expect(applyCommand(c, { type: 'slot.remove', id: 'walk' }).character.clips[0].time).toEqual({ fit: { enabled: false, at: 0.45 } })
   })
 })
 

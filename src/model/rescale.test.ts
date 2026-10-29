@@ -24,14 +24,11 @@ const fixture = (): Character => makeCharacter({
     makeGear({ id: 'pouch', attach: { kind: 'spot', place: { position: [0, 1, 0.1], rotation: [0, 0, 0], scale: 1 }, anchor: [0, 1, 0.1] } }),
     makeGear({ id: 'spear', catalog: 'spear_A.glb', attach: { kind: 'bone', bone: 'RightHand', place: { position: [0.1, 0.5, 0], rotation: [-80, 0, 0], scale: 0.62 }, legacyFrame: 'grip' } }),
   ],
-  clips: [makeSlot({ adjustments: [
-    { id: 'g', enabled: true, kind: 'ground', lift: 0.1 },
-    {
-      id: 'k', enabled: true, kind: 'keys',
-      bones: { Hips: [{ u: 0, q: [0, 0, 0, 1], p: [0, 1, 0] }], Spine: [{ u: 0, q: [0, 0, 0, 1] }], root: [{ u: 0, q: [0, 0, 0, 1], p: [0, 0, 0.5] }, { u: 1, q: [0, 0, 0, 1], p: [0, 0, 1] }] },
-      gear: { bow: [{ u: 0, q: [0, 0, 0, 1], p: [0, 0.2, 0] }] },
-    },
-  ] })],
+  clips: [makeSlot({
+    adjustments: [{ id: 'g', enabled: true, kind: 'ground', lift: 0.1 }],
+    bones: { Hips: [{ u: 0, q: [0, 0, 0, 1], p: [0, 1, 0] }], Spine: [{ u: 0, q: [0, 0, 0, 1] }], root: [{ u: 0, q: [0, 0, 0, 1], p: [0, 0, 0.5] }, { u: 1, q: [0, 0, 0, 1], p: [0, 0, 1] }] },
+    gear: { bow: { keys: [{ u: 0, q: [0, 0, 0, 1], p: [0, 0.2, 0] }] } },
+  })],
   mount: { character: 'horse-1', bone: 'spine_3', position: [0, 0.5, 0], rotation: [0, 0, 0], freeze: [], pose: {}, hips: [0, 1, 0] },
 })
 
@@ -58,10 +55,10 @@ describe('rescale', () => {
     // (still in the old grip frame: its position is in bone lengths, which grow with the bones; its size is not)
     expect(spear.attach).toEqual({ kind: 'bone', bone: 'RightHand', place: { position: [0.1, 0.5, 0], rotation: [-80, 0, 0], scale: 1.24 }, legacyFrame: 'grip' })
 
-    const [ground, keys] = r.clips[0].adjustments
-    expect(ground).toMatchObject({ lift: 0.2 })
+    expect(r.clips[0].adjustments[0]).toMatchObject({ lift: 0.2 })
     // (every bone's moves, not only the Hips': a horse keys its root)
-    expect(keys).toMatchObject({ bones: { Hips: [{ p: [0, 2, 0] }], root: [{ p: [0, 0, 1] }, { p: [0, 0, 2] }] }, gear: { bow: [{ p: [0, 0.2, 0] }] } })
+    expect(r.clips[0].bones).toMatchObject({ Hips: [{ p: [0, 2, 0] }], root: [{ p: [0, 0, 1] }, { p: [0, 0, 2] }] })
+    expect(r.clips[0].gear).toEqual({ bow: { keys: [{ u: 0, q: [0, 0, 0, 1], p: [0, 0.2, 0] }] } })
 
     expect(r.mount?.hips).toEqual([0, 2, 0])
   })
@@ -71,6 +68,6 @@ describe('rescale', () => {
     const r = rescale(c, 2, [0, -0.5, 0])
     expect(r.gear[0].handles.map(h => h.place)).toEqual(c.gear[0].handles.map(h => h.place))
     expect(r.mount?.position).toEqual([0, 0.5, 0])
-    expect(r.clips[0].adjustments[1]).toMatchObject({ bones: { Spine: [{ u: 0, q: [0, 0, 0, 1] }] } })
+    expect(r.clips[0].bones).toMatchObject({ Spine: [{ u: 0, q: [0, 0, 0, 1] }] })
   })
 })

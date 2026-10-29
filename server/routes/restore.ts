@@ -4,8 +4,9 @@
 // tools/game_import.py is its client: it brings the parts the build carries in through the gear upload route first,
 // then names them here (where each sits, whether it shows, a re-pivoted mesh).
 //
-//   record   schema 2: its slots (gear named by name), hands (hands.hold) and gearIds (to map handle ids by name);
-//            schema 1: its clips (clip, url, loop, inPlace, speed, lift, keyData) and scripts, read with the v1
+//   record   schema 3: its slots (gear named by name), hands (hands.hold) and gearIds (to map handle ids by name);
+//            schema 2: the same, its slots moved into source time through the blow cut the record says (its clips'
+//            `blow`, the library clip's length: src/model/migrate.ts slotFromV2); schema 1: its clips (clip, url, loop, inPlace, speed, lift, keyData) and scripts, read with the v1
 //            converters (src/model/migrate.ts slotsFromV1 / holdsFromV1). A build from before Rigsmith held the clips
 //            is sent as a schema 1 record game_import made from the game's old clip table.
 //   clips    the game's clip names to take, in order (default: every clip of the record)
@@ -22,13 +23,14 @@ import path from 'node:path'
 import type { Command } from '../../src/model/command-types.ts'
 import { applyCommands, CommandError } from '../../src/model/commands.ts'
 import { newId } from '../../src/model/ids.ts'
-import { holdsFromV1, slotsFromV1 } from '../../src/model/migrate.ts'
+import { holdsFromV1, slotFromV2, slotsFromV1 } from '../../src/model/migrate.ts'
 import { freshSet, gearById } from '../../src/model/select.ts'
-import type { Character, ClipKey, Gear, HandPoseRef, Placement, Side, Slot } from '../../src/model/types.ts'
+import type { Character, Gear, GearTrack, HandPoseRef, Placement, Side, Slot } from '../../src/model/types.ts'
 import type { V1AnimationEntry, V1ClipScript } from '../../src/model/v1.ts'
+import type { V2Slot } from '../../src/model/v2.ts'
 import { runCommands } from '../commands.ts'
 import { by, HttpError, readBody, route, send } from '../http.ts'
-import { type Change, getCharacter, paths, withFiles } from '../store.ts'
+import { type Change, getCharacter, LIBRARY, paths, readJson, withFiles } from '../store.ts'
 
 /** A part of the build, as game_import found it. */
 export interface RestoreGear {
@@ -61,10 +63,12 @@ const SIDES: Side[] = ['Left', 'Right']
 const fromGame = (g: Gear): boolean => g.from?.startsWith('emberhold:') === true
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
-/** v2 build record fields restore reads (src/model/unit.ts BuildRecord). */
+/** v2 and v3 build record fields restore reads (src/model/unit.ts BuildRecord). */
 interface RecordV2 {
-  schema: 2
-  slots: Slot[]
+  schema: 2 | 3
+  /** Schema 3: as stored; schema 2: schema 2's slots. */
+  slots: Slot[] | V2Slot[]
+  clips?: Record<string, { blow?: number }>
   hands?: Partial<Record<Side, HandPoseRef>>
   gearIds?: Record<string, { name: string, from?: string, handles?: Record<string, string> }>
 }
@@ -79,7 +83,8 @@ interface RecordV1 {
  * next is made against what the batch will have by then; a refused one throws the reducers' CommandError.
  * `modelFile(gear, i)` is where the i-th gear entry's new mesh was written (relative to the character folder).
  */
-export function restoreCommands (c: Character, req: RestoreRequest, makeId: () => string, modelFile: (gear: Gear, index: number) => string): RestorePlan {
+export function restoreCommands (c: Character, req: RestoreRequest, makeId: () => string, modelFile: (gear: Gear, index: number) => string,
+  o: { clipSeconds?: (clipId: string) => number | undefined } = {}): RestorePlan {
   const commands: Command[] = []
   const notes: string[] = []
   let work = c
@@ -121,8 +126,8 @@ export function restoreCommands (c: Character, req: RestoreRequest, makeId: () =
   // Its clips and hands.
   const record = req.record
   if (isObj(record)) {
-    const v2 = record.schema === 2 && Array.isArray(record.slots)
-    const set = v2 ? fromV2(record as unknown as RecordV2, work, req.clips) : fromV1(record as RecordV1, work, notes)
+    const v2 = (record.schema === 2 || record.schema === 3) && Array.isArray(record.slots)
+    const set = v2 ? fromV2(record as unknown as RecordV2, work, req.clips, notes, o.clipSeconds) : fromV1(record as RecordV1, work, notes)
     let slots = set.slots
     if (req.clips !== undefined) {
       const wanted = [...new Set(req.clips)]
@@ -140,7 +145,8 @@ export function restoreCommands (c: Character, req: RestoreRequest, makeId: () =
       // (a clip that paces like one this character has already follows that one)
       const byFresh = new Map(fresh.map(s => [s.id, s.name]))
       for (const s of added) {
-        for (const a of s.adjustments) if (a.kind === 'pace' && !added.some(x => x.id === a.like)) a.like = have.get(byFresh.get(a.like) ?? '') ?? a.like
+        const pace = s.time?.pace
+        if (pace !== undefined && !added.some(x => x.id === pace.like)) pace.like = have.get(byFresh.get(pace.like) ?? '') ?? pace.like
       }
       const kept = fresh.filter(s => have.has(s.name)).map(s => s.name)
       if (kept.length > 0) notes.push(`kept as they are here: ${kept.join(', ')} (--replace takes the build's)`)
@@ -169,10 +175,12 @@ export function restoreCommands (c: Character, req: RestoreRequest, makeId: () =
   return { commands, notes }
 }
 
-/** A schema 2 record's slots, their gear references (by name in the record) made into ids clips.replace maps by name:
- * gearNames for every name (and this character's own gear ids, for the slots kept beside them), handleNames for the
- * handles by the names the record gives their ids. Only the slots named `only` (all when unset). */
-function fromV2 (r: RecordV2, c: Character, only?: string[]): { slots: Slot[], hold: Partial<Record<Side, HandPoseRef>>, names: { gearNames: Record<string, string>, handleNames: Record<string, string> } } {
+/** A schema 3 (or 2) record's slots, their gear references (by name in the record) made into ids clips.replace maps by
+ * name: gearNames for every name (and this character's own gear ids, for the slots kept beside them), handleNames for
+ * the handles by the names the record gives their ids. Only the slots named `only` (all when unset). A schema 2 record's
+ * slots are moved into source time (slotFromV2) through the cut it records: the blow it found, the length of the
+ * library clip (`clipSeconds`); without that length they keep their phases, said in `notes`. */
+function fromV2 (r: RecordV2, c: Character, only: string[] | undefined, notes: string[], clipSeconds?: (clipId: string) => number | undefined): { slots: Slot[], hold: Partial<Record<Side, HandPoseRef>>, names: { gearNames: Record<string, string>, handleNames: Record<string, string> } } {
   const gearNames: Record<string, string> = {}
   const handleNames: Record<string, string> = {}
   for (const g of c.gear) gearNames[g.id] = g.name
@@ -189,13 +197,21 @@ function fromV2 (r: RecordV2, c: Character, only?: string[]): { slots: Slot[], h
     }
     return t
   }
-  const slots = structuredClone(r.slots.filter(s => only === undefined || only.includes(s.name))).map(s => {
+  const picked = (r.slots as Array<Slot | V2Slot>).filter(s => only === undefined || only.includes(s.name))
+  const sources: Slot[] = r.schema === 3 ? structuredClone(picked as Slot[]) : (structuredClone(picked) as V2Slot[]).map((s, i) => {
+    // (keys on gear by name, as the record has them, until the tokens below)
+    const seconds = clipSeconds?.(s.clip.id)
+    const blow = r.clips?.[s.name]?.blow
+    return slotFromV2(s, { characterId: c.id, index: i, times: seconds === undefined ? undefined : { seconds, ...(blow !== undefined ? { blow } : {}) }, notes })
+  })
+  const slots = sources.map(s => {
+    if (s.gear !== undefined) {
+      const out: Record<string, GearTrack> = {}
+      for (const [n, t] of Object.entries(s.gear)) out[token(n)] = t
+      s.gear = out
+    }
+    if (s.muted !== undefined) s.muted = s.muted.map(m => (m.startsWith('gear:') ? `gear:${token(m.slice(5))}` : m))
     for (const a of s.adjustments) {
-      if (a.kind === 'keys' && a.gear !== undefined) {
-        const out: Record<string, ClipKey[]> = {}
-        for (const [n, keys] of Object.entries(a.gear)) out[token(n)] = keys
-        a.gear = out
-      }
       if (a.kind === 'handPose' && a.gear !== undefined) a.gear = token(a.gear)
       if (a.kind === 'handleHold') {
         const gearName = a.gear
@@ -229,7 +245,7 @@ function fromV1 (r: RecordV1, c: Character, notes: string[]): { slots: Slot[], h
   const gearIdByName: Record<string, string> = {}
   for (const g of c.gear) gearIdByName[g.name] ??= g.id
   const poses = new Set(c.hands.poses.map(p => p.id))
-  const slots = slotsFromV1(animations, scripts, gearIdByName, c.id, { poses, notes })
+  const slots = slotsFromV1(animations, scripts, gearIdByName, c.id, { poses, notes }).map((s, i) => slotFromV2(s, { characterId: c.id, index: i, notes, windowsInSource: true }))
   return { slots, hold: holdsFromV1(scripts, { poses, notes }), names: {} }
 }
 
@@ -266,9 +282,16 @@ export function requestOf (body: unknown): RestoreRequest {
   return body as RestoreRequest
 }
 
+/** The library clips' lengths (seconds), what moving a schema 2 record's slots into source time needs. */
+async function clipSeconds (): Promise<(clipId: string) => number | undefined> {
+  const manifest = await readJson<{ clips?: Array<{ id: string, duration?: number }> } | null>(path.join(LIBRARY, 'manifest.json'), null)
+  const by = new Map((manifest?.clips ?? []).map(x => [x.id, x.duration]))
+  return id => by.get(id)
+}
+
 /** The batch a dry run shows (new meshes named by where they would go). */
-export const dryRun = (c: Character, body: RestoreRequest): RestorePlan =>
-  restoreCommands(c, { ...body, dryRun: true }, newId, (g, i) => `garments/${g.id}/model.<new mesh ${i + 1}>.glb`)
+export const dryRun = async (c: Character, body: RestoreRequest): Promise<RestorePlan> =>
+  restoreCommands(c, { ...body, dryRun: true }, newId, (g, i) => `garments/${g.id}/model.<new mesh ${i + 1}>.glb`, { clipSeconds: await clipSeconds() })
 
 const unwritten = (g: Gear): never => { throw new HttpError(409, `${g.name}: its new mesh wasn't written (it changed meanwhile; try again)`) }
 
@@ -303,9 +326,10 @@ export async function restore (id: string, body: RestoreRequest, who?: string): 
       files.set(i, file)
     }
     // (the journal's lines after the reducers': read once the batch is worked out under the lock)
+    const seconds = await clipSeconds()
     const extra = body.unit !== undefined ? [`as the game's build of ${body.unit} had it${body.replace === true ? ' (replaced)' : ''}`] : []
     return await runCommands(id, cur => {
-      const plan = restoreCommands(cur, { ...body, dryRun: false }, newId, (g, i) => files.get(i) ?? unwritten(g))
+      const plan = restoreCommands(cur, { ...body, dryRun: false }, newId, (g, i) => files.get(i) ?? unwritten(g), { clipSeconds: seconds })
       commands = plan.commands
       notes.push(...plan.notes)
       extra.push(...plan.notes)
@@ -326,7 +350,7 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/restore$/, async (req, res, [id
   if (body.dryRun === true) {
     const c = await getCharacter(id)
     if (c === null) throw new HttpError(404, 'No such character')
-    send(res, 200, dryRun(c, body))
+    send(res, 200, await dryRun(c, body))
     return
   }
   send(res, 200, await restore(id, body, by(req)))

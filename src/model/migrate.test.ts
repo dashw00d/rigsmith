@@ -5,10 +5,11 @@ import { describe, expect, it } from 'vitest'
 import { cleanImageName } from '../../server/glbimages.ts'
 import { applyCommands } from './commands.ts'
 import { stableId } from './ids.ts'
-import { gearFromProp, gearFromV1, holdsFromV1, migrate, migrateSettings, readCharacter, slotsFromV1 } from './migrate.ts'
+import { gearFromProp, gearFromV1, holdsFromV1, migrate, migrateSettings, migrateV1, readCharacter, slotFromV2, slotsFromV1, slotToV2, v2TimeMap } from './migrate.ts'
 import { DEFAULT_FIST, jointsOf } from './select.ts'
 import { hierarchyOf, humanHierarchy } from './skeletons.ts'
-import type { Adjustment, Character, FingerLevel, Joints, Slot, Vec3 } from './types.ts'
+import type { Adjustment, Character, FingerLevel, Joints, Vec3 } from './types.ts'
+import type { V2Adjustment, V2Character, V2Slot } from './v2.ts'
 import type { V1Character, V1ClipScript, V1Garment } from './v1.ts'
 
 const ID = 'hero-abc123'
@@ -58,8 +59,8 @@ const bow = (over: Partial<V1Garment> = {}): V1Garment => ({
   ...over,
 })
 
-const withoutIds = (adjustments: Adjustment[]): unknown[] => adjustments.map(a => Object.fromEntries(Object.entries(a).filter(([k]) => k !== 'id')))
-const slot = (c: Character, name: string): Slot => c.clips.find(s => s.name === name)!
+const withoutIds = (adjustments: Array<Adjustment | V2Adjustment>): unknown[] => adjustments.map(a => Object.fromEntries(Object.entries(a).filter(([k]) => k !== 'id')))
+const slot = <S extends { name: string }>(c: { clips: S[] }, name: string): S => c.clips.find(s => s.name === name)!
 
 describe('migrate: source and skin', () => {
   it('moves what the import found into source', () => {
@@ -114,7 +115,7 @@ describe('migrate: source and skin', () => {
 
   it('stamps the schema, a first version and the revision', () => {
     const c = migrate(v1({ revision: undefined, thumbVersion: 5 })).character
-    expect(c).toMatchObject({ schema: 2, version: 1, revision: 0, thumbVersion: 5, id: ID, name: 'Hero', status: 'rigged' })
+    expect(c).toMatchObject({ schema: 3, version: 1, revision: 0, thumbVersion: 5, id: ID, name: 'Hero', status: 'rigged' })
     expect(migrate(v1()).character.revision).toBe(3)
   })
 })
@@ -327,7 +328,8 @@ describe('migrate: clips', () => {
     { clipId: 'mixamo-Walk', name: 'Walk', inPlace: false, loop: true, speed: 1, lift: 0 },
     { clipId: 'mixamo-Idle2', name: 'Idle', inPlace: true, loop: true, speed: 1 },
   ]
-  const m = migrate(v1({ animations, scripts, garments, handPoses: [pinch] }))
+  // (the v1 -> v2 step: what schema 2 made of v1; schema 3's step is below)
+  const m = migrateV1(v1({ animations, scripts, garments, handPoses: [pinch] }))
   const c = m.character
 
   it('makes entries slots with stable ids, the clip as a reference, trim dropped', () => {
@@ -436,6 +438,97 @@ describe('migrate: look, mount, settings', () => {
   })
 })
 
+describe('migrate: schema 2 -> 3', () => {
+  const q: [number, number, number, number] = [0, 0, 0, 1]
+  const k = (u: number): { u: number, q: [number, number, number, number] } => ({ u, q })
+  const v2slot = (over: Partial<V2Slot> = {}): V2Slot => ({ id: 's1', name: 'Attack', clip: { id: 'mixamo-Stab' }, speed: 1, loop: false, inPlace: true, adjustments: [], ...over })
+  const v2char = (clips: V2Slot[]): V2Character => ({ ...(migrate(v1({ animations: [], scripts: [] })).character as unknown as V2Character), schema: 2, clips })
+  const blow = (over: Record<string, unknown> = {}): V2Adjustment => ({ id: 'b', enabled: true, kind: 'blowTiming', at: 0.45, hand: 'RightHand', ...over }) as V2Adjustment
+
+  it('makes blow timing the fit (a blow picked by hand its hit), pace the pace, keys the tracks', () => {
+    const s = slotFromV2(v2slot({ adjustments: [
+      blow({ blowU: 0.3, late: 'hold', note: 'why' }), { id: 'p', enabled: false, kind: 'pace', like: 'walk' },
+      { id: 'k', enabled: false, kind: 'keys', bones: { Spine: [k(0.2)] }, gear: { bow: [k(0.5)], empty: [] } },
+      { id: 'g', enabled: true, kind: 'ground', lift: 0.01 },
+    ] }), { characterId: ID, index: 2, times: { seconds: 2 } })
+    expect(s).toEqual({
+      id: 's1', name: 'Attack', clip: { id: 'mixamo-Stab' }, speed: 1, loop: false, inPlace: true,
+      time: { fit: { enabled: true, at: 0.45, late: 'hold', hand: 'RightHand' }, pace: { enabled: false, like: 'walk' } },
+      adjustments: [{ id: 'g', enabled: true, kind: 'ground', lift: 0.01 }],
+      // (the cut ran the end past the clip: 0.3 of it is the blow, so the played clip is 0.3 / 0.45 of the source)
+      bones: { Spine: [k(0.2 * 0.3 / 0.45)] }, gear: { bow: { keys: [k(0.5 * 0.3 / 0.45)] } },
+      muted: ['bones', 'gear'],
+      events: [{ id: stableId(`${ID}:hit:2`), name: 'hit', u: 0.3 }],
+    })
+  })
+
+  it('moves phases through the cut the fit made: a late blow cuts the start, a held one runs past 1, a window', () => {
+    const at = (adj: V2Adjustment, times: { seconds: number, blow?: number }, u: number): number => v2TimeMap(v2slot({ adjustments: [adj] }), times)!.toSource(u)
+    // (measured at 1.2 s of a 2 s clip: past 0.45, so the start goes; 0.45 of what is kept is the blow)
+    const start = (1.2 - 0.45 * 2) / (1 - 0.45)
+    expect(at(blow(), { seconds: 2, blow: 1.2 }, 0)).toBeCloseTo(start / 2, 12)
+    expect(at(blow(), { seconds: 2, blow: 1.2 }, 1)).toBeCloseTo(1, 12)
+    expect(at(blow(), { seconds: 2, blow: 1.2 }, 0.45)).toBeCloseTo(0.6, 12)
+    // (held: the end at 1.2 / 0.45 s, past the source's 2 s)
+    expect(at(blow({ late: 'hold' }), { seconds: 2, blow: 1.2 }, 1)).toBeCloseTo(1.2 / 0.45 / 2, 12)
+    // (early: the end cut so the blow lands at 0.45)
+    expect(at(blow(), { seconds: 2, blow: 0.6 }, 1)).toBeCloseTo(0.6 / 0.45 / 2, 12)
+    // (a 0.5 s window round the blow)
+    expect(at(blow({ window: 0.5 }), { seconds: 2, blow: 1 }, 0)).toBeCloseTo((1 - 0.45 * 0.5) / 2, 12)
+    // (the speed: the clip at speed 2 is 1 s long, the blow found at 0.6 s of it)
+    expect(v2TimeMap(v2slot({ speed: 2, adjustments: [blow()] }), { seconds: 2, blow: 0.6 })!.toSource(0.45)).toBeCloseTo(0.6, 12)
+    // (a picked blow needs only the length; a measured one needs the blow too)
+    expect(v2TimeMap(v2slot({ adjustments: [blow({ blowU: 0.6 })] }), { seconds: 2 })!.toSource(0.45)).toBeCloseTo(0.6, 12)
+    expect(v2TimeMap(v2slot({ adjustments: [blow()] }), { seconds: 2 })).toBeNull()
+    // (switched off: nothing was cut)
+    expect(v2TimeMap(v2slot({ adjustments: [blow({ enabled: false })] }), undefined)!.toSource(0.37)).toBe(0.37)
+  })
+
+  it('moves keys and windows, and maps them back to where they played', () => {
+    const was = v2slot({ speed: 1.25, adjustments: [
+      blow(), { id: 'k', enabled: true, kind: 'keys', gear: { bow: [k(0), k(0.3), k(1)] } },
+      { id: 'h', enabled: true, kind: 'handleHold', gear: 'bow', handle: 'draw', windows: [[0.35, 0.92]] },
+      { id: 'p', enabled: true, kind: 'handPose', hand: 'Left', pose: 'clip', windows: [[0.1, 0.2]] },
+      { id: 'w', enabled: true, kind: 'handPose', hand: 'Right', pose: 'default' },
+    ] })
+    const times = { seconds: 2.1666667461395264, blow: 0.41666666666666663 }
+    const now = slotFromV2(was, { characterId: ID, index: 0, times })
+    const map = v2TimeMap(was, times)!
+    expect(now.gear!.bow.keys!.map(x => map.toPlayed(x.u))).toEqual([0, 0.3, 1].map(u => expect.closeTo(u, 12) as unknown as number))
+    const hold = now.adjustments.find(a => a.id === 'h')!
+    expect(hold.kind === 'handleHold' && hold.windows.flat().map(map.toPlayed)).toEqual([0.35, 0.92].map(u => expect.closeTo(u, 12) as unknown as number))
+    // (a whole-clip hand pose stays the whole clip, whatever the timing)
+    expect(now.adjustments.find(a => a.id === 'w')).not.toHaveProperty('windows')
+  })
+
+  it('needs the cut measured: strict throws, else keeps the phases and says so', () => {
+    const c = v2char([v2slot({ adjustments: [blow(), { id: 'k', enabled: true, kind: 'keys', bones: { Spine: [k(0.5)] } }] })])
+    expect(() => migrate(c, {}, { strict: true })).toThrow(/run node tools\/migrate.ts/)
+    expect(() => readCharacter(c)).toThrow(/measured/)
+    const loose = migrate(c)
+    expect(loose.character.clips[0].bones).toEqual({ Spine: [k(0.5)] })
+    expect(loose.notes.some(n => n.includes("couldn't be measured"))).toBe(true)
+    // (measured, it goes through; nothing to move needs nothing measured)
+    expect(migrate(c, { clipTimes: { s1: { seconds: 1, blow: 0.25 } } }, { strict: true }).character.clips[0].bones!.Spine[0].u).toBeCloseTo(0.5 * 0.25 / 0.45, 12)
+    expect(() => readCharacter(v2char([v2slot({ adjustments: [blow()] })]))).not.toThrow()
+  })
+
+  it('says it came from schema 2 (kept as character.v2.json) and is schema 3 after', () => {
+    const m = migrate(v2char([v2slot()]))
+    expect([m.migrated, m.from, m.character.schema]).toEqual([true, 2, 3])
+    expect(migrate(m.character).migrated).toBe(false)
+  })
+
+  it('reads back as schema 2 for the v1 view, times as they are', () => {
+    const s = slotFromV2(v2slot({ adjustments: [blow({ blowU: 0.5 }), { id: 'k', enabled: true, kind: 'keys', bones: { Spine: [k(0.2)] } }] }), { characterId: ID, index: 0 })
+    expect(slotToV2(s).adjustments).toEqual([
+      { id: 's1-fit', kind: 'blowTiming', enabled: true, at: 0.45, blowU: 0.5, hand: 'RightHand' },
+      { id: 's1-keys', kind: 'keys', enabled: true, bones: { Spine: [k(0.2)] } },
+    ])
+    expect(slotToV2(s, { rowIds: true }).adjustments.map(a => a.id)).toEqual(['fit', 'keys'])
+  })
+})
+
 describe('migrate: as a whole', () => {
   const full = v1({
     joints: { ...skeleton('full'), Hips: [0, 1.2, 0] },
@@ -448,11 +541,11 @@ describe('migrate: as a whole', () => {
     texture: { filled: true, images: [{ image: 'Tex', coverage: 0.1, file: 'Tex.png' }], at: 9 },
   })
 
-  it('is idempotent: schema 2 comes back as it is', () => {
+  it('is idempotent: schema 3 comes back as it is', () => {
     const once = migrate(full, { textureFiles: ['Tex.png'] })
-    expect(once.migrated).toBe(true)
+    expect([once.migrated, once.from]).toEqual([true, 1])
     const twice = migrate(once.character, { textureFiles: ['Tex.png'] })
-    expect(twice).toEqual({ character: once.character, migrated: false, notes: [], fileOps: [] })
+    expect(twice).toEqual({ character: once.character, migrated: false, from: 3, notes: [], fileOps: [] })
     expect(migrate(JSON.parse(JSON.stringify(once.character))).character).toEqual(once.character)
     expect(readCharacter(full)).toEqual(migrate(full).character)
   })
@@ -472,7 +565,7 @@ describe('migrate: as a whole', () => {
   it('refuses what is not a character, or a schema it doesn\'t know', () => {
     expect(() => migrate(null)).toThrow()
     expect(() => migrate({ name: 'x' })).toThrow()
-    expect(() => migrate({ ...full, schema: 3 })).toThrow()
+    expect(() => migrate({ ...full, schema: 4 })).toThrow()
   })
 })
 
@@ -493,8 +586,10 @@ const real = existsSync(CHARACTERS)
 
 describe.skipIf(real.length === 0)('migrate: the workspace\'s characters', () => {
   it.each(real)('%s', id => {
-    const raw = JSON.parse(readFileSync(`${CHARACTERS}/${id}/character.json`, 'utf8')) as V1Character & { schema?: number }
-    if (raw.schema === 2) return
+    // (the v1 record: the file while it is one, else the copy migration kept)
+    const kept = `${CHARACTERS}/${id}/character.v1.json`
+    const raw = JSON.parse(readFileSync(existsSync(kept) ? kept : `${CHARACTERS}/${id}/character.json`, 'utf8')) as V1Character & { schema?: number }
+    if (raw.schema !== undefined) return
     const textures = existsSync(`${CHARACTERS}/${id}/textures`) ? readdirSync(`${CHARACTERS}/${id}/textures`) : []
     const edits = `${CHARACTERS}/${id}/weight_edits.json`
     const ctx = { textureFiles: textures, paintedCount: existsSync(edits) ? Object.keys(JSON.parse(readFileSync(edits, 'utf8')) as object).length : undefined }

@@ -16,7 +16,7 @@ const axe = makeGear({ id: 'axe', name: 'Axe', model: 'garments/axe/model.glb' }
 const cap = makeGear({ id: 'cap', name: 'Cap', model: 'garments/cap/model.glb' })
 const base = (): Character => makeCharacter({
   gear: [axe, cap],
-  clips: [makeSlot({ id: 'walk', name: 'Walk' }), makeSlot({ id: 'run', name: 'Run', adjustments: [{ id: 'k', enabled: true, kind: 'keys', gear: { axe: [{ u: 0, q: [0, 0, 0, 1] }] } }] })],
+  clips: [makeSlot({ id: 'walk', name: 'Walk' }), makeSlot({ id: 'run', name: 'Run', gear: { axe: { keys: [{ u: 0, q: [0, 0, 0, 1] }] } } })],
   look: { layers: [{ id: 'l1', kind: 'fill', image: 'Body', file: 'textures/layers/l1.png', enabled: true, at: 0 }] },
 })
 

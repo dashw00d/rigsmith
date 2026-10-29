@@ -2,11 +2,16 @@
 // PATCHes as commands. The game repo's own scripts (tools/rigsmith/import_new_units.py, import_gear.py) and
 // tools/game_import.py speak v1 until they are ported; server/compat.ts answers them through this file. The view is
 // read-only: a v1 client changes animations, scripts, garments and props only, through v1PatchToCommands.
+//
+// Slots go through schema 2's shape (src/model/migrate.ts slotToV2 / slotFromV2), their times left as they are: v1
+// clients never read a slot's phases closely, and what schema 3 has that v1 had no place for (retime markers, holds,
+// events, who holds gear) stays on a slot whose clip a PATCH leaves as it was.
 import type { Command } from './command-types.ts'
 import { applyCommands } from './commands.ts'
-import { gearFromProp, gearFromV1, holdsFromV1, slotsFromV1 } from './migrate.ts'
+import { gearFromProp, gearFromV1, holdsFromV1, slotFromV2, slotsFromV1, slotToV2 } from './migrate.ts'
 import { DEFAULT_FIST, carryHandle, handSide, jointsOf } from './select.ts'
-import type { Adjustment, AdjustmentKind, Character, Gear, Handle, HandPoseRef, Job, Side, Slot, Window } from './types.ts'
+import type { Character, Gear, Handle, HandPoseRef, Job, Side, Slot } from './types.ts'
+import type { V2Adjustment as Adjustment, V2AdjustmentKind as AdjustmentKind, V2Slot, V2Window as Window } from './v2.ts'
 import type { GameSpec } from './unit.ts'
 import type {
   V1AnimationEntry, V1Character, V1ClipKey, V1ClipScript, V1Garment, V1GarmentSocket, V1PropAttachment, V1PullSocket,
@@ -35,8 +40,12 @@ function poseToV1 (ref: HandPoseRef | undefined): string | undefined {
   return 'pose' in ref ? `pose:${ref.pose}` : ref.fist
 }
 
+/** A character's slots in schema 2's shape (the v1 view reads them so). */
+type Viewed = Omit<Character, 'clips'> & { clips: V2Slot[] }
+const viewed = (c: Character): Viewed => ({ ...c, clips: c.clips.map(s => slotToV2(s)) })
+
 /** Per slot name, the windows `pick` finds in its enabled adjustments. */
-function windowsBySlot (c: Character, pick: (a: Adjustment) => Window[] | undefined): Record<string, Window[]> {
+function windowsBySlot (c: Viewed, pick: (a: Adjustment) => Window[] | undefined): Record<string, Window[]> {
   const out: Record<string, Window[]> = {}
   for (const s of c.clips) {
     for (const a of s.adjustments) {
@@ -47,7 +56,7 @@ function windowsBySlot (c: Character, pick: (a: Adjustment) => Window[] | undefi
   return out
 }
 
-const enabled = <K extends AdjustmentKind>(s: Slot, kind: K): Extract<Adjustment, { kind: K }> | undefined =>
+const enabled = <K extends AdjustmentKind>(s: V2Slot, kind: K): Extract<Adjustment, { kind: K }> | undefined =>
   s.adjustments.find((a): a is Extract<Adjustment, { kind: K }> => a.kind === kind && a.enabled)
 
 // ---- the v1 view ------------------------------------------------------------------------------------------------
@@ -56,7 +65,8 @@ const enabled = <K extends AdjustmentKind>(s: Slot, kind: K): Extract<Adjustment
  * server/compat.ts calls; nothing in a v1 file came from them.) `job`: the character's queued or running job, if
  * any, whose state v1 kept in `status` (see statusOf). */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function toV1 (c: Character, units?: GameSpec, job?: Pick<Job, 'kind' | 'status'> | null): V1Character {
+export function toV1 (character: Character, units?: GameSpec, job?: Pick<Job, 'kind' | 'status'> | null): V1Character {
+  const c = viewed(character)
   const s = c.skeleton
   const placed = s.detected !== undefined || Object.keys(s.overrides).length > 0
   const view: V1Character = {
@@ -65,7 +75,7 @@ export function toV1 (c: Character, units?: GameSpec, job?: Pick<Job, 'kind' | '
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
     source: { file: c.source.file, originalName: c.source.originalName, bytes: c.source.bytes },
-    status: statusOf(c, job),
+    status: statusOf(character, job),
     // (v1 said 'mesh' of a rigged import converted onto the Rigsmith rig)
     kind: s.converted === true ? 'mesh' : c.source.kind,
     rigPreset: c.source.rigPreset,
@@ -84,7 +94,7 @@ export function toV1 (c: Character, units?: GameSpec, job?: Pick<Job, 'kind' | '
     rigReport: c.skin.report === undefined
       ? { method: 'import', seconds: 0, warnings: c.source.warnings }
       : { method: c.skin.report.method, seconds: c.skin.report.seconds, warnings: c.skin.report.warnings },
-    texture: textureOf(c),
+    texture: textureOf(character),
     animations: c.clips.map(slot => entryOf(c, slot)),
     scripts: scriptsOf(c),
     handPoses: c.hands.poses,
@@ -109,7 +119,7 @@ function statusOf (c: Character, job: Pick<Job, 'kind' | 'status'> | null | unde
   return c.status
 }
 
-function entryOf (c: Character, s: Slot): V1AnimationEntry {
+function entryOf (c: Viewed, s: V2Slot): V1AnimationEntry {
   const ground = enabled(s, 'ground')
   const keys = enabled(s, 'keys')
   const props: Record<string, V1ClipKey[]> = {}
@@ -132,7 +142,7 @@ function entryOf (c: Character, s: Slot): V1AnimationEntry {
   }
 }
 
-function scriptsOf (c: Character): V1ClipScript[] {
+function scriptsOf (c: Viewed): V1ClipScript[] {
   const out: V1ClipScript[] = []
   for (const side of SIDES) {
     const hold = c.hands.hold?.[side]
@@ -156,7 +166,7 @@ function scriptsOf (c: Character): V1ClipScript[] {
   return out
 }
 
-function garmentOf (c: Character, g: Gear): V1Garment {
+function garmentOf (c: Viewed, g: Gear): V1Garment {
   const a = g.attach
   const carry = carryHandle(g)
   const sockets: V1GarmentSocket[] = []
@@ -310,7 +320,7 @@ export function v1PatchToCommands (c: Character, patch: V1Patch, newId: () => st
       return pulls?.length === g.pulls?.length ? g : { ...g, pulls }
     })
     const next = slotsFromV1(patch.animations ?? v.animations, patch.scripts ?? v.scripts, gearIdByName, c.id, { poses, garments })
-    const slots = keepIds(before, next, newId)
+    const slots = keepIds(viewed(before), next, newId).map((s, i) => carried(before, slotFromV2(s, { characterId: c.id, index: i })))
     if (!equal(slots, work.clips)) run({ type: 'clips.replace', slots })
   }
   return out
@@ -333,7 +343,7 @@ function handlePatch (old: Handle, h: Handle): Partial<Omit<Handle, 'id' | 'kind
 /** Slots made from v1 (stable ids) with the ids of what they stand for in `c`: a slot of the same name keeps its
  * id, an adjustment of the same kind (hand, gear, handle) keeps its; new ones get newId(). What the v1 view can't
  * show of a slot stays while its clip is the same and nothing from v1 takes its place. */
-function keepIds (c: Character, next: Slot[], newId: () => string): Slot[] {
+function keepIds (c: Viewed, next: V2Slot[], newId: () => string): V2Slot[] {
   const ids = new Map<string, string>()
   const out = next.map(s => {
     const old = c.clips.find(x => x.name === s.name)
@@ -355,8 +365,26 @@ function keepIds (c: Character, next: Slot[], newId: () => string): Slot[] {
   return out
 }
 
+/** A slot back from v1 with what v1 has no place for (retime markers, holds, events but the hit, who holds gear and
+ * when it shows, the tracks switched off) from the slot it stands for, while that one plays the same clip. */
+function carried (c: Character, s: Slot): Slot {
+  const old = c.clips.find(x => x.id === s.id)
+  if (old === undefined || old.clip.id !== s.clip.id || old.clip.url !== s.clip.url) return s
+  const out: Slot = { ...s }
+  const markers = old.time?.markers; const holds = old.time?.holds
+  if (markers !== undefined || holds !== undefined) out.time = { ...out.time, ...(markers !== undefined ? { markers } : {}), ...(holds !== undefined ? { holds } : {}) }
+  const events = (old.events ?? []).filter(e => !(e.name === 'hit' && e.to === undefined))
+  if (events.length > 0) out.events = [...(out.events ?? []), ...events].sort((a, b) => a.u - b.u)
+  for (const [g, t] of Object.entries(old.gear ?? {})) {
+    if (t.heldBy === undefined && t.shown === undefined) continue
+    out.gear = { ...out.gear, [g]: { ...out.gear?.[g], ...(t.heldBy !== undefined ? { heldBy: t.heldBy } : {}), ...(t.shown !== undefined ? { shown: t.shown } : {}) } }
+  }
+  if (old.muted !== undefined && out.muted === undefined) out.muted = old.muted
+  return out
+}
+
 /** Whether the v1 view shows this adjustment (so a v1 PATCH that leaves it out means to take it out). */
-function shownInV1 (c: Character, a: Adjustment): boolean {
+function shownInV1 (c: Viewed, a: Adjustment): boolean {
   switch (a.kind) {
     case 'ground': return a.enabled && a.lift !== 0
     case 'keys': return a.enabled

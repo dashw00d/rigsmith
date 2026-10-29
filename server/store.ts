@@ -10,15 +10,17 @@
 // Two locks per character: the store lock (character.json and journal.jsonl) and withFiles (model.glb, rigged.glb,
 // weight_edits.json, garments/*/weights.json). A writer needing both takes withFiles first, then the store lock
 // inside it, never the other way round.
+import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { constants, existsSync } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import { bindJoints, readGlb } from '../src/engine/glb.ts'
 import { touchedBy, undoRecord } from '../src/model/entities.ts'
-import { migrate, migrateSettings, type MigrateContext, type Migration } from '../src/model/migrate.ts'
+import { migrate, migrateSettings, needsClipTimes, type ClipTimes, type MigrateContext, type Migration } from '../src/model/migrate.ts'
 import type { Character, JournalEntry, Settings } from '../src/model/types.ts'
 import type { GameSpec } from '../src/model/unit.ts'
 import { HttpError } from './http.ts'
@@ -111,6 +113,7 @@ function chain (locks: Map<string, Promise<unknown>>) {
 export const locked = chain(new Map())
 
 const migrations = chain(new Map())
+const run = promisify(execFile)
 const filesLock = chain(new Map())
 /** One writer of a character's model files at a time (model.glb, rigged.glb, weight_edits.json,
  * garments/<id>/weights.json): writeWeights, swapImages, transformGlb, publishRig, compose take it. */
@@ -124,11 +127,11 @@ const versions = new Map<string, number>()
 
 const fileOf = (id: string): string => path.join(characterDir(id), 'character.json')
 
-/** The character as schema 2; null when there is none. Reading a v1 file migrates it. */
+/** The character as schema 3; null when there is none. Reading an older file migrates it. */
 export async function getCharacter (id: string): Promise<Character | null> {
   const raw = await readJson<Record<string, unknown> | null>(fileOf(id), null)
   if (raw === null) return null
-  if (raw.schema === 2) {
+  if (raw.schema === 3) {
     versions.set(id, raw.version as number)
     return raw as unknown as Character
   }
@@ -150,11 +153,11 @@ export async function listCharacters (): Promise<Character[]> {
   return all.filter((c): c is Character => c !== null).sort((a, b) => a.createdAt - b.createdAt)
 }
 
-/** The document under the store lock (the caller holds it), migrated first if it is v1. */
+/** The document under the store lock (the caller holds it), migrated first if it is older than schema 3. */
 async function loadLocked (id: string): Promise<Character | null> {
   const raw = await readJson<Record<string, unknown> | null>(fileOf(id), null)
   if (raw === null) return null
-  if (raw.schema === 2) {
+  if (raw.schema === 3) {
     versions.set(id, raw.version as number)
     return raw as unknown as Character
   }
@@ -162,8 +165,9 @@ async function loadLocked (id: string): Promise<Character | null> {
   return await migrations('all', async () => await migrateLocked(id, raw))
 }
 
-/** v1 -> v2 in place (DESIGN.md §2.3): what the model needs to know from the files, then the v1 copy kept (once), the
- * migration's file copies, the write, and one journal entry with its notes. GLBs and weight_edits.json are only read. */
+/** v1 or v2 -> v3 in place (DESIGN.md §2.3, docs/motion-plan.md §5): what the model needs to know from the files, then
+ * the old copy kept (once: character.v1.json or character.v2.json), the migration's file copies, the write, and one
+ * journal entry with its notes. GLBs and weight_edits.json are only read. */
 async function migrateLocked (id: string, raw: Record<string, unknown>): Promise<Character> {
   const { ctx, notes } = await migrationContext(id, raw)
   const out = migrate(raw, ctx)
@@ -174,12 +178,24 @@ async function migrateLocked (id: string, raw: Record<string, unknown>): Promise
   return out.character
 }
 
-/** What migrate needs to know from a v1 character's files, and lines on what could not be read. Only reads.
- * (tools/migrate.ts migrates the workspace with this and writeMigration, as the store does on first read.) */
-export async function migrationContext (id: string, raw: Record<string, unknown>): Promise<{ ctx: MigrateContext, notes: string[] }> {
+/** What migrate needs to know from an old character's files, and lines on what could not be read. Only reads.
+ * (tools/migrate.ts migrates the workspace with this and writeMigration, as the store does on first read; it passes
+ * its own `measure`, in process.) The clips of slots whose phases move into source time are measured on the rig by
+ * tools/measure_clips.ts, a child, so three's headless shims stay out of the server. */
+export async function migrationContext (id: string, raw: Record<string, unknown>,
+  measure: (id: string) => Promise<{ times: Record<string, ClipTimes>, problems: string[] }> = measureChild): Promise<{ ctx: MigrateContext, notes: string[] }> {
   const dir = characterDir(id)
   const notes: string[] = []
   const ctx: MigrateContext = { textureFiles: await textureFiles(dir), units: await readJson<GameSpec | undefined>(UNITS_FILE, undefined) }
+  if (needsClipTimes(raw)) {
+    try {
+      const m = await measure(id)
+      ctx.clipTimes = m.times
+      for (const p of m.problems) notes.push(`not measured: ${p}`)
+    } catch (error) {
+      notes.push(`its clips could not be measured (${(error as Error).message})`)
+    }
+  }
   const edits = await readJson<Record<string, unknown> | null>(path.join(dir, 'weight_edits.json'), null)
   if (edits !== null && typeof edits === 'object') ctx.paintedCount = Object.keys(edits).length
   const rigged = (raw.files as { rigged?: unknown } | undefined)?.rigged
@@ -193,13 +209,21 @@ export async function migrationContext (id: string, raw: Record<string, unknown>
   return { ctx, notes }
 }
 
-/** A migration written, the caller holding the store lock (or no server running): the v1 copy kept (once), the file
- * copies made (never over a file; a missing source is added to `notes`), the document written, and one journal entry
- * with the migration's notes and `notes`. */
+/** tools/measure_clips.ts run on a character (as a child, with this store's workspace). */
+async function measureChild (id: string): Promise<{ times: Record<string, ClipTimes>, problems: string[] }> {
+  const { stdout } = await run(process.execPath, [path.join(ROOT, 'tools', 'measure_clips.ts'), id], {
+    cwd: ROOT, env: { ...process.env, RIGSMITH_WORKSPACE: WORKSPACE }, timeout: 120_000, maxBuffer: 1 << 22,
+  })
+  return JSON.parse(stdout.trim().split('\n').pop() ?? '{}') as { times: Record<string, ClipTimes>, problems: string[] }
+}
+
+/** A migration written, the caller holding the store lock (or no server running): the old copy kept (once: a v1 file
+ * as character.v1.json, a v2 one as character.v2.json), the file copies made (never over a file; a missing source is
+ * added to `notes`), the document written, and one journal entry with the migration's notes and `notes`. */
 export async function writeMigration (id: string, out: Migration, notes: string[], by = 'server'): Promise<JournalEntry> {
   const dir = characterDir(id)
   const character = out.character
-  const backup = path.join(dir, 'character.v1.json')
+  const backup = path.join(dir, out.from === 2 ? 'character.v2.json' : 'character.v1.json')
   if (!existsSync(backup)) await copyFile(fileOf(id), backup, constants.COPYFILE_EXCL)
   for (const op of out.fileOps) {
     const from = inside(dir, op.from)
@@ -268,7 +292,7 @@ export async function commit (id: string, fn: (c: Character) => void | Character
     if (before === null) throw new HttpError(404, `No character ${id}`)
     const draft = structuredClone(before)
     const after = (await fn(draft)) ?? draft
-    if (after.id !== id || after.schema !== 2) throw new Error('A write changed the character\'s id or schema')
+    if (after.id !== id || after.schema !== 3) throw new Error('A write changed the character\'s id or schema')
     const changes = meta?.changes ?? []
     if (changes.length === 0 && JSON.stringify(after) === JSON.stringify(before)) return { id, character: before, entry: null, touched: [] }
     after.version = before.version + 1
@@ -330,7 +354,7 @@ export async function createCharacter (originalName: string, bytes: Buffer, by =
     await writeFile(path.join(dir, file), bytes)
     const now = Date.now()
     const character: Character = {
-      schema: 2,
+      schema: 3,
       id,
       name: stem.replace(/[_-]+/g, ' ').replace(/\b\w/g, m => m.toUpperCase()),
       createdAt: now,

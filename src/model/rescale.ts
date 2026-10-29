@@ -1,7 +1,7 @@
 // A character resized (Import -> Size): its files are scaled by `s` and moved by `d` (server/glbtransform.ts), and
 // everything the document keeps in their units goes with them. The one list of every length in the document:
 // whoever adds a field with a length adds it here.
-import type { Adjustment, Character, Joints, Vec3 } from './types.ts'
+import type { Character, Joints, Vec3 } from './types.ts'
 
 /** Positions in the character's space get p·s + d; lengths get ×s. Left as they are: grip and carry handle places
  * and gear keys' moves (in the gear's placed frame, which its place.scale already sizes), a pull's rest (the gear
@@ -33,14 +33,12 @@ export function rescale (c: Character, s: number, d: Vec3): Character {
     for (const h of g.handles) if (h.pull !== undefined) h.pull.grip = times(h.pull.grip)
   }
 
-  for (const slot of out.clips) for (const a of slot.adjustments) lengths(a, s, times)
+  for (const slot of out.clips) {
+    for (const a of slot.adjustments) if (a.kind === 'ground') a.lift *= s
+    // (every bone's move, in its parent's frame: a human keys the Hips, a horse its hips or root)
+    for (const keys of Object.values(slot.bones ?? {})) for (const k of keys) if (k.p !== undefined) k.p = times(k.p)
+  }
 
   if (out.mount?.hips !== undefined) out.mount.hips = times(out.mount.hips)
   return out
-}
-
-function lengths (a: Adjustment, s: number, times: (p: Vec3) => Vec3): void {
-  if (a.kind === 'ground') a.lift *= s
-  // (every bone's move, in its parent's frame: a human keys the Hips, a horse its hips or root)
-  if (a.kind === 'keys') for (const keys of Object.values(a.bones ?? {})) for (const k of keys) if (k.p !== undefined) k.p = times(k.p)
 }

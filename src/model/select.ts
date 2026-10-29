@@ -1,7 +1,7 @@
 // The one place each derived fact about a character is computed: its effective skeleton, what state it is in, which
 // gear a hand carries, its size. Pure and synchronous; the server, the app and the tools all ask here.
 import { hierarchyOf } from './skeletons.ts'
-import type { Character, ClipKey, Gear, Handle, Job, Joints, Side, Slot } from './types.ts'
+import type { Character, ClipEvent, ClipKey, Gear, GearTrack, Handle, Job, Joints, Side, Slot } from './types.ts'
 
 export { hierarchyOf }
 
@@ -87,17 +87,19 @@ export function carriedBy (c: Pick<Character, 'gear'>, side: Side): Gear | undef
 /** Its height as measured (at import, kept by every resize): the one size of the character itself. */
 export const heightOf = (c: Pick<Character, 'source'>): number => c.source.stats?.height ?? 1
 
-/** A copy of a set of slots with fresh ids for the slots and their adjustments, a pace following a slot of the set
- * following its copy (for clips.replace). JSON-copied, so live (proxied) app state can be passed. */
+/** A copy of a set of slots with fresh ids for the slots and what they hold by id (adjustments, events, markers,
+ * holds), a pace following a slot of the set following its copy (for clips.replace). JSON-copied, so live (proxied) app
+ * state can be passed. */
 export function freshSet (slots: Slot[], newId: () => string): Slot[] {
   const copy = JSON.parse(JSON.stringify(slots)) as Slot[]
   const ids = new Map(copy.map(s => [s.id, newId()]))
   for (const s of copy) {
     s.id = ids.get(s.id)!
-    for (const a of s.adjustments) {
-      a.id = newId()
-      if (a.kind === 'pace') a.like = ids.get(a.like) ?? a.like
-    }
+    for (const a of s.adjustments) a.id = newId()
+    for (const e of s.events ?? []) e.id = newId()
+    for (const m of s.time?.markers ?? []) m.id = newId()
+    for (const h of s.time?.holds ?? []) h.id = newId()
+    if (s.time?.pace !== undefined) s.time.pace.like = ids.get(s.time.pace.like) ?? s.time.pace.like
   }
   return copy
 }
@@ -111,6 +113,36 @@ export function gearKeysFromPaths (c: Pick<Character, 'gear'>, paths: Record<str
     if (g !== undefined) out[g.id] = keys
   }
   return out
+}
+
+/** Keys on gear (gear id -> keys) as a slot's gear tracks. */
+export function gearTracksOf (keys: Record<string, ClipKey[]>): Record<string, GearTrack> {
+  return Object.fromEntries(Object.entries(keys).filter(([, ks]) => ks.length > 0).map(([id, ks]) => [id, { keys: ks }]))
+}
+
+/** A slot's keys on gear (gear id -> keys), every piece that has some. */
+export function gearKeysOf (slot: Pick<Slot, 'gear'>): Record<string, ClipKey[]> {
+  return Object.fromEntries(Object.entries(slot.gear ?? {}).filter(([, t]) => (t.keys?.length ?? 0) > 0).map(([id, t]) => [id, t.keys!]))
+}
+
+/** Whether a slot plays a track: 'bones' (a bone's keys: `name` the bone), 'gear' (a piece's keys: `name` its id), or
+ * 'events'. */
+export function isMuted (slot: Pick<Slot, 'muted'>, track: 'bones' | 'gear' | 'events', name?: string): boolean {
+  const m = slot.muted
+  if (m === undefined || m.length === 0) return false
+  if (m.includes(track)) return true
+  return name !== undefined && m.includes(`${track === 'bones' ? 'bone' : 'gear'}:${name}`)
+}
+
+/** A slot's events (none: []). */
+export const eventsOf = (slot: Pick<Slot, 'events'>): ClipEvent[] => slot.events ?? []
+
+/** The slot's blow, picked by hand: its point `hit` event (none: the blow fit measures it). */
+export const hitOf = (slot: Pick<Slot, 'events'>): ClipEvent | undefined => slot.events?.find(e => e.name === 'hit' && e.to === undefined)
+
+/** Whether anything is keyed in the slot (bones or gear). */
+export function hasKeys (slot: Pick<Slot, 'bones' | 'gear'>): boolean {
+  return Object.values(slot.bones ?? {}).some(k => k.length > 0) || Object.values(slot.gear ?? {}).some(t => (t.keys?.length ?? 0) > 0)
 }
 
 /** A name as a bone or node may carry it: every run of other characters than letters, digits and _ becomes one _. */

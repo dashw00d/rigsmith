@@ -93,16 +93,18 @@ describe('gear lookups', () => {
 })
 
 describe('freshSet', () => {
-  it('gives slots and adjustments new ids, a pace following the copy of its slot', () => {
+  it('gives slots and what they hold by id new ids, a pace following the copy of its slot', () => {
     const slots = [
       makeSlot({ id: 'walk', name: 'Walk', adjustments: [{ id: 'a1', enabled: true, kind: 'ground', lift: 0.01 }] }),
-      makeSlot({ id: 'carry', name: 'Carry', adjustments: [{ id: 'a1', enabled: true, kind: 'pace', like: 'walk' }, { id: 'a2', enabled: true, kind: 'pace', like: 'elsewhere' }] }),
+      makeSlot({ id: 'carry', name: 'Carry', time: { pace: { enabled: true, like: 'walk' }, markers: [{ id: 'm', u: 0.5, to: 0.4 }] }, events: [{ id: 'e', name: 'hit', u: 0.5 }] }),
+      makeSlot({ id: 'run', name: 'Run', time: { pace: { enabled: true, like: 'elsewhere' } } }),
     ]
     let n = 0
     const fresh = freshSet(slots, () => `n${++n}`)
-    expect(fresh.map(s => s.id)).toEqual(['n1', 'n2'])
-    expect(fresh[0].adjustments[0].id).toBe('n3')
-    expect(fresh[1].adjustments.map(a => (a.kind === 'pace' ? a.like : null))).toEqual(['n1', 'elsewhere'])
+    expect(fresh.map(s => s.id)).toEqual(['n1', 'n2', 'n3'])
+    expect(fresh[0].adjustments[0].id).toBe('n4')
+    expect([fresh[1].events![0].id, fresh[1].time!.markers![0].id]).toEqual(['n5', 'n6'])
+    expect(fresh.map(s => s.time?.pace?.like)).toEqual([undefined, 'n1', 'elsewhere'])
     expect(slots[0].id).toBe('walk')
   })
 })

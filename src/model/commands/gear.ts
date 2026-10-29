@@ -4,7 +4,7 @@
 // a bone has grips, pulls and keyed moves.
 import type { Command } from '../command-types.ts'
 import { carryHandle, gearById, handSide, safeName } from '../select.ts'
-import type { Character, Gear, GearAttach, Handle, SkinPolicy } from '../types.ts'
+import type { Character, Gear, GearAttach, Handle, SkinPolicy, Slot } from '../types.ts'
 import {
   bad, bool, conflict, handPoseRef, id, joint, list, missing, name, num, obj, oneOf, opt, overlaps, patchOf, placeText,
   placement, quat, refText, same, side, str, under, uniqueName, unknown, vec3, vecText,
@@ -160,13 +160,8 @@ function syncOffBone (c: Character, g: Gear): string[] {
     for (const h of gone) out.push(`gear ${g.name}: ${handleText(h)} removed (it isn't on a bone)`)
   }
   for (const s of c.clips) {
+    if (dropTrack(s, g.id)) out.push(`clip ${s.name}: the track of ${g.name} removed (it isn't on a bone)`)
     s.adjustments = s.adjustments.filter(a => {
-      if (a.kind === 'keys' && a.gear?.[g.id] !== undefined) {
-        delete a.gear[g.id]
-        if (Object.keys(a.gear).length === 0) delete a.gear
-        out.push(`clip ${s.name}: keys on ${g.name} removed (it isn't on a bone)`)
-        return Object.keys(a.bones ?? {}).length > 0 || a.gear !== undefined
-      }
       if (a.kind === 'handleHold' && a.gear === g.id) {
         out.push(`clip ${s.name}: hold of ${g.name} · ${gone.find(h => h.id === a.handle)?.name ?? a.handle} removed (it isn't on a bone)`)
         return false
@@ -175,6 +170,21 @@ function syncOffBone (c: Character, g: Gear): string[] {
     })
   }
   return out
+}
+
+/** A slot's track of a piece (its keys, who holds it, when it shows) and its 'gear:<id>' mute taken out; whether it
+ * had one. */
+function dropTrack (s: Slot, gearId: string): boolean {
+  if (s.muted !== undefined) {
+    s.muted = s.muted.filter(m => m !== `gear:${gearId}`)
+    if (s.muted.length === 0) delete s.muted
+  }
+  if (s.gear?.[gearId] === undefined) return false
+  const rest = { ...s.gear }
+  delete rest[gearId]
+  if (Object.keys(rest).length > 0) s.gear = rest
+  else delete s.gear
+  return true
 }
 
 /** Shown in a swap set, the others of the set are hidden. */
@@ -273,13 +283,8 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
       const out = [`gear ${g.name}: removed`]
       // What pointed at it goes with it (and comes back with an undo).
       for (const s of c.clips) {
+        if (dropTrack(s, g.id)) out.push(`clip ${s.name}: the track of ${g.name} removed`)
         s.adjustments = s.adjustments.filter(a => {
-          if (a.kind === 'keys' && a.gear?.[g.id] !== undefined) {
-            delete a.gear[g.id]
-            if (Object.keys(a.gear).length === 0) delete a.gear
-            out.push(`clip ${s.name}: keys on ${g.name} removed`)
-            return Object.keys(a.bones ?? {}).length > 0 || a.gear !== undefined
-          }
           if (a.kind === 'handleHold' && a.gear === g.id) {
             out.push(`clip ${s.name}: hold of ${g.name} · ${g.handles.find(h => h.id === a.handle)?.name ?? a.handle} removed`)
             return false

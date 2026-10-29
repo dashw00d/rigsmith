@@ -1,4 +1,4 @@
-// The character document, schema 2: one record per character (workspace/characters/<id>/character.json), split into
+// The character document, schema 3: one record per character (workspace/characters/<id>/character.json), split into
 // sections that each have exactly one owning module. The server, the app and the tools all read and write it through
 // this file's types and src/model/commands.ts. See docs/rebuild/DESIGN.md.
 //
@@ -9,7 +9,8 @@
 //   skin       Skin (server rig job, weights routes)            the rig report, the weight lock, painted count
 //   hands      Hands (src/model/commands/hands.ts)              named hand poses, hands held in every clip
 //   gear       Gear (src/model/commands/gear.ts, gear routes)   everything worn or carried, with its handles
-//   clips      Motion (src/model/commands/clips.ts)             the slots: game clip names and trials, adjustments
+//   clips      Motion (src/model/commands/clips.ts)             the slots: game clip names and trials, each its source
+//                                                               clip, time map and tracks (docs/motion-plan.md)
 //   look       Look (look routes and compose job)               texture layers (hole fill, repaints)
 //   mount      Ship (src/model/commands/mount.ts)               the horse a rider sits on
 //
@@ -20,16 +21,22 @@ export type Vec3 = [number, number, number]
 export type Quat = [number, number, number, number]
 /** Joint positions in glTF space (Y up, +Z forward, metres of the model as imported and sized). */
 export type Joints = Record<string, Vec3>
-/** A part of a clip as phases [from, to], 0 its start and 1 its end: phases of the slot's clip as it finally plays
- * (after its speed, blow timing and pace; one rider cycle when riding), what the timeline shows. */
-export type Window = [number, number]
+/** A moment of a slot's SOURCE clip (docs/motion-plan.md §1): 0 its first frame, 1 its last, as the clip source
+ * retargets it (in place or not, mirrored or not), before any timing. Past 1 is the source's last pose held, running on
+ * at the rate the clip played (a late blow held: SlotTime fit.late 'hold'). At most MAX_U. Every time a slot stores is
+ * one of these, so changing the slot's timing never moves a key, a window or an event; what the timeline shows is the
+ * played clip's phase, converted by the baked slot's time map (src/model/timemap.ts). */
+export type SourceU = number
+export const MAX_U = 16
+/** A part of a slot's source clip [from, to] (source time; schema 2's were phases of the clip as it played). */
+export type Window = [SourceU, SourceU]
 export type Side = 'Left' | 'Right'
 export type FingerLevel = 'none' | 'one' | 'two' | 'full'
 
-export const SCHEMA = 2
+export const SCHEMA = 3
 
 export interface Character {
-  schema: 2
+  schema: 3
   id: string
   name: string
   createdAt: number
@@ -246,54 +253,122 @@ export interface Handle {
 export interface ClipRef { id: string, url?: string }
 
 /** One clip of the character's set. A slot whose name is one of its unit's clip names is what the game plays under
- * that name; any other is a trial, kept here. Names are unique (commands enforce it), ids are stable. */
+ * that name; any other is a trial, kept here. Names are unique (commands enforce it), ids are stable.
+ *
+ * Non-destructive: its source clip, its time map (speed, then `time`) and its tracks (adjustments, bones, gear,
+ * events), every time in them source time (SourceU). The one bake (src/engine/bake.ts) plays it, the same in the
+ * viewer, the timeline and the game export (docs/motion-plan.md §3):
+ *   source -> time (markers, holds, speed, blow fit, pace) -> hands -> ground -> keys on bones -> gear tracks -> events */
 export interface Slot {
   id: string
   name: string
   clip: ClipRef
+  /** The time map's first stage: the source played `speed` times as fast. */
   speed: number
   loop: boolean
   inPlace: boolean
   /** Why this clip. */
   note?: string
-  /** Applied in a fixed order (src/engine/bake.ts), whatever their order in this list:
-   * speed, blowTiming, pace, hands (carry handles, hands.hold, handleHold pulls, handPose), ground, keys, gear tracks.
-   * At most one ground, blowTiming, pace and keys per slot; one handleHold per (gear, handle); a hand's handPose
-   * windows don't overlap (commands enforce it). */
+  /** The rest of the time map (src/model/timemap.ts): the blow fit, pace, retime markers, holds. */
+  time?: SlotTime
+  /** Settings over source windows (the inspector's): the ground, a hand's pose, a pull held. At most one ground; one
+   * handleHold per (gear, handle); a hand's handPose windows don't overlap (commands enforce it). */
   adjustments: Adjustment[]
+  /** The Body track: keyed turns (and the Hips' moves) per bone. */
+  bones?: Record<string, ClipKey[]>
+  /** The Gear tracks, by gear id. */
+  gear?: Record<string, GearTrack>
+  /** The Events track: named moments, points or spans, exported to the game with the unit. */
+  events?: ClipEvent[]
+  /** Tracks switched off (kept, not played): 'bones' (every bone's keys), 'gear' (every piece's keys), 'bone:<name>',
+   * 'gear:<id>', 'events'. */
+  muted?: string[]
 }
+
+/** How the source's time becomes the played clip's, after the slot's speed (src/model/timemap.ts has the stages). */
+export interface SlotTime {
+  /** The blow fit: an attack cut so its blow (the slot's `hit` event; none: the `hand`'s fastest moment, measured)
+   * lands at `at` of the played clip (the game times hits at 0.45), or `window` seconds round it. A blow later than
+   * `at` cuts the start ('cut', default) or holds the end ('hold': the source's last pose held past 1). */
+  fit?: BlowFit
+  /** Retimed (uniformly) so its planted foot covers ground as fast as another slot's (by its id). */
+  pace?: { enabled: boolean, like: string }
+  /** Retime markers: source `u` plays at `to` (a phase of the source's length); piecewise linear between them, 0 -> 0
+   * and 1 -> 1 implied. Strictly increasing in both, inside (0, 1). */
+  markers?: RetimeMarker[]
+  /** The pose at source `u` (0..1) held `seconds` (source seconds: they play faster with the speed, as the clip does).
+   * A hold has no time of its own: what sits at its `u` is at its start. */
+  holds?: TimeHold[]
+}
+
+export interface BlowFit { enabled: boolean, at: number, late?: 'cut' | 'hold', window?: number, hand?: string }
+export interface RetimeMarker { id: string, u: SourceU, to: number }
+export interface TimeHold { id: string, u: SourceU, seconds: number }
 
 interface AdjustmentBase { id: string, enabled: boolean, note?: string }
 
-/** One change a slot makes to its clip. Replaces Tune keys, the ground lift, clip scripts and per-clip windows. */
+/** A setting a slot makes over its clip that stays a setting (the inspector's; the timeline shows the hands' as bars). */
 export type Adjustment = AdjustmentBase & (
   /** The whole body raised (+) or lowered (-) by `lift`, character units (its height about 1). */
   | { kind: 'ground', lift: number }
-  /** An attack cut so its blow lands at `at` of it (the game times hits at 0.45), or `window` seconds round it.
-   * `blowU`: the blow picked by hand, as a phase of the uncut clip; unset: the `hand`'s fastest moment.
-   * `late`: a blow later than `at` cuts the start ('cut', default) or holds the end ('hold'). */
-  | { kind: 'blowTiming', at: number, blowU?: number, late?: 'cut' | 'hold', hand?: string, window?: number }
-  /** Retimed so its planted foot covers ground as fast as another slot's. */
-  | { kind: 'pace', like: string }
-  /** A hand posed in this slot (in `windows`; unset: the whole clip). 'clip' opens it to the clip's own hand.
-   * `gear`: it belongs to that gear's carry handle (a bow let go of): the hand is the carry handle's, and it goes
-   * when the gear leaves the hand or is removed. */
+  /** A hand posed in this slot (in `windows`; unset: the whole clip, whatever its timing). 'clip' opens it to the
+   * clip's own hand. `gear`: it belongs to that gear's carry handle (a bow let go of): the hand is the carry handle's,
+   * and it goes when the gear leaves the hand or is removed. */
   | { kind: 'handPose', hand: Side, pose: HandPoseRef, windows?: Window[], gear?: string }
   /** A handle held in this slot during `windows` (a bowstring drawn). */
   | { kind: 'handleHold', gear: string, handle: string, windows: Window[] }
-  /** Keyed turns (and the Hips' moves) on bones, and moves and turns of gear (by gear id) from where it is placed. */
-  | { kind: 'keys', bones?: Record<string, ClipKey[]>, gear?: Record<string, ClipKey[]> }
 )
 
 export type AdjustmentKind = Adjustment['kind']
 
+/** How a key's span (from it to the next key) tweens. 'smooth' (unset): a cubic through the keys (Catmull-Rom: a
+ * motion passes through a key without stopping); 'linear'; 'ease': out of this key and into the next, stopping at
+ * both; 'step': this key's value until the next, then a jump; 'hold': the bone held entirely, the clip's own motion on it
+ * stopped where this key is (the key on top) until the next key. On gear, 'hold' is 'step'. */
+export type Ease = 'smooth' | 'linear' | 'ease' | 'step' | 'hold'
+export const EASES: readonly Ease[] = ['smooth', 'linear', 'ease', 'step', 'hold']
+
 export interface ClipKey {
-  /** Phase 0..1 of the clip (a looping clip's keys wrap round). */
-  u: number
+  /** The moment of the source (SourceU; a looping clip's keys wrap round). Within a track keys are sorted and no two
+   * share a moment. */
+  u: SourceU
   /** The turn, a quaternion [x, y, z, w]. */
   q: Quat
   /** The move (the Hips: in its parent's frame; gear: in its own placed frame). */
   p?: Vec3
+  /** The span from this key to the next; unset: 'smooth'. */
+  ease?: Ease
+}
+
+/** A gear piece's track in a slot. */
+export interface GearTrack {
+  /** Moves and turns from where it is placed, in its placed frame. */
+  keys?: ClipKey[]
+  /** Who holds it from `u` on (sorted by u, distinct; before the first, its Gear attach bone). `place`: where it sits on
+   * that bone (the bone's rest frame); unset: wherever it was at `u`, so it changes hands without a pop. Played by the
+   * gear tracks stage (docs/motion-plan.md §9 C2). */
+  heldBy?: Array<{ u: SourceU, bone: string, place?: Placement }>
+  /** Shown or hidden from `u` on (sorted, distinct; before the first, as Gear has it). */
+  shown?: Array<{ u: SourceU, shown: boolean }>
+}
+
+/** The built-in event names (any other is the user's own). The game reads them by name (docs/motion-plan.md §6). */
+export const EVENT_NAMES = ['hit', 'release', 'swing', 'step.L', 'step.R', 'draw'] as const
+
+/** A named moment of a slot's clip (a point) or a part of it (a span). */
+export interface ClipEvent {
+  id: string
+  /** A built-in (EVENT_NAMES) or the user's own: a letter, then letters, digits, '.', '_' or '-' (32 at most). The
+   * slot's point `hit` is its blow: the fit lands it. */
+  name: string
+  u: SourceU
+  /** A span's end (after `u`); unset: a point. */
+  to?: SourceU
+  /** A sound played on it: an Emberhold mix.json sound id ('mix:<id>') or a file kept under the character's folder
+   * ('file:sounds/<name>.<ext>'). */
+  sound?: string
+  /** Where it happens (an arrow leaves the hand): a bone of the skeleton. */
+  bone?: string
 }
 
 // ---- look (Look) ------------------------------------------------------------------------------------------------

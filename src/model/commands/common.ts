@@ -2,7 +2,7 @@
 // by hand: the model has no schema library), and the words its changes are told in (the journal's lines).
 import { stableJson } from '../entities.ts'
 import { hierarchyOf } from '../skeletons.ts'
-import type { Character, ClipKey, ClipRef, HandPoseRef, Placement, Quat, Side, Vec3, Window } from '../types.ts'
+import { EASES, MAX_U, type Character, type ClipKey, type ClipRef, type HandPoseRef, type Placement, type Quat, type Side, type Vec3, type Window } from '../types.ts'
 
 /** 400: the command is malformed or asks for something impossible; 404: it names something that isn't there; 409:
  * it clashes with the character as it is now (a name taken, a lock, a rule a later change would break). */
@@ -113,21 +113,32 @@ export function handPoseRef (v: unknown, what: string): HandPoseRef {
   return bad(`${what} must be 'default', 'clip', {pose} or {fist}`)
 }
 
-/** Parts of a clip, sorted: phases 0..1, each starting before it ends. */
+/** A moment of a slot's source (types.ts SourceU): 0..MAX_U. */
+export const sourceU = (v: unknown, what: string): number => num(v, what, { min: 0, max: MAX_U })
+
+/** Parts of a slot's source, sorted: source time (0..MAX_U), each starting before it ends. */
 export function windows (v: unknown, what: string): Window[] {
   return list(v, what, (w, at) => {
     const [a, b] = numbers(w, 2, at)
-    if (!(a >= 0 && b <= 1 && a < b)) return bad(`${at} must run forward within 0..1`)
+    if (!(a >= 0 && b <= MAX_U && a < b)) return bad(`${at} must run forward within 0..${MAX_U}`)
     return [a, b] as Window
   }).sort((x, y) => x[0] - y[0])
 }
 
+/** Two keys closer than this are at the same moment. */
+export const SAME_MOMENT = 1e-6
+
+/** A track's keys: sorted by moment, no two at the same one, each span's ease one of types.ts EASES ('smooth' is left
+ * unset, as every key before eases was). */
 export function clipKeys (v: unknown, what: string): ClipKey[] {
-  return list(v, what, (k, at) => {
+  const keys = list(v, what, (k, at) => {
     const o = obj(k, at)
     const p = opt(o.p, x => vec3(x, `${at}.p`))
-    return { u: num(o.u, `${at}.u`, { min: 0, max: 1 }), q: quat(o.q, `${at}.q`), ...(p !== undefined ? { p } : {}) }
-  })
+    const ease = opt(o.ease, x => oneOf(x, EASES, `${at}.ease`))
+    return { u: sourceU(o.u, `${at}.u`), q: quat(o.q, `${at}.q`), ...(p !== undefined ? { p } : {}), ...(ease !== undefined && ease !== 'smooth' ? { ease } : {}) }
+  }).sort((a, b) => a.u - b.u)
+  for (let i = 1; i < keys.length; i++) if (keys[i].u - keys[i - 1].u < SAME_MOMENT) bad(`${what}: two keys at the same moment (${pct(keys[i].u)})`)
+  return keys
 }
 
 /** A bone or joint of the character's skeleton (src/model/skeletons.ts). */

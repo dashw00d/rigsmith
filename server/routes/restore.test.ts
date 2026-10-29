@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { applyCommands } from '../../src/model/commands.ts'
 import { makeGear, makeRigged, makeSlot } from '../../src/model/fixtures.ts'
 import type { Character, Gear, Slot } from '../../src/model/types.ts'
+import type { V2Slot } from '../../src/model/v2.ts'
 import { restoreCommands, type RestoreRequest } from './restore.ts'
 
 let n = 0
@@ -25,11 +26,12 @@ const bow = (): Gear => makeGear({
   ],
 })
 
-/** A schema 2 record as unit_export writes it: gear named by name, handle ids its own. */
+/** A schema 2 record as unit_export wrote it: gear named by name, handle ids its own, phases of the clips as played. */
 function v2Record (): Record<string, unknown> {
-  const slots: Slot[] = [
-    makeSlot({ id: 'src-idle', name: 'Idle', clip: { id: 'mixamo-Idle' } }),
-    makeSlot({
+  const v2 = (o: Partial<V2Slot>): V2Slot => ({ id: 's', name: 's', clip: { id: 'x' }, speed: 1, loop: true, inPlace: true, adjustments: [], ...o })
+  const slots: V2Slot[] = [
+    v2({ id: 'src-idle', name: 'Idle', clip: { id: 'mixamo-Idle' } }),
+    v2({
       id: 'src-attack', name: 'Attack', clip: { id: 'mixamo-Shoot' }, loop: false,
       adjustments: [
         { id: 'a1', kind: 'handleHold', enabled: true, gear: 'Weapons_LeftHand', handle: 'h-old', windows: [[0.2, 0.6]] },
@@ -37,27 +39,58 @@ function v2Record (): Record<string, unknown> {
         { id: 'a3', kind: 'blowTiming', enabled: true, at: 0.45 },
       ],
     }),
-    makeSlot({ id: 'src-walk', name: 'Walk', clip: { id: 'mixamo-Walk' }, adjustments: [{ id: 'a4', kind: 'pace', enabled: true, like: 'src-idle' }] }),
+    v2({ id: 'src-walk', name: 'Walk', clip: { id: 'mixamo-Walk' }, adjustments: [{ id: 'a4', kind: 'pace', enabled: true, like: 'src-idle' }] }),
   ]
   return {
-    schema: 2, unit: 'archer', slots, hands: { Right: 'default' },
+    schema: 2, unit: 'archer', slots, hands: { Right: 'default' }, clips: { Attack: { blow: 0.6 } },
     gearIds: { 'src-bow': { name: 'Weapons_LeftHand', from: 'emberhold:archer/Weapons_LeftHand', handles: { carry: 'Carried', 'h-old': 'String' } } },
   }
 }
 
+/** A schema 3 record: its slots as stored (source time), gear named by name. */
+function v3Record (): Record<string, unknown> {
+  const slots: Slot[] = [
+    makeSlot({ id: 'src-idle', name: 'Idle', clip: { id: 'mixamo-Idle' } }),
+    makeSlot({
+      id: 'src-attack', name: 'Attack', clip: { id: 'mixamo-Shoot' }, loop: false, time: { fit: { enabled: true, at: 0.45 } },
+      adjustments: [{ id: 'a1', kind: 'handleHold', enabled: true, gear: 'Weapons_LeftHand', handle: 'h-old', windows: [[0.2, 1.3]] }],
+      gear: { Weapons_LeftHand: { keys: [{ u: 1.2, q: [0, 0, 0, 1], ease: 'step' }], shown: [{ u: 0.9, shown: false }] } }, muted: ['gear:Weapons_LeftHand'],
+      events: [{ id: 'e', name: 'hit', u: 0.7 }],
+    }),
+    makeSlot({ id: 'src-walk', name: 'Walk', clip: { id: 'mixamo-Walk' }, time: { pace: { enabled: true, like: 'src-idle' } } }),
+  ]
+  return { ...v2Record(), schema: 3, slots }
+}
+
 describe('restoreCommands', () => {
-  it('maps a schema 2 record onto this character by gear and handle name', () => {
+  it('maps a schema 3 record onto this character by gear and handle name, its times as they are', () => {
     const c = makeRigged({ gear: [bow()] })
-    const { after } = apply(c, { record: v2Record(), replace: true })
+    const { after } = apply(c, { record: v3Record(), replace: true })
     expect(after.clips.map(s => s.name)).toEqual(['Idle', 'Attack', 'Walk'])
     const attack = after.clips.find(s => s.name === 'Attack')!
     expect(attack.id).not.toBe('src-attack')
-    const hold = attack.adjustments.find(a => a.kind === 'handleHold')
-    expect(hold).toMatchObject({ gear: 'bowid001', handle: 'string1', windows: [[0.2, 0.6]] })
-    expect(attack.adjustments.find(a => a.kind === 'keys')).toMatchObject({ gear: { bowid001: [{ u: 0.5 }] } })
+    expect(attack.adjustments.find(a => a.kind === 'handleHold')).toMatchObject({ gear: 'bowid001', handle: 'string1', windows: [[0.2, 1.3]] })
+    expect(attack.gear).toEqual({ bowid001: { keys: [{ u: 1.2, q: [0, 0, 0, 1], ease: 'step' }], shown: [{ u: 0.9, shown: false }] } })
+    expect(attack.muted).toEqual(['gear:bowid001'])
+    expect(attack.events?.map(e => [e.name, e.u])).toEqual([['hit', 0.7]])
     const walk = after.clips.find(s => s.name === 'Walk')!
-    expect(walk.adjustments[0]).toMatchObject({ kind: 'pace', like: after.clips.find(s => s.name === 'Idle')!.id })
+    expect(walk.time?.pace).toMatchObject({ like: after.clips.find(s => s.name === 'Idle')!.id })
     expect(after.hands.hold).toEqual({ Right: 'default' })
+  })
+
+  it('moves a schema 2 record\'s phases into source time through the cut it records, given the clip\'s length', () => {
+    const c = makeRigged({ gear: [bow()] })
+    // (a 2 s clip, the blow at 0.6 s: before 0.45 of it, so the end is cut to 0.6 / 0.45 s)
+    const plan = restoreCommands(c, { record: v2Record(), replace: true }, ids, file, { clipSeconds: id => (id === 'mixamo-Shoot' ? 2 : undefined) })
+    const attack = applyCommands(c, plan.commands).character.clips.find(s => s.name === 'Attack')!
+    const end = 0.6 / 0.45 / 2
+    expect(attack.gear!.bowid001.keys![0].u).toBeCloseTo(0.5 * end, 12)
+    expect(attack.adjustments.find(a => a.kind === 'handleHold')).toMatchObject({ windows: [[expect.closeTo(0.2 * end, 12), expect.closeTo(0.6 * end, 12)]] })
+    expect(attack.time?.fit).toEqual({ enabled: true, at: 0.45 })
+    // (without the length its phases stay as the record has them, and it says so)
+    const loose = apply(c, { record: v2Record(), replace: true })
+    expect(loose.after.clips.find(s => s.name === 'Attack')!.gear!.bowid001.keys![0].u).toBe(0.5)
+    expect(loose.notes.join('\n')).toMatch(/couldn't be measured/)
   })
 
   it('takes only the named clips, in their order', () => {
@@ -74,7 +107,7 @@ describe('restoreCommands', () => {
     expect(after.clips.map(s => s.name)).toEqual(['Idle', 'Attack', 'Walk'])
     expect(after.clips[0]).toEqual(own)
     // (Walk paced like the record's Idle: now this character's own Idle)
-    expect(after.clips[2].adjustments[0]).toMatchObject({ kind: 'pace', like: 'mine' })
+    expect(after.clips[2].time?.pace).toMatchObject({ like: 'mine' })
     expect(after.hands.hold).toEqual({ Left: 'clip' })
     expect(notes.join('\n')).toMatch(/kept as they are here: Idle/)
   })
@@ -117,15 +150,16 @@ describe('restoreCommands', () => {
     const { after } = apply(c, { record, replace: true })
     expect(after.clips.map(s => [s.name, s.speed])).toEqual([['Idle', 1], ['Attack', 1.2]])
     expect(after.clips[0].adjustments).toMatchObject([{ kind: 'ground', lift: 0.02 }])
-    expect(after.clips[1].adjustments.map(a => a.kind).sort()).toEqual(['blowTiming', 'keys'])
-    expect(after.clips[1].adjustments.find(a => a.kind === 'keys')).toMatchObject({ gear: { bowid001: [{ u: 0.3 }] } })
+    expect(after.clips[1].adjustments).toEqual([])
+    expect(after.clips[1].time?.fit).toMatchObject({ enabled: true, at: 0.45 })
+    expect(after.clips[1].gear).toMatchObject({ bowid001: { keys: [{ u: 0.3 }] } })
     expect(after.hands.hold).toEqual({ Right: { fist: 'mixamo-Holding' } })
   })
 
   it('a hand pose the character lacks becomes the default fist, noted only for what is restored', () => {
     const c = makeRigged({ gear: [bow()], clips: [makeSlot({ id: 'mine', name: 'Idle', clip: { id: 'mixamo-Breathing' } })] })
     const record = v2Record()
-    const slots = record.slots as Slot[]
+    const slots = record.slots as V2Slot[]
     slots[0].adjustments.push({ id: 'p0', kind: 'handPose', enabled: true, hand: 'Left', pose: { pose: 'gone0001' } })
     slots[1].adjustments.push({ id: 'p1', kind: 'handPose', enabled: true, hand: 'Left', pose: { pose: 'gone0002' } })
     record.hands = { Right: { pose: 'gone0003' } }

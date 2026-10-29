@@ -50,7 +50,8 @@ export interface GameSpec { units: Record<string, UnitSpec>, defaults?: Partial<
  * (emb_rigsmith.py: texture, the clip names, companion), by tools/game_import.py and by the Ship step. Every key a
  * schema 1 build wrote is kept except `scripts` (the slots and hands say it now). */
 export interface BuildRecord {
-  schema: 2
+  /** 3: `slots` are schema 3's (source time); 2: schema 2's. */
+  schema: 3
   unit: string
   generator: string
   /** The run token the build was started with (RIGSMITH_RUN): the Ship job trusts a record only with its own. */
@@ -72,8 +73,11 @@ export interface BuildRecord {
   mount?: Mount
   texture: { file: string, sha256: string } | null
   rigged: { file: string, sha256: string }
-  /** The slots exported, as baked: every adjustment (disabled ones too), gear referred to by its name. */
+  /** The slots exported, as stored (schema 3: source time): everything, switched off or not, gear referred to by its
+   * name. */
   slots: Slot[]
+  /** The events file written beside the unit's GLB (<unit>.events.json; docs/motion-plan.md §6). */
+  events: UnitEvents
   /** The character's hands.hold. */
   hands: Partial<Record<Side, HandPoseRef>>
   /** Every gear piece of the character by id (its handles' names by id, when it has any). */
@@ -81,6 +85,20 @@ export interface BuildRecord {
   /** What the build warned about, in words (also printed). */
   warnings: string[]
 }
+
+/** What the game reads beside a unit's GLB (<models dir>/<unit>.events.json, docs/motion-plan.md §6): per clip it
+ * exports, whether it loops, how long it is and its events, `t` (and a span's `to`) phases 0-1 of the clip as exported
+ * (a rider's after his horse's fit, a loop's repeated per cycle), sorted. The game falls back to a hit at 45 % without
+ * it. */
+export interface UnitEvents {
+  unit: string
+  schema: 1
+  clips: Record<string, { loop: boolean, seconds: number, events: UnitEvent[] }>
+  walkStride: number | null
+  runStride: number | null
+}
+
+export interface UnitEvent { t: number, name: string, to?: number, sound?: string, bone?: string }
 
 export interface BuiltClip {
   /** The library clip and where it loads from. */

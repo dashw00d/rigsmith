@@ -55,12 +55,13 @@ describe('migration on read', () => {
       'journal.jsonl': JSON.stringify({ at: '2026-10-20T00:00:00.000Z', by: 'app', changes: ['clip Idle: added'] }) + '\n',
     })
     const c = (await store.getCharacter(id))!
-    expect(c.schema).toBe(2)
+    expect(c.schema).toBe(3)
     expect(c.clips.map(s => s.name)).toEqual(['Idle'])
     expect(c.skeleton.detected).toEqual({ Hips: [0, 1, 0], Spine: [0, 1.2, 0] })
-    // (written back as schema 2, the v1 file beside it)
-    expect(JSON.parse(readFileSync(characterFile(id), 'utf8')).schema).toBe(2)
+    // (written back as schema 3, the v1 file beside it and no v2 one: it never was)
+    expect(JSON.parse(readFileSync(characterFile(id), 'utf8')).schema).toBe(3)
     expect(readFileSync(characterFile(id, 'character.v1.json'), 'utf8')).toBe(original)
+    expect(existsSync(characterFile(id, 'character.v2.json'))).toBe(false)
     // (one snapshot layer for the texture, not for its hole mask; copied, the original left where it was)
     expect(c.look.layers.map(l => [l.kind, l.image])).toEqual([['snapshot', 'Body']])
     expect(readFileSync(characterFile(id, c.look.layers[0].file))).toEqual(png)
@@ -91,6 +92,30 @@ describe('migration on read', () => {
   })
 })
 
+describe('migration of a schema 2 file on read', () => {
+  it('moves it to schema 3, keeps its v2 copy, and says when a cut slot couldn\'t be measured', async () => {
+    const id = 'mid-age-bbbbbb'
+    // (schema 2 as the v1 one migrates to, with an Attack whose blow timing cut keys and a hold)
+    const v2 = { ...(await import('../src/model/migrate.ts')).migrateV1(v1(id, 'Mid Age')).character, clips: [{
+      id: 'atk', name: 'Attack', clip: { id: 'mixamo-Stab' }, speed: 1, loop: false, inPlace: true, adjustments: [
+        { id: 'b', kind: 'blowTiming', enabled: true, at: 0.45 },
+        { id: 'k', kind: 'keys', enabled: true, bones: { Spine: [{ u: 0.5, q: [0, 0, 0, 1] }] } },
+      ],
+    }] }
+    const original = JSON.stringify(v2)
+    put(id, { 'character.json': original })
+    const c = (await store.getCharacter(id))!
+    expect(c.schema).toBe(3)
+    expect(c.clips[0]).toMatchObject({ time: { fit: { enabled: true, at: 0.45 } }, bones: { Spine: [{ u: 0.5 }] }, adjustments: [] })
+    expect(readFileSync(characterFile(id, 'character.v2.json'), 'utf8')).toBe(original)
+    expect(existsSync(characterFile(id, 'character.v1.json'))).toBe(false)
+    // (no rig to measure its clip on: its phases kept, and the journal says so)
+    const said = (await journal.readJournal(id)).flatMap(e => e.changes).join('\n')
+    expect(said).toMatch(/not measured: Mid Age has no rig/)
+    expect(said).toMatch(/couldn't be measured/)
+  }, 60_000)
+})
+
 describe('updateCharacter', () => {
   let id = ''
   const heard: Array<{ character: Character, entry?: { seq: number } }> = []
@@ -100,9 +125,9 @@ describe('updateCharacter', () => {
     id = (await store.createCharacter('Knight.glb', Buffer.from('knight bytes'))).id
   })
 
-  it('creates a schema 2 character at version 1 with an import entry', async () => {
+  it('creates a schema 3 character at version 1 with an import entry', async () => {
     const c = (await store.getCharacter(id))!
-    expect(c).toMatchObject({ schema: 2, version: 1, name: 'Knight', status: 'importing', gear: [], clips: [] })
+    expect(c).toMatchObject({ schema: 3, version: 1, name: 'Knight', status: 'importing', gear: [], clips: [] })
     expect((await journal.readJournal(id)).map(e => [e.seq, e.what])).toEqual([[1, 'import']])
   })
 

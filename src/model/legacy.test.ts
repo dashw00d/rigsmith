@@ -158,7 +158,7 @@ describe('v1PatchToCommands', () => {
     // (it has no bow: the bow's keys don't come along)
     expect(w.animations[1].keys).toEqual({ bones: { Spine: [{ u: 0, q: [0, 0, 0, 1] }] } })
     expect(scriptSet(w.scripts)).toEqual(scriptSet(v.scripts))
-    expect(slotByName(after, 'Run')!.adjustments[0]).toMatchObject({ kind: 'pace', like: slotByName(after, 'Walk')!.id })
+    expect(slotByName(after, 'Run')!.time?.pace).toMatchObject({ like: slotByName(after, 'Walk')!.id })
   })
 
   it('names, marks and puts an uploaded piece on its bone (import_gear)', () => {
@@ -249,9 +249,10 @@ describe('v1PatchToCommands', () => {
     const after = applyCommands(c, cmds).character
     expect(after.gear[0]).toMatchObject({ attach: { kind: 'skin', policy: 'body' }, handles: [] })
     const attack = slotByName(after, 'Attack')!
-    expect(attack.adjustments.map(a => a.kind).sort()).toEqual(['blowTiming', 'ground', 'keys'])
-    expect(attack.adjustments.find(a => a.kind === 'keys')).toMatchObject({ bones: { Spine: [{ u: 0 }] } })
-    expect(attack.adjustments.find(a => a.kind === 'keys')).not.toHaveProperty('gear')
+    expect(attack.adjustments.map(a => a.kind).sort()).toEqual(['ground'])
+    expect(attack.time?.fit).toBeDefined()
+    expect(attack.bones).toMatchObject({ Spine: [{ u: 0 }] })
+    expect(attack.gear).toBeUndefined()
     const w = toV1(after).garments![0]
     expect(w.mode).toBe('clothing')
     expect([w.sockets, w.pulls, w.carryPose, w.carryOpen]).toEqual([undefined, undefined, undefined, undefined])
@@ -273,8 +274,10 @@ const real = existsSync(CHARACTERS)
 
 describe.skipIf(real.length === 0)('toV1 of the workspace\'s characters', () => {
   it.each(real)('%s', id => {
-    const raw = JSON.parse(readFileSync(`${CHARACTERS}/${id}/character.json`, 'utf8')) as V1Character & { schema?: number }
-    if (raw.schema === 2) return
+    // (the v1 record: the file while it is one, else the copy migration kept)
+    const kept = `${CHARACTERS}/${id}/character.v1.json`
+    const raw = JSON.parse(readFileSync(existsSync(kept) ? kept : `${CHARACTERS}/${id}/character.json`, 'utf8')) as V1Character & { schema?: number }
+    if (raw.schema !== undefined) return
     const c = migrate(raw).character
     const w = toV1(c)
     // (no trim, no lift of 0, no empty keys: they did nothing)

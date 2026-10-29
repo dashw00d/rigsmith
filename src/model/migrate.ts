@@ -1,17 +1,25 @@
-// Reads a character.json of any schema as schema 2 (docs/rebuild/DESIGN.md §2.3). Pure and deterministic: every id it
-// makes is stableId('<character id>:<what>:<index>'), so every process migrating the same file gets the same document,
-// and a schema 2 document comes back as it is. It never touches files: the copies it needs are returned as fileOps,
-// which the caller (server/store.ts, tools/migrate.ts) runs. GLBs and weight_edits.json are never among them.
+// Reads a character.json of any schema as schema 3: v1 -> v2 (docs/rebuild/DESIGN.md §2.3), then v2 -> v3
+// (docs/motion-plan.md §5: a slot's blow timing, pace and keys become its time map and tracks, and every phase it held,
+// a phase of the clip as it played, becomes source time). Pure and deterministic: every id it makes is
+// stableId('<character id>:<what>:<index>'), so every process migrating the same file gets the same document, and a
+// schema 3 document comes back as it is. It never touches files: the copies it needs are returned as fileOps, which the
+// caller (server/store.ts, tools/migrate.ts) runs. GLBs and weight_edits.json are never among them.
 //
-// The converters (slotsFromV1, holdsFromV1, gearFromV1, gearFromProp) are also what src/model/legacy.ts uses to turn
-// a v1 PATCH into commands.
+// Moving a slot's phases into source time needs its blow fit's cut: the source's length and, for a blow the fit
+// measured (the hand's fastest moment), that blow. The caller measures them on the character (src/engine/measure.ts,
+// through tools/measure_clips.ts for the server) and hands them in as `clipTimes`.
+//
+// The converters (slotsFromV1, slotFromV2, holdsFromV1, gearFromV1, gearFromProp) are also what src/model/legacy.ts
+// uses to turn a v1 PATCH into commands, and server/routes/restore.ts to read an old build.
 import { stableId } from './ids.ts'
 import { DEFAULT_FIST, handSide, safeName } from './select.ts'
+import { fitBlow, fitRange, resolveTime, type TimeMap } from './timemap.ts'
 import type {
-  Adjustment, Character, ClipKey, FingerLevel, Gear, GearAttach, Handle, HandPoseRef, Joints, LookSection, Placement,
-  Quat, Settings, SkeletonSection, SkinSection, Side, Slot, Vec3, Window,
+  Adjustment, Character, ClipEvent, ClipKey, FingerLevel, Gear, GearAttach, GearTrack, Handle, HandPoseRef, Joints,
+  LookSection, Placement, Quat, Settings, SkeletonSection, SkinSection, Side, Slot, SlotTime, Vec3, Window,
 } from './types.ts'
 import type { GameSpec } from './unit.ts'
+import type { V2Adjustment, V2Character, V2ClipKey, V2Slot, V2Window } from './v2.ts'
 import type { V1AnimationEntry, V1Character, V1ClipScript, V1Garment, V1GripScript, V1PropAttachment, V1Settings } from './v1.ts'
 
 export interface MigrateContext {
@@ -23,6 +31,18 @@ export interface MigrateContext {
   bindJoints?: Joints
   /** The game's units (workspace/game/units.json), to check a rider's horse against its unit's companion. */
   units?: GameSpec
+  /** By schema 2 slot id: its source clip's length (seconds, at speed 1) and, where its blow timing measured the blow,
+   * the blow (seconds of the clip at the slot's speed, as timing.ts blowTime finds it). What moving a cut slot's
+   * phases into source time needs (src/engine/measure.ts measureClipTimes). */
+  clipTimes?: Record<string, ClipTimes>
+}
+
+export interface ClipTimes { seconds: number, blow?: number }
+
+export interface MigrateOptions {
+  /** Throw when a slot's phases can't be moved into source time without `clipTimes` (a tool reading an old file),
+   * rather than keep them as they were with a note. */
+  strict?: boolean
 }
 
 /** A file to copy, both paths relative to the character folder. Migration never moves or deletes. */
@@ -30,8 +50,10 @@ export interface FileOp { op: 'copy', from: string, to: string }
 
 export interface Migration {
   character: Character
-  /** False: it was schema 2 already (nothing to write). */
+  /** False: it was schema 3 already (nothing to write). */
   migrated: boolean
+  /** The schema it was read at (1, 2 or 3): a 2 is kept as character.v2.json, a 1 as character.v1.json. */
+  from: 1 | 2 | 3
   /** In plain words, for the journal: what changed meaning, what was dropped. */
   notes: string[]
   fileOps: FileOp[]
@@ -51,11 +73,23 @@ const FINGER = /Hand(Thumb|Index|Middle|Ring|Pinky)\d+$/
 /** Characters whose weights may be re-rigged (the rest were fixed by hand). */
 const UNLOCKED = /^(scout|villager)-/
 
-export function migrate (raw: unknown, ctx: MigrateContext = {}): Migration {
+export function migrate (raw: unknown, ctx: MigrateContext = {}, o: MigrateOptions = {}): Migration {
   if (raw === null || typeof raw !== 'object' || typeof (raw as { id?: unknown }).id !== 'string') throw new Error('Not a character')
   const schema = (raw as { schema?: unknown }).schema
-  if (schema === 2) return { character: raw as Character, migrated: false, notes: [], fileOps: [] }
+  if (schema === 3) return { character: raw as Character, migrated: false, from: 3, notes: [], fileOps: [] }
+  if (schema === 2) {
+    const notes: string[] = []
+    return { character: upgrade(raw as V2Character, ctx, notes, { ...o, from: 2 }), migrated: true, from: 2, notes, fileOps: [] }
+  }
   if (schema !== undefined) throw new Error(`Character schema ${String(schema)} is newer than this Rigsmith`)
+  const out = migrateV1(raw, ctx)
+  return { character: upgrade(out.character, ctx, out.notes, { ...o, from: 1 }), migrated: true, from: 1, notes: out.notes, fileOps: out.fileOps }
+}
+
+/** A v1 character as schema 2 (DESIGN.md §2.3), what the schema 3 upgrade reads; also how the clip measure
+ * (tools/measure_clips.ts) finds an old file's slots. Schema 2 comes back as it is. */
+export function migrateV1 (raw: unknown, ctx: MigrateContext = {}): { character: V2Character, notes: string[], fileOps: FileOp[] } {
+  if ((raw as { schema?: unknown }).schema === 2) return { character: raw as V2Character, notes: [], fileOps: [] }
   const v = raw as V1Character
   const notes: string[] = []
   const fileOps: FileOp[] = []
@@ -74,7 +108,7 @@ export function migrate (raw: unknown, ctx: MigrateContext = {}): Migration {
   for (const g of garments) gearIdByName[g.name] ??= g.id
 
   const hold = holdsFromV1(v.scripts, o)
-  const character: Character = defined({
+  const character: V2Character = defined({
     schema: 2 as const,
     id: v.id,
     name: v.name,
@@ -111,12 +145,131 @@ export function migrate (raw: unknown, ctx: MigrateContext = {}): Migration {
       notes.push(`Rides ${v.mount.character}, but the unit ${name}'s companion is ${unit.companion?.character ?? 'none'}`)
     }
   }
-  return { character, migrated: true, notes, fileOps }
+  return { character, notes, fileOps }
 }
 
-/** How every reader that bypasses the server reads a character.json (tools, the unit export, dev scripts). */
-export function readCharacter (raw: unknown): Character {
-  return migrate(raw).character
+/** How every reader that bypasses the server reads a character.json (tools, the unit export, dev scripts). Strict: an
+ * old file whose slots need measuring to move into source time throws (run node tools/migrate.ts, or open Rigsmith). */
+export function readCharacter (raw: unknown, ctx: MigrateContext = {}): Character {
+  return migrate(raw, ctx, { strict: true }).character
+}
+
+// ---- schema 2 -> 3 ----------------------------------------------------------------------------------------------
+
+/** A schema 2 character as schema 3: its slots through slotFromV2, the rest as it is. */
+function upgrade (c: V2Character, ctx: MigrateContext, notes: string[], o: MigrateOptions & { from: 1 | 2 }): Character {
+  const clips = c.clips.map((s, i) => slotFromV2(s, { characterId: c.id, index: i, times: ctx.clipTimes?.[s.id], notes, strict: o.strict, windowsInSource: o.from === 1 }))
+  return { ...c, schema: 3, clips }
+}
+
+/** Whether a schema 2 slot's phases move when they go into source time: its blow timing is on and something in it has
+ * a phase (keys, windows; `windowsInSource`: a slot from v1, whose windows were source time already, keys only). Speed
+ * and pace are uniform, so nothing else moves them. */
+export function cutMoves (s: V2Slot, o: { windowsInSource?: boolean } = {}): boolean {
+  const on = s.adjustments.filter(a => a.enabled)
+  if (!on.some(a => a.kind === 'blowTiming')) return false
+  return s.adjustments.some(a => (a.kind === 'keys' && [...Object.values(a.bones ?? {}), ...Object.values(a.gear ?? {})].some(k => k.length > 0)) ||
+    (o.windowsInSource !== true && ((a.kind === 'handPose' && a.windows !== undefined) || a.kind === 'handleHold')))
+}
+
+/** Whether migrating this file (any schema) needs its clips measured (src/engine/measure.ts). */
+export function needsClipTimes (raw: unknown): boolean {
+  const schema = (raw as { schema?: unknown }).schema
+  if (schema === 3) return false
+  return migrateV1(raw).character.clips.some(s => cutMoves(s, { windowsInSource: schema === undefined }))
+}
+
+/** The time map schema 2 played a slot by (its blow cut, with the measured blow where the fit measured it), or null
+ * when the cut can't be known (`times` missing). Identity without an enabled blow timing. */
+export function v2TimeMap (s: V2Slot, times: ClipTimes | undefined): TimeMap | null {
+  const blow = s.adjustments.find((a): a is Extract<V2Adjustment, { kind: 'blowTiming' }> => a.enabled && a.kind === 'blowTiming')
+  if (blow === undefined) return resolveTime({ seconds: times?.seconds ?? 1, speed: s.speed })
+  if (times === undefined || (blow.blowU === undefined && times.blow === undefined)) return null
+  const uncut = times.seconds / s.speed
+  const at = blow.blowU !== undefined ? fitBlow(blow.blowU, uncut) : times.blow!
+  return resolveTime({ seconds: times.seconds, speed: s.speed, kept: fitRange(at, uncut, blow) })
+}
+
+/**
+ * A schema 2 slot as schema 3 (docs/motion-plan.md §5): blow timing -> time.fit (a blow picked by hand -> its `hit`
+ * event), pace -> time.pace, keys -> bones and gear tracks (switched off: muted), ground, hand poses and handle holds
+ * kept; every key and window from a phase of the clip as it played to source time, through the cut its blow timing
+ * made (`times`; none needed without an enabled blow timing). Ids: the adjustments keep theirs, a hit event is
+ * stableId('<character>:hit:<slot index>'). `windowsInSource`: the slot came from v1, which laid hand windows on before
+ * its blow cut, so they are source time already. Without `times` where they are needed: strict throws, else the
+ * phases are kept as they were and a note says so.
+ */
+export function slotFromV2 (s: V2Slot, o: { characterId: string, index: number, times?: ClipTimes, notes?: string[], strict?: boolean, windowsInSource?: boolean }): Slot {
+  const moves = cutMoves(s, { windowsInSource: o.windowsInSource })
+  const map = v2TimeMap(s, o.times)
+  if (map === null) {
+    if (o.strict === true && moves) throw new Error(`clip ${s.name} of ${o.characterId}: its blow cut must be measured to move its keys and windows into source time: run node tools/migrate.ts (or open Rigsmith)`)
+    if (moves) o.notes?.push(`clip ${s.name}: its blow cut couldn't be measured, so its keys and windows were kept where the clip played them; check them`)
+  }
+  if (map !== null && moves) o.notes?.push(`clip ${s.name}: its keys and windows kept against its source clip, where its blow timing played them (so a change of timing no longer moves them)`)
+  const toSource = (u: number): number => (map === null ? u : clampU(map.toSource(u)))
+  const win = (w: V2Window[]): Window[] => w.map(([a, b]): Window => (o.windowsInSource === true ? [a, b] : [toSource(a), toSource(b)]))
+  const keys = (ks: V2ClipKey[]): ClipKey[] => ks.map(k => defined({ u: toSource(k.u), q: [...k.q] as Quat, p: k.p === undefined ? undefined : [...k.p] as Vec3 }))
+  const out: Slot = defined({
+    id: s.id, name: s.name, clip: { ...s.clip }, speed: s.speed, loop: s.loop, inPlace: s.inPlace, note: s.note,
+    adjustments: [] as Adjustment[],
+  })
+  const time: SlotTime = {}
+  const events: ClipEvent[] = []
+  for (const a of s.adjustments) {
+    const lost = a.note !== undefined ? ` (its note: ${a.note})` : ''
+    switch (a.kind) {
+      case 'ground': out.adjustments.push(clone(a)); break
+      case 'handPose': out.adjustments.push(defined({ ...clone(a), windows: a.windows === undefined ? undefined : win(a.windows) })); break
+      case 'handleHold': out.adjustments.push({ ...clone(a), windows: win(a.windows) }); break
+      case 'blowTiming':
+        time.fit = defined({ enabled: a.enabled, at: a.at, late: a.late, window: a.window, hand: a.hand })
+        if (a.blowU !== undefined) events.push({ id: stableId(`${o.characterId}:hit:${o.index}`), name: 'hit', u: a.blowU })
+        if (lost !== '') o.notes?.push(`clip ${s.name}: blow timing${lost}`)
+        break
+      case 'pace':
+        time.pace = { enabled: a.enabled, like: a.like }
+        if (lost !== '') o.notes?.push(`clip ${s.name}: pace${lost}`)
+        break
+      case 'keys': {
+        const bones = Object.entries(a.bones ?? {}).filter(([, k]) => k.length > 0)
+        const gear = Object.entries(a.gear ?? {}).filter(([, k]) => k.length > 0)
+        if (bones.length > 0) out.bones = Object.fromEntries(bones.map(([b, k]) => [b, keys(k)]))
+        if (gear.length > 0) out.gear = Object.fromEntries(gear.map(([g, k]): [string, GearTrack] => [g, { keys: keys(k) }]))
+        if (!a.enabled && (bones.length > 0 || gear.length > 0)) out.muted = ['bones', 'gear']
+        if (lost !== '') o.notes?.push(`clip ${s.name}: keys${lost}`)
+        break
+      }
+    }
+  }
+  if (Object.keys(time).length > 0) out.time = time
+  if (events.length > 0) out.events = events
+  return out
+}
+
+const clampU = (u: number): number => Math.min(16, Math.max(0, u))
+
+/** A schema 3 slot in schema 2's shape, its times left as they are (source time): for the deprecated v1 view
+ * (src/model/legacy.ts), whose clients never read phases closely. Its fit, pace and keys become the adjustments they
+ * were (ids '<slot>-fit', '-pace', '-keys'; `rowIds`: 'fit', 'pace', 'keys', the Motion stack's rows). What schema 2 had no place for (markers, holds, events but the hit, who
+ * holds gear, eases) is left out. */
+export function slotToV2 (s: Slot, o: { rowIds?: boolean } = {}): V2Slot {
+  const idOf = (what: string): string => (o.rowIds === true ? what : `${s.id}-${what}`)
+  const adjustments = clone(s.adjustments) as V2Adjustment[]
+  const fit = s.time?.fit
+  const hit = s.events?.find(e => e.name === 'hit' && e.to === undefined)
+  if (fit !== undefined) adjustments.push(defined({ id: idOf('fit'), kind: 'blowTiming' as const, enabled: fit.enabled, at: fit.at, blowU: hit?.u, late: fit.late, hand: fit.hand, window: fit.window }))
+  if (s.time?.pace !== undefined) adjustments.push({ id: idOf('pace'), kind: 'pace', enabled: s.time.pace.enabled, like: s.time.pace.like })
+  const strip = (ks: ClipKey[]): V2ClipKey[] => ks.map(k => defined({ u: k.u, q: [...k.q] as Quat, p: k.p === undefined ? undefined : [...k.p] as Vec3 }))
+  const bones = Object.fromEntries(Object.entries(s.bones ?? {}).map(([b, k]) => [b, strip(k)]))
+  const gear = Object.fromEntries(Object.entries(s.gear ?? {}).filter(([, t]) => (t.keys?.length ?? 0) > 0).map(([g, t]) => [g, strip(t.keys!)]))
+  if (Object.keys(bones).length > 0 || Object.keys(gear).length > 0) {
+    adjustments.push(defined({
+      id: idOf('keys'), kind: 'keys' as const, enabled: !(s.muted?.includes('bones') === true && s.muted.includes('gear')),
+      bones: Object.keys(bones).length > 0 ? bones : undefined, gear: Object.keys(gear).length > 0 ? gear : undefined,
+    }))
+  }
+  return defined({ id: s.id, name: s.name, clip: { ...s.clip }, speed: s.speed, loop: s.loop, inPlace: s.inPlace, note: s.note, adjustments })
 }
 
 /** Settings of any schema: the game repo and the shared hand poses (the export options went with the generic export). */
@@ -314,7 +467,7 @@ export function gearFromProp (p: V1PropAttachment, o: FromV1 = {}): Gear | null 
 
 // (Omit over each kind of the union, not over the union as a whole)
 type Without<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
-type NewAdjustment = Without<Adjustment, 'id'>
+type NewAdjustment = Without<V2Adjustment, 'id'>
 
 /**
  * Animation entries as slots, with what v1 kept elsewhere as their adjustments: the entry's lift and keys (gear keys
@@ -324,9 +477,9 @@ type NewAdjustment = Without<Adjustment, 'id'>
  * keeps it and gets what is keyed by it, later ones are renamed.
  */
 export function slotsFromV1 (animations: V1AnimationEntry[], scripts: V1ClipScript[] | undefined, gearIdByName: Record<string, string>,
-  characterId: string, o: FromV1 & { garments?: V1Garment[] } = {}): Slot[] {
+  characterId: string, o: FromV1 & { garments?: V1Garment[] } = {}): V2Slot[] {
   const names = dedupe(animations.map(e => e.name))
-  const slots: Slot[] = animations.map((e, i) => {
+  const slots: V2Slot[] = animations.map((e, i) => {
     if (names[i] !== e.name) o.notes?.push(`Two clips were named ${e.name}: the second is now ${names[i]}`)
     return defined({
       id: stableId(`${characterId}:slot:${i}`),
@@ -340,11 +493,11 @@ export function slotsFromV1 (animations: V1AnimationEntry[], scripts: V1ClipScri
     })
   })
   const byName = new Map(slots.map(s => [s.name, s]))
-  const add = (slot: Slot, a: NewAdjustment): void => {
+  const add = (slot: V2Slot, a: NewAdjustment): void => {
     const id = stableId(`${characterId}:adjust:${slots.indexOf(slot)}:${slot.adjustments.length}`)
-    slot.adjustments.push(defined({ id, ...a }) as Adjustment)
+    slot.adjustments.push(defined({ id, ...a }) as V2Adjustment)
   }
-  const slotFor = (name: string, what: string): Slot | undefined => {
+  const slotFor = (name: string, what: string): V2Slot | undefined => {
     const slot = byName.get(name)
     if (slot === undefined) o.notes?.push(`${what} for ${name} dropped: no clip of that name`)
     return slot
@@ -353,7 +506,7 @@ export function slotsFromV1 (animations: V1AnimationEntry[], scripts: V1ClipScri
   animations.forEach((e, i) => {
     const slot = slots[i]
     if (e.lift !== undefined && e.lift !== 0) add(slot, { kind: 'ground', enabled: true, lift: e.lift })
-    const gear: Record<string, ClipKey[]> = {}
+    const gear: Record<string, V2ClipKey[]> = {}
     for (const [name, keys] of Object.entries(e.keys?.props ?? {})) {
       const id = gearIdByName[name]
       if (id === undefined) o.notes?.push(`${slot.name}: keys for ${name} dropped (no gear of that name)`)
@@ -411,7 +564,7 @@ export function slotsFromV1 (animations: V1AnimationEntry[], scripts: V1ClipScri
   for (const slot of slots) {
     const cut = slot.adjustments.some(a => a.kind === 'blowTiming' && a.enabled)
     if (cut && slot.adjustments.some(a => a.kind === 'handPose' || a.kind === 'handleHold')) {
-      o.notes?.push(`${slot.name}: its hand windows were set on the clip before its blow cut and are kept as they were; check them`)
+      o.notes?.push(`${slot.name}: its hand windows were set on the clip before its blow cut, as source time keeps them now`)
     }
   }
   return slots
