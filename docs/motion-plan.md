@@ -173,16 +173,18 @@ slot whose fit is on and has no hit event still exports a `hit`: the measured bl
 ```ts
 export interface GearTrack {
   keys?: ClipKey[]
-  /** Who holds it, from `u` on (segments sorted by u; before the first, its Gear attach bone). `place`: where it sits
-   * on that bone (the bone's rest frame, as Placement); unset: wherever it was at `u`, so it changes hands without a
-   * pop (Back -> Right hand at frame 12). */
-  heldBy?: Array<{ u: SourceU, bone: string, place?: Placement }>
+  /** Who holds it, from `u` on (segments sorted by u; before the first, its Gear attach bone). Where it sits there,
+   * the first given of: `place` (rest space, as Gear's placement: where it would be at rest, carried by that bone);
+   * `handle` (one of its carry or grip handles, on the hand it is for); `placed` (its Gear placement, on its attach
+   * bone); none: wherever it was at `u`, so it changes hands without a pop (Back -> Right hand at frame 12). */
+  heldBy?: Array<{ u: SourceU, bone: string, place?: Placement, handle?: string, placed?: true }>
   /** Shown or hidden from `u` on (sorted; before the first, as Gear has it). */
   shown?: Array<{ u: SourceU, shown: boolean }>
 }
 ```
 
-The bake ignores `heldBy` and `shown` until C2's stage lands (§9); the commands keep them valid now.
+The bake plays them (`src/engine/geartracks.ts`, §10 C2); the commands keep them valid (a handle one of the piece's carry
+or grip handles on the hand it is for, `placed` only on its attach bone, one of place, handle, placed).
 
 ### 2.6 The editor's build in the one bake (Phase B adds `ik`)
 
@@ -380,6 +382,12 @@ Settings are unchanged (schema 2).
 - Every clip the unit exports is listed (`tools/lib/unit_export.ts eventsFile`, times rounded to 1e-4). A companion's
   clips aren't in it yet (a horse's events are C1's: `"companion": {"clips": {...}}` under its prefix's names).
 - The record (`rigsmith.json`) gets `schema: 3`, `slots` as stored (v3, gear by name), and `events` (this object).
+- Gear events (C2, `geartracks.ts gearEvents`), among each clip's own: `hide:<mesh>` / `show:<mesh>` where a piece hides
+  and shows again (a hide at 0 when it starts hidden), `detach:<mesh>` (`bone`: who let go) and `attach:<mesh>` (`bone`:
+  who took it) where it changes bones. `<mesh>` is the piece's mesh name in the GLB (`contract.ts meshNameOf`).
+- Variants (C2, `src/model/variants.ts`): a slot named `<Clip> <n>` (n from 2) of a game clip exports as `<Clip>_<n>`
+  (its horse or companion playing `<Clip>`'s), and the file gets `"variants": {"Attack": ["Attack", "Attack_2"]}` (each
+  clip that has any, itself first; the key is left out when none has any). The game picks one at random.
 
 The GLB itself does not change (§8 checks it byte for byte for the workspace units).
 
@@ -491,3 +499,24 @@ baked clip), `src/app/motion/pose/**`, the easing UI (per span menu writing `eas
   every slot of the six characters bakes to the same tracks (largest difference 0, `tests/equivalence/bake.test.ts`),
   riders ridden too, and the five units' GLBs export byte for byte the same as before the change (checked by hand
   against a build of b281970); the build records differ only in the last digit of a few converted keyData phases.
+- C2 (branch `motion-gear`): gear held by / shown and variants, as §9, except:
+  - `heldBy` segments gained `handle` (a carry or grip handle of the piece: the hand's wrist on it as the handle says)
+    and `placed` (its Gear placement on its attach bone: sheathed again); `place` is rest space, like Gear's placement
+    (§2.5). `slot.gear.update` checks them; `clips.replace` maps handles by name (a handle not found here: where it is).
+  - The stage is one call in `bake.ts` after the gear keys (`holdGear`), skipped with 'keys'; a muted `gear:<id>` mutes
+    the piece's holds and hidden spans too. What it resolved is `BakedSlot.gearHolds` (played phases, every holder's
+    place found; `bakeRide` repeats it per cycle), so the export plays the same places. A switch that jumps (a handle, a
+    placement) is a step a ten-thousandth of a second wide; a no-pop switch keeps the world pose (7e-8 on the workspace
+    spearman). A piece hidden in any clip of the character gets a size track in every clip (constant elsewhere), so a
+    clip that hid it never leaves it hidden; characters that hide nothing get no new tracks.
+  - The export's Prop_ bones are for gearKeys ∪ gearHolds; their moves come from the bake's holds sampled on the clip
+    as baked (`holdTracks`, the character's own units, moves times the game scale). Gear events reach the events file
+    through `eventsFile`'s new optional `more.gear` (and `more.variants`): C1's writer should keep passing them through.
+  - A rider's holds are resolved before the ride freezes his hips and legs: a piece handed to or from a frozen bone
+    (Hips, a leg) may sit off in the ride (none of the workspace riders do that).
+  - Mount points for B: `GearLanes`/`GearInspector` as lanes.ts says (selection tracks `held:<id>` with the entry's
+    index as id, -1 the first segment, and `shown:<id>` with the hidden span's index); `src/app/motion/variants/
+    AddVariant.svelte {character, name, names}` on each filled game clip row of the slot list (`names` the game's clip
+    names). Variant slots are trials to `rules.ts isTrial` today: show them under their clip (`variantOf`).
+  - Unverified in the live app: the components ran against a harness (commands applied locally), not inside B's
+    timeline.

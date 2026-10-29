@@ -137,6 +137,34 @@ centimetre a frame) rather than bend its wrist far. The head keeps looking where
   gear keys (and, opened as it plays, the hand poses and holds of the clip it came from).
 - **Finish** closes the editor (asking first when there are unsaved edits).
 
+## 7. Change hands, hide it (Motion step, the Gear track)
+
+Each piece has a **Held by** strip and a **Shown** strip under its keys in the timeline, so a clip can draw a sword
+from the back, throw a javelin and have it gone, or pick a tool up.
+
+- **Change hands:** put the playhead where it changes hands and press the scissors on Held by (or **Change hands at
+  frame N** in the inspector). The strip splits; pick the new segment and choose who holds it from there:
+  - **a hand on one of its handles** (Left hand on Front grip): the hand takes it where the handle says;
+  - **as placed in Gear**, on its own bone (sheathed again, back exactly where Gear puts it);
+  - **a bone, where it is**: it changes hands without a pop, staying where it was at that frame and riding the new
+    bone from then on. **Pin this place** keeps that spot even if the timing changes later.
+  **No pop** on a segment says the same: on, it takes the piece where it is; off, by its handle, its placement or the
+  pinned spot. Drag a boundary to move the switch (frames; Alt between them); the trash button or Delete hands it back
+  to the holder before. The first segment is its Gear bone unless you set who holds it from the start.
+- **Hide it:** put the playhead where it goes and press the eye on Shown (**Hide from frame N**): it is hidden from
+  there to the next hidden span or the end. Press it inside a hidden span to show it again from there. Drag a span, or
+  its edges; Delete or the trash button shows it again.
+- **Plays in this clip** (the inspector) switches the piece's whole track off without losing it.
+
+The piece never changes parents: the game gets it on its own `Prop_<piece>` bone under its Gear bone, moved to wherever
+the holder has it, and sized to 0 while hidden. The unit's events file also tells the game `hide:<mesh>` /
+`show:<mesh>` and `detach:<mesh>` / `attach:<mesh>` (with the bone) at each change, so it can spawn the thrown javelin or
+play a sound.
+
+**Variants:** **+ variant** on one of the game's clips (Attack, Die...) copies it as `Attack 2` (then `Attack 3`...) and
+plays it to change. The game gets it as `Attack_2` and picks one of them at random each time; remove the slot to drop
+it.
+
 ## Good to know
 
 - **The game holds the gear by its Gear placement, moved by the slot's gear keys.** Keys are relative to that
