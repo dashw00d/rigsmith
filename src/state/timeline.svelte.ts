@@ -1,5 +1,5 @@
 // The Motion timeline's state (docs/motion-plan.md §9 B): the selection across tracks (keys, events, gear strips, hand
-// bars, the Time track's items), the zoom, the clipboard of keys and what the keyboard does. Every key edit is a pure
+// bars, the Time track's items), the zoom, the clipboard (keys and events) and what the keyboard does. Every key edit is a pure
 // helper (src/model/keyedit.ts) sent as one `slot.keys.set` (one journal entry, one undo); undo and redo are the
 // journal's (Ctrl+Z, Ctrl+Shift+Z). Positions are played phases of one cycle of the slot's clip (its time map,
 // baked.time, IDENTITY while it first bakes); stored times are source moments.
@@ -9,7 +9,7 @@
 // `timeline.applyKeys(edit)` (send a keyedit result).
 import type { Command } from '../model/command-types.ts'
 import {
-  copyKeys, deleteKeys, duplicateKeys, isKeyTrack, keysOf, keysToFrame, keyTracks, moveKeys, pasteKeys, spanOf, stretchFactor, stretchKeys,
+  copyKeys, deleteKeys, isKeyTrack, keysOf, keysToFrame, keyTracks, moveKeys, pasteKeys, snapPlayed, spanOf, stretchFactor, stretchKeys,
   stretchMarkers, type KeyClipboard, type KeyEdit, type KeyRef, type TimeFrame,
 } from '../model/keyedit.ts'
 import { newId } from '../model/ids.ts'
@@ -17,7 +17,8 @@ import { hierarchyOf, slotById } from '../model/select.ts'
 import { IDENTITY, type TimeMap } from '../model/timemap.ts'
 import type { Character, Slot } from '../model/types.ts'
 import type { BakedSlot } from '../engine/bake.ts'
-import type { SelectedItem, TimelineView } from '../app/motion/lanes.ts'
+import type { AreaClip, AreaEdit, AreaItems, AreaView, SelectedItem, TimelineView } from '../app/motion/lanes.ts'
+import { AREAS } from '../app/motion/areas.ts'
 import { framesOf, timeAt, cycleAt } from '../app/motion/rules.ts'
 import { app } from './app.svelte.ts'
 import { animator } from './animator.svelte.ts'
@@ -26,6 +27,10 @@ const same = (a: SelectedItem, b: SelectedItem): boolean => a.track === b.track 
 
 /** A key as a selected item (its id: its source moment, as a string). */
 export const keyItem = (k: KeyRef): SelectedItem => ({ track: k.track, id: String(k.u), u: k.u })
+
+/** What Ctrl+C took: the keys and the areas' items (events...), each with its offset in frames from the earliest of
+ * them all, so they go down together. */
+interface Clipboard { keys: KeyClipboard | null, keysAt: number, areas: Array<{ area: AreaItems, clip: AreaClip, at: number }> }
 
 /** The slot playing on stage, with what the timeline reads of it. */
 export interface Playing {
@@ -49,7 +54,7 @@ class Timeline {
   open = $state.raw<string[]>(['body'])
   /** The lanes' width in pixels (the Timeline measures it). */
   width = $state(600)
-  private clipboard: KeyClipboard | null = null
+  private clipboard: Clipboard | null = null
   /** Undos made from here (their journal entries), for redo, newest last; any new edit clears them. */
   private redos: Array<{ character: string, seq: number }> = []
   /** The last bake of each slot (its time map stays while it bakes again). */
@@ -169,9 +174,55 @@ class Timeline {
     return await app.do(c.id, commands, what) !== null
   }
 
+  /** The selection's items of each area (events, gear strips) that has some selected. */
+  private areaItems (): Array<{ area: AreaItems, items: SelectedItem[] }> {
+    return AREAS.map(area => ({ area, items: this.selection.filter(s => area.owns(s.track)) })).filter(x => x.items.length > 0)
+  }
+
+  private areaView (p: Playing): AreaView {
+    const f = this.frame(p)
+    return {
+      character: p.character, slot: p.slot, baked: p.baked, frames: p.frames, toPlayed: f.toPlayed, toSource: f.toSource,
+      snap: (v, free) => (free === true ? v : Math.round(v * p.frames) / p.frames),
+    }
+  }
+
+  /** The played span of the whole selection: its keys and the areas' items that have a place in time. */
+  private spanAll (p: Playing): [number, number] | null {
+    const view = this.areaView(p)
+    const spans = [spanOf(p.slot, this.keys, this.frame(p)), ...this.areaItems().map(x => x.area.span?.(view, x.items) ?? null)].filter((x): x is [number, number] => x !== null)
+    return spans.length === 0 ? null : [Math.min(...spans.map(x => x[0])), Math.max(...spans.map(x => x[1]))]
+  }
+
+  /** A key edit and the areas' edits sent as one undo; each area's items selected as its edit leaves them. */
+  private async applyAll (keys: KeyEdit | null, edits: Array<{ area: AreaItems, edit: AreaEdit }>, what?: string): Promise<boolean> {
+    const sent = this.applyKeys(keys, what, edits.flatMap(e => e.edit.commands))
+    if (edits.length > 0) this.selection = [...this.selection.filter(s => !edits.some(e => e.area.owns(s.track))), ...edits.flatMap(e => e.edit.selection)]
+    return await sent
+  }
+
+  /** The selection moved by `dv` (a drag of its keys from `anchor`, snapped to frames unless free; or a nudge): its
+   * keys and the areas' items together, none past the clip's ends. */
   move (dv: number, o: { free?: boolean, anchor?: number } = {}): void {
     const p = this.playing
-    if (p !== null) void this.applyKeys(moveKeys(p.slot, this.keys, dv, this.frame(p), o))
+    if (p === null) return
+    const f = this.frame(p)
+    const span = this.spanAll(p)
+    if (span === null) return
+    const anchor = o.anchor ?? span[0]
+    let d = snapPlayed(anchor + dv, f.frames, o.free) - anchor
+    d = Math.min(Math.max(1, span[1]) - span[1], Math.max(Math.min(0, span[0]) - span[0], d))
+    if (Math.abs(d) < 1e-12) return
+    const view = this.areaView(p)
+    const edits = this.areaItems().flatMap(({ area, items }) => { const edit = area.move?.(view, items, d) ?? null; return edit === null ? [] : [{ area, edit }] })
+    const keys = this.keys.length === 0 ? null : moveKeys(p.slot, this.keys, d, f, { free: true, anchor })
+    void this.applyAll(keys, edits, 'move')
+  }
+
+  /** The selection moved by whole frames (Ctrl+← →; Shift: 10). */
+  nudge (frames: number): void {
+    const p = this.playing
+    if (p !== null && this.selection.length > 0) this.move(frames / Math.max(1, p.frames), { free: true })
   }
 
   /** The selection's edge dragged to `to`: the keys stretched, or (retimeClip) the clip retimed under them. */
@@ -193,41 +244,84 @@ class Timeline {
     if (p !== null) void this.applyKeys(keysToFrame(p.slot, this.keys, frame, this.frame(p)))
   }
 
+  /** Whether the selection has what Ctrl+C and Ctrl+D take (keys, events). */
+  get copyable (): boolean { return this.keys.length > 0 || this.areaItems().some(x => x.area.copy !== undefined) }
+
+  /** The selection copied just after itself (keys and events together). */
   duplicate (): void {
     const p = this.playing
-    if (p === null || this.keys.length === 0) return
-    const e = duplicateKeys(p.slot, this.keys, this.frame(p))
-    if (e === null) { app.toast('info', 'No room after the selection to duplicate it into'); return }
-    void this.applyKeys(e, 'duplicate keys')
+    if (p === null) return
+    const span = this.spanAll(p)
+    const clip = this.take(p)
+    if (span === null || clip === null) return
+    const step = 1 / Math.max(1, p.frames)
+    const d = Math.max(step, snapPlayed(span[1] - span[0], p.frames) + step)
+    if (span[1] + d > 1 + 1e-9) { app.toast('info', 'No room after the selection to duplicate it into'); return }
+    void this.put(p, clip, Math.round((span[0] + d) * p.frames), 'duplicate')
   }
 
-  copy (): number {
-    const p = this.playing
-    if (p === null || this.keys.length === 0) return 0
-    this.clipboard = copyKeys(p.slot, this.keys, this.frame(p))
-    return this.clipboard.items.length
+  /** The keys and the areas' items selected, as a clipboard (null: nothing to copy). */
+  private take (p: Playing): Clipboard | null {
+    const f = this.frame(p)
+    const view = this.areaView(p)
+    const keys = this.keys.length === 0 ? null : copyKeys(p.slot, this.keys, f)
+    const keySpan = spanOf(p.slot, this.keys, f)
+    const areas = this.areaItems().flatMap(({ area, items }) => { const clip = area.copy?.(view, items) ?? null; return clip === null ? [] : [{ area, clip }] })
+    const firsts = [...(keys !== null && keys.items.length > 0 && keySpan !== null ? [keySpan[0]] : []), ...areas.map(a => a.clip.first)]
+    if (firsts.length === 0) return null
+    const first = Math.min(...firsts)
+    const at = (v: number): number => Math.round((v - first) * p.frames)
+    return { keys: keys !== null && keys.items.length > 0 ? keys : null, keysAt: keySpan === null ? 0 : at(keySpan[0]), areas: areas.map(a => ({ ...a, at: at(a.clip.first) })) }
   }
 
-  get canPaste (): boolean { return (this.clipboard?.items.length ?? 0) > 0 }
-
-  /** The keys copied put down at the playhead (in this clip or another): tracks this slot can't have are left out. */
-  paste (): void {
-    const p = this.playing; const clip = this.clipboard
-    if (p === null || clip === null) return
+  /** A clipboard put down with its earliest item on `frame`: tracks this slot can't have are left out. */
+  private async put (p: Playing, clip: Clipboard, frame: number, what: string): Promise<boolean> {
+    const f = this.frame(p)
+    const view = this.areaView(p)
     const bones = new Set(hierarchyOf(p.character).map(([n]) => n))
     const gear = new Set(p.character.gear.map(g => g.id))
     const ok = (t: string): boolean => (t.startsWith('gear:') ? gear.has(t.slice(5)) : bones.size === 0 || bones.has(t.slice(5)))
-    void this.applyKeys(pasteKeys(p.slot, clip, this.frameNow, this.frame(p), { tracks: ok }), 'paste keys')
+    const keys = clip.keys === null ? null : pasteKeys(p.slot, clip.keys, frame + clip.keysAt, f, { tracks: ok })
+    const edits = clip.areas.flatMap(({ area, clip: c, at }) => {
+      const edit = area.paste?.(view, c, (frame + at) / Math.max(1, p.frames)) ?? null
+      return edit === null ? [] : [{ area, edit }]
+    })
+    if (keys === null && edits.length === 0) return false
+    // (what was selected goes: the pasted items are)
+    this.selection = []
+    return await this.applyAll(keys, edits, what)
   }
 
-  /** Delete what is selected, across tracks: keys, events, hand bars, retime markers and holds. One undo. */
+  /** The selection copied (Ctrl+C): how many keys and other items. */
+  copy (): number {
+    const p = this.playing
+    if (p === null) return 0
+    const clip = this.take(p)
+    if (clip === null) return 0
+    this.clipboard = clip
+    return this.keys.length + this.areaItems().filter(x => x.area.copy !== undefined).reduce((n, x) => n + x.items.length, 0)
+  }
+
+  get canPaste (): boolean { return this.clipboard !== null }
+
+  /** What was copied put down at the playhead (in this clip or another). */
+  paste (): void {
+    const p = this.playing; const clip = this.clipboard
+    if (p === null || clip === null) return
+    void this.put(p, clip, this.frameNow, 'paste')
+  }
+
+  /** Delete what is selected, across tracks: keys, the areas' items (events, gear strips' switches and hidden spans),
+   * hand bars, retime markers and holds. One undo. */
   remove (): void {
     const p = this.playing
     if (p === null || this.selection.length === 0) return
     const extra: Command[] = []
+    const view = this.areaView(p)
+    const areas = this.areaItems()
+    for (const { area, items } of areas) extra.push(...(area.remove?.(view, items) ?? []))
     for (const s of this.selection) {
-      if (s.track === 'events') extra.push({ type: 'slot.event.remove', slot: p.slot.id, id: s.id })
-      else if (s.track.startsWith('hands:')) {
+      if (s.track.startsWith('hands:')) {
         const id = s.track.slice(6)
         if (id.startsWith('ik:')) continue
         if (p.slot.adjustments.some(a => a.id === id) && !extra.some(x => x.type === 'slot.adjust.remove' && x.id === id)) extra.push({ type: 'slot.adjust.remove', slot: p.slot.id, id })
@@ -249,7 +343,7 @@ class Timeline {
       if (Object.keys(patch).length > 0) extra.push({ type: 'slot.time', slot: p.slot.id, patch })
     }
     const keys = deleteKeys(p.slot, this.keys)
-    const left = this.selection.filter(s => !isKeyTrack(s.track) && s.track !== 'events' && !s.track.startsWith('hands:') && s.track !== 'time')
+    const left = this.selection.filter(s => !isKeyTrack(s.track) && !areas.some(a => a.area.owns(s.track)) && !s.track.startsWith('hands:') && s.track !== 'time')
     void this.applyKeys(keys, 'delete', extra).then(ok => { if (ok) this.selection = left })
   }
 

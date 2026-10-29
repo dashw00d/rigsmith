@@ -23,6 +23,14 @@ describe('Motion\'s keys', () => {
     expect(motionAction(key('o', { alt: true }))).toBeNull()
   })
 
+  it('nudges the selection a frame with Ctrl ← →, ten with Shift', () => {
+    expect(motionAction(key('ArrowLeft', { ctrl: true }))).toBe('nudgeBack')
+    expect(motionAction(key('ArrowRight', { ctrl: true }))).toBe('nudgeOn')
+    expect(motionAction(key('ArrowLeft', { ctrl: true, shift: true }))).toBe('nudgeBack10')
+    expect(motionAction(key('ArrowRight', { ctrl: true, shift: true }))).toBe('nudgeOn10')
+    expect(motionAction(key('ArrowRight'))).toBeNull()
+  })
+
   it('maps the plain ones', () => {
     expect(motionAction(key('Delete'))).toBe('delete')
     expect(motionAction(key('Backspace'))).toBe('delete')

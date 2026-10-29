@@ -90,7 +90,8 @@
     // (undo works whatever plays; the rest acts on the clip playing)
     if (action !== 'undo' && action !== 'redo' && !playing) return
     if (action === 'deselect' && timeline.selection.length === 0 && pose.selected === null && pose.gear === null) return
-    if ((action === 'copy' || action === 'duplicate') && timeline.keys.length === 0) return
+    if ((action === 'copy' || action === 'duplicate') && !timeline.copyable) return
+    if (action.startsWith('nudge') && timeline.selection.length === 0) return
     if (pose.busy !== null && action !== 'undo' && action !== 'redo') return
     e.preventDefault()
     switch (action) {
@@ -101,7 +102,7 @@
       case 'move': pose.setGizmo('move'); break
       case 'rotate': pose.setGizmo('rotate'); break
       case 'duplicate': timeline.duplicate(); break
-      case 'copy': { const n = timeline.copy(); if (n > 0) app.toast('info', `${n} ${n === 1 ? 'key' : 'keys'} copied: Ctrl+V puts them at the playhead`, 2500) } break
+      case 'copy': { const n = timeline.copy(); if (n > 0) app.toast('info', `${n} copied: Ctrl+V puts ${n === 1 ? 'it' : 'them'} at the playhead`, 2500) } break
       case 'paste': timeline.paste(); break
       case 'all': timeline.selectAll(); break
       case 'key': void pose.keyHere(); break
@@ -111,6 +112,10 @@
       case 'regionStart': timeline.regionAt('start'); break
       case 'regionEnd': timeline.regionAt('end'); break
       case 'regionClear': timeline.clearRegion(); break
+      case 'nudgeBack': timeline.nudge(-1); break
+      case 'nudgeOn': timeline.nudge(1); break
+      case 'nudgeBack10': timeline.nudge(-10); break
+      case 'nudgeOn10': timeline.nudge(10); break
     }
   }
 </script>

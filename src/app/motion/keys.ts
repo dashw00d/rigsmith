@@ -2,11 +2,11 @@
 // app's other shortcuts (src/ui/shortcuts.ts) they also work with the focus on a button (the toolbar's Move was just
 // clicked, the hand is back on the stage); fields and lists keep their own keys. The transport's (Space, frames, keys)
 // are the timeline's (src/app/motion/Timeline.svelte). The pose tools' own (Ctrl+Shift+C/V, Ctrl+Alt+C/V, Alt+O) are
-// theirs: nothing here takes Shift or Alt with Ctrl but redo.
+// theirs: nothing here takes Shift or Alt with Ctrl but redo and the nudge (Ctrl+← →, Shift: 10 frames).
 
 export type MotionAction =
   | 'undo' | 'redo' | 'delete' | 'deselect' | 'move' | 'rotate' | 'duplicate' | 'copy' | 'paste' | 'all'
-  | 'key' | 'solve' | 'fit' | 'fitSelection' | 'regionStart' | 'regionEnd' | 'regionClear'
+  | 'key' | 'solve' | 'fit' | 'fitSelection' | 'regionStart' | 'regionEnd' | 'regionClear' | 'nudgeBack' | 'nudgeOn' | 'nudgeBack10' | 'nudgeOn10'
 
 /** Whether Motion may take this key press (not one a field, a list or a slider needs). */
 export function motionKeyAllowed (e: Pick<KeyboardEvent, 'defaultPrevented' | 'target'>): boolean {
@@ -22,6 +22,8 @@ export function motionAction (e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKe
   if (e.ctrlKey || e.metaKey) {
     if (e.altKey) return null
     if (k === 'z') return e.shiftKey ? 'redo' : 'undo'
+    if (e.key === 'ArrowLeft') return e.shiftKey ? 'nudgeBack10' : 'nudgeBack'
+    if (e.key === 'ArrowRight') return e.shiftKey ? 'nudgeOn10' : 'nudgeOn'
     if (e.shiftKey) return null
     if (k === 'y') return 'redo'
     if (k === 'd') return 'duplicate'

@@ -12,6 +12,7 @@
 //   src/app/motion/gear/GearInspector.svelte      { view: TimelineView, gear: string }  shown when a piece is selected
 //   src/app/motion/pose/PoseToolbar.svelte        { view: TimelineView }            the pose tools, in the timeline's toolbar
 import type { BakedSlot } from '../../engine/bake.ts'
+import type { Command } from '../../model/command-types.ts'
 import type { Character, Slot } from '../../model/types.ts'
 
 /** One selected item: its track (`body:<bone>`, `gear:<id>`, `held:<id>`, `shown:<id>`, `events`, `hands:<adj id>`,
@@ -41,4 +42,32 @@ export interface TimelineView {
   /** The selection across tracks. */
   selection: readonly SelectedItem[]
   select: (items: SelectedItem[], mode: 'set' | 'add' | 'toggle') => void
+}
+
+/** The part of a TimelineView an area's items need (the timeline's state has no pixels). */
+export type AreaView = Pick<TimelineView, 'character' | 'slot' | 'baked' | 'frames' | 'toPlayed' | 'toSource' | 'snap'>
+
+/** Commands an area's items make (sent with the keys' as one undo) and its items to select after. */
+export interface AreaEdit { commands: Command[], selection: SelectedItem[] }
+
+/** An area's items copied: the played phase of the earliest, and what the area pastes from. */
+export interface AreaClip { first: number, data: unknown }
+
+/**
+ * What an area does with its own items in the cross-track selection when the timeline acts on all of it (src/state/
+ * timeline.svelte.ts: Delete, Ctrl+D, the nudge and a drag of selected keys, Ctrl+C / Ctrl+V), so keys, events and
+ * the rest go together. Positions are played phases; each part is optional (an area without `move` stays put). The
+ * areas are listed in src/app/motion/areas.ts.
+ */
+export interface AreaItems {
+  /** Whether a selected item's track is this area's. */
+  owns: (track: string) => boolean
+  /** The played extent of its selected items (for where a duplicate goes and how far the selection can move). */
+  span?: (view: AreaView, items: readonly SelectedItem[]) => [number, number] | null
+  remove?: (view: AreaView, items: readonly SelectedItem[]) => Command[]
+  /** Moved by `dv` of the played clip (already snapped and kept inside the clip by the timeline). */
+  move?: (view: AreaView, items: readonly SelectedItem[], dv: number) => AreaEdit | null
+  copy?: (view: AreaView, items: readonly SelectedItem[]) => AreaClip | null
+  /** Put down with the earliest at played phase `at` (on a frame), in this clip or another. */
+  paste?: (view: AreaView, clip: AreaClip, at: number) => AreaEdit | null
 }

@@ -18,6 +18,8 @@
   import { OnionSkins } from '../../../engine/onion.ts'
   import type { Stage } from '../../../engine/Stage.ts'
   import { app } from '../../../state/app.svelte.ts'
+  import { timeline } from '../../../state/timeline.svelte.ts'
+  import { easeKeys } from '../../../model/keyedit.ts'
   import { animator } from '../../../state/animator.svelte.ts'
   import { tooltip } from '../../../ui/tooltip.ts'
   import Popover from '../../../ui/Popover.svelte'
@@ -174,10 +176,13 @@
     hold: { label: 'Hold', hint: 'The bone held entirely: the clip\'s own motion stopped here until the next key', path: 'M2 9 H14 M2 6 V12 M14 6 V12' },
   }
   const ease = $derived(keysPicked.length === 0 ? null : tools.selectedEase(view))
+  /** The ease of the selected keys' spans, as the timeline's own key edits are sent (keyedit.ts easeKeys). */
   function setEase (e: Ease): void {
     open = null
-    const writes = tools.easeWrites(view, e)
-    void commit(writes, `ease ${e}`, `${EASE_TEXT[e].label} on ${keysPicked.length === 1 ? '1 key' : `${keysPicked.length} keys`}`)
+    const n = keysPicked.length
+    void timeline.applyKeys(easeKeys(view.slot, keysPicked, e), `ease ${e}`).then(done => {
+      say(done ? `${EASE_TEXT[e].label} on ${n === 1 ? '1 key' : `${n} keys`}` : 'Nothing to change')
+    })
   }
 
   // ---- range edit -----------------------------------------------------------------------------------------------------
@@ -395,7 +400,7 @@
 </div>
 
 <style>
-  .pose-tools { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0; font-size: 11.5px; color: var(--text-2); }
+  .pose-tools { display: flex; align-items: center; gap: 4px 6px; flex-wrap: wrap; min-width: 0; font-size: 11.5px; color: var(--text-2); }
   .group { display: flex; align-items: center; gap: 1px; padding: 0 4px; border-left: 1px solid var(--line); }
   .group:first-child { border-left: none; padding-left: 0; }
   .anchor { position: relative; display: flex; align-items: center; }
