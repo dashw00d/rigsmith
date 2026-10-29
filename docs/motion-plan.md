@@ -491,3 +491,38 @@ baked clip), `src/app/motion/pose/**`, the easing UI (per span menu writing `eas
   every slot of the six characters bakes to the same tracks (largest difference 0, `tests/equivalence/bake.test.ts`),
   riders ridden too, and the five units' GLBs export byte for byte the same as before the change (checked by hand
   against a build of b281970); the build records differ only in the last digit of a few converted keyData phases.
+- B (the timeline, key editing, the editor merged into Motion; branch motion-timeline). Built as §9 B says, except:
+  - **slot.ik** is §2.6's shape (`SlotIk`, command `slot.ik {slot, patch: {hands?, lead?, floor?}}`, each part replaced
+    whole, null removes it, the whole ik gone when no hand and no lead is left). A hand with windows is on or off frame
+    by frame (no blend in or out). The bake leaves the shafts and grips out of the build's rig (only the body solver
+    reads them: `ikRig(..., {measure: true})`), and the shaft gap is a fixed fist width, so the export, whose body has
+    no gear meshes when it bakes, builds the same. A body lacking a piece's node gets an empty one hung as the viewer
+    wears a piece (garments.ts boneFrame: the bone's rest frame undone, then the placement); hanging it straight on the
+    bone had put a held hand's goal elsewhere than the viewer's (fixed; `ikbuild.test.ts` now builds its viewer copy
+    with boneFrame). The build's height is `heightOf(c)` (the editor used the view's). `BakeContext.rom` gives the
+    joints' ranges (browser: fetched; tools: `node3d.ts nodeRom`) and `ClipSource.sourceRest` the clip's own skeleton
+    they are mapped through. RootHolds stay in the engine's types (inert: nothing makes them).
+  - Checked: the spearman's Attack with his left hand on a grip by ik, baked in the browser (the animator's context)
+    and by the export's context in node (a script sampling `bakeSlot(..., {gearNodes: false})`): every arm, spine and
+    hips track equal within 1.1e-6 on every frame. Slots without ik bake as before (tests/equivalence).
+  - **Posing** is `src/state/pose.svelte.ts` (clipedit.svelte.ts and src/app/editor/** are gone): keys are relative
+    to `baked.unkeyed` at the player's time, on the frame shown snapped to a frame of one cycle; the pose dragged is
+    held on stage (`animator.holding`) until the slot baked with its keys plays. A grip made by letting a hand go on a
+    shaft is `gear.handle.add` + `slot.ik` in one batch. Naturalize keys every frame of every bone it moved (but the
+    arms held on gear). Not kept: "New clip from this frame", opening a library preview or "the clip alone" to edit,
+    reopening a custom clip's edit record (fill a slot from the library, then pose it), the editor's unsaved/discard
+    flow. The server's edit routes (`server/routes/edits.ts`) and `api.saveEdit` are left for now, unused by the app.
+  - **The timeline** (`Timeline.svelte`, `tracks.ts`, state in `timeline.svelte.ts`): area lanes are mounted in a
+    row whose label column (172 px) is the timeline's; an area's lane gets the lane's own pixels (`view.toX` from 0 at
+    the lane's left edge), so its row labels belong in the timeline's column, not over the lane (C1: the Events row's
+    label is "Events" with the events' mute eye; sub-rows of your own should keep their labels inside your lane's
+    height or say what you need). Positions are one cycle of a ridden loop (`baked.time` is the slot's own map;
+    `animator.playing.phase` the phase in that cycle). The preview's loop is `animator.loop`.
+  - Delete acts across tracks for keys, events (`slot.event.remove`), hand bars (`slot.adjust.remove`, `slot.ik`),
+    markers and holds; Ctrl+D, Ctrl+C/V and moves are keys only (events' duplicate/nudge are C1's helpers to call at
+    merge). Arrow keys step frames (↑ ↓ jump keys), not nudge.
+  - The settings stack (ground, blow fit, pace, hand poses, holds: `AdjustmentStack`) stays under the inspector,
+    without its keys row; a hand bar or a Time item selected opens its setting there.
+  - Variants: listed under their game clip (`rules.ts variantOf`, to be replaced by C2's `src/model/variants.ts`),
+    `AddVariant.svelte` mounted on each filled game clip row (a placeholder here).
+  - The preview into Idle isn't offered for a rider (the horse's clip would need the same blend).

@@ -1,7 +1,7 @@
 # Animating with gear: Gear, then Motion
 
 How to give a character a piece of gear (a spear, a staff, a bow), say where its hands hold it, then pose and key a
-clip with it in the clip editor: both hands on it, the body following it, saved to the slot or as a library clip.
+clip with it in Motion: both hands on it, the body solved to it when you ask, saved as the clip the game plays.
 
 ## 1. Put the gear on the character (Gear step)
 
@@ -16,8 +16,8 @@ clip with it in the clip editor: both hands on it, the body following it, saved 
 
 This placement is the gear in every clip and in the game: the export attaches it to that bone exactly as it sits here.
 Only parts the game built go into the game (brought in by `tools/game_import.py`); catalog gear and your uploads show
-here and in the editor, and Ship's checks say the export leaves them out. "Other ways to wear it" (clothing on the
-skin, a part pinned to a spot) isn't held by hands and doesn't lead in the editor.
+here and in Motion, and Ship's checks say the export leaves them out. "Other ways to wear it" (clothing on the
+skin, a part pinned to a spot) isn't held by hands and doesn't lead.
 
 ## 2. Its handles (Gear step)
 
@@ -26,129 +26,115 @@ for the clip's own hand, one of the character's or the shared hand poses, or a f
 Golf club, Holding, Rifle, 2hand idle).
 
 - **Carried** (the carry handle): the hand it rides. Its pose closes that hand in every clip, unless a slot opens it.
-  **Held exactly** keeps the hand at its hold in the editor, without slipping along it. Once the editor has put the
-  hand somewhere else on it, "Held where the editor put the hand" shows, and **Use its placement** goes back.
+  **Held exactly** keeps the hand at its hold, without slipping along it. Once Motion has put the hand somewhere else on
+  it, "Held where the editor put the hand" shows, and **Use its placement** goes back.
 - **Grips**: where the other hand holds it. **+ Left hand grip** (or right) makes one where that hand is now (pause a
-  clip on a frame where it holds it); the editor also makes one when a free hand goes on the gear. **For** says which
+  clip on a frame where it holds it); Motion also makes one when a free hand is let go on the gear. **For** says which
   hand it is for (or either).
 - **Pulls**: a point of it another bone draws while a slot holds it (a bowstring). **+ Pull**, then **Drawn by** the
   bone, the hand's pose while it draws, and **Pick its point** on the piece; the strand bends there, and its weights
   (painted below the handles) say which parts follow. **Held in** lists the slots that hold it; when it is held is
-  each slot's own (a Handle hold adjustment in Motion).
+  each slot's own (a bar in the timeline's Hands track).
 
 The **Hands** panel (in Gear and Motion) shows, for the slot playing, each hand's layers bottom to top (what it
 carries, what it holds in every clip, a pull being drawn, the slot's own hand poses), which one wins at the playhead and
 why. **Held in every clip** there poses a hand whatever it carries.
 
-## 3. Open a clip in the editor (Motion step)
+## 3. Pose and key a clip (Motion step)
 
-1. Play one of the character's slots (or a library card).
-2. **Edit animation:**
-   - **Edit as it plays**: the slot with its speed, timing, hands, ground and keys. Saving bakes them in.
-   - **Edit the clip alone**: the clip without the slot's speed or adjustments. Saving keeps them on the slot.
-   - Or pause on a pose, set a length and **New clip from this frame**.
-
-The badge says what you're editing ("as it plays", "the clip alone", "a new clip") and turns to "unsaved" once you
-change something.
-
-**Posing:**
+There is no editor to open: the clip playing **is** what you edit. Click a clip in **Clips** to play it; the timeline
+docks under the viewport and the joints show on the character.
 
 | You want to | Do this |
 | --- | --- |
-| Pick a frame | Scrub the timeline or click a key's diamond. `,` and `.` step one frame; Space plays and pauses. |
-| Select a hidden joint or gear | Choose it in **Target**. |
-| Move a joint | Drag its sphere. A hand or foot reaches, its arm or leg follows. Any other joint turns its bone. |
-| Crouch or jump | Drag the diamond at the hips up or down. The legs bend, the feet stay on the floor. Shift moves it any way. |
-| Use the gizmo | Click a joint. **G** or **Move** moves it; **R** or **Rotate** turns its bone. **Local / World** picks what Rotate turns about. |
-| Take keys off | **Delete keys here** (or Delete): the selected joint's at this frame, or every joint's with nothing selected. **Clear all keys** takes them all. **Esc** deselects. |
-| Undo | **Ctrl+Z**, **Ctrl+Shift+Z** to redo: every pose change, key and grip in this edit. |
+| Pick a frame | Click or drag the ruler (Alt: between frames), type a frame, `,` `.` or `←` `→` (Shift: 10), `↑` `↓` the previous / next key. Space plays and pauses. |
+| Move a joint | Drag its dot. A hand or foot reaches, its arm or leg follows; any other joint turns its bone. Letting go keys every bone the drag moved, on that frame. |
+| Crouch or jump | Drag the diamond at the hips up or down (the feet stay). Shift: any way. |
+| Use the gizmo | Click a joint. `G` moves it, `R` turns its bone; Local / World in the toolbar. |
+| Key a joint as it is | `K`, or the **+** on its timeline row. |
+| Solve the body | **Solve body** (`B`): on the frame shown, arms are pushed out of the body, then the body is fitted to the hands on gear. It keys what it moved. |
+| Smooth the whole clip | **Naturalize**: every frame edged toward how people move, the hands kept on gear, your keys held near; it keys every frame it moved (press again to go further). |
+| Undo | `Ctrl+Z`, `Ctrl+Shift+Z` to redo: the character's own history (Activity), so every key, grip and timing change is one step. |
+| Keep it | Nothing to save: every change is in the clip already, and the game gets it on Ship. **Save as** copies the clip playing over another (Attack, Run, a trial, or a new name), replacing what that one played. |
 
-Dragging moves only what you drag; hands on gear follow by IK, and the body is never solved while you drag. When an
-arm has ended up in the body, or the body should follow the hands on gear, press **Solve body**: on the frame shown it
-pushes each arm straight out of whatever it is in, a centimetre at a time, until it is clear, then fits the body to the
-hands on gear, and keys what it moved there.
+Dragging moves only what you drag; hands on gear follow by IK, and the body is never solved while you drag ("the
+solver needs to run when you ask it to"). A joint's first key also pins it at the clip's ends, so the change eases in
+and out. **Joint limits** (in the inspector) keeps poses within the rig's range of motion. Keys sit on moments of the
+clip's own motion: change the speed, the blow fit or the timing, and they stay on the same moment.
 
-Letting go keys only what you moved, at that frame. A joint's first key also pins it at the clip's ends, so the change
-eases in and out. **Joint limits** keeps poses within the rig's range of motion. **Loop** is in the timeline. Choose
-In place and Mirror before editing: the frame your keys and grips were made against stays fixed while the editor is
-open.
+## 4. The timeline
 
-## 4. Make the gear lead
+Under the ruler, one row per track:
 
-1. **Click the gear** in the viewport (or pick it in Target). Its box opens.
-2. Turn on **Leads the body**. Its path is fitted to the body once over the whole clip (it can take a few seconds): it
-   moves a little, for example farther from the body, so the hands can hold it with room to spare. The body now
-   follows it: the hands on it follow its path, the body follows the hands, and the body keeps clear of it.
+- **Summary**: every key. **Body**: limb groups (open one with its arrow; **all** shows its unkeyed bones), opening
+  to bones; selecting a joint in the viewport opens its row. **Gear**: each piece's keys (and, once the gear area's
+  strips land, who holds it and when it shows). **Hands and pulls**: each hand pose, pull held and hand kept on a
+  handle as a bar: drag it, or its ends, to change when. **Events**: the clip's named moments. **Time**: the clip's
+  speed, retime markers (drag to speed up or slow down round them; **+** adds one at the playhead), holds (**hold**
+  adds one; drag its end to hold longer) and the hit (drag it to pick the blow; with the blow fit on, the clip is cut
+  so it still lands where the game times hits).
+- The eye on a row switches that track off (kept, not played).
+- Each key's span to the next is drawn as its easing: thin line smooth, solid linear, dashed eases, a step, or a thick
+  bar where the clip is held.
+
+| Keys | |
+| --- | --- |
+| Select | Click; Shift+click adds, Ctrl+click toggles; drag a box over empty lanes (across rows); `Ctrl+A` all; `Esc` none |
+| Move | Drag a selected key (snaps to frames; Alt: free), or type **At frame** in the inspector |
+| Stretch | Drag the pink ends of the selection on the ruler. **Stretching retimes the clip** (inspector) retimes the motion under the keys instead (retime markers) |
+| Duplicate, copy, paste | `Ctrl+D` (just after the selection), `Ctrl+C` / `Ctrl+V` (at the playhead, this clip or another) |
+| Delete | `Delete`: keys, events, hand bars, markers and holds selected |
+| Zoom | `Ctrl`+wheel (or the wheel over the ruler); Shift+wheel scrolls; `F` fits, `Shift+F` fits the selection |
+| Loop a part | Shift+drag the ruler, or `[` and `]` at the playhead; `\` clears it |
+| Preview into Idle | The **Idle** button (a clip that plays once): the clip, then the character's Idle blended in over 0.2 s as the game does |
+
+Loop, mirror and the speed menu at the right are the preview's only: nothing they change is saved.
+
+## 5. Make the gear lead
+
+1. **Click the gear** in the viewport (or its name in the Gear rows). Its box opens in the inspector.
+2. Turn on **Leads the body**. Its path is fitted to the body once over the whole clip (it can take a few seconds):
+   it moves a little so the hands hold it with room to spare. The hands on it follow its path.
 3. **Move or turn it with its gizmo** to key its path:
-   - **Move entire path** off: the move keys this frame only.
-   - **Move entire path** on: the move shifts the whole path, every frame (hold it farther to the right all through).
-   - **Moves in the hand** on: dragging it moves it where the hand holds it, and whatever holds it stays. Then **In
-     every clip** changes its placement (as Gear does); off, this frame only, tweened between keys.
+   - **Move entire path** off: a key on this frame. On: the whole path moved by it, every frame.
+   - **Moves in the hand** on: it moves where the hand holds it, whatever holds it stays. Then **In every clip**
+     changes its placement (as Gear does); off, this frame only, tweened between keys.
 
-Moving it away from the body doesn't pull the body after it: the arms reach out.
+Without leading, moving it keys its move in the hand. Moving it away from the body doesn't pull the body after it.
 
-## 5. Put the hands on it
-
-The gear's box has a row for each hand that carries it or holds it.
+## 6. Put the hands on it
 
 **Put a hand on:** drag a free hand onto the shaft and let go. Within about a tenth of the body's height it snaps on at
-the nearest spot, the fist squarely round the shaft, a hand's width from the other hand, and a grip handle is made
-there. Or pick one of its grips in that hand's handle list ("Not on it" takes the hand off; for the carrying hand, "As
-placed" goes back to the Gear placement).
+the nearest spot, the fist round the shaft, a hand's width from the other hand: a grip handle is made there (the
+character's, every clip) and this clip keeps the hand on it by IK (its bar in the Hands track; drag its ends to hold it
+only part of the clip). Or pick a grip in that hand's list in the gear's box ("Not on it" lets go).
 
-**Adjust a grip:** click the hand. Its gizmo sits where it grips, lined up with the gear.
-- **Red** runs along the gear: drag it to slide the grip up or down the shaft.
-- **Green** is up across it, **blue** is sideways.
-- **Rotate** turns the hand any way about its grip, for example to lay the palm flat on the shaft.
+**Adjust a grip:** click the hand. Its gizmo sits where it grips, lined up with the gear: **red** slides it along the
+shaft, **green** and **blue** across; **Rotate** turns the hand about its grip. Letting go moves the grip handle there,
+every frame. **Exactly here** keeps a hand on that spot; the trash button removes the grip.
 
-Letting go saves the grip handle exactly where the hand is, on every frame. This works for the carrying hand too when
-the gear leads: its carry handle moves on the gear, and the gear stays on its path. **Exactly here** keeps a hand on
-that spot (no give or slide along the shaft); the trash button removes the grip handle from the gear.
+**Hand pose:** each hand's picker sets how its fingers close on the gear. Where it is set is said beside it (the
+carry handle's for every clip, the grip's, or this clip's own).
 
-**Hand pose:** each hand's picker sets how its fingers close on the gear (Great sword fits a spear's shaft best). For
-the carrying hand it is the carry handle's pose, in every clip; for a gripping hand, its pose in this slot. For the
-carrying hand, **Opens in <slot>** sets where in this slot it lets go (a bow released); a pull's row has its pose while
-drawing and **Held in <slot>**, where in this slot the pull is held. Those windows are the slot's, so they can be
-changed only while editing a slot as it plays.
+When an arm can't reach its grip (a spear thrust out past it), press **Solve body** on that frame: the body turns and
+leans so both hands hold it, and those joints are keyed there.
 
-Handles and hand poses are the character's, for every clip, and change at once (each is in the journal). Finishing
-with unsaved edits asks first and offers to undo the handle changes made during the edit.
+## 7. Save as
 
-At extremes, such as a fast strike, a hand turns in its grip and slides along the shaft a little (at most about a
-centimetre a frame) rather than bend its wrist far. The head keeps looking where the clip looks.
-
-## 6. Naturalize, then save
-
-- **Naturalize** edges every frame toward how people move and smooths the motion. The hands stay on the gear, and the
-  frames you keyed stay near where you put them. Each press (**Naturalize again**) goes a little further; "Ready to
-  save" shows when it is done. Do it when the clip is mostly right: any change after it builds the clip again from
-  your keys. Captured stretches and crossed-arm movements keep their own elbow freedom; the solver corrects extra
-  elbow bow your edits added. **Cancel naturalization** keeps your previous edit.
-- Free fingers get a contact pass that checks the actual skinned hand, including surfaces buried inside it (how it
-  works: [rigging.md](rigging.md#the-finger-contact-pass)). Hands carrying gear, saved fists, hands held in every clip
-  and explicitly keyed fingers keep their poses. This pass can take longer on detailed hands.
-- **Save as <clip>**: choose which of the character's clips the edit becomes (Attack, Run, any the game plays, a
-  trial, or **A new clip…** by name) and save. That clip plays the edit from then on, exactly as shown, whatever it
-  played before (Undo in Activity puts it back). It starts on the clip you opened. Every save is a new clip under
-  Library → Custom (named after the character and the clip); nothing is saved over. Saved over the clip it was opened
-  on as it plays, its speed, timing and bone keys are baked in, the ground stays an adjustment, the gear's path becomes
-  its gear keys, and its hand poses and holds stay; the clip alone keeps its speed and adjustments. Saved as another
-  clip, it plays at speed 1 with its own loop and in place, standing as it stood here, with the gear's path as its
-  gear keys (and, opened as it plays, the hand poses and holds of the clip it came from).
-- **Finish** closes the editor (asking first when there are unsaved edits).
+**Save as** (the inspector): choose the clip the game plays (Attack, Run...), a trial, or **A new clip…** by name. The
+clip playing, with its timing, keys, hands on gear and events, is copied over it (what it had goes; Ctrl+Z brings it
+back), and plays from then on. Nothing new is written to the library: the clip stays the library clip it was, with your
+changes on top, exactly as the game will play it.
 
 ## Good to know
 
-- **The game holds the gear by its Gear placement, moved by the slot's gear keys.** Keys are relative to that
-  placement, so changing the placement in Gear afterwards moves the gear in every clip that keys it.
-- **Adjustments** (Motion, under each slot): ground (Auto stands it on the floor by its flat feet), blow timing, pace,
-  hand pose, handle hold and keys, each switchable, applied in a fixed order whatever their order in the list. The
-  timeline shows the playing slot's as lanes. Keys you add there (pause, drag the gizmo, let go) are the same keys the
-  editor bakes.
-- **Slow steps:** turning Leads on fits the whole clip; Naturalize solves every frame and shows progress. Raised feet
-  don't count as ground support, and a solve that loses hand targets or floor clearance leaves the previous edit in
-  place.
+- **The game holds the gear by its Gear placement, moved by the slot's gear keys** (and, leading, by its path).
+  Changing the placement in Gear afterwards moves the gear in every clip that keys it.
+- **Settings** (Motion, under the inspector): ground (Auto stands it on the floor by its flat feet), blow timing,
+  pace, hand poses and handle holds, each switchable, applied in a fixed order.
+- **What you see is what ships.** The viewer, the timeline and the game export bake a clip the one way (hands kept on
+  gear included), so the shown clip is the exported one.
+- **Slow steps:** turning Leads on fits the whole clip; Naturalize solves every frame and shows progress (Cancel stops
+  it, nothing keyed).
 - **A one-handed clip made two-handed** (Spear Thrust) turns the body side-on at the strike to get the front hand
-  forward. That's the solver keeping both hands on the spear at the clip's own speed.
-- **Reload after Rigsmith updates.** An editor already open keeps its old code: reload the page (Ctrl+Shift+R) and
-  open the clip again.
+  forward: Solve body on the strike frame.
