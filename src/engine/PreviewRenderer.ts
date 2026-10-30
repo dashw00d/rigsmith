@@ -31,6 +31,11 @@ export class PreviewRenderer {
     // Pending requests stay queued and will render with the new subject.
     const model = cloneSkinned(root)
     model.position.set(0, 0, 0)
+    // The character may be posed right now (a clip playing): the rest is read from the skeleton's inverse binds, as
+    // CharacterView.setRename does, so clips aren't retargeted onto whatever pose it was caught in.
+    const skinned: THREE.SkinnedMesh[] = []
+    model.traverse(o => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) skinned.push(o as THREE.SkinnedMesh) })
+    skinned[0]?.skeleton.pose()
     this.scene.add(model)
     this.model = model
     this.retargets = new RetargetCache(captureRest(model, o => (o as THREE.Bone).isBone === true, rename))
