@@ -101,6 +101,24 @@ describe('a character\'s collider without a body to fit', () => {
 })
 
 describe.skipIf(!have)('the body as solids', () => {
+  it('keeps the authored collision fit when a UV repair appends seam copies', async () => {
+    const { scene } = await load(YBOT)
+    scene.updateMatrixWorld(true)
+    const bones = bonesOf(scene)
+    const before = buildBodyCollider(scene, bones).shape
+    scene.traverse(o => {
+      const mesh = o as THREE.SkinnedMesh
+      if (!mesh.isSkinnedMesh) return
+      const count = mesh.geometry.attributes.position.count
+      mesh.userData.surfaceVertexCount = count
+      for (const name of ['position', 'skinIndex', 'skinWeight']) {
+        const a = mesh.geometry.attributes[name]
+        const values = Float32Array.from({ length: count * a.itemSize * 2 }, (_, i) => a.getComponent(Math.floor(i / a.itemSize) % count, i % a.itemSize))
+        mesh.geometry.setAttribute(name, new THREE.Float32BufferAttribute(values, a.itemSize))
+      }
+    })
+    expect(buildBodyCollider(scene, bones).shape).toEqual(before)
+  })
   it('fits every character\'s own mesh: sections that grow with the body, a pair list, nothing overlapping at rest', async () => {
     const dims: number[] = []
     for (const file of [YBOT, SPEARMAN, SKIRMISHER]) {

@@ -386,9 +386,13 @@ export function fitBodyShape (root: THREE.Object3D): BodyShape {
       }
       if (axis !== null) frames[i] = { axis, tip, scale }
     })
-    const step = Math.max(1, Math.floor(pos.count / SAMPLE))
+    // A UV-only atlas repair preserves the original vertex prefix and appends
+    // seam copies. Those copies must not change the fitted collision solids.
+    const original = mesh.userData.surfaceVertexCount as unknown
+    const sampleCount = typeof original === 'number' && Number.isInteger(original) && original > 0 && original <= pos.count ? original : pos.count
+    const step = Math.max(1, Math.floor(sampleCount / SAMPLE))
     const v = new THREE.Vector3()
-    for (let k = 0; k < pos.count; k += step) {
+    for (let k = 0; k < sampleCount; k += step) {
       let best = -1; let bw = 0
       for (let c = 0; c < 4; c++) { const w = sw.getComponent(k, c); if (w > bw) { bw = w; best = si.getComponent(k, c) } }
       if (best < 0 || bw < WEIGHTED) continue
