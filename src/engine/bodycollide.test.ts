@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { loadGlbFile as load } from './headless.ts'
 import { canonical, captureRest, retargetOffsets } from './retarget.ts'
 import { BoundShape, buildBodyCollider, CharacterCollider, colliderFor, shaftObstacles, type BodyShape } from './bodycollide.ts'
+import { HandContactSurface } from './surfacecontact.ts'
 import { BODY, DIM, NaturalRig, PoseModel, createBodySolver, encodeSource, restSoles, type PoseModelData } from './posespace.ts'
 
 const ROOT = path.resolve(__dirname, '../..')
@@ -106,18 +107,24 @@ describe.skipIf(!have)('the body as solids', () => {
     scene.updateMatrixWorld(true)
     const bones = bonesOf(scene)
     const before = buildBodyCollider(scene, bones).shape
+    const hand = new HandContactSurface(scene, 'Left', 1)
     scene.traverse(o => {
       const mesh = o as THREE.SkinnedMesh
       if (!mesh.isSkinnedMesh) return
       const count = mesh.geometry.attributes.position.count
       mesh.userData.surfaceVertexCount = count
+      mesh.userData.surfaceIndex = Array.from(mesh.geometry.index!.array)
       for (const name of ['position', 'skinIndex', 'skinWeight']) {
         const a = mesh.geometry.attributes[name]
         const values = Float32Array.from({ length: count * a.itemSize * 2 }, (_, i) => a.getComponent(Math.floor(i / a.itemSize) % count, i % a.itemSize))
         mesh.geometry.setAttribute(name, new THREE.Float32BufferAttribute(values, a.itemSize))
       }
+      mesh.geometry.setIndex(Array.from(mesh.geometry.index!.array, (v, i) => v + (i % 2 ? count : 0)))
     })
     expect(buildBodyCollider(scene, bones).shape).toEqual(before)
+    const repaired = new HandContactSurface(scene, 'Left', 1)
+    expect(repaired.positions).toEqual(hand.positions)
+    expect(repaired.contacts.index).toEqual(hand.contacts.index)
   })
   it('fits every character\'s own mesh: sections that grow with the body, a pair list, nothing overlapping at rest', async () => {
     const dims: number[] = []

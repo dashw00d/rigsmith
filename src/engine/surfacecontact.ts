@@ -360,7 +360,11 @@ export class HandContactSurface {
       if (mesh.skeleton.bones.some(b => !objects.has(b))) throw new Error('Hand correction needs a skeleton owned by its pose root')
       const geo = mesh.geometry, si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight
       const map = new Map<number,number>()
-      const count = geo.index?.count ?? geo.attributes.position.count
+      // Atlas seam copies are render vertices. UV-only repairs retain the
+      // authored vertex prefix and its physical topology for contact solving.
+      const saved = mesh.userData.surfaceIndex as unknown
+      const original = Array.isArray(saved) && saved.length % 3 === 0 && saved.every(v => Number.isInteger(v) && v >= 0 && v < geo.attributes.position.count) ? saved as number[] : null
+      const count = original?.length ?? geo.index?.count ?? geo.attributes.position.count
       const hand = mesh.skeleton.bones.map(b => canonical(b.name).startsWith(side+'Hand'))
       const add = (v: number): number => {
         if (map.has(v)) return map.get(v)!
@@ -374,7 +378,7 @@ export class HandContactSurface {
         return at
       }
       for (let f = 0; f < count; f += 3) {
-        const tri = [0,1,2].map(k => geo.index?.getX(f+k) ?? f+k)
+        const tri = [0,1,2].map(k => original?.[f+k] ?? geo.index?.getX(f+k) ?? f+k)
         let weight = 0
         for (const v of tri) for (let k = 0; k < 4; k++) if (hand[si.getComponent(v,k)]) weight += sw.getComponent(v,k)
         if (weight >= 1.5) index.push(...tri.map(add))
