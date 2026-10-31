@@ -319,7 +319,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   if (bodyBudget <= 0) throw new Error(`${unit}: its gear alone is over its budget of ${spec.budget} triangles`)
   const tris0 = triangles(geometry)
   const ratio = budgetRatio(tris0, bodyBudget)
-  const lod0 = ratio < 1 ? simplify(geometry, ratio, uvSeamLock(geometry)) : geometry
+  const lod0 = ratio < 1 ? simplify(geometry, ratio, uvSeamLock(geometry), true) : geometry
   const meshes: THREE.SkinnedMesh[] = []
   // (`pulled`: joints whose vertices every level keeps where they are: a pull's, so each level's strand bends as LOD0's)
   const addLevels = (base: string, geo0: THREE.BufferGeometry, mat: THREE.Material, report: number[], pulled?: Set<number>): void => {

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it } from 'vitest'
 import * as THREE from 'three'
-import { compact, ready, simplify, triangles, uvSeamLock } from './lods.ts'
+import { compact, invertedUvVertices, ready, simplify, triangles, uvSeamLock } from './lods.ts'
 
 beforeAll(async () => { await ready })
 
@@ -32,6 +32,17 @@ const has = (g: THREE.BufferGeometry, x: number, y: number): boolean => {
 }
 
 describe('lods', () => {
+  it('detects a UV fold even when the replacement triangle still faces forward in 3D', () => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0, 1,0,0, 1,1,0, 0,1,0, .9,.1,0], 3))
+    g.setAttribute('uv', new THREE.Float32BufferAttribute([0,0, 1,0, 1,1, 0,1, .1,.9], 2))
+    g.setIndex([0,1,4, 1,2,4, 2,3,4, 3,0,4])
+    expect(invertedUvVertices(g, Uint32Array.from(g.index!.array)).size).toBe(0)
+    expect([...invertedUvVertices(g, Uint32Array.from([0,4,2]))]).toEqual([0,4,2])
+    // The same fold in a mirrored chart still needs protection.
+    for (let i = 0; i < g.attributes.uv.count; i++) g.attributes.uv.setX(i, -g.attributes.uv.getX(i))
+    expect([...invertedUvVertices(g, Uint32Array.from([0,4,2]))]).toEqual([0,4,2])
+  })
   it('protects both copies of a packed UV seam without locking ordinary interior vertices', () => {
     const g = new THREE.BufferGeometry()
     g.setAttribute('position', new THREE.Float32BufferAttribute([

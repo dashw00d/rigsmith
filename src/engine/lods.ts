@@ -65,10 +65,32 @@ export function uvSeamLock (geometry: THREE.BufferGeometry): Uint8Array | undefi
   return lock
 }
 
+/** Vertices of a newly inverted UV triangle, relative to its source chart's
+ * orientation. Mirrored charts are valid; changing their winding is not. */
+export function invertedUvVertices (geometry: THREE.BufferGeometry, candidate: Uint32Array): Set<number> {
+  const uv = geometry.attributes.uv
+  const bad = new Set<number>()
+  if (uv === undefined) return bad
+  const source = geometry.index?.array ?? Uint32Array.from({ length: uv.count }, (_, i) => i)
+  const orientation = new Float64Array(uv.count)
+  const area = (a: number, b: number, c: number): number =>
+    (uv.getX(b) - uv.getX(a)) * (uv.getY(c) - uv.getY(a)) - (uv.getY(b) - uv.getY(a)) * (uv.getX(c) - uv.getX(a))
+  for (let i = 0; i < source.length; i += 3) {
+    const a = source[i], b = source[i + 1], c = source[i + 2], value = area(a, b, c)
+    orientation[a] += value; orientation[b] += value; orientation[c] += value
+  }
+  for (let i = 0; i < candidate.length; i += 3) {
+    const a = candidate[i], b = candidate[i + 1], c = candidate[i + 2]
+    const expected = Math.sign(orientation[a]) + Math.sign(orientation[b]) + Math.sign(orientation[c])
+    if (area(a, b, c) * Math.sign(expected) < -1e-12) { bad.add(a); bad.add(b); bad.add(c) }
+  }
+  return bad
+}
+
 /** Simplify a geometry to about `ratio` of its triangles, keeping UV seams and shading. `lock` (one byte per vertex)
  * marks vertices kept where they are: a pulled strand's ring, which left free collapses back into the straight strand
  * that then can't bend. Needs `ready`. */
-export function simplify (geometry: THREE.BufferGeometry, ratio: number, lock?: Uint8Array): THREE.BufferGeometry {
+export function simplify (geometry: THREE.BufferGeometry, ratio: number, lock?: Uint8Array, preserveUv = false): THREE.BufferGeometry {
   const count = geometry.attributes.position.count
   const positions = attributeArray(geometry.attributes.position)
   const source = geometry.index !== null ? Uint32Array.from(geometry.index.array) : Uint32Array.from({ length: count }, (_, i) => i)
@@ -90,7 +112,24 @@ export function simplify (geometry: THREE.BufferGeometry, ratio: number, lock?: 
     // Permissive: AI meshes are cut into many UV charts, and without it simplification stalls at the
     // seams (~45% on a Tripo character); with it, collapses may cross seams when the UV/normal error
     // allows, reaching 25% / 12% at a third of the error.
-    ;[indices] = MeshoptSimplifier.simplifyWithAttributes(source, positions, 3, attributes, stride, weights, lock ?? null, target, 1, ['Permissive'])
+    const guardedLock = preserveUv ? (lock?.slice() ?? new Uint8Array(count)) : lock
+    for (let attempt = 0; ; attempt++) {
+      ;[indices] = MeshoptSimplifier.simplifyWithAttributes(source, positions, 3, attributes, stride, weights, guardedLock ?? null, target, 1, ['Permissive'])
+      if (!preserveUv) break
+      const bad = invertedUvVertices(geometry, indices)
+      if (bad.size === 0) break
+      if (attempt >= 8) throw new Error('LOD0 simplification keeps inverting the UV atlas')
+      let added = 0
+      // Lock the source neighborhood as well: the missing interior vertex that
+      // created the bad triangle must survive the retry, not just its corners.
+      for (let i = 0; i < source.length; i += 3) {
+        const a = source[i], b = source[i + 1], c = source[i + 2]
+        if (bad.has(a) || bad.has(b) || bad.has(c)) for (const v of [a, b, c]) {
+          if (guardedLock![v] === 0) { guardedLock![v] = 1; added++ }
+        }
+      }
+      if (added === 0) throw new Error('Cannot preserve the UV atlas during LOD0 simplification')
+    }
   } else {
     ;[indices] = MeshoptSimplifier.simplify(source, positions, 3, target, 1, ['Permissive'])
   }
