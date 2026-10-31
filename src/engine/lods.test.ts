@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it } from 'vitest'
 import * as THREE from 'three'
-import { compact, ready, simplify, triangles } from './lods.ts'
+import { compact, ready, simplify, triangles, uvSeamLock } from './lods.ts'
 
 beforeAll(async () => { await ready })
 
@@ -32,6 +32,21 @@ const has = (g: THREE.BufferGeometry, x: number, y: number): boolean => {
 }
 
 describe('lods', () => {
+  it('protects both copies of a packed UV seam without locking ordinary interior vertices', () => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute([
+      -1, 0, 0, 0, 0, 0, 0, 1, 0,
+       0, 0, 0, 1, 0, 0, 0, 1, 0,
+    ], 3))
+    g.setAttribute('uv', new THREE.Float32BufferAttribute([
+      0, 0, .4, 0, .4, 1,
+      .6, 0, 1, 0, .6, 1,
+    ], 2))
+    expect(Array.from(uvSeamLock(g)!)).toEqual([0, 1, 1, 1, 0, 1])
+    g.attributes.uv.setXY(3, .4, 0)
+    g.attributes.uv.setXY(5, .4, 1)
+    expect(Array.from(uvSeamLock(g)!)).toEqual([0, 0, 0, 0, 0, 0])
+  })
   it('counts triangles of indexed and unindexed geometry', () => {
     const g = skinnedPlane()
     expect(triangles(g)).toBe(40 * 40 * 2)

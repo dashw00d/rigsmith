@@ -35,7 +35,7 @@ import { originMatrix, type GarmentEdit } from '../../src/engine/garments.ts'
 import { safeName } from '../../src/engine/geom.ts'
 import { baseColorImage, imageBytes, readGlb } from '../../src/engine/glb.ts'
 import { frameTimes } from '../../src/engine/keys.ts'
-import { compact, ready, simplify, triangles } from '../../src/engine/lods.ts'
+import { compact, ready, simplify, triangles, uvSeamLock } from '../../src/engine/lods.ts'
 import { repeat, seatMatrix } from '../../src/engine/mount.ts'
 import { garmentMatrix } from '../../src/engine/placement.ts'
 import { holdFactor } from '../../src/engine/pulls.ts'
@@ -319,7 +319,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   if (bodyBudget <= 0) throw new Error(`${unit}: its gear alone is over its budget of ${spec.budget} triangles`)
   const tris0 = triangles(geometry)
   const ratio = budgetRatio(tris0, bodyBudget)
-  const lod0 = ratio < 1 ? simplify(geometry, ratio) : geometry
+  const lod0 = ratio < 1 ? simplify(geometry, ratio, uvSeamLock(geometry)) : geometry
   const meshes: THREE.SkinnedMesh[] = []
   // (`pulled`: joints whose vertices every level keeps where they are: a pull's, so each level's strand bends as LOD0's)
   const addLevels = (base: string, geo0: THREE.BufferGeometry, mat: THREE.Material, report: number[], pulled?: Set<number>): void => {

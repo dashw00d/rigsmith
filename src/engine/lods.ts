@@ -42,6 +42,29 @@ export function compact (geometry: THREE.BufferGeometry, indices: Uint32Array): 
   return out
 }
 
+/** Lock both copies of a UV seam. A small LOD0 budget trim must not move a
+ * vertex from one packed chart into another, even when their 3D points coincide. */
+export function uvSeamLock (geometry: THREE.BufferGeometry): Uint8Array | undefined {
+  const uv = geometry.attributes.uv
+  if (uv === undefined) return undefined
+  const p = geometry.attributes.position
+  const groups = new Map<string, number[]>()
+  for (let v = 0; v < p.count; v++) {
+    const key = `${p.getX(v)},${p.getY(v)},${p.getZ(v)}`
+    const group = groups.get(key)
+    if (group === undefined) groups.set(key, [v])
+    else group.push(v)
+  }
+  const lock = new Uint8Array(p.count)
+  for (const group of groups.values()) {
+    const first = group[0]
+    if (group.some(v => uv.getX(v) !== uv.getX(first) || uv.getY(v) !== uv.getY(first))) {
+      for (const v of group) lock[v] = 1
+    }
+  }
+  return lock
+}
+
 /** Simplify a geometry to about `ratio` of its triangles, keeping UV seams and shading. `lock` (one byte per vertex)
  * marks vertices kept where they are: a pulled strand's ring, which left free collapses back into the straight strand
  * that then can't bend. Needs `ready`. */
