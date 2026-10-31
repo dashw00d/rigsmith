@@ -37,6 +37,7 @@ import { baseColorImage, imageBytes, readGlb } from '../../src/engine/glb.ts'
 import { frameTimes } from '../../src/engine/keys.ts'
 import { compact, ready, simplify, triangles, uvSeamLock } from '../../src/engine/lods.ts'
 import { repeat, seatMatrix } from '../../src/engine/mount.ts'
+import { samePhysicalSurface } from '../../src/engine/physical.ts'
 import { garmentMatrix } from '../../src/engine/placement.ts'
 import { holdFactor } from '../../src/engine/pulls.ts'
 import { pelvisName } from '../../src/engine/retarget.ts'
@@ -827,7 +828,14 @@ async function subject (unit: string, id: string, workspace: string, shared: Han
   if (c.files.rigged === undefined) throw new Error(`${unit}: ${c.name} (${id}) is not rigged`)
   const dir = path.join(workspace, 'characters', id)
   const file = path.join(dir, c.files.rigged)
-  const view = new CharacterView((await load(file)).scene)
+  let scene = (await load(file)).scene
+  const physical = path.join(dir, 'source', 'uv-physics.glb')
+  if (existsSync(physical)) {
+    const authored = (await load(physical)).scene
+    const actual = skinnedIn(scene), before = skinnedIn(authored)
+    if (actual.length === 1 && before.length === 1 && samePhysicalSurface(actual[0], before[0])) scene = authored
+  }
+  const view = new CharacterView(scene)
   if (view.rest === null) throw new Error(`${unit}: ${c.name}'s ${c.files.rigged} has no skeleton`)
   return { c, dir, file, view, ctx: { rest: view.rest, posable: view.root, clips: nodeClipSource(view.rest, workspace), fps: FPS, sharedPoses: shared, rom: nodeRom } }
 }
