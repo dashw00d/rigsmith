@@ -35,7 +35,7 @@ export class CharacterView {
   /** Node name -> canonical name for custom skeletons (see presets/skeletonMap.ts). */
   rename: ((name: string) => string | null) | undefined = undefined
   private readonly originalMaterials = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>()
-  private readonly clay = new THREE.MeshStandardMaterial({ color: 0xb9bfcc, roughness: 0.75, metalness: 0 })
+  private readonly clay = new THREE.MeshStandardMaterial({ color: 0xb9bfcc, roughness: 0.75, metalness: 0, side: THREE.DoubleSide })
   private weightMaterial: THREE.MeshLambertMaterial | null = null
   private skeletonLines: THREE.LineSegments | null = null
   private offSkeletonLines: (() => void) | null = null
@@ -56,6 +56,10 @@ export class CharacterView {
         mesh.receiveShadow = true
         mesh.frustumCulled = false
         this.meshes.push(mesh)
+        // (both sides drawn: the generated robes and capes are closed shells, and a hem pulled to follow a leg folds its
+        // triangles over; drawn one-sided they vanish and show the shell's unlit inside, black shards. The back of a fold
+        // shows the cloth's own texture, its normal turned to face the camera)
+        for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) m.side = THREE.DoubleSide
         this.originalMaterials.set(mesh, mesh.material)
         if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) this.skinned.push(mesh as THREE.SkinnedMesh)
         if (mesh.geometry.attributes.color !== undefined) this.hadVertexColors.add(mesh.geometry)
@@ -127,7 +131,7 @@ export class CharacterView {
   }
 
   private weightMat (mesh: THREE.Mesh): THREE.Material {
-    this.weightMaterial ??= new THREE.MeshLambertMaterial({ vertexColors: true, toneMapped: false })
+    this.weightMaterial ??= new THREE.MeshLambertMaterial({ vertexColors: true, toneMapped: false, side: THREE.DoubleSide })
     this.writeWeightColors(mesh)
     return this.weightMaterial
   }
