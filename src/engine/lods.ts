@@ -3,6 +3,7 @@
 // vertices kept.
 import * as THREE from 'three'
 import { MeshoptSimplifier } from 'meshoptimizer'
+import { copyMorphState } from './morph-state.ts'
 
 /** Resolves once the simplifier has loaded: await it before the first simplify. */
 export const ready: Promise<void> = MeshoptSimplifier.ready
@@ -17,7 +18,7 @@ function attributeArray (attr: THREE.BufferAttribute | THREE.InterleavedBufferAt
   return out
 }
 
-/** Keep only the vertices `indices` uses; every attribute (skin included) follows. */
+/** Keep only the vertices `indices` uses; skin and every morph target follow the same vertex map. */
 export function compact (geometry: THREE.BufferGeometry, indices: Uint32Array): THREE.BufferGeometry {
   const remap = new Int32Array(geometry.attributes.position.count).fill(-1)
   const order: number[] = []
@@ -28,17 +29,34 @@ export function compact (geometry: THREE.BufferGeometry, indices: Uint32Array): 
     index[i] = remap[v]
   }
   const out = new THREE.BufferGeometry()
-  for (const [name, attr] of Object.entries(geometry.attributes)) {
+  const copyAttribute = (attr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute): THREE.BufferAttribute => {
     const size = attr.itemSize
     const source = attr as THREE.BufferAttribute
     const Ctor = (source.array?.constructor ?? Float32Array) as new (n: number) => THREE.TypedArray
     const array = new Ctor(order.length * size)
-    for (let i = 0; i < order.length; i++) for (let k = 0; k < size; k++) array[i * size + k] = attr.getComponent(order[i], k)
-    out.setAttribute(name, new THREE.BufferAttribute(array, size, attr.normalized))
+    const copied = source instanceof THREE.Float16BufferAttribute
+      ? new THREE.Float16BufferAttribute(array as Uint16Array, size, attr.normalized)
+      : new THREE.BufferAttribute(array, size, attr.normalized)
+    // getComponent decodes normalized integer attributes; setComponent encodes them again. Directly writing the
+    // decoded fraction into an integer array would erase quantized weights, colors and correction attributes.
+    for (let i = 0; i < order.length; i++) for (let k = 0; k < size; k++) copied.setComponent(i, k, attr.getComponent(order[i], k))
+    copied.name = source.name
+    copied.gpuType = source.gpuType ?? THREE.FloatType
+    return copied
   }
+  for (const [name, attr] of Object.entries(geometry.attributes)) out.setAttribute(name, copyAttribute(attr))
+  const morphs = out.morphAttributes as Record<string, THREE.BufferAttribute[]>
+  for (const [name, targets] of Object.entries(geometry.morphAttributes)) morphs[name] = targets.map(copyAttribute)
+  out.morphTargetsRelative = geometry.morphTargetsRelative
+  copyMorphState(geometry, out)
   out.setIndex(new THREE.BufferAttribute(order.length > 65535 ? index : Uint16Array.from(index), 1))
   out.computeBoundingBox()
-  out.computeBoundingSphere()
+  if ((out.morphAttributes.position?.length ?? 0) > 0) {
+    out.boundingBox!.getBoundingSphere(out.boundingSphere = new THREE.Sphere())
+    // Round outward: sqrt(radiusSquared) can otherwise put a box corner just outside its own sphere.
+    out.boundingSphere.radius *= 1 + 4 * Number.EPSILON
+  }
+  else out.computeBoundingSphere()
   return out
 }
 

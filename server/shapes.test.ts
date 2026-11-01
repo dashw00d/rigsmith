@@ -6,7 +6,7 @@ import path from 'node:path'
 
 const state = vi.hoisted(() => ({ dir: '' }))
 vi.mock('./workspace.ts', () => ({ characterDir: () => state.dir }))
-import { dropShapeEdits, keepShapeEdits, shapeEdits, writeShapes, type ShapeEdit } from './shapes.ts'
+import { dropShapeEdits, keepShapeEdits, shapeEdits, shapeReferences, writeShapes, type ShapeEdit } from './shapes.ts'
 
 beforeEach(async () => { state.dir = await mkdtemp(path.join(os.tmpdir(), 'rigsmith-shapes-')) })
 afterEach(async () => { await rm(state.dir, { recursive: true, force: true }) })
@@ -67,5 +67,114 @@ describe('lifted skin', () => {
     expect(await dropShapeEdits('x', file('rigged.glb'))).toBe(1)
     expect(read(await readFile(file('rigged.glb'))).points[1][2]).toBeCloseTo(0.1)
     expect(await shapeEdits('x')).toEqual([])
+  })
+
+  it('resolves and forgets lifts on reordered vertices and every split seam copy', async () => {
+    const edit: ShapeEdit = { mesh: 0, vertex: 0, from: [0, 1, .1], to: [0, 1, .25] }
+    await keepShapeEdits('x', [edit])
+    await writeFile(file('fresh.glb'), glb([[.5, .5, 0], [0, 1, .1], [0, 0, 0], [0, 1, .1]]))
+    await writeShapes(file('fresh.glb'), [edit])
+    const before = await readFile(file('fresh.glb'))
+    const resolved = await shapeReferences('x', file('fresh.glb'))
+    expect(resolved.map(e => e.vertex)).toEqual([1, 3])
+    expect(resolved.every(e => e.from[2] === .1 && e.to[2] === .25)).toBe(true)
+    expect(await readFile(file('fresh.glb'))).toEqual(before)
+    expect(await shapeEdits('x')).toEqual([edit])
+    expect(await dropShapeEdits('x', file('fresh.glb'))).toBe(2)
+    const restored = read(await readFile(file('fresh.glb'))).points
+    expect(restored[0]).toEqual([.5, .5, 0])
+    expect(restored[1][2]).toBeCloseTo(.1)
+    expect(restored[3][2]).toBeCloseTo(.1)
+  })
+
+  it('keeps the right origins and latest destinations when new vertex indices reuse older ones', async () => {
+    await writeFile(file('shape_edits.json'), JSON.stringify({
+      '0:0': { mesh: 0, vertex: 0, from: [0, 1, .1], to: [0, 1, .2] },
+      '0:1': { mesh: 0, vertex: 1, from: [1, 1, .1], to: [1, 1, .2] },
+    }))
+    await keepShapeEdits('x', [
+      { mesh: 0, vertex: 1, from: [0, 1, .1], to: [0, 1, .3] },
+      { mesh: 0, vertex: 0, from: [1, 1, .1], to: [1, 1, .4] },
+    ], [
+      { mesh: 0, vertex: 1, from: [0, 1, .1], to: [0, 1, .2] },
+      { mesh: 0, vertex: 0, from: [1, 1, .1], to: [1, 1, .2] },
+    ])
+    const kept = await shapeEdits('x')
+    expect(kept).toHaveLength(2)
+    expect(kept.find(e => e.from[0] === 0)).toEqual({ mesh: 0, vertex: 1, from: [0, 1, .1], to: [0, 1, .3] })
+    expect(kept.find(e => e.from[0] === 1)).toEqual({ mesh: 0, vertex: 0, from: [1, 1, .1], to: [1, 1, .4] })
+    await writeFile(file('fresh.glb'), glb([[1, 1, .1], [0, 1, .1], [0, 0, 0]]))
+    expect(await writeShapes(file('fresh.glb'), kept)).toBe(2)
+    const current = read(await readFile(file('fresh.glb'))).points
+    expect(current[0][2]).toBeCloseTo(.4)
+    expect(current[1][2]).toBeCloseTo(.3)
+    expect((await shapeReferences('x', file('fresh.glb'))).map(e => e.vertex)).toEqual([0, 1])
+  })
+
+  it('does not infer another layer\'s origin merely because its position coincides with a saved destination', async () => {
+    await keepShapeEdits('x', [
+      { mesh: 0, vertex: 0, from: [0, 1, .1], to: [0, 1, .25] },
+    ])
+    await writeFile(file('rigged.glb'), glb([[0, 1, .25], [0, 1, .25], [0, 0, 0]]))
+    expect((await shapeReferences('x', file('rigged.glb'))).map(e => e.vertex)).toEqual([0])
+    await writeShapes(file('rigged.glb'), [{ mesh: 0, vertex: 1, from: [0, 1, .25], to: [0, 1, .3] }], true, await shapeEdits('x'))
+    await keepShapeEdits('x', [{ mesh: 0, vertex: 1, from: [0, 1, .25], to: [0, 1, .3] }])
+    const references = await shapeReferences('x', file('rigged.glb'))
+    expect(references.find(e => e.vertex === 0)?.from[2]).toBe(.1)
+    expect(references.find(e => e.vertex === 1)?.from[2]).toBe(.25)
+    expect(await shapeEdits('x')).toHaveLength(2)
+  })
+
+  it('does not apply historical-index fallback to an unrelated vertex after re-rig', async () => {
+    const edit: ShapeEdit = { mesh: 0, vertex: 0, from: [0, 1, .1], to: [0, 1, .2] }
+    await keepShapeEdits('x', [edit])
+    await writeFile(file('rigged.glb'), glb([[0, 1, .2], [0, 1, .1], [0, 0, 0]]))
+    await writeShapes(file('rigged.glb'), [edit])
+    expect((await shapeReferences('x', file('rigged.glb'))).map(e => e.vertex)).toEqual([1])
+    expect(await dropShapeEdits('x', file('rigged.glb'))).toBe(1)
+    expect(read(await readFile(file('rigged.glb'))).points[0][2]).toBeCloseTo(.2)
+  })
+
+  it('does not seed old addresses over actual re-rig references during a later save', async () => {
+    const a: ShapeEdit = { mesh: 0, vertex: 0, from: [0, 1, .1], to: [0, 1, .3] }
+    const b: ShapeEdit = { mesh: 0, vertex: 1, from: [0, 1, .2], to: [0, 1, .3] }
+    await keepShapeEdits('x', [a, b])
+    await writeFile(file('rigged.glb'), glb([[0, 1, .2], [0, 1, .1], [1, 1, .1], [0, 0, 0]]))
+    await writeShapes(file('rigged.glb'), [a, b])
+    const references = await shapeReferences('x', file('rigged.glb'))
+    const edit: ShapeEdit = { mesh: 0, vertex: 2, from: [1, 1, .1], to: [1, 1, .2] }
+    await writeShapes(file('rigged.glb'), [edit], true, await shapeEdits('x'))
+    await keepShapeEdits('x', [edit], references)
+    const after = await shapeReferences('x', file('rigged.glb'))
+    expect(after.find(e => e.vertex === 0)?.from).toEqual(b.from)
+    expect(after.find(e => e.vertex === 1)?.from).toEqual(a.from)
+  })
+
+  it('retains distinct legacy destination branches from coincident source coordinates', async () => {
+    const a: ShapeEdit = { mesh: 0, vertex: 0, from: [0, 1, .1], to: [0, 1, .2] }
+    const b: ShapeEdit = { mesh: 0, vertex: 1, from: [0, 1, .1], to: [0, 1, .3] }
+    await writeFile(file('shape_edits.json'), JSON.stringify({ '0:0': a, '0:1': b }))
+    await writeFile(file('rigged.glb'), glb([a.to, b.to, [1, 1, .1], [0, 0, 0]]))
+    const references = await shapeReferences('x', file('rigged.glb'))
+    const edit: ShapeEdit = { mesh: 0, vertex: 2, from: [1, 1, .1], to: [1, 1, .2] }
+    await writeShapes(file('rigged.glb'), [edit], true, await shapeEdits('x'))
+    await keepShapeEdits('x', [edit], references)
+    expect((await shapeReferences('x', file('rigged.glb'))).map(e => e.vertex)).toEqual([0, 1, 2])
+    expect(await dropShapeEdits('x', file('rigged.glb'))).toBe(3)
+    const restored = read(await readFile(file('rigged.glb'))).points
+    expect(restored[0][2]).toBeCloseTo(.1)
+    expect(restored[1][2]).toBeCloseTo(.1)
+  })
+
+  it('leaves ambiguous coincident-source branches unassigned on a fresh rig', async () => {
+    const edits: ShapeEdit[] = [
+      { mesh: 0, vertex: 0, from: [0, 1, .1], to: [0, 1, .2] },
+      { mesh: 0, vertex: 1, from: [0, 1, .1], to: [0, 1, .3] },
+    ]
+    await keepShapeEdits('x', edits)
+    await writeFile(file('rigged.glb'), glb([[0, 1, .1], [0, 1, .2], [0, 0, 0]]))
+    expect(await writeShapes(file('rigged.glb'), edits)).toBe(0)
+    expect(await shapeReferences('x', file('rigged.glb'))).toEqual([])
+    expect(await shapeEdits('x')).toHaveLength(2)
   })
 })

@@ -7,6 +7,7 @@ import type { UnitSpec } from '../model/unit.ts'
 import type { CatalogStatus, Clip } from '../../server/library.ts'
 import type { SavedEdit } from '../../server/clipedits.ts'
 import type { GameStatus, UnitBuildView } from '../../server/game.ts'
+import type { ShapeEdit } from '../engine/weightpaint.ts'
 
 export type * from '../model/types.ts'
 export type * from '../model/unit.ts'
@@ -165,8 +166,10 @@ export const api = {
   // ---- skin ----
   rig: async (id: string) => await call<Job>('POST', `${of(id)}/rig`),
   saveWeights: async (id: string, edits: WeightEdit[]) => await call<Job>('PUT', `${of(id)}/weights`, { edits }),
+  savePainting: async (id: string, edits: WeightEdit[], lifts: ShapeEdit[], revision?: number) => await call<Job>('PUT', `${of(id)}/painting`, { edits, lifts, revision }),
   forgetWeights: async (id: string) => await call<Job>('DELETE', `${of(id)}/weights`),
-  saveShape: async (id: string, edits: Array<{ mesh: number, vertex: number, from: [number, number, number], to: [number, number, number] }>) => await call<Job>('PUT', `${of(id)}/shape`, { edits }),
+  shapeEdits: async (id: string) => await call<ShapeEdit[]>('GET', `${of(id)}/shape`),
+  saveShape: async (id: string, edits: ShapeEdit[]) => await call<Job>('PUT', `${of(id)}/shape`, { edits }),
   forgetShape: async (id: string) => await call<Job>('DELETE', `${of(id)}/shape`),
 
   // ---- gear ----

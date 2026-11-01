@@ -33,6 +33,8 @@ import { CharacterView } from '../../src/engine/CharacterView.ts'
 import { budgetOf, budgetRatio, clipProblem, DEFAULT_LODS, gearLeftOut, HIT_AT, meshNameOf, NO_LOD_BELOW } from '../../src/engine/contract.ts'
 import { originMatrix, type GarmentEdit } from '../../src/engine/garments.ts'
 import { safeName } from '../../src/engine/geom.ts'
+import { applyGeometryMatrix } from '../../src/engine/geometry-transform.ts'
+import { cloneMorphGeometry, mergeMorphState, restoreMorphState } from '../../src/engine/morph-state.ts'
 import { baseColorImage, imageBytes, readGlb } from '../../src/engine/glb.ts'
 import { frameTimes } from '../../src/engine/keys.ts'
 import { compact, ready, simplify, triangles, uvSeamLock } from '../../src/engine/lods.ts'
@@ -134,7 +136,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   const hips = skeleton.bones.find(b => b.name === 'Hips')
   if (hips === undefined) throw new Error(`${unit}: no Hips bone`)
   if (!(hips.parent?.matrixWorld ?? new THREE.Matrix4()).equals(new THREE.Matrix4())) throw new Error(`${unit}: the skeleton's parent is transformed; not supported`)
-  const geometry = skinned[0].geometry.clone().applyMatrix4(skinned[0].matrixWorld)
+  const geometry = applyGeometryMatrix(cloneMorphGeometry(skinned[0]), skinned[0].matrixWorld)
   geometry.computeBoundingBox()
   const floor = geometry.boundingBox!.min.y
   const s = spec.height / (geometry.boundingBox!.max.y - floor)
@@ -176,7 +178,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   out.updateMatrixWorld(true)
   const bones = [...skeleton.bones, root, ...compBones]
   const material = new THREE.MeshStandardMaterial({ name: 'Main' })
-  geometry.applyMatrix4(toGame)
+  applyGeometryMatrix(geometry, toGame)
   for (const name of Object.keys(geometry.attributes)) if (!ATTRIBUTES.includes(name)) geometry.deleteAttribute(name)
 
   // Its gear, each piece placed as Rigsmith places it (its placement in the character's rest space), then into game
@@ -218,7 +220,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
       const model = await gearModel(file, g, garmentMatrix(a.place), material)
       if (model.geos.length === 0) throw new Error(`${unit}: ${g.name}: no mesh in ${g.model}`)
       const skin = gearSkin(me.view, g, model.geos, a.kind === 'skin' ? editsOf(g) : [], model.animations, bones.map(b => b.name))
-      model.geos.forEach((geo, i) => setSkin(geo.applyMatrix4(toGame), skin.skins[i].indices, skin.skins[i].weights))
+      model.geos.forEach((geo, i) => setSkin(applyGeometryMatrix(geo, toGame), skin.skins[i].indices, skin.skins[i].weights))
       if (skin.mechanism !== undefined) warn(`${g.name}: its own animation ${skin.mechanism} isn't exported: it rides ${skin.lead} still`)
       parts.push({ geometry: merged(model.geos, unit, g), material: model.mats.length === 1 ? model.mats[0] : model.mats, name })
       gearReport[name] = {
@@ -283,7 +285,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
       mats = model.mats
       const skin = pullSkin(g, model.geos, editsOf(g), joints)
       painted = skin.painted
-      skin.geometries.forEach((x, i) => setSkin(x.applyMatrix4(placed), skin.skins[i].indices, skin.skins[i].weights))
+      skin.geometries.forEach((x, i) => setSkin(applyGeometryMatrix(x, placed), skin.skins[i].indices, skin.skins[i].weights))
       geo = merged(skin.geometries, unit, g)
     }
     parts.push({ geometry: geo, material: mats.length === 1 ? mats[0] : mats, name, pulled: pulls.length > 0 ? new Set(pullBones.filter(pb => pb.gear === g).map(pb => bones.indexOf(pb.bone))) : undefined })
@@ -309,8 +311,8 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     seatBone.add(hips)
     local.decompose(hips.position, hips.quaternion, hips.scale)
     hips.scale.set(1, 1, 1)
-    geometry.applyMatrix4(W)
-    for (const part of parts) part.geometry.applyMatrix4(W)
+    applyGeometryMatrix(geometry, W)
+    for (const part of parts) applyGeometryMatrix(part.geometry, W)
     out.updateMatrixWorld(true)
   }
 
@@ -371,7 +373,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   mkdirSync(srcDir, { recursive: true })
   let compReport: BuiltCompanion | undefined
   if (comp !== null) {
-    const geo = comp.geometry.clone().applyMatrix4(place)
+    const geo = applyGeometryMatrix(comp.geometry.clone(), place)
     for (const name of Object.keys(geo.attributes)) if (!ATTRIBUTES.includes(name)) geo.deleteAttribute(name)
     const offset = skeleton.bones.length + 1
     const si = geo.attributes.skinIndex
@@ -405,7 +407,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
         gs.traverse(o => {
           const m = o as THREE.Mesh
           if (m.isMesh !== true) return
-          const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(at, m.matrixWorld))
+          const geo = applyGeometryMatrix(cloneMorphGeometry(m), new THREE.Matrix4().multiplyMatrices(at, m.matrixWorld))
           for (const name of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv'].includes(name)) geo.deleteAttribute(name)
           geos.push(geo)
           const loaded = Array.isArray(m.material) ? m.material[0] : m.material
@@ -413,6 +415,8 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
         })
         if (geos.length === 0) continue
         const geo = geos.length === 1 ? geos[0] : mergeGeometries(geos, true)
+        if (geo === null) throw new Error(`${unit}: ${g.name}: its meshes can't be joined (their attributes differ)`)
+        mergeMorphState(geos, geo)
         const n = geo.attributes.position.count
         const si = new Uint16Array(n * 4); const sw = new Float32Array(n * 4)
         for (let i = 0; i < n; i++) { si[i * 4] = index; sw[i * 4] = 1 }
@@ -850,7 +854,7 @@ async function companionOf (unit: string, spec: CompanionSpec, workspace: string
   const tops = mesh.skeleton.bones.filter(b => b.parent === null || !isBone(b.parent))
   if (tops.length !== 1) throw new Error(`${unit}: companion ${spec.character}: ${tops.length} top bones (${tops.map(b => b.name).join(', ')})`)
   if (!mesh.skeleton.bones.some(b => b.name === pelvisName(sub.ctx.rest))) throw new Error(`${unit}: companion ${spec.character}: no pelvis`)
-  const geometry = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld)
+  const geometry = applyGeometryMatrix(cloneMorphGeometry(mesh), mesh.matrixWorld)
   geometry.computeBoundingBox()
   const floor = geometry.boundingBox!.min.y
   return { ...sub, spec, mesh, top: tops[0], geometry, floor, s: spec.height / (geometry.boundingBox!.max.y - floor) }
@@ -953,7 +957,7 @@ async function gearModel (file: string, g: Pick<Gear, 'origin'>, placement: THRE
   scene.traverse(o => {
     const m = o as THREE.Mesh
     if (m.isMesh !== true) return
-    const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(own, m.matrixWorld))
+    const geo = applyGeometryMatrix(cloneMorphGeometry(m), new THREE.Matrix4().multiplyMatrices(own, m.matrixWorld))
     for (const name of Object.keys(geo.attributes)) if (!['position', 'normal', 'uv'].includes(name)) geo.deleteAttribute(name)
     geos.push(geo)
     const loaded = Array.isArray(m.material) ? m.material[0] : m.material
@@ -998,13 +1002,14 @@ function setSkin (geo: THREE.BufferGeometry, indices: Uint16Array, weights: Floa
 function merged (geos: THREE.BufferGeometry[], unit: string, g: Gear): THREE.BufferGeometry {
   const geo = geos.length === 1 ? geos[0] : mergeGeometries(geos, true)
   if (geo === null) throw new Error(`${unit}: ${g.name}: its meshes can't be joined (their attributes differ)`)
+  mergeMorphState(geos, geo)
   return geo
 }
 
 /** A mesh of the unit, tangents computed where it can have them, added to `meshes` (bound to the skeleton later). */
 function skinnedMesh (name: string, geo: THREE.BufferGeometry, mat: THREE.Material | THREE.Material[], meshes: THREE.SkinnedMesh[]): THREE.SkinnedMesh {
   if (geo.attributes.uv !== undefined && geo.index !== null) geo.computeTangents()
-  const mesh = new THREE.SkinnedMesh(geo, mat)
+  const mesh = restoreMorphState(new THREE.SkinnedMesh(geo, mat))
   mesh.name = name
   meshes.push(mesh)
   return mesh

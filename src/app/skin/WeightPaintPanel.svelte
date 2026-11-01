@@ -4,7 +4,7 @@
   // src/engine/weightpaint.ts. The body's painting goes into the rig and is put back after every re-rig; a gear
   // piece's is kept beside it.
   import { onDestroy } from 'svelte'
-  import { Anchor, ArrowUpFromLine, Brush, Eraser, FlipHorizontal2, Layers, Lock, Paintbrush, RotateCcw, Save, Sparkles, Waves } from '@lucide/svelte'
+  import { Anchor, ArrowUpFromLine, Brush, Eraser, FlipHorizontal2, Layers, Lock, Paintbrush, RotateCcw, Save, Shirt, Sparkles, Waves } from '@lucide/svelte'
   import type { Character, Gear } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
   import { paint, paintableGear, type PaintTool } from '../../state/paint.svelte.ts'
@@ -40,11 +40,13 @@
 
   const tools: Array<{ id: PaintTool, label: string, hint: string }> = [
     { id: 'area', label: 'Heal', hint: 'Mark the problem skin (Alt to unmark), then Heal: its weights refilled smoothly from the good skin round it (skin pulled by a wrong bone goes with what surrounds it)' },
+    { id: 'protect', label: 'Protect', hint: 'Pin skin before painting nearby cloth. Drag to protect; Alt-drag to remove protection. Protected points and their shared seams keep their weights and Lift positions, including when Mirror is on. Protection is temporary and clears when the painted model reloads' },
     { id: 'add', label: 'Add', hint: 'Give the brushed skin more of the bone' },
     { id: 'remove', label: 'Remove', hint: 'Take the bone off the brushed skin (its share goes to its other bones)' },
     { id: 'smooth', label: 'Smooth', hint: "Blend the brushed skin's weights with its neighbours'" },
-    { id: 'follow', label: 'Follow', hint: 'Make the brushed skin move with what is under it: the skin it covers (the legs under a coat), or the nearest bones where nothing is close under it. For hems and cloth the body should push' },
-    { id: 'lift', label: 'Lift', hint: 'Push the brushed skin out off the skin under it, to the gap below: a cape off the body it follows, so the body and the lining stop showing through. Its inner side goes out with it. Works on the body as it stands (pause on the frame that shows it); saved with the weights and kept through re-rigs' },
+    { id: 'follow', label: 'Follow', hint: 'Take the weights of the covered skin, or nearby bones for a free hem. Cloth layers beneath the clicked surface share the target and brush falloff; each blends from its own starting weights by Strength. The body keeps its weights. Changes are limited where they would fold, collapse or cross neighbouring layers in the playing clip' },
+    { id: 'cloth', label: 'Cloth', hint: 'Weight a skirt or robe from the hips into its own side\'s leg, with some shin below the knee and no arms. Shared pulls from both legs stay on the hips so the middle is not crushed. Layers share the target; Strength and falloff apply to each. Changes that would fold, collapse or cross neighbouring layers in the playing clip are limited' },
+    { id: 'lift', label: 'Lift', hint: 'Clear the actual nearby body surface on the paused pose. Gap goes between the body and innermost cloth; outer layers retain their starting separation. Layers already clear of their required gap stay put, and the body stays fixed. Lifts that would tear, spike or cross neighbouring cloth layers in the playing clip are limited. Saved as a shape change, so check standing and bent poses before saving' },
     { id: 'rigid', label: 'Bone', hint: 'Paint the brushed skin onto the one bone under the brush, dropping pulls from cloth and bones around it. The bone is the one that already moves most of the skin where you start the stroke (shown below as you hover): start on the face for the head. For a face a hood drags, buckles, plates' },
   ]
   const boneName = (name: string | null): string => paint.bones.find(b => b.name === name)?.label ?? name ?? '–'
@@ -57,6 +59,15 @@
   async function forgetLifts (): Promise<void> {
     const ok = await app.confirm({ title: 'Forget the lifts?', body: 'Every vertex the Lift brush moved goes back where it was.', confirm: 'Forget', danger: true })
     if (ok && await paint.forgetLifts(character)) app.toast('ok', 'Lifts forgotten: the skin is back where it was')
+  }
+  async function startOver (): Promise<void> {
+    const ok = await app.confirm({
+      title: `Start ${character.name}'s weights over?`,
+      body: 'Every painted weight and every lift is dropped and the body is rigged afresh now, so its weights are the auto-rig\'s again. Clips, gear, hands and sounds stay. Robe or tabard weights painted by a script go too.',
+      confirm: 'Start over',
+      danger: true,
+    })
+    if (ok && await paint.startOver(character)) app.toast('ok', 'Started over: the body is rigged afresh, nothing painted')
   }
   async function forget (): Promise<void> {
     const ok = await app.confirm({
@@ -89,11 +100,12 @@
     {#if paint.waiting}
       <p class="faint small">Waiting for {what} to be on stage…</p>
     {:else}
-      <p class="faint small">Pause a test clip on the frame that shows the problem, then paint on {gear === undefined ? 'the body' : gear.name}. Left-drag on it paints; off it the camera turns.{gear !== undefined && !pulled ? ' The body under it is there for Follow to take from, not painted.' : ''}</p>
+      <p class="faint small">Paint on {gear === undefined ? 'the body' : gear.name}; painting pauses playback on that pose. Left-drag paints; off the skin, the camera turns.{gear !== undefined && !pulled ? ' The body under it supplies Follow and keeps its own weights.' : ''}</p>
+      <p class="faint small">The current pose is checked while you drag. Release to check the playing clip and limit unsafe changes.</p>
       <div class="tools">
         {#each (gear === undefined ? tools : tools.filter(t => t.id !== 'lift')) as t (t.id)}
-          <button class:on={paint.tool === t.id} onclick={() => { paint.tool = t.id; paint.refreshView() }} use:tooltip={t.hint}>
-            {#if t.id === 'area'}<Sparkles size={12} />{:else if t.id === 'add'}<Brush size={12} />{:else if t.id === 'remove'}<Eraser size={12} />{:else if t.id === 'follow'}<Layers size={12} />{:else if t.id === 'rigid'}<Anchor size={12} />{:else if t.id === 'lift'}<ArrowUpFromLine size={12} />{:else}<Waves size={12} />{/if} {t.label}
+          <button class:on={paint.tool === t.id} disabled={paint.busy || paint.stroking} onclick={() => { paint.tool = t.id; paint.refreshView() }} use:tooltip={t.hint}>
+            {#if t.id === 'area'}<Sparkles size={12} />{:else if t.id === 'protect'}<Lock size={12} />{:else if t.id === 'add'}<Brush size={12} />{:else if t.id === 'remove'}<Eraser size={12} />{:else if t.id === 'follow'}<Layers size={12} />{:else if t.id === 'cloth'}<Shirt size={12} />{:else if t.id === 'rigid'}<Anchor size={12} />{:else if t.id === 'lift'}<ArrowUpFromLine size={12} />{:else}<Waves size={12} />{/if} {t.label}
           </button>
         {/each}
       </div>
@@ -102,33 +114,46 @@
       {/if}
       {#if paint.tool === 'add' || paint.tool === 'remove'}
         <Field label="Bone">
-          <Select size="sm" width="190px" options={paint.bones.map(b => ({ value: b.name, label: b.label }))} value={paint.bone}
+          <Select size="sm" width="190px" disabled={paint.busy || paint.stroking} options={paint.bones.map(b => ({ value: b.name, label: b.label }))} value={paint.bone}
             onchange={(v) => { paint.bone = v; paint.refreshView() }} />
         </Field>
       {/if}
       {#if !pulled}
-        <Toggle label="Mirror left and right" checked={paint.mirror} onchange={(on: boolean) => paint.setMirror(on)} />
+        <Toggle label="Mirror left and right" disabled={paint.busy || paint.stroking} checked={paint.mirror} onchange={(on: boolean) => paint.setMirror(on)} />
       {/if}
       {#if paint.tool === 'lift'}
-        <label class="field" use:tooltip={'How far clear of the skin under it the brushed skin ends (a share of the height: 1% is about 2 cm on a man)'}>Gap <input type="range" min="0.002" max="0.04" step="0.001" bind:value={paint.gap} /></label>
+        <label class="field" use:tooltip={'Clearance from the body to the innermost cloth (a share of the height: 1% is about 2 cm on a man). Outer layers keep their starting separation'}>Gap <input type="range" min="0.002" max="0.04" step="0.001" disabled={paint.busy || paint.stroking} bind:value={paint.gap} /></label>
+        <p class="faint small">A lift changes the shape in every pose. Check standing and bent poses before saving.</p>
       {/if}
-      <label class="field">Brush <input type="range" min="0.01" max="0.15" step="0.005" bind:value={paint.radius} /></label>
-      {#if paint.tool !== 'area'}<label class="field">Strength <input type="range" min="0.05" max="1" step="0.05" bind:value={paint.strength} /></label>{/if}
+      <label class="field">Brush <input type="range" min="0.01" max="0.15" step="0.005" disabled={paint.busy || paint.stroking} bind:value={paint.radius} /></label>
+      {#if paint.tool !== 'area' && paint.tool !== 'protect'}<label class="field" use:tooltip={'The maximum change in one stroke. Overlapping dabs share this strength; lift the pointer and paint again to build more'}>Strength <input type="range" min="0.05" max="1" step="0.05" disabled={paint.busy || paint.stroking} bind:value={paint.strength} /></label>{/if}
+      {#if paint.tool === 'protect' || paint.protectedCount > 0}
+        <p class="faint small">Cyan points are protected from weight brushes and Lift. Alt-drag with Protect to unpin them. Protection clears when the painted model reloads.</p>
+        <Button size="sm" variant="ghost" disabled={paint.protectedCount === 0 || paint.busy || paint.stroking} onclick={() => paint.clearProtection()}>Clear protection {paint.protectedCount > 0 ? `(${paint.protectedCount})` : ''}</Button>
+      {/if}
+      {#if paint.tool === 'cloth' || paint.tool === 'follow' || paint.tool === 'lift'}
+        <p class="faint small">Where clothing joins the legs, use Protect on the leg region first to pin their shared points.</p>
+      {/if}
+      {#if paint.limited > 0}<p class="faint small">Some changes were limited {paint.contactLimited > 0 ? 'at body or cloth contacts in the tested poses' : 'to preserve the surface'}.</p>{/if}
+      {#if paint.validating}
+        <p class="faint small" role="status">Checking the clip…</p>
+        <Button size="sm" variant="ghost" onclick={() => paint.cancelStroke()}>Cancel this stroke</Button>
+      {/if}
       {#if paint.tool === 'area'}
         <div class="row">
-          <Button size="sm" variant="primary" disabled={paint.marked === 0 || paint.busy} onclick={() => paint.heal()}><Sparkles size={13} /> Heal {paint.marked > 0 ? `${paint.marked} points` : 'the area'}</Button>
-          <Button size="sm" variant="ghost" disabled={paint.marked === 0} onclick={() => paint.clearArea()}>Clear</Button>
+          <Button size="sm" variant="primary" disabled={paint.marked === 0 || paint.busy || paint.stroking} onclick={() => paint.heal()}><Sparkles size={13} /> Heal {paint.marked > 0 ? `${paint.marked} points` : 'the area'}</Button>
+          <Button size="sm" variant="ghost" disabled={paint.marked === 0 || paint.stroking || paint.busy} onclick={() => paint.clearArea()}>Clear</Button>
         </div>
       {/if}
       {#if !pulled}
         <div class="row">
-          <span use:tooltip={'Set the whole right side from the left (each point from its mirror twin, the left arm\'s bones for the right\'s), the middle evened between them'}><Button size="sm" variant="ghost" disabled={paint.busy} onclick={() => paint.copySide(1)}><FlipHorizontal2 size={13} /> Left → right</Button></span>
-          <span use:tooltip={'Set the whole left side from the right'}><Button size="sm" variant="ghost" disabled={paint.busy} onclick={() => paint.copySide(-1)}><FlipHorizontal2 size={13} /> Right → left</Button></span>
+          <span use:tooltip={'Set the whole right side from the left (each point from its mirror twin, the left arm\'s bones for the right\'s), the middle evened between them'}><Button size="sm" variant="ghost" disabled={paint.busy || paint.stroking} onclick={() => paint.copySide(1)}><FlipHorizontal2 size={13} /> Left → right</Button></span>
+          <span use:tooltip={'Set the whole left side from the right'}><Button size="sm" variant="ghost" disabled={paint.busy || paint.stroking} onclick={() => paint.copySide(-1)}><FlipHorizontal2 size={13} /> Right → left</Button></span>
         </div>
       {/if}
       <div class="row">
-        <Button size="sm" variant="ghost" disabled={paint.busy} onclick={() => paint.undo()}><RotateCcw size={13} /> Undo</Button>
-        <Button size="sm" variant="primary" loading={paint.busy} disabled={paint.edited === 0} onclick={() => paint.save()}><Save size={13} /> Save {paint.edited > 0 ? `${paint.edited} points` : ''}</Button>
+        <Button size="sm" variant="ghost" disabled={paint.busy || paint.stroking} onclick={() => paint.undo()}><RotateCcw size={13} /> Undo</Button>
+        <Button size="sm" variant="primary" loading={paint.busy} disabled={paint.edited === 0 || paint.stroking} onclick={() => paint.save()}><Save size={13} /> Save {paint.edited > 0 ? `${paint.edited} points` : ''}</Button>
       </div>
     {/if}
   {/if}
@@ -141,6 +166,7 @@
     {/if}
     {#if painted > 0 && !locked}<button class="link" disabled={paint.busy} onclick={forget}>Forget the painting</button>{/if}
     {#if gear === undefined && !locked}<button class="link" disabled={paint.busy} onclick={forgetLifts}>Forget the lifts</button>{/if}
+    {#if gear === undefined && !locked}<button class="link" disabled={paint.busy} onclick={startOver}>Start over</button>{/if}
   </p>
 </Section>
 

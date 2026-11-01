@@ -7,8 +7,9 @@
 // together, under withFiles) and writes what each stage decided into skin.report. It reads the effective skeleton
 // (select.jointsOf) and never touches the user's overrides: joints Blender had to complete go into skeleton.detected.
 //
-// Painted weights (PUT/DELETE /weights) run as lock 'files' jobs: kept in weight_edits.json for the next rig and
-// written into rigged.glb (replaced whole: server/weights.ts savePainting). A gear piece's painting is the gear routes'
+// Body painting (PUT /painting) saves weights and Lift together as one 'files' job. PUT/DELETE /weights remain for
+// existing clients. Both records are kept for re-rigs; server/painting.ts stages the combined save before publication.
+// A gear piece's painting is the gear routes'
 // (server/routes/gear.ts).
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -26,7 +27,8 @@ import {
 } from '../skinopt.ts'
 import { characterDir, getCharacter, paths, readJson, ROOT, updateCharacter, withFiles, writeJson } from '../store.ts'
 import { checkEdits, dropWeightEdits, publishRig, savePainting, skinnedParts, type WeightEdit, weightEdits, writeWeights } from '../weights.ts'
-import { dropShapeEdits, keepShapeEdits, type ShapeEdit, shapeEdits, writeShapes } from '../shapes.ts'
+import { dropShapeEdits, shapeEdits, shapeReferences, writeShapes } from '../shapes.ts'
+import { checkBodyPainting, saveBodyPainting } from '../painting.ts'
 import { applyRig, assertUnlocked, jointsBack, rigRefusal } from './skin-policy.ts'
 
 export { assertUnlocked, rigRefusal }
@@ -249,6 +251,34 @@ async function rigParts (c: Character): Promise<ReturnType<typeof skinnedParts>>
 
 // Save painting: the edits (vertices of CharacterView.bodySkinned's meshes) written into rigged.glb and kept for the
 // next rig. 400 for an edit the rig doesn't have; 409 while locked or while another of its file jobs runs.
+route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/painting$/, async (req, res, [id]) => {
+  const c = await found(id)
+  const refused = paintRefusal(c)
+  if (refused !== null) throw refused
+  assertUnlocked(c)
+  const running = busy(id, 'files')
+  if (running !== undefined) throw new HttpError(409, `Wait for ${running.label} to finish`)
+  let painting
+  try { painting = checkBodyPainting(await rigParts(c), await readJsonBody(req)) }
+  catch (error) { throw new HttpError(400, (error as Error).message) }
+  if (painting.revision !== undefined && painting.revision !== (c.revision ?? 0)) throw new HttpError(409, 'The rig changed while painting; reload it before saving')
+  const who = by(req)
+  send(res, 202, enqueue('paint', `Save ${c.name}'s painting`, id, async (_job, update, signal) => {
+    update({ message: 'Saving the weights and lifts together' })
+    await withFiles(id, async () => {
+      const now = await found(id)
+      const refusedNow = paintRefusal(now)
+      if (refusedNow !== null) throw refusedNow
+      assertUnlocked(now)
+      if (painting.revision !== undefined && painting.revision !== (now.revision ?? 0)) throw new HttpError(409, 'The rig changed while painting; reload it before saving')
+      const saved = await saveBodyPainting(id, path.join(characterDir(id), now.files.rigged!), painting, signal)
+      await updateCharacter(id, x => {
+        x.revision = (x.revision ?? 0) + 1
+        if (painting.edits.length > 0) x.skin.painted = saved.weightsKept
+      }, { by: who, what: 'weights', changes: [`painting saved: ${saved.weighted} weighted, ${saved.lifted} lifted vertices`] })
+    })
+  }, { lock: 'files' }))
+})
 route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/weights$/, async (req, res, [id]) => {
   const c = await found(id)
   const refused = paintRefusal(c)
@@ -286,6 +316,12 @@ route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/weights$/, async (req, res, [id]
 
 // Lifted skin (Fix weights' Lift): rest positions written into rigged.glb and kept for the next rig
 // (shape_edits.json, with where each vertex first was); DELETE puts them back.
+route('GET', /^\/api\/characters\/([a-z0-9-]+)\/shape$/, async (_req, res, [id]) => {
+  await withFiles(id, async () => {
+    const c = await found(id)
+    send(res, 200, c.files.rigged === undefined ? [] : await shapeReferences(id, path.join(characterDir(id), c.files.rigged)))
+  })
+})
 route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/shape$/, async (req, res, [id]) => {
   const c = await found(id)
   const refused = paintRefusal(c)
@@ -293,18 +329,22 @@ route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/shape$/, async (req, res, [id]) 
   assertUnlocked(c)
   const running = busy(id, 'files')
   if (running !== undefined) throw new HttpError(409, `Wait for ${running.label} to finish`)
-  const { edits } = await readJsonBody<{ edits?: ShapeEdit[] }>(req)
-  if (!Array.isArray(edits) || edits.length === 0) throw new HttpError(400, 'No lifts to write')
+  const { edits } = await readJsonBody<{ edits?: unknown }>(req)
+  let painting
+  try { painting = checkBodyPainting(await rigParts(c), { lifts: edits }) }
+  catch (error) { throw new HttpError(400, (error as Error).message) }
   const who = by(req)
-  send(res, 202, enqueue('paint', `Save ${c.name}'s lifted skin`, id, async (_job, update) => {
+  send(res, 202, enqueue('paint', `Save ${c.name}'s lifted skin`, id, async (_job, update, signal) => {
     update({ message: 'Writing the lifts into the rig' })
     await withFiles(id, async () => {
       const now = await found(id)
+      const refusedNow = paintRefusal(now)
+      if (refusedNow !== null) throw refusedNow
       assertUnlocked(now)
-      const written = await writeShapes(path.join(characterDir(id), now.files.rigged!), edits, true)
-      const kept = await keepShapeEdits(id, edits)
+      const rigPath = path.join(characterDir(id), now.files.rigged!)
+      const saved = await saveBodyPainting(id, rigPath, painting, signal)
       await updateCharacter(id, x => { x.revision = (x.revision ?? 0) + 1 },
-        { by: who, what: 'weights', changes: [`skin lifted: ${written} vertices (${kept} kept for re-rigs)`] })
+        { by: who, what: 'weights', changes: [`skin lifted: ${saved.lifted} vertices (${saved.liftsKept} kept for re-rigs)`] })
     })
   }, { lock: 'files' }))
 })

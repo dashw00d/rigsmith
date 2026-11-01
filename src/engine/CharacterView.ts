@@ -16,6 +16,7 @@ function boneColor (index: number): THREE.Color {
 }
 
 const PAINT_TINT = new THREE.Color(0xff3df0)
+const PROTECTED_TINT = new THREE.Color(0x36d6e7)
 
 export class CharacterView {
   readonly root: THREE.Group
@@ -165,12 +166,13 @@ export class CharacterView {
       // (the weight painter's area, tinted over the weights)
       const m = this.paintMasks.get(mesh)?.[i] ?? 0
       if (m > 0) color.lerp(PAINT_TINT, 0.65 * m)
+      else if (m < 0) color.lerp(PROTECTED_TINT, 0.85)
       colors.set([color.r, color.g, color.b], i * 3)
     }
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   }
 
-  /** The weight painter's area per mesh (0..1 per vertex), tinted in the Weights view. */
+  /** Weight painter overlay: positive 0..1 Heal coverage; negative values mark protected vertices in cyan. */
   readonly paintMasks = new Map<THREE.Mesh, Float32Array>()
 
   /** Weights changed (painted): the Weights view drawn again. */

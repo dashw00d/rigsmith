@@ -19,6 +19,8 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { Gear, Placement, SkinPolicy } from '../model/types.ts'
 import type { CharacterView } from './CharacterView.ts'
 import { gearNode, safeName } from './geom.ts'
+import { applyGeometryMatrix } from './geometry-transform.ts'
+import { cloneMorphGeometry, restoreMorphState } from './morph-state.ts'
 import { garmentMatrix, placementMatrix } from './placement.ts'
 import { clearPulls, defaultPullWeights, PROP_ROOT, pullBoneName, pullWeightKeys, pullWeightName, registerPulls, splitStrand } from './pulls.ts'
 
@@ -100,11 +102,11 @@ async function meshesOf (url: string, g: Pick<Gear, 'name' | 'origin'>, placemen
   scene.traverse(o => {
     const mesh = o as THREE.Mesh
     if (!mesh.isMesh) return
-    const geometry = mesh.geometry.clone()
+    const geometry = cloneMorphGeometry(mesh)
     for (const attribute of ['skinIndex', 'skinWeight']) geometry.deleteAttribute(attribute)
-    geometry.applyMatrix4(new THREE.Matrix4().multiplyMatrices(own, mesh.matrixWorld))
+    applyGeometryMatrix(geometry, new THREE.Matrix4().multiplyMatrices(own, mesh.matrixWorld))
     const material = Array.isArray(mesh.material) ? mesh.material.map(m => m.clone()) : mesh.material.clone()
-    const copy = new THREE.Mesh(geometry, material)
+    const copy = restoreMorphState(new THREE.Mesh(geometry, material))
     copy.name = `${safeName(name)}_${out.length}`
     copy.castShadow = true
     copy.frustumCulled = false
@@ -590,7 +592,7 @@ export async function wear (view: WearView, g: Gear, o: WearOptions): Promise<Wo
     if (edits.length > 0) applyEdits(indices, weights, edits, i, boneNames)
     m.geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(indices, 4))
     m.geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights, 4))
-    const skinned = new THREE.SkinnedMesh(m.geometry, m.material)
+    const skinned = restoreMorphState(new THREE.SkinnedMesh(m.geometry, m.material))
     skinned.name = m.name
     skinned.castShadow = true
     skinned.frustumCulled = false
@@ -677,7 +679,7 @@ async function rigPulls (view: Pick<CharacterView, 'bones' | 'skinned'>, g: Gear
     if (edits.length > 0) applyEdits(indices, weights, edits, i, names)
     geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(indices, 4))
     geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights, 4))
-    const skinned = new THREE.SkinnedMesh(geometry, m.material)
+    const skinned = restoreMorphState(new THREE.SkinnedMesh(geometry, m.material))
     skinned.name = m.name
     skinned.castShadow = true
     skinned.frustumCulled = false

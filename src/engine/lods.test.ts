@@ -80,6 +80,69 @@ describe('lods', () => {
     }
   })
 
+  it.each([true, false])('compacts named correction targets with the same skin vertex mapping (relative=%s)', relative => {
+    const g = skinnedPlane(); const pos = g.attributes.position
+    g.morphTargetsRelative = relative
+    g.morphAttributes.position = [0, 1].map(t => {
+      const array = Float32Array.from(pos.array, (value, i) => (relative ? 0 : value) + (t + 1) * .001 * (i % 7))
+      const attr = new THREE.BufferAttribute(array, 3); attr.name = `cloth_${t}`; return attr
+    })
+    g.morphAttributes.normal = [0, 1].map(t => new THREE.Float32BufferAttribute(new Float32Array(pos.count * 3).fill(.01 * t), 3))
+    const kept = Uint32Array.from([93, 51, 7, 7, 51, 12])
+    const result = compact(g, kept)
+    expect(result.morphTargetsRelative).toBe(relative)
+    const mesh = new THREE.SkinnedMesh(result)
+    expect(mesh.morphTargetDictionary).toEqual({ cloth_0: 0, cloth_1: 1 })
+    for (let i = 0; i < kept.length; i++) for (const key of ['position', 'normal'] as const) for (let t = 0; t < 2; t++) {
+      const a = result.morphAttributes[key]![t]; const b = g.morphAttributes[key]![t]
+      for (let k = 0; k < 3; k++) expect(a.getComponent(result.index!.getX(i), k)).toBe(b.getComponent(kept[i], k))
+    }
+  })
+
+  it('preserves normalized integer and interleaved values while compacting', () => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0, 1,0,0, 0,1,0, 1,1,0], 3))
+    g.setAttribute('skinWeight', new THREE.Uint16BufferAttribute([65535,0, 32768,32767, 16384,49151, 0,65535], 2, true))
+    const data = new THREE.InterleavedBuffer(Uint8Array.from([255,0,8, 64,191,8, 128,127,8, 0,255,8]), 3)
+    g.setAttribute('color', new THREE.InterleavedBufferAttribute(data, 2, 0, true))
+    const kept = Uint32Array.from([3, 1, 2]); const result = compact(g, kept)
+    for (let i = 0; i < kept.length; i++) for (const key of ['skinWeight', 'color']) for (let k = 0; k < 2; k++) {
+      expect(result.attributes[key].getComponent(i, k)).toBe(g.attributes[key].getComponent(kept[i], k))
+    }
+  })
+
+  it('retains correction targets on the vertices kept by simplification', () => {
+    const g = skinnedPlane(); const pos = g.attributes.position
+    g.morphTargetsRelative = true
+    g.morphAttributes.position = [0, 1].map(t => {
+      const array = Float32Array.from(pos.array, (value, i) => .01 * (t + 1) * Math.sin(value + i))
+      const attr = new THREE.BufferAttribute(array, 3); attr.name = `cloth_${t}`; return attr
+    })
+    const result = simplify(g, .3)
+    expect(result.morphAttributes.position).toHaveLength(2)
+    const lookup = new Map(Array.from({ length: pos.count }, (_, i) => [`${pos.getX(i)},${pos.getY(i)}`, i]))
+    for (let i = 0; i < result.attributes.position.count; i++) {
+      const source = lookup.get(`${result.attributes.position.getX(i)},${result.attributes.position.getY(i)}`)!
+      expect(source).toBeDefined()
+      for (let t = 0; t < 2; t++) for (let k = 0; k < 3; k++) expect(result.morphAttributes.position![t].getComponent(i, k)).toBe(g.morphAttributes.position[t].getComponent(source, k))
+    }
+  })
+
+  it('keeps half-float attributes decoded and simultaneous correction bounds conservative', () => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute([-1,0,0, 1,0,0, 0,1,0], 3))
+    const half = new THREE.Float16BufferAttribute(new Uint16Array(9), 3)
+    for (let i = 0; i < 3; i++) half.setXYZ(i, .5, .25, 0)
+    g.setAttribute('color', half)
+    g.morphTargetsRelative = true
+    g.morphAttributes.position = [0, 1].map(() => new THREE.Float32BufferAttribute([-1,0,0, 1,0,0, 0,0,0], 3))
+    const result = compact(g, Uint32Array.from([0, 1, 2]))
+    expect(result.attributes.color).toBeInstanceOf(THREE.Float16BufferAttribute)
+    expect(result.attributes.color.getX(0)).toBe(.5)
+    const mesh = new THREE.Mesh(result); mesh.morphTargetInfluences = [1, 1]
+    for (let i = 0; i < 3; i++) expect(result.boundingSphere!.containsPoint(mesh.getVertexPosition(i, new THREE.Vector3()))).toBe(true)
+  })
+
   it('simplifies to about the ratio, with fewer vertices, skin weights still whole', () => {
     const g = skinnedPlane()
     for (const ratio of [0.45, 0.15]) {
