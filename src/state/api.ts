@@ -188,6 +188,7 @@ export const api = {
     await call<{ path: string }>('PUT', `${of(id)}/projections/${encodeURIComponent(pid)}/${encodeURIComponent(file)}`, data),
   /** Ask Codex to paint a capture's views (uses the owner's Codex quota). */
   codex: async (id: string, pid: string) => await call<Job>('POST', `${of(id)}/projections/${encodeURIComponent(pid)}/codex`),
+  qwen: async (id: string, pid: string) => await call<Job>('POST', `${of(id)}/projections/${encodeURIComponent(pid)}/qwen`),
 
   // ---- motion, editor ----
   library: async (params: LibraryQuery) => await call<LibraryPage>('GET', `/api/library?${query({ ...params })}`),

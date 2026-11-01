@@ -203,6 +203,43 @@ function lastError (log: string): string | null {
   return lines.length > 0 ? lines[lines.length - 1].trim().slice(0, 300) : null
 }
 
+/** Paint a Look capture's views with Qwen Image 2.1 in the local ComfyUI (tools/paint_capture.py): each view's masked
+ * area cropped, painted at 512 px, laid back in its place as result-N.png. Progress from its @@PROGRESS lines. */
+export async function runQwenPaint (dir: string, onProgress?: (progress: number, message: string) => void, o: ProcessOptions = {}): Promise<void> {
+  const timeoutMs = o.timeoutMs ?? 15 * 60_000
+  await new Promise<void>((resolve, reject) => {
+    const child = spawnJob(process.env.PYTHON ?? 'python3', [path.join(ROOT, 'tools', 'paint_capture.py'), dir], { stdio: ['ignore', 'pipe', 'pipe'] }, o.signal)
+    let log = ''
+    let buffer = ''
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; killGroup(child, 'SIGKILL') }, timeoutMs)
+    const onLine = (line: string): void => {
+      if (line.startsWith('@@PROGRESS ')) {
+        try {
+          const p = JSON.parse(line.slice(11)) as { progress: number, message: string }
+          onProgress?.(p.progress, p.message)
+        } catch { /* (a line that only looked like progress) */ }
+      } else log += line + '\n'
+    }
+    child.stdout!.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString()
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      lines.forEach(onLine)
+    })
+    child.stderr!.on('data', (chunk: Buffer) => { log += chunk.toString() })
+    child.on('error', error => { clearTimeout(timer); reject(new Error(`Could not start the Qwen painter: ${error.message}`)) })
+    child.on('close', code => {
+      clearTimeout(timer)
+      if (buffer !== '') onLine(buffer)
+      if (o.signal?.aborted === true) reject(cancelled(o.signal))
+      else if (timedOut) reject(new Error('The Qwen painter timed out'))
+      else if (code === 0) resolve()
+      else reject(new Error(lastError(log) ?? log.trim().split('\n').pop()?.slice(0, 300) ?? `The Qwen painter exited with ${code}`))
+    })
+  })
+}
+
 /** Run the Codex CLI non-interactively in `dir` (it may write files there), with images attached. */
 export async function runCodex (dir: string, prompt: string, images: string[], onMessage?: (message: string) => void, o: ProcessOptions = {}): Promise<void> {
   // (low reasoning: the work is one image edit a view, so a long think first only costs time; $CODEX_EFFORT overrides)

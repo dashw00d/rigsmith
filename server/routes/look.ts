@@ -14,7 +14,7 @@ import { newId } from '../../src/model/ids.ts'
 import type { Character, TextureImage, TextureLayer } from '../../src/model/types.ts'
 import { imageNames, sameImage, swapImages } from '../glbimages.ts'
 import { by, HttpError, readBody, route, send } from '../http.ts'
-import { enqueue, getJob, type Job, listJobs, runBlender, runCodex, type Update } from '../jobs.ts'
+import { enqueue, getJob, type Job, listJobs, runBlender, runCodex, runQwenPaint, type Update } from '../jobs.ts'
 import { afterChange, type Change, commit, getCharacter, paths, readJson, updateCharacter, withFiles, writeJson } from '../store.ts'
 
 async function found (id: string): Promise<Character> {
@@ -407,6 +407,29 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/projections\/([A-Za-z0-9_-]+)\/
     await runCodex(dir, prompt, images, message => { update({ message }) }, { signal })
     const missing = (await resultsOf(dir, count)).flatMap((r, i) => (r === null || r.at < asked ? [`result-${i + 1}.png`] : []))
     if (missing.length > 0) throw new Error(`Codex finished without painting ${missing.join(', ')}`)
+  }, { lock: 'none' })
+  painting.set(key, job.id)
+  send(res, 202, job)
+})
+
+// The same with Qwen Image 2.1 in the local ComfyUI (tools/paint_capture.py): each view's masked area painted at
+// 512 px and laid back in its place, seconds a view; ComfyUI must be running. Shares the Codex job's slot per capture.
+route('POST', /^\/api\/characters\/([a-z0-9-]+)\/projections\/([A-Za-z0-9_-]+)\/qwen$/, async (req, res, [id, pid]) => {
+  const c = await found(id)
+  const dir = paths(id).projection(pid)
+  const v = await viewsOf(dir)
+  if (v === null) throw new HttpError(400, 'Capture the views first')
+  const key = `${id}/${pid}`
+  const busy = getJob(painting.get(key) ?? '')
+  if (live(busy)) throw new HttpError(409, 'This capture is already being painted', { job: busy })
+  const asked = Date.now()
+  await writeFile(path.join(dir, 'request.json'), JSON.stringify({ requestedAt: asked, by: by(req), painter: 'qwen' }))
+  const count = v.views.length
+  const job = enqueue('codex', `Qwen painting · ${c.name}`, id, async (job, update, signal) => {
+    update({ progress: 0.05, message: 'Qwen is painting' })
+    await runQwenPaint(dir, (progress, message) => { update({ progress, message }) }, { signal })
+    const missing = (await resultsOf(dir, count)).flatMap((r, i) => (r === null || r.at < asked ? [`result-${i + 1}.png`] : []))
+    if (missing.length > 0) throw new Error(`Qwen finished without painting ${missing.join(', ')}`)
   }, { lock: 'none' })
   painting.set(key, job.id)
   send(res, 202, job)

@@ -155,8 +155,11 @@
         <Button variant="primary" block loading={codex !== undefined} disabled={codex !== undefined} onclick={() => { void painter.askCodex(character) }}>
           {#if codex === undefined}<Sparkles size={14} />{/if} {codex === undefined ? (info?.ready === true ? 'Paint them again with Codex' : 'Paint with Codex') : codex.status === 'queued' ? 'Codex is queued' : codex.message || 'Codex is painting'}
         </Button>
+        <Button block disabled={codex !== undefined} onclick={() => { void painter.askQwen(character) }}>
+          <Sparkles size={14} /> {info?.ready === true ? 'Paint them again with Qwen (local)' : 'Paint with Qwen (local, seconds)'}
+        </Button>
         {#if codex !== undefined}
-          <Button size="sm" variant="ghost" onclick={() => { void app.cancelJob(codex.id) }}><X size={13} /> Stop Codex</Button>
+          <Button size="sm" variant="ghost" onclick={() => { void app.cancelJob(codex.id) }}><X size={13} /> Stop {codex.label.startsWith('Qwen') ? 'Qwen' : 'Codex'}</Button>
         {/if}
         {#if painter.pollError !== null}
           <p class="error small" role="alert">{painter.pollError}</p>

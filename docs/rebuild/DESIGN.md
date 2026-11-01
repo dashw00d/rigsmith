@@ -201,7 +201,7 @@ Each area owns the files listed; nobody else edits them except as §1 allows. Ne
 | **skin** | `src/app/steps/SkinPanel.svelte`, `src/app/skin/**` (WeightPaintPanel, RigReport, DeformationTests), `src/state/paint.svelte.ts`, `src/engine/weightpaint.ts`, `server/routes/skin.ts` (rig job, weights routes, lock), `server/skinopt.ts`, `server/weights.ts`, `tools/skin_opt/**`, `tools/lib/{skintransfer,deformation}.ts`, `blender/autorig/{rig,weights,regions,heat}.py`, `tools/dev/coat_weights.ts`, `tools/verify_autorig.py` |
 | **gear** | `src/app/steps/GearPanel.svelte`, `src/app/gear/**` (CatalogDrawer, GearList, HandleList, PlacementFields, gizmo helper), `src/state/gear.svelte.ts` (from outfit.svelte.ts minus mount), `src/engine/{garments,props,placement,pulls}.ts`, `server/routes/gear.ts` (upload, gear weights) |
 | **hands** | `src/app/hands/**` (HandsPanel "what each hand does and why", HandPoseSelect, HandPoseEditor, HandPosesList), `src/state/hands.svelte.ts` (from handposes.svelte.ts), `src/engine/{handposes,handdots}.ts` |
-| **look** | `src/app/steps/LookPanel.svelte`, `src/app/look/**` (MaskPainter, Layers, Capture), `src/state/painter.svelte.ts`, `src/engine/{projection,surfacemask,selection}.ts`, `server/routes/look.ts` (fill, layers, compose, projections, codex), `server/glbimages.ts`, `blender/jobs/texture_fill.py`, `blender/jobs/texture_compose.py` (new) |
+| **look** | `src/app/steps/LookPanel.svelte`, `src/app/look/**` (MaskPainter, Layers, Capture), `src/state/painter.svelte.ts`, `src/engine/{projection,surfacemask,selection}.ts`, `server/routes/look.ts` (fill, layers, compose, projections, codex, qwen), `tools/paint_capture.py`, `server/glbimages.ts`, `blender/jobs/texture_fill.py`, `blender/jobs/texture_compose.py` (new) |
 | **motion** | `src/app/steps/MotionPanel.svelte`, `src/app/motion/**` (LibraryDrawer, LibraryCard, Timeline with lanes, SlotList, AdjustmentStack, adjustment editors), `src/state/{animator,slots,library,adjust}.svelte.ts` (adjust replaces tune), `src/engine/{Player,ground}.ts`, `server/library.ts`, `server/routes/library.ts` |
 | **editor** | `src/app/editor/**` (EditPanel), `src/state/clipedit.svelte.ts`, `src/engine/{clipedit,PoseEditor,ik,propfit,clipexport,bodysolve,posespace,limits,bodycollide,handcontacts,surfacecontact}.ts`, `server/clipedits.ts`, `server/routes/edits.ts` (library edits, creature clips, `GET /api/library/usage/:clipId`), `blender/clips/**`, `tools/{posespace,rom}.ts`, `static/templates/rom/**` |
 | **ship** | `src/app/steps/ShipPanel.svelte`, `src/app/ship/**` (UnitCard, MountEditor, ScaleRoom, Checks, BuildRecord), `src/state/{ship,mount,scaleroom}.svelte.ts`, `src/engine/{mount,checks}.ts`, `server/game.ts`, `server/routes/ship.ts` (units, export, game models, `/:id/game`) |
@@ -487,6 +487,12 @@ Step panels (`src/app/steps/<Name>Panel.svelte`, prop `character: Character`):
    (carry / grip / pull, each with its hand pose), gear weight painting (skin gear, pulled gear). Hands panel.
 5. **Look**: layers list (fill, repaints, snapshots: toggle, remove, reorder; each undoable), Find and fill holes,
    projection painting (mask tools, notes, capture, Codex or an image, preview, Keep as a new layer, Discard).
+   **Qwen** (2026-10-31): "Paint with Qwen (local, seconds)" beside Codex, `POST .../projections/<id>/qwen` (`runQwenPaint`,
+   `tools/paint_capture.py`): each view's masked area cropped (its box and a quarter round it, square, at least 128 px),
+   edited at 512 px by Qwen Image 2.1 in the local ComfyUI (:8188, `tools/comfy/qwen_edit.json`) from the capture's notes,
+   sized back and laid over the view inside the feathered mask only; `result-N.png` as Codex writes it. ~11 s a view
+   (Codex: minutes). Qwen gets no mask (`--mode edit`): as a latent noise mask, hard or blurred with Differential
+   Diffusion, it left an olive ring along the mask's edge. It shares the Codex job's slot per capture.
 6. **Motion**: the unit's slots + trials (stable ids; arm a slot then pick a card; "Use" when previewing), per-slot
    controls (speed, loop, in place), the adjustments stack (add/enable/remove/edit: ground with Auto, blow timing,
    pace, hand pose, handle hold, keys), the timeline with lanes for the playing slot's adjustments (windows, keys,

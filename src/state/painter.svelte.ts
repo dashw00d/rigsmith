@@ -452,6 +452,19 @@ class Painter {
     }
   }
 
+  /** Ask Qwen in the local ComfyUI to paint every view (seconds a view; results from before the ask no longer count). */
+  async askQwen (character: Character): Promise<void> {
+    const capture = this.capture
+    if (capture === null) return
+    try {
+      await api.qwen(character.id, capture.id)
+      app.toast('info', 'Qwen is painting (ComfyUI). Its results are picked up as they come.')
+      void this.check()
+    } catch (error) {
+      app.toast('error', message(error))
+    }
+  }
+
   /** An image of your own as view `n`'s result (from 1). */
   async useFile (character: Character, n: number, file: File): Promise<void> {
     const capture = this.capture
