@@ -20,7 +20,7 @@ const sanitize = (name: string): string => name.replace(/\s/g, '_').replace(/[[\
 
 /** One skinned primitive of a GLB: its vertex count, the bone names its JOINTS_0 indexes, and its skin accessors
  * (none on a primitive the file left unskinned). */
-export interface SkinnedPart { count: number, joints: string[], attributes: { JOINTS_0?: number, WEIGHTS_0?: number } }
+export interface SkinnedPart { count: number, joints: string[], attributes: { JOINTS_0?: number, WEIGHTS_0?: number, POSITION?: number } }
 
 /** The skinned primitives as the app counts its skinned meshes (three.js makes every primitive of a skinned node one):
  * scene order, depth first. */
@@ -34,7 +34,7 @@ export function skinnedParts (glb: Glb): SkinnedPart[] {
       for (const prim of meshes[node.mesh].primitives) {
         const { JOINTS_0, WEIGHTS_0, POSITION } = prim.attributes
         const skinned = JOINTS_0 !== undefined && WEIGHTS_0 !== undefined
-        parts.push({ count: skinned ? accessors[POSITION ?? JOINTS_0]?.count ?? 0 : 0, joints, attributes: skinned ? { JOINTS_0, WEIGHTS_0 } : {} })
+        parts.push({ count: skinned ? accessors[POSITION ?? JOINTS_0]?.count ?? 0 : 0, joints, attributes: skinned ? { JOINTS_0, WEIGHTS_0, POSITION } : {} })
       }
     }
     for (const c of node.children ?? []) visit(c)
@@ -110,7 +110,72 @@ export function paintGlb (bytes: Uint8Array, edits: WeightEdit[]): number {
     }
     written++
   }
+  if (written > 0) weldSeams(glb)
   return written
+}
+
+/**
+ * The copies of one point given one skin, in place: glTF splits a vertex wherever its UVs or material change, and every
+ * weight pass here (the pose optimizer, painting put back by vertex) treats the copies as separate vertices, so they
+ * drift apart and the surface cracks open along the seam when posed (Emberhold's base body along its head/neck border,
+ * 2026-11-02). Vertices at the same rest position, across all skinned primitives, take their averaged weights (four
+ * strongest bones, normalised). Returns the points welded.
+ */
+export function weldSeams (glb: Glb): number {
+  const parts = skinnedParts(glb)
+  const groups = new Map<string, Array<[number, number]>>()
+  const views = parts.map(part => {
+    const { JOINTS_0, WEIGHTS_0, POSITION } = part.attributes
+    if (JOINTS_0 === undefined || WEIGHTS_0 === undefined || POSITION === undefined) return null
+    return { j: accessor(glb, JOINTS_0), w: accessor(glb, WEIGHTS_0), p: accessor(glb, POSITION), joints: part.joints }
+  })
+  views.forEach((v, m) => {
+    if (v === null) return
+    for (let i = 0; i < v.p.count; i++) {
+      // (exact positions: the copies a seam split are bit-identical; 1e-6 absorbs float noise, nothing more)
+      const key = [0, 1, 2].map(k => Math.round(v.p.get(i, k) * 1e6)).join(',')
+      const list = groups.get(key)
+      if (list === undefined) groups.set(key, [[m, i]])
+      else list.push([m, i])
+    }
+  })
+  let welded = 0
+  for (const members of groups.values()) {
+    if (members.length < 2) continue
+    const sum = new Map<string, number>()
+    for (const [m, i] of members) {
+      const v = views[m]!
+      for (let k = 0; k < 4; k++) {
+        const w = v.w.get(i, k)
+        if (w > 0) { const name = v.joints[v.j.get(i, k)]; sum.set(name, (sum.get(name) ?? 0) + w) }
+      }
+    }
+    const top = [...sum.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4)
+    const total = top.reduce((t, [, w]) => t + w, 0)
+    if (total <= 0) continue
+    let differs = false
+    for (const [m, i] of members) {
+      const v = views[m]!
+      const want = top.map(([name, w]) => [v.joints.indexOf(name), w / total] as [number, number])
+      if (want.some(([j]) => j < 0)) continue   // (a primitive bound to another skeleton: left as it is)
+      for (let k = 0; k < 4; k++) {
+        const [j, w] = want[k] ?? [0, 0]
+        if (Math.abs(v.w.get(i, k) - w) > 1e-4 || (w > 0 && v.j.get(i, k) !== j)) differs = true
+        v.j.set(i, k, j); v.w.set(i, k, w)
+      }
+    }
+    if (differs) welded++
+  }
+  return welded
+}
+
+/** weldSeams on a GLB file, the file replaced whole when anything changed. Returns the points welded. */
+export async function weldSeamsFile (glbPath: string): Promise<number> {
+  const bytes = await readFile(glbPath)
+  if (bytes.length < 12 || bytes.toString('latin1', 0, 4) !== 'glTF') return 0   // (not a GLB: nothing to weld)
+  const welded = weldSeams(readGlb(bytes))
+  if (welded > 0) await replaceFile(glbPath, bytes)
+  return welded
 }
 
 /** Write edits into a GLB file's skin (paintGlb), the file replaced whole. Returns the vertices written. */
@@ -184,6 +249,7 @@ export async function savePainting (id: string, glbPath: string, edits: WeightEd
  * rig if publishing its paint record fails; old vertex addresses must never be
  * paired with a new topology. Temporary paths belong to this rig job. */
 export async function publishRig (id: string, candidate: string, destination: string, painted: WeightEdit[]): Promise<void> {
+  await weldSeamsFile(candidate)   // (every rig, painted or not: a seam's copies share one skin)
   if (painted.length === 0) { await rename(candidate,destination); return }
   const paint = editsFile(id), staged = candidate + '.paint.json', backup = candidate + '.previous.glb'
   const previousRig = existsSync(destination)

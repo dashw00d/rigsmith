@@ -12,7 +12,7 @@ vi.mock('node:fs/promises', async importOriginal => {
   const rename = async (from: string, to: string): Promise<void> => { state.onRename?.(to); await fs.rename(from, to) }
   return { ...fs, rename, default: { ...fs, rename } }
 })
-import { checkEdits, dropWeightEdits, keepWeightEdits, publishRig, savePainting, skinnedParts, weightEdits, writeWeights } from './weights.ts'
+import { checkEdits, dropWeightEdits, keepWeightEdits, publishRig, savePainting, skinnedParts, weightEdits, weldSeamsFile, writeWeights } from './weights.ts'
 import { accessor, type Glb, readGlb, writeGlb } from '../src/engine/glb.ts'
 
 beforeEach(async () => { state.dir = await mkdtemp(path.join(os.tmpdir(),'rigsmith-paint-publish-')) })
@@ -97,7 +97,7 @@ describe('painted weights from a request', () => {
       },
     }
     expect(skinnedParts(glb)).toEqual([
-      { count: 4, joints: ['mixamorigHips'], attributes: { JOINTS_0: 1, WEIGHTS_0: 2 } },
+      { count: 4, joints: ['mixamorigHips'], attributes: { JOINTS_0: 1, WEIGHTS_0: 2, POSITION: 0 } },
       { count: 0, joints: ['mixamorigHips'], attributes: {} },
     ])
   })
@@ -191,5 +191,49 @@ describe('painted weights written into a rig', () => {
     state.onRename = to => { if (path.basename(to) === 'rigged.glb') throw new Error('disk full') }
     await expect(savePainting('test', file('rigged.glb'), stroke)).rejects.toThrow('disk full')
     expect(await readdir(state.dir)).toEqual(['rigged.glb'])
+  })
+})
+
+/** Two primitives, two triangles meeting at a seam: vertex 1 of the first and vertex 0 of the second are one point that
+ * glTF split (a material border), bound to Hips (joint 0) and Spine (joint 1). */
+function seamRig (): Uint8Array {
+  const bin = new Uint8Array(192)
+  const data = new DataView(bin.buffer)
+  const pos = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 0, 0], [2, 0, 0], [1, 1, 0]]
+  pos.forEach((xyz, v) => xyz.forEach((x, k) => { data.setFloat32(v * 12 + k * 4, x, true) }))
+  for (let v = 0; v < 6; v++) data.setFloat32(96 + v * 16, 1, true)   // (every vertex all Hips)
+  const prim = (o: number) => ({ attributes: { POSITION: o, JOINTS_0: o + 1, WEIGHTS_0: o + 2 } })
+  return writeGlb({
+    asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0, 1] }],
+    nodes: [{ name: 'Body', mesh: 0, skin: 0 }, { name: 'Hips', children: [2] }, { name: 'Spine' }],
+    meshes: [{ primitives: [prim(0), prim(3)] }], skins: [{ joints: [1, 2] }],
+    accessors: [0, 3].flatMap(v => [{ bufferView: 0, byteOffset: v * 12, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 1, byteOffset: v * 4, componentType: 5121, count: 3, type: 'VEC4' },
+      { bufferView: 2, byteOffset: v * 16, componentType: 5126, count: 3, type: 'VEC4' }]),
+    bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 72 }, { buffer: 0, byteOffset: 72, byteLength: 24 }, { buffer: 0, byteOffset: 96, byteLength: 96 }],
+    buffers: [{ byteLength: 192 }],
+  }, bin)
+}
+
+describe('a seam\'s copies share one skin', () => {
+  const skin = async (f: string, prim: number, v: number): Promise<Array<[number, number]>> => {
+    const glb = readGlb(new Uint8Array(await readFile(f)))
+    const j = accessor(glb, prim * 3 + 1); const w = accessor(glb, prim * 3 + 2)
+    return [0, 1, 2, 3].map(k => [j.get(v, k), Math.round(w.get(v, k) * 1000) / 1000] as [number, number]).filter(([, x]) => x > 0)
+  }
+
+  it('painting one copy moves the other with it (across primitives), and leaves the rest', async () => {
+    await writeFile(file('seam.glb'), seamRig())
+    await writeWeights(file('seam.glb'), [{ mesh: 0, vertex: 1, weights: [['Spine', 1]] }])
+    expect(await skin(file('seam.glb'), 0, 1)).toEqual([[1, 0.5], [0, 0.5]])
+    expect(await skin(file('seam.glb'), 1, 0)).toEqual([[1, 0.5], [0, 0.5]])
+    expect(await skin(file('seam.glb'), 1, 1)).toEqual([[0, 1]])
+  })
+
+  it('a published rig\'s copies are welded; a file that isn\'t a GLB is left alone', async () => {
+    await writeFile(file('candidate.glb'), seamRig())
+    expect(await weldSeamsFile(file('candidate.glb'))).toBe(0)   // (copies already agree)
+    await writeFile(file('text.glb'), 'not a rig')
+    expect(await weldSeamsFile(file('text.glb'))).toBe(0)
   })
 })
