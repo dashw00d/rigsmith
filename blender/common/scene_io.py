@@ -130,8 +130,15 @@ def close_small_holes(meshes, max_fraction=0.03, weld_fraction=0.002):
         scale = max(ob.matrix_world.to_scale())
         bm = bmesh.new()
         bm.from_mesh(ob.data)
-        edge_verts = list({v for e in bm.edges if e.is_boundary for v in e.verts})
         before = len(bm.verts)
+        # first the seams glTF splits a mesh along (UV seams, material borders): vertices at the same place, welded
+        # exactly; only the edges still open after that are slits. One wide weld over every open edge also merged a
+        # clean mesh's own vertices a few millimetres apart (Emberhold's base v6: its garment lips and head cut) and
+        # then capped the loops that left, faces in none of its files (2026-11-02)
+        edge_verts = list({v for e in bm.edges if e.is_boundary for v in e.verts})
+        if edge_verts:
+            bmesh.ops.remove_doubles(bm, verts=edge_verts, dist=1e-6 * height / scale)
+        edge_verts = list({v for e in bm.edges if e.is_boundary for v in e.verts})
         if edge_verts:
             bmesh.ops.remove_doubles(bm, verts=edge_verts, dist=weld_fraction * height / scale)
         changed += before - len(bm.verts)
@@ -328,4 +335,9 @@ def export_glb(path, armature, meshes, animations=False):
         export_skins=True,
         export_animations=animations,
         export_materials='EXPORT',
+        # the tangents a normal map was baked against (MikkTSpace). Without them three.js shades the map in a frame it
+        # improvises per pixel, which isn't the bake's: patches and island seams on every normal-mapped body (Emberhold's
+        # base v6 nose and jaw, 2026-11-02). Custom attributes (a body's build masks, _LONG_SLEEVE, _FEET) ride along.
+        export_tangents=True,
+        export_attributes=True,
     )

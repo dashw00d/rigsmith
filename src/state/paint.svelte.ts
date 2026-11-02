@@ -13,18 +13,16 @@
 // the step or the character changes.
 import * as THREE from 'three'
 import type { CharacterView } from '../engine/CharacterView.ts'
-import { BrushStroke } from '../engine/brushstroke.ts'
 import { GARMENT_FLAG } from '../engine/garments.ts'
 import { PROP_ROOT, pullWeightKeys } from '../engine/pulls.ts'
 import { skeletonSpec } from '../engine/templates.ts'
-import { type MirrorName, type PaintPick, type ShapeEdit, WeightPainter } from '../engine/weightpaint.ts'
+import { type MirrorName, WeightPainter } from '../engine/weightpaint.ts'
 import { boneLabel, carriesSkin } from '../app/skin/bones.ts'
 import { api, type Character, type Gear, type WeightEdit } from './api.ts'
 import { app } from './app.svelte.ts'
 import { viewer } from './viewer.svelte.ts'
-import { animator } from './animator.svelte.ts'
 
-export type PaintTool = 'area' | 'protect' | 'add' | 'remove' | 'smooth' | 'follow' | 'cloth' | 'rigid' | 'lift'
+export type PaintTool = 'area' | 'add' | 'remove' | 'smooth' | 'follow' | 'rigid' | 'lift'
 export interface PaintBone { name: string, label: string }
 
 /** Gear the weight brushes work on: worn on the skin, or a piece with pull handles. */
@@ -58,12 +56,8 @@ class Paint {
   boneUnder = $state<string | null>(null)
   /** Points changed and not saved yet. */
   edited = $state(0)
-  limited = $state(0)
-  contactLimited = $state(0)
   marked = $state(0)
-  protectedCount = $state(0)
   busy = $state(false)
-  validating = $state(false)
   /** On, but nothing to paint on stage yet (the model or the gear's meshes still loading). */
   waiting = $state(false)
 
@@ -78,11 +72,7 @@ class Paint {
   private offGuard: (() => void) | null = null
   private offFrame: (() => void) | null = null
   private ray = new THREE.Raycaster()
-  stroking = $state(false)
-  private loadVersion = 0
-  private shapeReference: ShapeEdit[] = []
-  private revision: number | null = null
-  private workVersion = 0
+  private stroking = false
 
   /** Paint `character`'s body, or `gear` of it. Asks first when unsaved strokes on something else would go. */
   async start (character: Character, gear: Gear | null = null): Promise<void> {
@@ -101,15 +91,7 @@ class Paint {
 
   /** Painting off (the panel closed, "Done painting" answered): unsaved strokes go. */
   stop (): void {
-    if (this.validating) {
-      this.workVersion++; this.validating = false; this.busy = false
-      app.setBusy('paint', null)
-    }
-    this.loadVersion++
     this.detach()
-    // The live view may be reused when painting starts again. Discard restores its last saved checkpoint,
-    // including raw seam attributes and Lift positions, rather than leaving unsaved edits on that same mesh.
-    while (this.painter?.stepBack() === true) { /* each Undo removes one unsaved transaction */ }
     this.offFrame?.(); this.offFrame = null
     this.offLoad?.(); this.offLoad = null
     this.offGuard?.(); this.offGuard = null
@@ -120,18 +102,13 @@ class Paint {
     }
     this.view = null
     this.painter = null
-    this.shapeReference = []
-    this.revision = null
     this.active = false
     this.waiting = false
     this.characterId = null
     this.gear = null
     this.bones = []
     this.edited = 0
-    this.limited = 0
-    this.contactLimited = 0
     this.marked = 0
-    this.protectedCount = 0
     this.boneUnder = null
   }
 
@@ -142,7 +119,7 @@ class Paint {
 
   /** True when there is nothing unsaved to lose, or the user agreed to lose it. */
   private async discardAsked (): Promise<boolean> {
-    if (!this.active || this.edited === 0 || (this.busy && !this.validating)) return true
+    if (!this.active || this.edited === 0 || this.busy) return true
     return await app.confirm({
       title: 'Discard the painting?',
       body: `${this.edited} painted ${this.edited === 1 ? 'point isn\'t' : 'points aren\'t'} saved.`,
@@ -152,46 +129,19 @@ class Paint {
   }
 
   /** A view loaded (viewer.onLoad): paint on it while it is there. */
-  private async loaded (view: CharacterView, c: Character): Promise<(() => void) | void> {
+  private loaded (view: CharacterView, c: Character): (() => void) | void {
     if (!this.active) return
     // (another character on stage: painting this one is over; after the viewer's own loop)
-    if (c.id !== this.characterId) {
-      const version = this.loadVersion
-      queueMicrotask(() => { if (this.loadVersion === version) this.stop() })
-      return
-    }
-    const version = ++this.loadVersion
-    const gear = this.gear
-    const current = (): boolean => this.loadVersion === version && this.active && this.characterId === c.id &&
-      this.gear === gear && viewer.character === view
-    this.waiting = true
-    let reference: ShapeEdit[]
-    try {
-      reference = await api.shapeEdits(c.id)
-    } catch (error) {
-      if (current()) {
-        this.stop()
-        app.toast('error', `Could not load saved lifts: ${(error as Error).message}`)
-      }
-      return
-    }
-    if (!current()) return
-    this.shapeReference = reference
-    this.revision = c.revision ?? 0
+    if (c.id !== this.characterId) { queueMicrotask(() => { this.stop() }); return }
     this.view = view
     this.offFrame?.()
     this.offFrame = viewer.stage?.onFrame(() => { this.watch() }) ?? null
     this.attach()
     return () => {
-      // A late cleanup from the viewer must not detach a newer painting session.
-      if (this.loadVersion !== version || this.view !== view) return
-      this.loadVersion++
       this.offFrame?.(); this.offFrame = null
       this.detach()
       this.view = null
       this.painter = null
-      this.shapeReference = []
-      this.revision = null
       if (this.active) this.waiting = true
     }
   }
@@ -218,20 +168,13 @@ class Paint {
     this.waiting = false
     this.editable = new Set(target.editable)
     this.pulled = target.gear !== null && paintableGear(target.gear) === 'pulled'
-    const reference = this.shapeReference.flatMap(edit => {
-      const mesh = target.meshes.indexOf(view.bodySkinned[edit.mesh])
-      return mesh < 0 ? [] : [{ ...edit, mesh }]
-    })
-    this.painter = new WeightPainter(target.meshes, this.mirrorName, this.editable, reference)
+    this.painter = new WeightPainter(target.meshes, this.mirrorName)
     // (a prop isn't mirrored across the body: a bow's two ends aren't each other's)
     this.painter.mirror = this.mirror && !this.pulled
     this.bones = this.bonesOf(target.editable[0], target.gear)
     if (this.bone === null || !this.bones.some(b => b.name === this.bone)) this.bone = this.bones[this.pulled ? Math.min(1, this.bones.length - 1) : 0]?.name ?? null
     this.edited = 0
-    this.limited = 0
-    this.contactLimited = 0
     this.marked = 0
-    this.protectedCount = 0
     viewer.setMode('weights')
     this.refreshView()
     this.listen(stage, view)
@@ -269,24 +212,28 @@ class Paint {
     this.ring.visible = false
     this.ring.renderOrder = 999
     stage.scene.add(this.ring)
-    // Track the surface from the LAST dab. Layers can be joined far away at the shoulders; the whole connected mesh
-    // and the accumulated stroke are both too broad. Keep the picked triangle even when the brush is smaller than it.
-    let held: { part: number, sheet: Set<number> } | null = null
-    let stroke: BrushStroke | null = null
-    let pointer: number | null = null
-    let altKey = false
-    let dirty = false
-    const flush = (): void => { if (dirty) { dirty = false; this.redraw() } }
-    const pick = (e: { clientX: number, clientY: number }): PaintPick | null => {
+    const pick = (e: PointerEvent): { part: number, point: THREE.Vector3, normal: THREE.Vector3, face?: number[] } | null => {
       const painter = this.painter
       if (painter === null) return null
       const r = canvas.getBoundingClientRect()
-      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return null
       this.ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, 1 - (e.clientY - r.top) / r.height * 2), stage.camera)
-      const lock = this.stroking ? held : null
-      return painter.pick(this.ray.ray, this.radius * view.height, lock ?? undefined)
+      const meshes = painter.parts.map(p => p.mesh)
+      // (the body as it stands: its bounds follow the pose)
+      for (const m of meshes) m.computeBoundingSphere()
+      const hit = this.ray.intersectObjects(meshes, false)[0]
+      if (hit === undefined) return null
+      const mesh = hit.object as THREE.SkinnedMesh
+      const normal = new THREE.Vector3(0, 0, 1)
+      if (hit.face !== undefined && hit.face !== null) {
+        const points = [hit.face.a, hit.face.b, hit.face.c].map(v => mesh.getVertexPosition(v, new THREE.Vector3()).applyMatrix4(mesh.matrixWorld))
+        normal.crossVectors(points[1].sub(points[0]), points[2].sub(points[0])).normalize()
+        if (normal.dot(this.ray.ray.direction) > 0) normal.negate()
+      }
+      // (the painter's own part number: the meshes it was given, in that order)
+      const part = painter.parts.findIndex(p => p.mesh === mesh)
+      return { part, point: hit.point, normal, face: hit.face === undefined || hit.face === null ? undefined : [hit.face.a, hit.face.b, hit.face.c] }
     }
-    const brush = (e: { clientX: number, clientY: number, altKey: boolean }): void => {
+    const brush = (e: PointerEvent): void => {
       const at = pick(e)
       this.showRing(at)
       const painter = this.painter
@@ -294,103 +241,49 @@ class Paint {
       if (!this.stroking && this.tool !== 'rigid') return
       // (the body under a garment is there to follow, not to paint)
       if (!this.editable.has(painter.parts[at.part].mesh)) return
-      const points = at.points
-      if (this.stroking) held = { part: at.part, sheet: new Set([...points.keys(), ...at.face.map(v => painter.parts[at.part].point[v])]) }
+      const points = painter.under(at.part, at.point, this.radius * view.height, at.face)
       if (this.tool === 'rigid') {
         // (the bone it paints, shown before and while painting)
-        const index = painter.strokeBoneFor(at.part) ?? painter.leadingBone(at.part, points)
+        const index = painter.strokeBoneIndex ?? painter.leadingBone(at.part, points)
         const name = index === null ? null : painter.parts[at.part].mesh.skeleton.bones[index].name
         if (name !== this.boneUnder) { this.boneUnder = name; view.setHighlightBone(name) }
         if (!this.stroking) return
       }
       const bone = this.boneIndex(at.part)
       if (this.tool === 'area') painter.mark(at.part, points, !e.altKey)
-      else if (this.tool === 'protect') painter.protect(at.part, points, !e.altKey)
-      else if (this.tool === 'add' && bone >= 0) painter.add(at.part, points, bone, this.strength)
-      else if (this.tool === 'remove' && bone >= 0) painter.remove(at.part, points, bone, this.strength)
-      else if (this.tool === 'smooth') painter.smooth(at.part, points, this.strength)
-      else if (this.tool === 'follow' || this.tool === 'cloth' || (this.tool === 'lift' && this.gear === null)) {
-        painter.paintLayers(this.tool, at, this.radius * view.height, this.strength, this.gap * view.height, this.editable)
-      }
-      else if (this.tool === 'rigid') painter.rigid(at.part, points, this.strength)
-      dirty = true
-    }
-    const move = (e: PointerEvent): void => {
-      if (!this.stroking) { brush(e); return }
-      if (e.pointerId !== pointer || stroke === null) return
-      altKey = e.altKey
-      const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : []
-      for (const sample of events.length > 0 ? events : [e]) {
-        for (const point of stroke.move({ x: sample.clientX, y: sample.clientY })) brush({ clientX: point.x, clientY: point.y, altKey })
-      }
-      flush()
-      this.showRing(pick(e))
+      else if (this.tool === 'add' && bone >= 0) painter.add(at.part, points, bone, this.strength * 0.25)
+      else if (this.tool === 'remove' && bone >= 0) painter.remove(at.part, points, bone, this.strength * 0.25)
+      else if (this.tool === 'smooth') painter.smooth(at.part, points, this.strength * 0.5)
+      else if (this.tool === 'follow') painter.followUnder(at.part, points, this.strength * 0.5)
+      else if (this.tool === 'rigid') painter.rigid(at.part, points, this.strength * 0.5)
+      else if (this.tool === 'lift' && this.gear === null) painter.lift(at.part, points, this.gap * view.height, this.strength * 0.5)
+      this.redraw()
     }
     const down = (e: PointerEvent): void => {
-      if (e.button !== 0 || this.stroking || this.painter === null || this.busy) return
-      const at = pick(e)
-      if (at === null || !this.editable.has(this.painter.parts[at.part]?.mesh)) return   // (off the editable skin: the camera orbits)
+      if (e.button !== 0 || this.painter === null || this.busy) return
+      if (pick(e) === null) return   // (off the body: the camera orbits)
       e.stopPropagation(); e.preventDefault()
       stage.controls.enabled = false
-      held = at.part < 0 ? null : { part: at.part, sheet: new Set() }
-      pointer = e.pointerId; altKey = e.altKey
-      const rect = canvas.getBoundingClientRect()
-      const right = new THREE.Vector3().setFromMatrixColumn(stage.camera.matrixWorld, 0)
-      const a = at.point.clone().project(stage.camera)
-      const b = at.point.clone().addScaledVector(right, this.radius * view.height).project(stage.camera)
-      const pixels = Math.hypot((b.x - a.x) * rect.width / 2, (b.y - a.y) * rect.height / 2)
-      stroke = new BrushStroke({ x: e.clientX, y: e.clientY }, pixels * 0.15)
-      canvas.setPointerCapture(e.pointerId)
-      animator.setPlaying(false) // one stroke edits one pose, even when painting began during playback
       this.stroking = true
-      const maskOnly = this.tool === 'area' || this.tool === 'protect'
-      this.painter.begin({ bounded: true, stableSurface: true, preserveSurface: !maskOnly,
-        ...(maskOnly ? {} : { deferClip: true, animation: { root: view.root, clip: animator.clip } }) })
+      this.painter.begin()
       brush(e)
-      flush()
     }
-    const up = (e?: Event): void => {
+    const up = (): void => {
       if (!this.stroking) return
-      if (e instanceof PointerEvent && e.pointerId !== pointer) return
-      if (e instanceof PointerEvent && e.type === 'pointerup') {
-        for (const point of stroke?.move({ x: e.clientX, y: e.clientY }) ?? []) brush({ clientX: point.x, clientY: point.y, altKey })
-      }
-      for (const point of stroke?.end() ?? []) brush({ clientX: point.x, clientY: point.y, altKey })
-      flush()
-      const painter = this.painter
       this.stroking = false
-      held = null
-      stroke = null
-      if (pointer !== null && canvas.hasPointerCapture(pointer)) canvas.releasePointerCapture(pointer)
-      pointer = null
       stage.controls.enabled = true
-      if (painter !== null) {
-        if (this.tool === 'area' || this.tool === 'protect') { painter.end(); this.redraw() }
-        else void this.checkStroke(painter)
-      }
     }
     canvas.addEventListener('pointerdown', down, { capture: true })
-    window.addEventListener('pointermove', move)
+    window.addEventListener('pointermove', brush)
     window.addEventListener('pointerup', up)
-    window.addEventListener('pointercancel', up)
-    window.addEventListener('blur', up)
     this.listeners = () => {
-      if (this.stroking) this.painter?.stepBack() // a disappearing canvas cancels its unfinished gesture
-      if (pointer !== null && canvas.hasPointerCapture(pointer)) canvas.releasePointerCapture(pointer)
       canvas.removeEventListener('pointerdown', down, { capture: true })
-      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointermove', brush)
       window.removeEventListener('pointerup', up)
-      window.removeEventListener('pointercancel', up)
-      window.removeEventListener('blur', up)
     }
   }
 
   private detach (): void {
-    if (this.validating) {
-      this.painter?.stepBack()
-      this.workVersion++; this.validating = false; this.busy = false
-      app.setBusy('paint', null)
-    }
     this.listeners?.(); this.listeners = null
     this.ring?.removeFromParent()
     if (this.stroking && viewer.stage !== null) viewer.stage.controls.enabled = true
@@ -406,7 +299,6 @@ class Paint {
     if (this.ring === null || this.view === null) return
     this.ring.visible = at !== null
     if (at === null) return
-    ;(this.ring.material as THREE.MeshBasicMaterial).color.setHex(this.tool === 'protect' ? 0x36d6e7 : 0xff3df0)
     const r = this.radius * this.view.height
     this.ring.position.copy(at.point).addScaledVector(at.normal, r * 0.02)
     this.ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), at.normal)
@@ -430,55 +322,28 @@ class Paint {
     painter.parts.forEach(({ mesh, members }, part) => {
       const mask = new Float32Array(mesh.geometry.attributes.position.count)
       for (const [p, f] of painter.area[part]) for (const v of members.get(p) ?? [p]) mask[v] = f
-      for (const p of painter.protectedPoints[part]) for (const v of members.get(p) ?? [p]) mask[v] = -1
       view.paintMasks.set(mesh, mask)
     })
     view.refreshWeights()
     this.edited = painter.editedCount
-    this.limited = painter.limitedCount
-    this.contactLimited = painter.contactLimitedCount
     this.marked = painter.area.reduce((n, a) => n + a.size, 0)
-    this.protectedCount = painter.protectedCount
   }
 
   private async working<T> (text: string, fn: () => T | Promise<T>): Promise<T> {
-    const version = ++this.workVersion
     this.busy = true
     app.setBusy('paint', text)
     try {
       return await fn()
     } finally {
-      if (version === this.workVersion) { this.busy = false; app.setBusy('paint', null) }
+      this.busy = false
+      app.setBusy('paint', null)
     }
-  }
-
-  /** The finished drag stays visible while the full clip check yields to camera/redraw events. */
-  private async checkStroke (painter: WeightPainter): Promise<void> {
-    const version = this.workVersion + 1
-    this.validating = true
-    await this.working('Checking the stroke against the clip', async () => {
-      try {
-        if (await painter.endAsync() && this.painter === painter && version === this.workVersion) this.redraw()
-      } catch (error) {
-        // The engine restores this stroke on failure; do not undo an earlier stroke a second time.
-        if (this.painter === painter && version === this.workVersion) { this.redraw(); app.toast('error', `Stroke check failed: ${(error as Error).message}`) }
-      } finally {
-        if (this.painter === painter && version === this.workVersion) this.validating = false
-      }
-    })
-  }
-
-  cancelStroke (): void {
-    if (!this.validating) return
-    this.workVersion++; this.validating = false; this.busy = false
-    app.setBusy('paint', null)
-    if (this.painter?.stepBack() === true) this.redraw()
   }
 
   /** Heal the marked area: its weights refilled from the skin round it. */
   async heal (): Promise<void> {
     const painter = this.painter
-    if (painter === null || this.stroking || this.busy) return
+    if (painter === null) return
     await this.working('Healing the marked skin', () => {
       const n = painter.heal()
       this.redraw()
@@ -487,7 +352,6 @@ class Paint {
   }
 
   setMirror (on: boolean): void {
-    if (this.stroking || this.busy) return
     this.mirror = on
     if (this.painter !== null) this.painter.mirror = on && !this.pulled
   }
@@ -495,7 +359,7 @@ class Paint {
   /** The whole other side set from one: `from` the body's left (+1) or its right (-1). */
   async copySide (from: 1 | -1): Promise<void> {
     const painter = this.painter
-    if (painter === null || this.stroking || this.busy) return
+    if (painter === null) return
     await this.working('Mirroring the weights', () => {
       const n = painter.copySide(from)
       this.redraw()
@@ -503,9 +367,8 @@ class Paint {
     })
   }
 
-  clearArea (): void { if (!this.stroking && !this.busy) { this.painter?.clearArea(); this.redraw() } }
-  clearProtection (): void { if (!this.stroking && !this.busy) { this.painter?.clearProtection(); this.redraw() } }
-  undo (): void { if (!this.stroking && !this.busy && this.painter?.stepBack() === true) this.redraw() }
+  clearArea (): void { this.painter?.clearArea(); this.redraw() }
+  undo (): void { if (this.painter?.stepBack() === true) this.redraw() }
 
   /** The strokes as the weights routes take them: the body's by bodySkinned index, a gear piece's by its model's mesh
    * (and a pulled piece's bones as its weight keys). */
@@ -531,22 +394,26 @@ class Paint {
   async save (): Promise<void> {
     const c = app.byId(this.characterId)
     const painter = this.painter
-    if (c === null || painter === null || this.busy || this.stroking) return
+    if (c === null || painter === null || this.busy) return
     const edits = this.editsToSave()
     const gear = this.gear
-    const revision = this.revision
     // (lifted skin, Lift: the body's only)
     const lifts = gear === null ? painter.shapeEdits() : []
     if (edits.length === 0 && lifts.length === 0) return
     await this.working(gear === null ? 'Saving the weights into the rig' : 'Saving the gear\'s weights', async () => {
       try {
-        const job = gear === null ? await api.savePainting(c.id, edits, lifts, revision ?? undefined) : await api.saveGearWeights(c.id, gear, edits)
-        const done = await app.jobDone(job.id)
-        // One body job publishes both halves and increments the revision once. A failed job leaves the same
-        // unsaved painter available; there is no shape-only reload between saving Lift and weight strokes.
-        if (done.status !== 'done') return
+        if (lifts.length > 0) {
+          const lifted = await app.jobDone((await api.saveShape(c.id, lifts)).id)
+          if (lifted.status !== 'done') return
+        }
+        if (edits.length > 0) {
+          const job = gear === null ? await api.saveWeights(c.id, edits) : await api.saveGearWeights(c.id, gear, edits)
+          const done = await app.jobDone(job.id)
+          // (a failed job is toasted by the app; the strokes stay to save again)
+          if (done.status !== 'done') return
+        }
         painter.saved()
-        if (this.painter === painter) { this.edited = 0; this.limited = 0; this.contactLimited = 0 }
+        if (this.painter === painter) this.edited = 0
         const said = [lifts.length > 0 ? `${lifts.length} lifted` : '', edits.length > 0 ? `${edits.length} weighted` : ''].filter(Boolean).join(', ')
         app.toast('ok', `Saved: ${said} vertices${gear === null ? ' (kept for re-rigs)' : ''}`)
       } catch (error) {
@@ -560,25 +427,6 @@ class Paint {
     try {
       const done = await app.jobDone((await api.forgetShape(c.id)).id)
       return done.status === 'done'
-    } catch (error) {
-      app.toast('error', (error as Error).message)
-      return false
-    }
-  }
-
-  /** Start the body over: every painted weight and every lift forgotten, and the body rigged afresh at once, so its
-   * weights are the auto-rig's again (forgetting alone leaves the live rig's weights until the next rig: painting over
-   * several sessions only piled up; the designer, 2026-10-31). Clips, gear, hands and sounds stay. Ask first (the
-   * panel does). */
-  async startOver (c: Character): Promise<boolean> {
-    if (this.active && this.characterId === c.id) this.stop()
-    try {
-      for (const drop of [() => api.forgetWeights(c.id), () => api.forgetShape(c.id)]) {
-        const job = await drop()
-        if ((await app.jobDone(job.id)).status !== 'done') return false
-      }
-      const rig = await app.rig(c.id)
-      return rig !== null && (await app.jobDone(rig.id)).status === 'done'
     } catch (error) {
       app.toast('error', (error as Error).message)
       return false
