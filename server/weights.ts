@@ -110,7 +110,7 @@ export function paintGlb (bytes: Uint8Array, edits: WeightEdit[]): number {
     }
     written++
   }
-  if (written > 0) weldSeams(glb)
+  if (written > 0) weldSeams(glb, new Set(edits.map(e => `${e.mesh}:${e.vertex}`)))
   return written
 }
 
@@ -119,9 +119,10 @@ export function paintGlb (bytes: Uint8Array, edits: WeightEdit[]): number {
  * weight pass here (the pose optimizer, painting put back by vertex) treats the copies as separate vertices, so they
  * drift apart and the surface cracks open along the seam when posed (Emberhold's base body along its head/neck border,
  * 2026-11-02). Vertices at the same rest position, across all skinned primitives, take their averaged weights (four
- * strongest bones, normalised). Returns the points welded.
+ * strongest bones, normalised); where some of them were just painted (`painted`, "part:vertex"), the painted copies'
+ * weights, so painting one copy is never halved by its twin. Returns the points welded.
  */
-export function weldSeams (glb: Glb): number {
+export function weldSeams (glb: Glb, painted: ReadonlySet<string> = new Set()): number {
   const parts = skinnedParts(glb)
   const groups = new Map<string, Array<[number, number]>>()
   const views = parts.map(part => {
@@ -143,7 +144,8 @@ export function weldSeams (glb: Glb): number {
   for (const members of groups.values()) {
     if (members.length < 2) continue
     const sum = new Map<string, number>()
-    for (const [m, i] of members) {
+    const fresh = members.filter(([m, i]) => painted.has(`${m}:${i}`))
+    for (const [m, i] of fresh.length > 0 ? fresh : members) {
       const v = views[m]!
       for (let k = 0; k < 4; k++) {
         const w = v.w.get(i, k)

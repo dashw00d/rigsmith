@@ -37,10 +37,14 @@ interface Part {
   members: Map<number, number[]>
   /** point -> neighbouring points */
   adj: Map<number, Set<number>>
+  /** point -> the same point in the other parts (a material border splits a seam into parts): [part, point] */
+  shared: Map<number, Array<[number, number]>>
   rest: Float32Array
 }
 
 export interface Edit { mesh: number, vertex: number, weights: Array<[string, number]> }
+/** A lifted vertex (Lift): where it was and where it went, in its primitive's rest space (server/shapes.ts keeps them). */
+export interface ShapeEdit { mesh: number, vertex: number, from: [number, number, number], to: [number, number, number] }
 
 /** A part's rest shape for the Follow brush (WeightPainter.followUnder), in the mesh's own space. */
 interface Rest {
@@ -103,11 +107,33 @@ export class WeightPainter {
       const { twin, side } = twins(mesh, members, tol)
       const names = mesh.skeleton.bones.map(b => b.name)
       const swap = Int32Array.from(names.map((n, i) => { const j = names.indexOf(mirror(n)); return j >= 0 ? j : i }))
-      this.parts.push({ mesh, point, members, adj, rest: Float32Array.from(pos.array as ArrayLike<number>), twin, swap, side })
+      this.parts.push({ mesh, point, members, adj, shared: new Map(), rest: Float32Array.from(pos.array as ArrayLike<number>), twin, swap, side })
       this.area.push(new Map())
       this.edited.push(new Set())
       this.shaped.push(new Set())
       this.origin.push(Float32Array.from(pos.array as ArrayLike<number>))
+    }
+    this.linkParts()
+  }
+
+  /** The same point across parts: three.js makes each material its own mesh, so a seam along a material border is two
+   * parts' points at one rest position. Painting either sets both (set), so a border paints like anywhere else. */
+  private linkParts (): void {
+    if (this.parts.length < 2) return
+    const at = new Map<string, Array<[number, number]>>()
+    const v = new THREE.Vector3()
+    this.parts.forEach(({ mesh, members }, part) => {
+      const pos = mesh.geometry.attributes.position
+      for (const p of members.keys()) {
+        // (in the skeleton's space, the parts' common frame: each part's own space is its node's)
+        v.fromBufferAttribute(pos, p).applyMatrix4(mesh.bindMatrix)
+        const k = `${Math.round(v.x * 1e5)},${Math.round(v.y * 1e5)},${Math.round(v.z * 1e5)}`
+        ;(at.get(k) ?? at.set(k, []).get(k)!).push([part, p])
+      }
+    })
+    for (const group of at.values()) {
+      if (group.length < 2 || new Set(group.map(([part]) => part)).size < 2) continue
+      for (const [part, p] of group) this.parts[part].shared.set(p, group.filter(([q]) => q !== part))
     }
   }
 
@@ -124,8 +150,9 @@ export class WeightPainter {
     return w
   }
 
-  /** A point's weights set (on all its vertices): the four largest, summing to one. */
-  private set (part: number, p: number, w: Weights, log: Array<{ part: number, point: number, weights?: Weights, position?: number[] }> | null): void {
+  /** A point's weights set (on all its vertices, and on the same point in the other parts): the four largest, summing
+   * to one. */
+  private set (part: number, p: number, w: Weights, log: Array<{ part: number, point: number, weights?: Weights, position?: number[] }> | null, linked = true): void {
     const g = this.parts[part].mesh.geometry
     const si = g.attributes.skinIndex as THREE.BufferAttribute; const sw = g.attributes.skinWeight as THREE.BufferAttribute
     if (log !== null) log.push({ part, point: p, weights: this.weights(part, p) })
@@ -140,6 +167,14 @@ export class WeightPainter {
     }
     si.needsUpdate = true; sw.needsUpdate = true
     this.edited[part].add(p)
+    if (!linked) return
+    const names = this.parts[part].mesh.skeleton.bones.map(b => b.name)
+    for (const [q, qp] of this.parts[part].shared.get(p) ?? []) {
+      const other = this.parts[q].mesh.skeleton.bones.map(b => b.name)
+      const mapped: Weights = new Map()
+      for (const [b, x] of top) { const j = other.indexOf(names[b]); if (j >= 0) mapped.set(j, (mapped.get(j) ?? 0) + x) }
+      if (mapped.size > 0) this.set(q, qp, mapped, log, false)
+    }
   }
 
   /** A point's weights as its twin should have them: each bone for the other side's. */

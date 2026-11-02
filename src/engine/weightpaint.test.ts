@@ -193,3 +193,29 @@ describe('Follow on a garment', () => {
     expect(p.weights(1, 0).get(1) ?? 0).toBe(1)
   })
 })
+
+describe('a seam along a material border', () => {
+  // Two parts sharing one skeleton (three.js makes each material its own mesh): the strip's left column is the right
+  // column of a second strip, so points 2 and 5 of the first are points 0 and 3 of the second.
+  function pair (): THREE.SkinnedMesh[] {
+    const a = strip()
+    const g = a.geometry.clone()
+    const pos = g.attributes.position
+    for (let i = 0; i < pos.count; i++) pos.setX(i, pos.getX(i) + 2)
+    const b = new THREE.SkinnedMesh(g, new THREE.MeshBasicMaterial())
+    b.bind(a.skeleton, a.bindMatrix)
+    return [a, b]
+  }
+
+  it('painting a point on one part sets the same point on the other, undoes and saves with it', () => {
+    const p = new WeightPainter(pair())
+    p.mirror = false
+    p.begin()
+    p.add(0, new Map([[2, 1]]), 1, 0.5)
+    expect(p.weights(1, 0).get(1) ?? 0).toBeCloseTo(0.5)
+    expect(p.weights(1, 1).get(1) ?? 0).toBe(0)   // (the next point along is its own)
+    expect(p.edits().some(e => e.mesh === 1 && e.vertex === 0)).toBe(true)
+    expect(p.stepBack()).toBe(true)
+    expect(p.weights(1, 0).get(1) ?? 0).toBe(0)
+  })
+})

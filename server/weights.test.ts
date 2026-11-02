@@ -222,12 +222,19 @@ describe('a seam\'s copies share one skin', () => {
     return [0, 1, 2, 3].map(k => [j.get(v, k), Math.round(w.get(v, k) * 1000) / 1000] as [number, number]).filter(([, x]) => x > 0)
   }
 
-  it('painting one copy moves the other with it (across primitives), and leaves the rest', async () => {
+  it('painting one copy gives the other its weights, whole (across primitives), and leaves the rest', async () => {
     await writeFile(file('seam.glb'), seamRig())
     await writeWeights(file('seam.glb'), [{ mesh: 0, vertex: 1, weights: [['Spine', 1]] }])
-    expect(await skin(file('seam.glb'), 0, 1)).toEqual([[1, 0.5], [0, 0.5]])
-    expect(await skin(file('seam.glb'), 1, 0)).toEqual([[1, 0.5], [0, 0.5]])
+    expect(await skin(file('seam.glb'), 0, 1)).toEqual([[1, 1]])
+    expect(await skin(file('seam.glb'), 1, 0)).toEqual([[1, 1]])
     expect(await skin(file('seam.glb'), 1, 1)).toEqual([[0, 1]])
+  })
+
+  it('painting both copies keeps the painted weights (none averaged in from before)', async () => {
+    await writeFile(file('seam.glb'), seamRig())
+    await writeWeights(file('seam.glb'), [{ mesh: 0, vertex: 1, weights: [['Spine', 1]] }, { mesh: 1, vertex: 0, weights: [['Spine', 1]] }])
+    expect(await skin(file('seam.glb'), 0, 1)).toEqual([[1, 1]])
+    expect(await skin(file('seam.glb'), 1, 0)).toEqual([[1, 1]])
   })
 
   it('a published rig\'s copies are welded; a file that isn\'t a GLB is left alone', async () => {
