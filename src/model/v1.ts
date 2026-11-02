@@ -22,7 +22,7 @@ export interface V1Character {
   jointsEdited?: boolean
   scale?: number
   markers?: { set: string, base: Record<string, Vec3>, positions: Record<string, Vec3> }
-  fingers?: 'none' | 'one' | 'two' | 'full'
+  fingers?: 'none' | 'one' | 'two' | 'three' | 'full'
   template?: string
   boneMap?: Record<string, string>
   files: { model?: string, rigged?: string, thumbnail?: string }

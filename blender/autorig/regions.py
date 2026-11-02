@@ -217,14 +217,16 @@ def attach(verts, tris, names, heads, tails, joints):
 
 
 def _chain_for(finger, prefix, idx):
-    """Deform bones that drive a detected finger at the rig's finger level (mittens share Index)."""
+    """Deform bones that drive a detected finger at the rig's finger level (mittens share a chain: at one and two the
+    four fingers share Index; at three ring and pinky share Middle with the middle finger)."""
     own = [f'{prefix}Hand{finger}{i}' for i in (1, 2, 3)]
     if all(b in idx for b in own):
         return own
     if finger != 'Thumb':
-        shared = [f'{prefix}HandIndex{i}' for i in (1, 2, 3)]
-        if all(b in idx for b in shared):
-            return shared
+        for chain in (('Middle', 'Index') if finger in ('Ring', 'Pinky') else ('Index',)):
+            shared = [f'{prefix}Hand{chain}{i}' for i in (1, 2, 3)]
+            if all(b in idx for b in shared):
+                return shared
     return []
 
 

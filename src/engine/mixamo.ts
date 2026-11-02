@@ -28,6 +28,7 @@ export const BONES_AT: Readonly<Record<FingerLevel, number>> = {
   none: humanHierarchy('none').length,
   one: humanHierarchy('one').length,
   two: humanHierarchy('two').length,
+  three: humanHierarchy('three').length,
   full: humanHierarchy('full').length,
 }
 
@@ -65,6 +66,7 @@ export function groups (fingers: FingerLevel, prefix: 'Left' | 'Right' = 'Left')
 export function fingerLevelOf (joints: Joints): FingerLevel {
   const has = (f: string): boolean => ['Left', 'Right'].every(s => [1, 2, 3].every(i => joints[`${s}Hand${f}${i}`] !== undefined))
   if (FINGERS.every(has)) return 'full'
+  if (has('Thumb') && has('Index') && has('Middle')) return 'three'
   if (has('Thumb') && has('Index')) return 'two'
   return has('Index') ? 'one' : 'none'
 }

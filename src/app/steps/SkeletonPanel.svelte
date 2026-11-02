@@ -27,6 +27,7 @@
     { value: 'none', label: 'None', hint: `No finger bones: the hand moves as one piece (${BONES_AT.none} bones)` },
     { value: 'one', label: '1', hint: `One chain curls the fingers and thumb together (${BONES_AT.one} bones)` },
     { value: 'two', label: '2', hint: `Mixamo's mitten: the thumb, and one chain for the four fingers (${BONES_AT.two} bones)` },
+    { value: 'three', label: '3', hint: `The thumb, the index finger, and one chain for the other three: a point, a pinch, a bow draw (${BONES_AT.three} bones)` },
     { value: 'full', label: 'All', hint: `A chain for each finger (${BONES_AT.full} bones)` },
   ]
   const PRESETS: Record<string, string> = { mixamo: 'Mixamo', tripo: 'Tripo', rigify: 'Rigify', unreal: 'Unreal' }

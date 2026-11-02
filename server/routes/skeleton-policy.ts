@@ -15,7 +15,7 @@ const INDEX = /^(Left|Right)HandIndex[1-4]$/
 /** The marker board's finger tips (static/templates/markers.json, the human set's hand view). */
 const TIP = /^(thumb|index|middle|ring|pinky)_tip(_[lr])?$/
 
-export const LEVEL_NAMES: Record<FingerLevel, string> = { none: 'no fingers', one: 'one finger chain', two: 'two finger chains', full: 'all five fingers' }
+export const LEVEL_NAMES: Record<FingerLevel, string> = { none: 'no fingers', one: 'one finger chain', two: 'two finger chains', three: 'three finger chains', full: 'all five fingers' }
 
 const close = (a: Vec3, b: Vec3, d: number): boolean => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) <= d
 
@@ -93,13 +93,15 @@ export function applyFingerTrace (c: Character, o: { level: FingerLevel, redetec
   if (completed.length > 0) out.push(`skeleton: ${names(completed)} detected (they were missing)`)
 
   const known = new Set(want)
-  const crossing = o.from !== o.level && (o.from === 'full') !== (o.level === 'full')
+  // (the Index chain is the index finger at three and full, a mitten down the middle of the four at one and two)
+  const realIndex = (level: FingerLevel): boolean => level === 'three' || level === 'full'
+  const crossing = o.from !== o.level && realIndex(o.from) !== realIndex(o.level)
   const aside: StaleOverride[] = []
   for (const [j, at] of Object.entries(s.overrides)) {
     let reason: string | null = null
     if (o.redetect && isFingerJoint(j)) reason = 'the fingers were detected again'
     else if (!known.has(j)) reason = `finger level ${o.level} has no ${j}`
-    else if (crossing && INDEX.test(j)) reason = o.from === 'full' ? 'the index chain became the middle of a mitten' : 'the middle of the mitten became the index finger'
+    else if (crossing && INDEX.test(j)) reason = realIndex(o.from) ? 'the index chain became the middle of a mitten' : 'the middle of the mitten became the index finger'
     if (reason === null) continue
     aside.push({ joint: j, at: [...at], reason, template: s.template, level: o.from })
     delete s.overrides[j]

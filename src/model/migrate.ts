@@ -413,7 +413,7 @@ export function migrateSettings (raw: unknown, fallback: Settings = { gameRepo: 
 /** The finger level a set of joints was made at. */
 function levelOf (joints: Joints): FingerLevel {
   const has = (finger: string): boolean => `LeftHand${finger}1` in joints || `RightHand${finger}1` in joints
-  return has('Middle') ? 'full' : has('Thumb') ? 'two' : has('Index') ? 'one' : 'none'
+  return has('Ring') ? 'full' : has('Middle') ? 'three' : has('Thumb') ? 'two' : has('Index') ? 'one' : 'none'
 }
 
 function skeletonFromV1 (v: V1Character, notes: string[]): SkeletonSection {

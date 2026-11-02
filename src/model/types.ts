@@ -31,7 +31,7 @@ export const MAX_U = 16
 /** A part of a slot's source clip [from, to] (source time; schema 2's were phases of the clip as it played). */
 export type Window = [SourceU, SourceU]
 export type Side = 'Left' | 'Right'
-export type FingerLevel = 'none' | 'one' | 'two' | 'full'
+export type FingerLevel = 'none' | 'one' | 'two' | 'three' | 'full'
 
 export const SCHEMA = 4
 

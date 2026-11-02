@@ -7,11 +7,11 @@ import { FINGER_LEVELS, hierarchyOf, humanHierarchy, TEMPLATE_PARENTS } from './
 import type { FingerLevel } from './types.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..')
-const LEVELS: FingerLevel[] = ['none', 'one', 'two', 'full']
+const LEVELS: FingerLevel[] = ['none', 'one', 'two', 'three', 'full']
 
 /** v1's hierarchy (src/engine/mixamo.ts before it read the data file), which the data file was made from. */
 function v1Hierarchy (fingers: FingerLevel): Array<[string, string | null]> {
-  const chains: Record<FingerLevel, string[]> = { none: [], one: ['Index'], two: ['Thumb', 'Index'], full: ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'] }
+  const chains: Record<FingerLevel, string[]> = { none: [], one: ['Index'], two: ['Thumb', 'Index'], three: ['Thumb', 'Index', 'Middle'], full: ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'] }
   const bones: Array<[string, string | null]> = [
     ['Hips', null], ['Spine', 'Hips'], ['Spine1', 'Spine'], ['Spine2', 'Spine1'], ['Neck', 'Spine2'], ['Head', 'Neck'], ['HeadTop_End', 'Head'],
   ]
@@ -31,7 +31,7 @@ function v1Hierarchy (fingers: FingerLevel): Array<[string, string | null]> {
 describe('the human hierarchy', () => {
   it('is v1 Mixamo at every finger level', () => {
     for (const level of LEVELS) expect(humanHierarchy(level)).toEqual(v1Hierarchy(level))
-    expect(LEVELS.map(l => humanHierarchy(l).length)).toEqual([25, 33, 41, 65])
+    expect(LEVELS.map(l => humanHierarchy(l).length)).toEqual([25, 33, 41, 49, 65])
     expect(FINGER_LEVELS.two).toEqual(['Thumb', 'Index'])
   })
 

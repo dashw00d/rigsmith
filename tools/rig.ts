@@ -20,6 +20,12 @@
 //   node tools/rig.ts ride WHO HORSE|off                put him on a horse with the app's default seat, or off it
 //   node tools/rig.ts render WHO [clips=Idle,Walk] [at=0,.25,.5,.75] [views=right,front] [size=320] [out=DIR]
 //                                                       pictures of its clips as the game file has them (Blender)
+//   node tools/rig.ts shot WHO [clip=SLOT|CLIP] [frame=15] [mode=shaded|clay|weights|xray] [view=three|front|back|
+//                          left|right|x,y,z] [zoom=1] [at=.5] [drop=albedo,ao,normal,metal] [size=800] [out=FILE.png]
+//                                                       one frame as the viewer draws it (its renderer, lights, the
+//                                                       live rig and textures; headless Chrome, the app's server up):
+//                                                       a slot's library clip or any library clip (id or name),
+//                                                       retargeted in place, without the slot's adjustments
 //   node tools/rig.ts check [UNIT ...]                  is each game unit's file what Rigsmith would build now?
 //   node tools/rig.ts units                             Rigsmith's game units, and which differ from the game's
 //   node tools/rig.ts unit NAME JSON|null               set one unit's entry (in Rigsmith: the game is untouched)
@@ -339,7 +345,7 @@ async function set (c: Character, field: string, value: unknown): Promise<string
       return await run(c, commands, 'hands.poses')
     }
     case 'fingers': {
-      if (!['none', 'one', 'two', 'full'].includes(value as string)) throw new Error('fingers: none, one, two or full')
+      if (!['none', 'one', 'two', 'three', 'full'].includes(value as string)) throw new Error('fingers: none, one, two, three or full')
       // (a finger level is a generator: the trace replaces the fingers, so it is a job, not a command)
       const job = await call<Job>('POST', `/api/characters/${c.id}/fingers`, { fingers: value })
       if (typeof job?.id !== 'string' || typeof job.status !== 'string') return ['fingers fitted']
@@ -527,6 +533,29 @@ async function main (): Promise<void> {
     case 'ride': {
       const c = resolve(pos[0])
       console.log(await ride(c, pos[1] ?? 'off'))
+      return
+    }
+    case 'shot': {
+      const c = resolve(pos[0])
+      const { shot } = await import('./lib/shot.ts')
+      const { clipUrl, refUrl } = await import('../src/engine/clips.ts')
+      let clip = ''
+      if (kv.clip !== undefined) {
+        const slot = c.clips.find(x => x.name.toLowerCase() === kv.clip.toLowerCase())
+        const manifest = JSON.parse(readFileSync(path.join(WORKSPACE, 'library', 'manifest.json'), 'utf8')) as { clips: Array<{ id: string, name: string }> }
+        const listed = manifest.clips.find(x => x.id === kv.clip) ?? manifest.clips.find(x => x.name.toLowerCase() === kv.clip.toLowerCase())
+        if (slot !== undefined) clip = refUrl(slot.clip)
+        else if (listed !== undefined) clip = clipUrl(listed.id)
+        else throw new Error(`${c.name} has no slot "${kv.clip}" and the library no clip by that id or name`)
+      }
+      const frame = kv.frame ?? '0'
+      const out = kv.out ?? path.join(WORKSPACE, 'renders', c.id, `shot-${(kv.clip ?? 'rest').replace(/[^\w-]+/g, '_')}-${frame}-${kv.mode ?? 'shaded'}${kv.drop !== undefined ? '-no-' + kv.drop.replace(/,/g, '-') : ''}.png`)
+      mkdirSync(path.dirname(out), { recursive: true })
+      const file = `/files/characters/${encodeURIComponent(c.id)}/${c.files.rigged ?? c.files.model}?v=${Date.now()}`
+      const query: Record<string, string> = { file, clip, frame }
+      for (const k of ['mode', 'view', 'zoom', 'at', 'size', 'fps', 'drop']) if (kv[k] !== undefined) query[k] = kv[k]
+      await shot(SERVER, query, out)
+      console.log(out)
       return
     }
     case 'render': {

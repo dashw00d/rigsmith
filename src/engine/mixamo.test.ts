@@ -12,7 +12,7 @@ const ROOT = path.resolve(import.meta.dirname, '..', '..')
 describe('the Mixamo humanoid', () => {
   it('is the model\'s hierarchy, from the one data file', () => {
     for (const level of ['none', 'one', 'two', 'full'] as const) expect(hierarchy(level)).toEqual(humanHierarchy(level))
-    expect(BONES_AT).toEqual({ none: 25, one: 33, two: 41, full: 65 })
+    expect(BONES_AT).toEqual({ none: 25, one: 33, two: 41, three: 49, full: 65 })
   })
 
   it('lays fingers by the anatomy table the finger trace reads too', () => {
@@ -23,7 +23,7 @@ describe('the Mixamo humanoid', () => {
   })
 
   it('tells finger levels from the joints', () => {
-    for (const level of ['none', 'one', 'two', 'full'] as const) expect(fingerLevelOf(humanJoints(level))).toBe(level)
+    for (const level of ['none', 'one', 'two', 'three', 'full'] as const) expect(fingerLevelOf(humanJoints(level))).toBe(level)
     const one = humanJoints('full')
     delete one.RightHandMiddle2
     expect(fingerLevelOf(one)).toBe('two')

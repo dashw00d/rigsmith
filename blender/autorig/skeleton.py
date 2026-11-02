@@ -286,12 +286,19 @@ def _toe_tip_y(sil, toe_x, z0, H):
     return float(np.percentile(sil.points[near, 1], 0.5))
 
 
+def _layout(table, finger, fingers):
+    """A finger's layout at a level: at three the Middle chain is a mitten down the middle of middle, ring and pinky."""
+    if fingers == 'three' and finger == 'Middle':
+        return [tuple(np.mean([table[f][i] for f in ('Middle', 'Ring', 'Pinky')], axis=0)) for i in range(len(table['Middle']))]
+    return table[finger]
+
+
 def _add_fingers(joints, fingers, hand=None):
     wrist = joints['LeftHand']
     if hand is not None:
         frame = np.stack([hand['axis'], hand['thumb'], hand['palm']])
         for finger in mixamo.FINGER_LEVELS[fingers]:
-            for i, offset in enumerate(FINGER_LAYOUT[finger], start=1):
+            for i, offset in enumerate(_layout(FINGER_LAYOUT, finger, fingers), start=1):
                 joints[f'LeftHand{finger}{i}'] = wrist + hand['length'] * (np.array(offset) @ frame)
         return
     elbow = joints['LeftForeArm']
@@ -303,7 +310,7 @@ def _add_fingers(joints, fingers, hand=None):
     y_axis /= np.linalg.norm(y_axis)
     z_axis = np.cross(x_axis, y_axis)  # matches the ground-truth frame (z = x × forward)
     for finger in mixamo.FINGER_LEVELS[fingers]:
-        for i, (fx, fy, fz) in enumerate(FOREARM_FINGER_LAYOUT[finger], start=1):
+        for i, (fx, fy, fz) in enumerate(_layout(FOREARM_FINGER_LAYOUT, finger, fingers), start=1):
             joints[f'LeftHand{finger}{i}'] = wrist + length * (fx * x_axis + fy * y_axis + fz * z_axis)
 
 
@@ -335,14 +342,17 @@ def detect_finger_joints(verts, tris, joints, height, x_center):
 
 def fit_finger_level(detected, fingers, joints):
     """Detected five-finger joints reduced to the requested level. Mitten levels (Mixamo's one/two
-    chains) drive all four fingers from the Index chain, so it runs down the middle of them."""
+    chains) drive all four fingers from the Index chain, so it runs down the middle of them; at three the Index chain
+    is the index finger and the Middle chain runs down the middle of middle, ring and pinky."""
     out = {}
     wanted = mixamo.FINGER_LEVELS[fingers]
     for finger in wanted:
         for i in range(1, 5):
             name = f'LeftHand{finger}{i}'
-            if finger == 'Index' and fingers in ('one', 'two'):
-                pts = [detected.get(f'LeftHand{f}{i}') for f in ('Index', 'Middle', 'Ring', 'Pinky')]
+            together = (('Index', 'Middle', 'Ring', 'Pinky') if finger == 'Index' and fingers in ('one', 'two') else
+                        ('Middle', 'Ring', 'Pinky') if finger == 'Middle' and fingers == 'three' else None)
+            if together:
+                pts = [detected.get(f'LeftHand{f}{i}') for f in together]
                 pts = [p for p in pts if p is not None]
                 if pts:
                     out[name] = np.mean(pts, axis=0)

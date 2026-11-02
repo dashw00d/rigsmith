@@ -1,10 +1,11 @@
 {
-  "_doc": "The Mixamo humanoid (bare bone names, no mixamorig: prefix): every bone at the full finger level with its parent, parents before children. A finger bone names its finger third. A finger level keeps the bones whose finger is in fingerLevels[level] (Mixamo's skeleton options; at one and two the Index chain is a mitten down the middle of the four fingers). Read by src/model/skeletons.ts, src/engine/mixamo.ts and blender/autorig/mixamo.py. `anatomy`: where each long finger's joints sit along the hand (Mixamo's proportions): the knuckle's reach along the hand as a fraction of the tip's, then the two middle joints as fractions of knuckle -> tip; the finger trace (blender/autorig/fingers.py) and the marker board (src/engine/markers.ts) both lay fingers by it.",
+  "_doc": "The Mixamo humanoid (bare bone names, no mixamorig: prefix): every bone at the full finger level with its parent, parents before children. A finger bone names its finger third. A finger level keeps the bones whose finger is in fingerLevels[level] (Mixamo's skeleton options; at one and two the Index chain is a mitten down the middle of the four fingers; at three the Index chain is the index finger and the Middle chain a mitten down the middle of the other three). Read by src/model/skeletons.ts, src/engine/mixamo.ts and blender/autorig/mixamo.py. `anatomy`: where each long finger's joints sit along the hand (Mixamo's proportions): the knuckle's reach along the hand as a fraction of the tip's, then the two middle joints as fractions of knuckle -> tip; the finger trace (blender/autorig/fingers.py) and the marker board (src/engine/markers.ts) both lay fingers by it.",
   "fingers": ["Thumb", "Index", "Middle", "Ring", "Pinky"],
   "fingerLevels": {
     "none": [],
     "one": ["Index"],
     "two": ["Thumb", "Index"],
+    "three": ["Thumb", "Index", "Middle"],
     "full": ["Thumb", "Index", "Middle", "Ring", "Pinky"]
   },
   "anatomy": {

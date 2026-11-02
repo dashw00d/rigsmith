@@ -21,7 +21,7 @@ import { type Character, characterDir, getCharacter, ROOT, updateCharacter, WORK
 import { applyConvert, applyFingerTrace, applyRefit, applyTemplate, assertLevelUnlocked, humanSeed, LEVEL_NAMES, traceInput } from './skeleton-policy.ts'
 import { assertUnlocked } from './skin.ts'
 
-const LEVELS: readonly FingerLevel[] = ['none', 'one', 'two', 'full']
+const LEVELS: readonly FingerLevel[] = ['none', 'one', 'two', 'three', 'full']
 
 async function found (id: string): Promise<Character> {
   const c = await getCharacter(id)

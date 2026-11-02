@@ -60,7 +60,8 @@ def child_of(bone, bones):
     children = [b for b, parent in bones if parent == bone]
     if not children:
         return None
-    # The hand runs toward the middle knuckle, or the index one on mitten hands (as Mixamo does);
+    # The hand runs toward the middle knuckle (at three, the middle of the last three fingers), or the index one on
+    # mitten hands (as Mixamo does);
     # never toward the thumb.
     preferred = {'Hips': ['Spine'], 'Spine2': ['Neck'],
                  'LeftHand': ['LeftHandMiddle1', 'LeftHandIndex1'], 'RightHand': ['RightHandMiddle1', 'RightHandIndex1']}

@@ -9,7 +9,7 @@
 
   let { character }: { character: Character } = $props()
 
-  const LEVELS: Record<FingerLevel, string> = { none: 'no finger bones', one: 'one finger chain', two: 'the mitten (thumb and one chain)', full: 'every finger' }
+  const LEVELS: Record<FingerLevel, string> = { none: 'no finger bones', one: 'one finger chain', two: 'the mitten (thumb and one chain)', three: 'thumb, index and one chain for the other three', full: 'every finger' }
 
   const report = $derived(character.skin.report ?? null)
   const human = $derived(character.skeleton.template === 'human')
