@@ -10,6 +10,7 @@
   import Section from '../../ui/Section.svelte'
   import TextField from '../../ui/TextField.svelte'
   import DeformationTests from '../skin/DeformationTests.svelte'
+  import SlotClips from '../skin/SlotClips.svelte'
   import RigReport from '../skin/RigReport.svelte'
   import WeightChips from '../skin/WeightChips.svelte'
   import WeightPaintPanel from '../skin/WeightPaintPanel.svelte'
@@ -98,6 +99,9 @@
   {/if}
 
   {#if phase.phase === 'rigged'}
+    <Section title="Its animations">
+      <SlotClips {character} />
+    </Section>
     <Section title="Deformation tests">
       <DeformationTests {character} />
     </Section>

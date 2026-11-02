@@ -89,10 +89,12 @@ export class NowPlaying {
   }
 }
 
-/** The steps a playing clip stays on in: gear, motion and ship; the skeleton and skin steps keep a rig test playing. */
+/** The steps a playing clip stays on in: gear, motion, ship and skin (the weights are judged in what the character
+ * plays: a frame paused in Motion, a hand pose, not only the tests); the skeleton step keeps only a rig test playing
+ * (its joints move under it). */
 function keeps (step: Step, now: NowPlaying): boolean {
-  if (step === 'gear' || step === 'motion' || step === 'ship') return true
-  return (step === 'skeleton' || step === 'skin') && now.kind === 'test'
+  if (step === 'gear' || step === 'motion' || step === 'ship' || step === 'skin') return true
+  return step === 'skeleton' && now.kind === 'test'
 }
 
 interface Horse { mount: MountView, player: Player, cache: RetargetCache, posable: THREE.Object3D | null }
