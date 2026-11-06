@@ -1,4 +1,4 @@
-// The character document, schema 4: one record per character (workspace/characters/<id>/character.json), split into
+// The character document, schema 5: one record per character (workspace/characters/<id>/character.json), split into
 // sections that each have exactly one owning module. The server, the app and the tools all read and write it through
 // this file's types and src/model/commands.ts. See docs/rebuild/DESIGN.md.
 //
@@ -35,10 +35,10 @@ export type Window = [SourceU, SourceU]
 export type Side = 'Left' | 'Right'
 export type FingerLevel = 'none' | 'one' | 'two' | 'three' | 'full'
 
-export const SCHEMA = 4
+export const SCHEMA = 5
 
 export interface Character {
-  schema: 4
+  schema: 5
   id: string
   name: string
   createdAt: number
@@ -662,7 +662,9 @@ export interface JournalEntry {
 
 /** Entity keys (src/model/entities.ts): 'name', 'skeleton', 'skinLock' ({locked, lockReason}), 'hands', 'mount',
  * 'gear:<id>' (without the job-owned status, error, painted, model), 'slot:<id>', 'layer:<id>' (look layers), 'skins' ({skins, skin, clothes, clothing}: look's skins and clothes and the ones shown),
- * 'gearOrder', 'slotOrder', 'layerOrder'. Job-owned fields (source, files, status, skin report, look.scan/at...) are
+ * 'gearOrder', 'slotOrder', 'layerOrder'; a dynamic character's 'set:<id>', 'pool:<id>', 'kind:<id>', 'stance:<id>'
+ * (Character.folk's), 'cloth:<id>' (look.cloth's), 'setOrder', 'clothOrder' (pools, kinds and stances keep their
+ * order with their entity: 'poolOrder', 'kindOrder', 'stanceOrder'). Job-owned fields (source, files, status, skin report, look.scan/at...) are
  * not entities. `before` null: it did not exist. `after`: a stable hash of the entity right after the write, so a
  * later change to it is seen as a conflict (order entities never conflict: they merge). */
 export interface UndoRecord {

@@ -142,7 +142,7 @@ export async function measureCharacter (id: string, o: { workspace?: string, fil
   const workspace = o.workspace ?? WORKSPACE
   const dir = path.join(workspace, 'characters', id)
   const raw = JSON.parse(readFileSync(o.file ?? path.join(dir, 'character.json'), 'utf8')) as { schema?: unknown }
-  const v3 = raw.schema === 3 || raw.schema === 4
+  const v3 = raw.schema === 3 || raw.schema === 4 || raw.schema === 5
   const c = v3 ? raw as unknown as V3Character : migrateV1(raw).character
   const rigged = c.files.rigged
   // (no rig, or one without a skeleton: none of its clips can play, so none is there to measure)

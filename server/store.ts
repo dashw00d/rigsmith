@@ -127,11 +127,11 @@ const versions = new Map<string, number>()
 
 const fileOf = (id: string): string => path.join(characterDir(id), 'character.json')
 
-/** The character as schema 4; null when there is none. Reading an older file migrates it. */
+/** The character as schema 5; null when there is none. Reading an older file migrates it. */
 export async function getCharacter (id: string): Promise<Character | null> {
   const raw = await readJson<Record<string, unknown> | null>(fileOf(id), null)
   if (raw === null) return null
-  if (raw.schema === 4) {
+  if (raw.schema === 5) {
     versions.set(id, raw.version as number)
     return raw as unknown as Character
   }
@@ -153,11 +153,11 @@ export async function listCharacters (): Promise<Character[]> {
   return all.filter((c): c is Character => c !== null).sort((a, b) => a.createdAt - b.createdAt)
 }
 
-/** The document under the store lock (the caller holds it), migrated first if it is older than schema 4. */
+/** The document under the store lock (the caller holds it), migrated first if it is older than schema 5. */
 async function loadLocked (id: string): Promise<Character | null> {
   const raw = await readJson<Record<string, unknown> | null>(fileOf(id), null)
   if (raw === null) return null
-  if (raw.schema === 4) {
+  if (raw.schema === 5) {
     versions.set(id, raw.version as number)
     return raw as unknown as Character
   }
@@ -165,8 +165,8 @@ async function loadLocked (id: string): Promise<Character | null> {
   return await migrations('all', async () => await migrateLocked(id, raw))
 }
 
-/** v1, v2 or v3 -> v4 in place (DESIGN.md §2.3, docs/motion-plan.md §5, §11.5): what the model needs to know from the
- * files, then the old copy kept (once: character.v1.json, character.v2.json or character.v3.json), the migration's file copies, the write, and one
+/** v1 to v4 -> v5 in place (DESIGN.md §2.3, docs/motion-plan.md §5, §11.5, docs/dressing-plan.md Phase 1): what the model needs to know from the
+ * files, then the old copy kept (once: character.v1.json to character.v4.json), the migration's file copies, the write, and one
  * journal entry with its notes. GLBs and weight_edits.json are only read. */
 async function migrateLocked (id: string, raw: Record<string, unknown>): Promise<Character> {
   const { ctx, notes } = await migrationContext(id, raw)
@@ -226,12 +226,12 @@ async function measureChild (id: string): Promise<MeasuredTimes> {
 }
 
 /** A migration written, the caller holding the store lock (or no server running): the old copy kept (once: a v1 file
- * as character.v1.json, a v2 one as character.v2.json, a v3 one as character.v3.json), the file copies made (never over a file; a missing source is
+ * as character.v1.json, a v2 one as character.v2.json, a v3 one as character.v3.json, a v4 one as character.v4.json), the file copies made (never over a file; a missing source is
  * added to `notes`), the document written, and one journal entry with the migration's notes and `notes`. */
 export async function writeMigration (id: string, out: Migration, notes: string[], by = 'server'): Promise<JournalEntry> {
   const dir = characterDir(id)
   const character = out.character
-  const backup = path.join(dir, `character.v${out.from === 4 ? 3 : out.from}.json`)
+  const backup = path.join(dir, `character.v${out.from === 5 ? 4 : out.from}.json`)
   if (!existsSync(backup)) await copyFile(fileOf(id), backup, constants.COPYFILE_EXCL)
   for (const op of out.fileOps) {
     const from = inside(dir, op.from)
@@ -300,7 +300,7 @@ export async function commit (id: string, fn: (c: Character) => void | Character
     if (before === null) throw new HttpError(404, `No character ${id}`)
     const draft = structuredClone(before)
     const after = (await fn(draft)) ?? draft
-    if (after.id !== id || after.schema !== 4) throw new Error('A write changed the character\'s id or schema')
+    if (after.id !== id || after.schema !== 5) throw new Error('A write changed the character\'s id or schema')
     const changes = meta?.changes ?? []
     if (changes.length === 0 && JSON.stringify(after) === JSON.stringify(before)) return { id, character: before, entry: null, touched: [] }
     after.version = before.version + 1
@@ -362,7 +362,7 @@ export async function createCharacter (originalName: string, bytes: Buffer, by =
     await writeFile(path.join(dir, file), bytes)
     const now = Date.now()
     const character: Character = {
-      schema: 4,
+      schema: 5,
       id,
       name: stem.replace(/[_-]+/g, ' ').replace(/\b\w/g, m => m.toUpperCase()),
       createdAt: now,

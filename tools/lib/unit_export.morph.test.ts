@@ -66,7 +66,7 @@ async function fixture (workspace: string): Promise<string> {
   const file = path.join(dir, 'rigged.glb')
   writeFileSync(file, new Uint8Array(bytes))
   const c: Character = {
-    schema: 4, id: 'corrected-body', name: 'Corrected body', createdAt: 1, updatedAt: 1, version: 1, revision: 1,
+    schema: 5, id: 'corrected-body', name: 'Corrected body', createdAt: 1, updatedAt: 1, version: 1, revision: 1,
     status: 'rigged', files: { rigged: 'rigged.glb' },
     source: { file: 'rigged.glb', originalName: 'corrected.glb', bytes: bytes.byteLength, kind: 'rigged', scale: 1, warnings: [] },
     skeleton: { template: 'human', fingerLevel: 'none', overrides: {} }, skin: { locked: false },

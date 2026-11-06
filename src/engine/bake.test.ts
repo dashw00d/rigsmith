@@ -84,7 +84,7 @@ const bow: Gear = {
 
 function character (clips: Slot[] = [], patch: Partial<Character> = {}): Character {
   return {
-    schema: 4, id: 'c1', name: 'Test', createdAt: 0, updatedAt: 0, version: 1, revision: 0, files: { rigged: 'rigged.glb' }, status: 'rigged',
+    schema: 5, id: 'c1', name: 'Test', createdAt: 0, updatedAt: 0, version: 1, revision: 0, files: { rigged: 'rigged.glb' }, status: 'rigged',
     source: { file: 'source/original.glb', originalName: 'test.glb', bytes: 1, kind: 'mesh', scale: 1, warnings: [], stats: { vertices: 30, triangles: 0, height: 1.8, meshes: 1, bones: 16 } },
     skeleton: { template: 'human', fingerLevel: 'full', overrides: {} },
     skin: { locked: false },

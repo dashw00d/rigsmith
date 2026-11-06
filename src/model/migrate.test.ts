@@ -5,11 +5,14 @@ import { describe, expect, it } from 'vitest'
 import { cleanImageName } from '../../server/glbimages.ts'
 import { applyCommands } from './commands.ts'
 import { stableId } from './ids.ts'
-import { gearFromProp, gearFromV1, holdsFromV1, migrate, migrateSettings, migrateV1, needsClipTimes, piecesFromHolds, readCharacter, slotFromV2, slotsFromV1, slotToV2, unmeasured, v2TimeMap } from './migrate.ts'
+import { makeCharacter, makeGear } from './fixtures.ts'
+import { gearFromProp, gearFromV1, holdsFromV1, migrate, migrateSettings, migrateV1, needsClipTimes, piecesFromHolds, readCharacter, slotFromV2, slotsFromV1, slotToV2, toV5, unmeasured, v2TimeMap } from './migrate.ts'
+import type { GameSpec } from './unit.ts'
 import type { V3Character, V3Slot } from './v3.ts'
+import type { V4Character } from './v4.ts'
 import { DEFAULT_FIST, jointsOf } from './select.ts'
 import { hierarchyOf, humanHierarchy } from './skeletons.ts'
-import type { Adjustment, Character, FingerLevel, Joints, Vec3 } from './types.ts'
+import type { Adjustment, Character, FingerLevel, Joints, Pool, Skin, Vec3 } from './types.ts'
 import type { V2Adjustment, V2Character, V2Slot } from './v2.ts'
 import type { V1Character, V1ClipScript, V1Garment } from './v1.ts'
 
@@ -116,7 +119,7 @@ describe('migrate: source and skin', () => {
 
   it('stamps the schema, a first version and the revision', () => {
     const c = migrate(v1({ revision: undefined, thumbVersion: 5 })).character
-    expect(c).toMatchObject({ schema: 4, version: 1, revision: 0, thumbVersion: 5, id: ID, name: 'Hero', status: 'rigged' })
+    expect(c).toMatchObject({ schema: 5, version: 1, revision: 0, thumbVersion: 5, id: ID, name: 'Hero', status: 'rigged' })
     expect(migrate(v1()).character.revision).toBe(3)
   })
 })
@@ -530,9 +533,9 @@ describe('migrate: schema 2 -> 3', () => {
     expect(() => readCharacter(v2char([v2slot({ adjustments: [blow()] })]))).not.toThrow()
   })
 
-  it('says it came from schema 2 (kept as character.v2.json) and is schema 4 after', () => {
+  it('says it came from schema 2 (kept as character.v2.json) and is schema 5 after', () => {
     const m = migrate(v2char([v2slot()]))
-    expect([m.migrated, m.from, m.character.schema]).toEqual([true, 2, 4])
+    expect([m.migrated, m.from, m.character.schema]).toEqual([true, 2, 5])
     expect(migrate(m.character).migrated).toBe(false)
   })
 
@@ -558,11 +561,11 @@ describe('migrate: as a whole', () => {
     texture: { filled: true, images: [{ image: 'Tex', coverage: 0.1, file: 'Tex.png' }], at: 9 },
   })
 
-  it('is idempotent: schema 4 comes back as it is', () => {
+  it('is idempotent: schema 5 comes back as it is', () => {
     const once = migrate(full, { textureFiles: ['Tex.png'] })
     expect([once.migrated, once.from]).toEqual([true, 1])
     const twice = migrate(once.character, { textureFiles: ['Tex.png'] })
-    expect(twice).toEqual({ character: once.character, migrated: false, from: 4, notes: [], fileOps: [] })
+    expect(twice).toEqual({ character: once.character, migrated: false, from: 5, notes: [], fileOps: [] })
     expect(migrate(JSON.parse(JSON.stringify(once.character))).character).toEqual(once.character)
     expect(readCharacter(full)).toEqual(migrate(full).character)
   })
@@ -582,7 +585,7 @@ describe('migrate: as a whole', () => {
   it('refuses what is not a character, or a schema it doesn\'t know', () => {
     expect(() => migrate(null)).toThrow()
     expect(() => migrate({ name: 'x' })).toThrow()
-    expect(() => migrate({ ...full, schema: 5 })).toThrow()
+    expect(() => migrate({ ...full, schema: 6 })).toThrow()
   })
 })
 
@@ -643,7 +646,7 @@ describe('migrate: schema 3 -> 4 (holds become pieces)', () => {
 
   it('makes each hold a held piece between parts of the clip, every time where it played', () => {
     const m = migrate(v3char([held(), v3slot({ id: 'idle', name: 'Idle' })]), { clipTimes: { atk: { seconds: 2 } } })
-    expect([m.migrated, m.from, m.character.schema]).toEqual([true, 3, 4])
+    expect([m.migrated, m.from, m.character.schema]).toEqual([true, 3, 5])
     const s = m.character.clips[0]
     expect(s.pieces!.map(p => [p.id, p.kind, p.from, p.to])).toEqual([['h0', 'hold', 0, 0.25], [expect.any(String), 'clip', 0, 1], ['h1', 'hold', 0, 0.5], [expect.any(String), 'clip', 1, 2]])
     expect(s.time).toEqual({ fit: { enabled: true, at: 0.45 } })
@@ -684,5 +687,90 @@ describe('migrate: schema 3 -> 4 (holds become pieces)', () => {
     expect(loose.notes.some(n => /dropped/.test(n))).toBe(true)
     const p = piecesFromHolds(held(), 2, 'x')
     expect(p.pieces).toHaveLength(4)
+  })
+})
+
+describe('schema 4 -> 5 (a dynamic character\'s dressing as data)', () => {
+  const skin = (name: string, tags?: string[]): Skin => ({ name, file: `skins/${name}.png`, ...(tags !== undefined ? { tags } : {}) })
+  const folkV4 = (): V4Character => {
+    const c = makeCharacter({
+      id: 'folk-v6-aaaaaa',
+      gear: [
+        makeGear({ id: 'h1', name: 'Hair_braids', role: 'hair', swapSet: 'hair', tags: ['fem', 'long'] }),
+        makeGear({ id: 'h2', name: 'Hair_tonsure', role: 'hair', swapSet: 'hair', tags: ['masc'] }),
+        makeGear({ id: 'b1', name: 'Beard_full', role: 'beard', swapSet: 'beard' }),
+        makeGear({ id: 'm1', name: 'Outfit_mail_helm', outfit: 'mail', tags: ['covers-hair'] }),
+        makeGear({ id: 'm2', name: 'Outfit_mail_forearm_L', outfit: 'mail' }),
+        makeGear({ id: 's1', name: 'Outfit_straw_hat', outfit: 'straw' }),
+        makeGear({ id: 'x', name: 'Axe' }),
+      ],
+      look: { layers: [], skins: [skin('asha', ['female']), skin('bran')], clothes: [skin('plain'), { ...skin('long'), file: 'clothes/long.png', tags: ['long-sleeves'] }], skin: 'bran', clothing: 'plain' },
+    })
+    return { ...c, schema: 4 } as unknown as V4Character
+  }
+
+  it('only moves a character that isn\'t dynamic to schema 5', () => {
+    const plain = { ...makeCharacter(), schema: 4 }
+    const m = migrate(plain)
+    expect([m.migrated, m.from, m.character.schema]).toEqual([true, 4, 5])
+    expect(m.character.folk).toBeUndefined()
+    expect(m.character.look.cloth).toBeUndefined()
+    expect({ ...m.character, schema: 4 }).toEqual(plain)
+    expect(m.notes).toEqual([])
+  })
+
+  it('makes each outfit a set, the roles and skins pools with the old rules, the clothes cloth layers, one kind', () => {
+    const v4 = folkV4()
+    const m = migrate(v4)
+    const c = m.character
+    expect([m.migrated, m.from, c.schema]).toEqual([true, 4, 5])
+    const f = c.folk!
+    expect(f.sets).toEqual([
+      { id: stableId('folk-v6-aaaaaa:set:mail'), name: 'mail', pieces: ['m1', 'm2'], tags: [], grants: ['bracers', 'covers-hair'] },
+      { id: stableId('folk-v6-aaaaaa:set:straw'), name: 'straw', pieces: ['s1'], tags: [], grants: [] },
+    ])
+    const pool = (kind: string): Pool => f.pools.find(p => p.kind === kind)!
+    expect(pool('skin').items).toEqual([{ ref: 'asha' }, { ref: 'bran' }])
+    expect(pool('hair')).toMatchObject({ excludes: ['covers-hair'], items: [{ ref: 'h1', requires: ['female'] }, { ref: 'h2', excludes: ['female'] }] })
+    expect(pool('beard')).toMatchObject({ chance: 0.5, excludes: ['beardless', 'covers-face'], items: [{ ref: 'b1' }] })
+    const long = c.look.cloth!.find(l => l.name === 'long')!
+    expect(c.look.cloth).toEqual([
+      { id: stableId('folk-v6-aaaaaa:cloth:plain'), name: 'plain', slots: ['top', 'bottom'], file: 'skins/plain.png' },
+      { id: long.id, name: 'long', slots: ['top', 'bottom'], file: 'clothes/long.png', shapes: ['long_sleeve'], tags: ['long-sleeves'] },
+    ])
+    expect(pool('cloth')).toMatchObject({ slot: 'bottom', items: [{ ref: c.look.cloth![0].id }, { ref: long.id, excludes: ['bracers'] }] })
+    expect(f.kinds).toEqual([{ id: 'folk', name: 'Folk', tags: [], sets: { query: [] } }])
+    expect(f.stances).toEqual([])
+    // (the old fields stay, the UI reads them until it is ported)
+    expect(c.gear).toEqual(v4.gear)
+    expect(c.look.clothes).toEqual(v4.look.clothes)
+    expect(m.notes.join('\n')).toMatch(/2 outfits are sets.*kinds folk/)
+  })
+
+  it('takes the kinds from the game\'s units of it', () => {
+    const units: GameSpec = { units: {
+      villager: { character: 'folk-v6-aaaaaa', height: 1.8, budget: 5000, clips: [], folk: { outfits: ['straw'] } },
+      guard: { character: 'folk-v6-aaaaaa', height: 1.8, budget: 5000, clips: [], folk: { outfits: ['mail', 'gone'] } },
+      other: { character: 'someone-else', height: 1.8, budget: 5000, clips: [], folk: { outfits: ['mail'] } },
+    } }
+    const f = migrate(folkV4(), { units }).character.folk!
+    expect(f.kinds).toEqual([
+      { id: 'guard', name: 'guard', tags: [], sets: [{ set: stableId('folk-v6-aaaaaa:set:mail') }] },
+      { id: 'villager', name: 'villager', tags: [], sets: [{ set: stableId('folk-v6-aaaaaa:set:straw') }] },
+    ])
+  })
+
+  it('is pure, deterministic and idempotent; older schemas come through it too', () => {
+    const v4 = folkV4()
+    const copy = structuredClone(v4)
+    const once = migrate(v4)
+    expect(v4).toEqual(copy)
+    expect(migrate(structuredClone(v4))).toEqual(once)
+    expect(migrate(once.character)).toEqual({ character: once.character, migrated: false, from: 5, notes: [], fileOps: [] })
+    expect(toV5(v4)).toEqual(once.character)
+    expect(needsClipTimes(v4)).toBe(false)
+    expect(unmeasured(v4, undefined)).toEqual([])
+    const v3 = { ...structuredClone(v4), schema: 3 }
+    expect(migrate(v3).character).toEqual(once.character)
   })
 })

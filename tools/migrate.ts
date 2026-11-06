@@ -1,7 +1,8 @@
-// Migrates the whole workspace to schema 4 (docs/rebuild/DESIGN.md §2.3, docs/motion-plan.md §5, §11.5) with the steps
+// Migrates the whole workspace to schema 5 (docs/rebuild/DESIGN.md §2.3, docs/motion-plan.md §5, §11.5, docs/dressing-plan.md
+// Phase 1) with the steps
 // the server takes for a character the first time it reads one (server/store.ts migrationContext and writeMigration):
 // each characters/*/character.json still at v1 is kept as character.v1.json (once), one at v2 as character.v2.json
-// (once), one at v3 as character.v3.json (once), its old textures copied in as layers, the clips of slots whose phases
+// (once), one at v3 as character.v3.json (once), one at v4 as character.v4.json (once), its old textures copied in as layers, the clips of slots whose phases
 // move into source time (or whose holds become pieces) measured on the rig (here, in this process), the document written and one 'migrate' journal entry made of its notes. settings.json
 // keeps only what schema 2 has (the old file kept as settings.v1.json, once). GLBs and weight_edits.json are only ever
 // read.
@@ -15,7 +16,10 @@
 //               character.v2.json kept): migrating it again gives its slots, and every key, window and picked blow
 //               maps back to the phase it played at; against its v3 record (the character.v3.json kept, or the file):
 //               migrating it again gives its slots, and every time of a slot with holds plays at the same second
-//               (tools/lib/migrate_check.ts); and that no GLB or
+//               (tools/lib/migrate_check.ts); of a dynamic character, against its v4 record (the character.v4.json
+//               kept, or the file): for every set and skin the pick engine (src/engine/folkpick.ts) allows exactly
+//               the hair, beards and clothes fits/coversHair/coversFace/clothesFor allowed, each kind its outfits
+//               (migrate_check.ts folkProblems); and that no GLB or
 //               painted-weights file changed during the run
 //   --hashes    (implies --check) also compare those files with a sha256sum list whose paths are inside the
 //               workspace (`cd workspace && sha256sum characters/*/rigged.glb characters/*/weight_edits.json`); a
@@ -33,9 +37,11 @@ import { migrate } from '../src/model/migrate.ts'
 import type { Character } from '../src/model/types.ts'
 import type { V1Character } from '../src/model/v1.ts'
 import type { V2Character } from '../src/model/v2.ts'
-import { CHARACTERS, getSettings, locked, migrationContext, saveSettings, WORKSPACE, writeMigration } from '../server/store.ts'
+import { CHARACTERS, getSettings, locked, migrationContext, saveSettings, UNITS_FILE, WORKSPACE, writeMigration } from '../server/store.ts'
 import type { V3Character } from '../src/model/v3.ts'
-import { formatHashes, handProblems, heldProblems, jointProblems, parseHashes, phaseProblems } from './lib/migrate_check.ts'
+import type { V4Character } from '../src/model/v4.ts'
+import type { GameSpec } from '../src/model/unit.ts'
+import { folkProblems, formatHashes, handProblems, heldProblems, jointProblems, parseHashes, phaseProblems } from './lib/migrate_check.ts'
 import { measureCharacter } from './lib/node3d.ts'
 import { IGNORE_SERVER, runningServer } from './lib/offline.ts'
 
@@ -85,6 +91,7 @@ async function guarded (): Promise<Map<string, string>> {
 }
 
 const before = check ? await guarded() : new Map<string, string>()
+const units = existsSync(UNITS_FILE) ? JSON.parse(await readFile(UNITS_FILE, 'utf8')) as GameSpec : undefined
 let migrated = 0
 let already = 0
 let checked = 0
@@ -95,20 +102,22 @@ for (const id of ids) {
   let v1: V1Character | null
   let v2: V2Character | null = null
   let v3: V3Character | null = null
+  let v4: V4Character | null = null
   let c: Character
   const read = async (name: string): Promise<Record<string, unknown> | null> =>
     existsSync(path.join(dir, name)) ? JSON.parse(await readFile(path.join(dir, name), 'utf8')) as Record<string, unknown> : null
   try {
     const raw = (await read('character.json'))!
-    if (raw.schema === 4) {
+    if (raw.schema === 5) {
       already++
-      console.log(`${id}: schema 4 already`)
+      console.log(`${id}: schema 5 already`)
       if (!check) continue
       c = raw as unknown as Character
       v1 = await read('character.v1.json') as V1Character | null
       v2 = await read('character.v2.json') as V2Character | null
       v3 = await read('character.v3.json') as V3Character | null
-      if (v1 === null && v2 === null && v3 === null) { console.log('  (no older record kept, nothing to check against)'); continue }
+      v4 = await read('character.v4.json') as V4Character | null
+      if (v1 === null && v2 === null && v3 === null && v4 === null && c.folk === undefined) { console.log('  (no older record kept, nothing to check against)'); continue }
     } else {
       const { ctx, notes } = await migrationContext(id, raw, async who => await measureCharacter(who))
       const out = migrate(raw, ctx)
@@ -120,8 +129,13 @@ for (const id of ids) {
       c = out.character
       if (out.from === 1) v1 = raw as unknown as V1Character
       else if (out.from === 2) { v2 = raw as unknown as V2Character; v1 = await read('character.v1.json') as V1Character | null }
-      else {
+      else if (out.from === 3) {
         v3 = raw as unknown as V3Character
+        v2 = await read('character.v2.json') as V2Character | null
+        v1 = await read('character.v1.json') as V1Character | null
+      } else {
+        v4 = raw as unknown as V4Character
+        v3 = await read('character.v3.json') as V3Character | null
         v2 = await read('character.v2.json') as V2Character | null
         v1 = await read('character.v1.json') as V1Character | null
       }
@@ -155,6 +169,10 @@ for (const id of ids) {
       if (stableJson(again.clips) !== stableJson(c.clips)) fail(id, 'migrating its v3 record again gives other slots')
       for (const problem of heldProblems(v3, c, times.times)) fail(id, `from v3: ${problem}`)
     }
+    // (the folk pick: against the v4 record, or the old fields the file still carries)
+    const folkProblemsOf = folkProblems(v4 ?? c, c, units)
+    for (const problem of folkProblemsOf) fail(id, `from v4: ${problem}`)
+    if (c.folk !== undefined && folkProblemsOf.length === 0) console.log(`  folk: ${c.folk.sets.length} sets, ${c.folk.pools.length} pools, ${c.folk.kinds.length} kinds: the pick allows what schema 4 did`)
     checked++
   } catch (error) {
     fail(id, `the check failed: ${message(error)}`)
@@ -206,7 +224,7 @@ if (check) {
   }
 }
 
-console.log(`\n${migrated} ${dry ? 'to migrate' : 'migrated'}, ${already} schema 4 already${check ? `; ${checked} checked, ${before.size} files hashed` : ''}`)
+console.log(`\n${migrated} ${dry ? 'to migrate' : 'migrated'}, ${already} schema 5 already${check ? `; ${checked} checked, ${before.size} files hashed` : ''}`)
 if (failures.length > 0) {
   console.error(`\n${failures.length} problem${failures.length === 1 ? '' : 's'}:`)
   for (const line of failures) console.error(`  ${line}`)

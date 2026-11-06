@@ -1,11 +1,12 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { humanJoints } from '../../src/model/fixtures.ts'
+import { humanJoints, makeCharacter, makeGear } from '../../src/model/fixtures.ts'
 import { migrate } from '../../src/model/migrate.ts'
 import { DEFAULT_FIST } from '../../src/model/select.ts'
-import type { Vec3 } from '../../src/model/types.ts'
+import type { Character, Vec3 } from '../../src/model/types.ts'
+import type { GameSpec } from '../../src/model/unit.ts'
 import type { V1AnimationEntry, V1Character, V1Garment, V1GripScript, V1PullSocket } from '../../src/model/v1.ts'
-import { formatHashes, handProblems, jointProblems, parseHashes, refKey, v1Grips, v1HandAt } from './migrate_check.ts'
+import { folkProblems, formatHashes, handProblems, jointProblems, parseHashes, refKey, v1Grips, v1HandAt } from './migrate_check.ts'
 
 function v1 (over: Partial<V1Character> = {}): V1Character {
   return {
@@ -163,5 +164,39 @@ describe('hash lists', () => {
 
   it('refuses a line it can\'t read', () => {
     expect(() => parseHashes(`${a}  ok.glb\nnot a hash\n`, '/ws')).toThrow(/Line 2/)
+  })
+})
+
+describe('folkProblems (schema 4 -> 5)', () => {
+  const v4 = (): Character => makeCharacter({
+    id: 'folk-x',
+    gear: [
+      makeGear({ id: 'h1', name: 'Hair_a', role: 'hair', tags: ['fem'] }),
+      makeGear({ id: 'b1', name: 'Beard_a', role: 'beard' }),
+      makeGear({ id: 'm1', name: 'Outfit_mail_helm', outfit: 'mail', tags: ['covers-hair'] }),
+      makeGear({ id: 'm2', name: 'Outfit_mail_forearm_L', outfit: 'mail' }),
+      makeGear({ id: 's1', name: 'Outfit_straw_hat', outfit: 'straw' }),
+    ],
+    look: { layers: [], skins: [{ name: 'asha', file: 'skins/a.png', tags: ['female', 'beardless'] }, { name: 'bran', file: 'skins/b.png' }], clothes: [{ name: 'long', file: 'clothes/l.png', tags: ['long-sleeves'] }, { name: 'short', file: 'clothes/s.png' }] },
+  })
+
+  it('passes what the migration makes, and says what an edit broke', () => {
+    const old = v4()
+    const c = migrate({ ...old, schema: 4 }).character
+    expect(folkProblems(old, c)).toEqual([])
+    const broken = structuredClone(c)
+    broken.folk!.pools.find(p => p.kind === 'hair')!.items[0] = { ref: 'h1' }
+    broken.folk!.pools.find(p => p.kind === 'beard')!.excludes = []
+    expect(folkProblems(old, broken).join('\n')).toMatch(/skin bran: hair h1 allowed, was \(none\)|hair h1 allowed/)
+    expect(folkProblems(old, broken).join('\n')).toMatch(/beards b1 allowed/)
+    expect(folkProblems(old, { ...c, folk: undefined })).toEqual(['its outfits, hair and beards were not made a folk section'])
+  })
+
+  it('checks the kinds against the units\' outfits', () => {
+    const old = v4()
+    const units: GameSpec = { units: { guard: { character: 'folk-x', height: 1.8, budget: 1, clips: [], folk: { outfits: ['mail'] } } } }
+    const c = migrate({ ...old, schema: 4 }, { units }).character
+    expect(folkProblems(old, c, units)).toEqual([])
+    expect(folkProblems(old, migrate({ ...old, schema: 4 }).character, units)).toEqual(['kind guard: missing'])
   })
 })
