@@ -77,12 +77,12 @@ skin tagged `female` plays it at 1 (Rigsmith, the game).
 ## In the game (Emberhold)
 
 - `assets/models/units/folk.glb` + `folk.folk.json` (this export, a spec with `folk.outfits`), then
-  `tools/rigsmith/folk_maps.py folk`: the body's maps (its mask's red: the clothes' shirt area, for the clan), the skins
+  `tools/rigsmith/folk_maps.py folk`: the body's maps (its mask's red: the tunic's trims, for the clan), the skins
   and clothes as Texture2DArrays, one atlas per piece group (`assets/textures/models/folk_<group>/`: the export moved
   each piece's UVs into its cell and gives its surface `Atlas_folk_<group>`; gear has UV2 -1).
 - `unit_folk.gdshader` (entity.gdshaderinc `EMB_FOLK`): one instance value per unit (skin, clothes, hidden-region mask,
   hair colour), the body's regions collapsed in the vertex shader, the clothes laid over the skin, the hair tinted, the
-  clan on the tunic by `data/visual.json folk.clan_on_tunic` (0 now: the designer to rule where a folk unit's clan shows).
+  clan on the tunic's trims (hem, collar, sleeve ends) by `data/visual.json folk.clan_on_tunic` (1).
 - No blend shapes reach the game: shapes on a skinned mesh cost the GPU every frame whatever their weight (+3.9 ms with
   every villager folk, 10.9 -> 14.8 ms, 2026-11-06). The export bakes them: the body as `<unit>` and `FolkBody_F`,
   `FolkBody_L`, `FolkBody_FL` (female, long sleeves, both), each shaped piece as `<name>` and `<name>_F`. With them every
@@ -92,5 +92,5 @@ skin tagged `female` plays it at 1 (Rigsmith, the game).
 
 ## Open
 
-- Where a folk unit carries its clan (the tunic washes all one colour above ~0.15 of it).
+- Whether the trims are enough clan colour at a distance (the whole tunic washed every unit one colour).
 - More gear for women (two styles are tagged fem; the rest unisex) and per-culture outfit lists for a kind.
