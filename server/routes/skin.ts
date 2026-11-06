@@ -30,6 +30,7 @@ import { checkEdits, dropWeightEdits, publishRig, savePainting, skinnedParts, ty
 import { dropShapeEdits, shapeEdits, shapeReferences, writeShapes } from '../shapes.ts'
 import { checkBodyPainting, saveBodyPainting } from '../painting.ts'
 import { applyRig, assertUnlocked, jointsBack, rigRefusal } from './skin-policy.ts'
+import { textureOverrides } from './look.ts'
 
 export { assertUnlocked, rigRefusal }
 
@@ -68,12 +69,15 @@ async function runRig (id: string, who: string, update: Update, signal: AbortSig
   const output = path.join(dir, `rigging-${randomBytes(6).toString('hex')}.glb`)
   const alternative = output.replace(/\.glb$/, '-heat.glb')
   const beforeOptimize = output.replace(/\.glb$/, '-before-optimize.glb')
+  const beforeLayers = output.replace(/\.glb$/, '-before-layers.glb')
   // (the joints handed to Blender, outside the character's folder until the rig is published)
   const work = await mkdtemp(path.join(os.tmpdir(), 'rigsmith-rig-'))
   const started = Date.now()
   try {
+    // (only composites made on this very source, with paint layers behind them: never an old body's texture)
+    const overrides = await textureOverrides(id, who)
     const args = ['--input', path.join(dir, character.source.file), '--output', output, '--fingers', fingerLevel,
-      '--overrides', paths(id).textures, '--scale', String(character.source.scale)]
+      ...(overrides !== null ? ['--overrides', overrides] : []), '--scale', String(character.source.scale)]
     // (Blender's volume heat as a second candidate: for people and the horse, where the tests can tell them apart)
     const native = !creature || template === 'horse'
     if (native) args.push('--native-output', alternative)
@@ -134,14 +138,10 @@ async function runRig (id: string, who: string, update: Update, signal: AbortSig
         stages.volume = { built: false, why: why ?? 'Blender could not build it on this mesh' }
       }
     }
-    if (hasPrevious) {
-      update({ progress: share + 0.05, message: 'Checking deformation against the previous weights' })
-      stages.previous = await validateSkin(output, previous!, template, signal)
-      if (!stages.previous.compared) warnings.push(`Previous weights could not be compared: ${stages.previous.reason ?? 'the bind surface or bone set changed'}`)
-      if (stages.previous.retained || stages.previous.hybrid === true) {
-        warnings.push(stages.previous.retained ? 'Used the previous weights as the starting skin: they deform better on the test animations with these joint placements' : 'Used previous weights on some surface islands: they deform better on every test animation with these joint placements')
-      }
-    }
+    // (never the previous rig's weights: kept whenever they strained the tests a little less, they carried every old
+    // script's, brush's and fit's weights into each fresh rig, Forget and Start over included, so nothing old ever went
+    // (the designer, 2026-11-01: "the old stuff poisoning current stuff for weeks"). A rig is the auto-rig's weights and
+    // the saved painting; the previous rig only says where that painting goes.)
     if (optimize) {
       // Refine the best available skin, including native heat and previous paint,
       // rather than optimizing a regional candidate that may then be discarded.
@@ -160,6 +160,24 @@ async function runRig (id: string, who: string, update: Update, signal: AbortSig
         const message = (error as Error).message.slice(0, 200)
         stages.optimizer = { ran: true, failed: message }
         warnings.push(`weights not pose-optimized: ${message}`)
+      }
+    }
+    if (optimize && !creature) {
+      // The layers (a coat over the thigh) fitted on whatever skin won, nothing else moving; kept when it keeps them
+      // apart (tools/skin_opt/selection.ts: a stretch can be painted out, a thigh through a coat can't).
+      await copyFile(output, beforeLayers)
+      try {
+        const always = await trainedClips(character)
+        const posed = await optimizeSkin(output, (progress, message) => { update({ progress: 0.96 + 0.02 * progress, message }) }, undefined, always, signal, { onlyLayers: true })
+        if (painted.length > 0) await writeWeights(output, painted)
+        update({ progress: 0.98, message: 'Checking the layers on deformation tests' })
+        stages.layers = { ran: true, check: await validateSkin(output, beforeLayers, template, signal, { exclude: optimizerExclude(always, posed), layers: true }) }
+      } catch (error) {
+        if (signal.aborted) throw error
+        await copyFile(beforeLayers, output)
+        const message = (error as Error).message.slice(0, 200)
+        stages.layers = { ran: true, failed: message }
+        warnings.push(`layers not fitted: ${message}`)
       }
     }
     // A comparison can select a previous skin; authored paint still wins.
@@ -192,6 +210,7 @@ async function runRig (id: string, who: string, update: Update, signal: AbortSig
     await rm(output, { force: true })
     await rm(alternative, { force: true })
     await rm(beforeOptimize, { force: true })
+    await rm(beforeLayers, { force: true })
     await rm(work, { recursive: true, force: true })
   }
 }

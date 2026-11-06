@@ -30,4 +30,22 @@ describe('skin candidate selection', () => {
     expect(explainRetain([.1,.1], [.2,.2], [10,20], [20,20], names)).toEqual({ retain: false, why: 'was no worse on any of the 2 tests (50% less strain)' })
     expect(explainRetain([.2], [.2], [0], [0])).toEqual({ retain: false, why: 'was no worse on the test' })
   })
+  it('weighs layer crossings: a skin that keeps the coat over the legs wins whatever its stretch, short of a broken fit', () => {
+    const names = ['Walk', 'Air squat']
+    expect(explainRetain([.2,.22], [.2,.2], [5,5], [5,5], names, { generated: [2,8], reference: [20,80] }))
+      .toEqual({ retain: false, why: 'kept the layers apart (90% fewer points through the layer under them on the 2 tests, 5% more strain)' })
+    // stretch can be painted out, a thigh through a coat can't: a third more on one test, more edges past double length
+    expect(explainRetain([.17,.27], [.2,.2], [5,9], [5,5], names, { generated: [2,8], reference: [20,80] }))
+      .toEqual({ retain: false, why: 'kept the layers apart (90% fewer points through the layer under them on the 2 tests, 10% more strain)' })
+    // but not a broken fit: half as much strain again in all
+    expect(explainRetain([.3,.32], [.2,.2], [5,5], [5,5], names, { generated: [2,8], reference: [20,80] }))
+      .toEqual({ retain: true, why: 'strained the 2 tests 55% more in all' })
+    // a skin with less strain that lets more points through is refused
+    expect(explainRetain([.1,.1], [.2,.2], [0,0], [0,0], names, { generated: [30,90], reference: [20,40] }))
+      .toEqual({ retain: true, why: 'let 60 more points through the layer under them on the 2 tests' })
+    // the same layers either way: the strain rules as before
+    expect(explainRetain([.1,.23], [.2,.2], [0,0], [0,0], names, { generated: [3,3], reference: [3,4] }))
+      .toEqual({ retain: true, why: 'strained Air squat 15% more' })
+    expect(() => explainRetain([.1], [.1], [0], [0], [], { generated: [1, 2], reference: [1] })).toThrow()
+  })
 })

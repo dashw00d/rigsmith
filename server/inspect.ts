@@ -8,7 +8,8 @@ import { mkdir, readdir, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { applyInspect, hasOwnRig, type InspectResult } from './importing.ts'
 import { enqueue, type Job, runBlender, type Update } from './jobs.ts'
-import { type Character, characterDir, failCharacter, getCharacter, paths, updateCharacter, withFiles } from './store.ts'
+import { type Character, characterDir, failCharacter, getCharacter, updateCharacter, withFiles } from './store.ts'
+import { textureOverrides } from './routes/look.ts'
 
 // (Blender's own folder inside the character's, so the model moves into place with a rename; and a resize's temp
 // files, server/routes/import.ts)
@@ -24,9 +25,11 @@ export async function runInspect (id: string, update: Update, signal: AbortSigna
   const dir = characterDir(id)
   const scratch = path.join(dir, `inspect-${randomBytes(4).toString('hex')}`)
   await mkdir(scratch)
+  // (only composites made on this very source, with paint layers behind them: never an old body's texture)
+  const overrides = await textureOverrides(id, o.by)
   try {
     const { result } = await runBlender('jobs/inspect.py', [
-      '--input', path.join(dir, c.source.file), '--out', scratch, '--overrides', paths(id).textures, '--ground',
+      '--input', path.join(dir, c.source.file), '--out', scratch, ...(overrides !== null ? ['--overrides', overrides] : []), '--ground',
       '--fingers', c.skeleton.fingerLevel, '--scale', String(c.source.scale),
     ], (progress, message) => { update({ progress: progress * 0.95, message }) }, { signal })
     const r = result as unknown as InspectResult

@@ -6,6 +6,10 @@
 // Prints one JSON line: whether they could be compared (else `reason`), whether the reference was kept whole
 // (`retained`) or on some surface islands (`hybrid`, `switched` of `islands`), and `why`: what the candidate did
 // against the reference on the tests, in words for the rig report. The kept weights are written into the candidate.
+// --layers: the Layers step's check. Besides stretch it counts layer crossings (layers.ts: a coat's points behind the
+// thigh they covered at rest), and the skin that keeps the coat over the legs wins over one with less stretch. Only
+// there: weighed in every comparison, it picked regional heat and the whole-body optimizer for fewer crossings, and
+// they tore the healer's chest and satchel strap (2026-11-01).
 import { parseArgs } from 'node:util'
 import * as THREE from 'three'
 import { load, entrySource, isBone } from '../lib/node3d.ts'
@@ -13,9 +17,10 @@ import { deformationTests } from '../lib/deformation.ts'
 import { captureRest, retarget } from '../../src/engine/retarget.ts'
 import { writeWeights, type WeightEdit } from '../../server/weights.ts'
 import { explainRetain, selectIslands, surfaceIslands } from './selection.ts'
+import { crossed, findLayerPairs } from './layers.ts'
 import { skinMeshes, transferSkin } from '../lib/skintransfer.ts'
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { exclude: { type: 'string' } } })
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { exclude: { type: 'string' }, layers: { type: 'boolean' } } })
 const [candidate, previous, template = 'human'] = positionals
 const sets = deformationTests(true, (values.exclude ?? '').split(',').filter(id => id !== ''))
 const tests = sets[template] ?? []
@@ -69,16 +74,40 @@ if (tests.length === 0) {
     return { m, offset, distance, edges: [...edges.values()].map(([a,b]) => ({ a, b, length: distance(positions,a,b) })).filter(e => e.length > 1e-6) }
   })
   const islands = surfaceIslands(positions, triangles)
+  // The layers at rest, from the candidate's main bones (the same pairs score both skins).
+  const boneNames: string[] = []
+  const boneIndex = new Map<string, number>()
+  for (const m of now) for (const b of m.skeleton.bones) if (!boneIndex.has(b.name)) { boneIndex.set(b.name, boneNames.length); boneNames.push(b.name) }
+  const boneParents = boneNames.map(name => {
+    const bone = now.flatMap(m => m.skeleton.bones).find(b => b.name === name)
+    const parent = bone?.parent as THREE.Bone | null | undefined
+    return parent?.isBone === true ? boneIndex.get(parent.name) ?? -1 : -1
+  })
+  const mainBone = new Int32Array(positions.length / 3)
+  now.forEach((m, mi) => {
+    const si = m.geometry.attributes.skinIndex, sw = m.geometry.attributes.skinWeight
+    for (let v = 0; v < m.geometry.attributes.position.count; v++) {
+      let best = 0
+      for (let k = 1; k < 4; k++) if (sw.getComponent(v, k) > sw.getComponent(v, best)) best = k
+      mainBone[offsets[mi] + v] = boneIndex.get(m.skeleton.bones[si.getComponent(v, best)]?.name ?? '') ?? 0
+    }
+  })
+  const layerPairs = values.layers === true ? findLayerPairs(positions, triangles, mainBone, boneNames, boneParents) : { point: new Int32Array(0), tri: new Int32Array(0), bary: new Float64Array(0), gap: new Float64Array(0) }
+  let low = Infinity, high = -Infinity
+  for (let i = 1; i < positions.length; i += 3) { low = Math.min(low, positions[i]); high = Math.max(high, positions[i]) }
+  const height = Math.max(high - low, 1e-9)
   const counts = new Float64Array(islands.count)
   for (const d of data) for (const e of d.edges) counts[islands.labels[e.a]] += 8
   const edgeCount = counts.reduce((s,x) => s+x, 0)
   if (edgeCount === 0) throw new Error('No surface edges to validate')
-  function score (): { strain: number[][], severe: number[][] } {
+  function score (): { strain: number[][], severe: number[][], layers: number[][] } {
     const severe: number[][] = []
+    const layers: number[][] = []
     const strain = clips.map(clip => {
       const mixer = new THREE.AnimationMixer(root); mixer.clipAction(clip).play()
       const squared = new Array<number>(islands.count).fill(0)
       const extreme = new Array<number>(islands.count).fill(0); severe.push(extreme)
+      const through = new Array<number>(islands.count).fill(0); layers.push(through)
       const posed = new Float64Array(positions.length)
       try {
         for (let f = 0; f < 8; f++) {
@@ -92,11 +121,12 @@ if (tests.length === 0) {
               if (Math.abs(log) > Math.LN2) extreme[islands.labels[e.a]]++
             }
           }
+          for (let k = 0; k < layerPairs.point.length; k++) if (crossed(posed, layerPairs, k, height)) through[islands.labels[layerPairs.point[k]]]++
         }
       } finally { mixer.stopAllAction(); mixer.uncacheRoot(root) }
       return squared
     })
-    return { strain, severe }
+    return { strain, severe, layers }
   }
   const generatedScores = score()
   const generatedParts = generatedScores.strain
@@ -116,9 +146,12 @@ if (tests.length === 0) {
   // Retain the whole-model guard, then improve independent islands only when
   // every test agrees. Cross-mesh material seams share an island too.
   const extremeCounts = (rows: number[][]): number[] => rows.map(r => r.reduce((s,x) => s+x, 0))
-  const verdict = explainRetain(generated, prior, extremeCounts(generatedScores.severe), extremeCounts(previousScores.severe), tests.map(t => t.name))
+  const verdict = explainRetain(generated, prior, extremeCounts(generatedScores.severe), extremeCounts(previousScores.severe), tests.map(t => t.name),
+    values.layers === true ? { generated: extremeCounts(generatedScores.layers), reference: extremeCounts(previousScores.layers) } : undefined)
   const preferPrior = verdict.retain
-  const selection = selectIslands([...generatedParts, ...generatedScores.severe], [...previousParts, ...previousScores.severe], preferPrior)
+  const selection = values.layers === true
+    ? selectIslands([...generatedParts, ...generatedScores.severe, ...generatedScores.layers], [...previousParts, ...previousScores.severe, ...previousScores.layers], preferPrior)
+    : selectIslands([...generatedParts, ...generatedScores.severe], [...previousParts, ...previousScores.severe], preferPrior)
   // (islands that took the other skin than the whole-model winner)
   const switched = selection.filter(s => s !== preferPrior).length
   const chosen = edits.filter(e => selection[islands.labels[offsets[e.mesh]+e.vertex]])
@@ -126,5 +159,5 @@ if (tests.length === 0) {
   const selected = total(generatedParts.map((r,i) => r.map((x,c) => selection[c] ? previousParts[i][c] : x)))
   const retained = chosen.length === edits.length
   const hybrid = chosen.length > 0 && !retained
-  console.log(JSON.stringify({ compared: true, projected, retained, hybrid, why: verdict.why, switched, islands: islands.count, retainedVertices: chosen.length, generated: average(generated), previous: average(prior), selected: average(selected), clips: tests.map((t,i) => ({ name:t.name, generated:generated[i], previous:prior[i], selected:selected[i] })) }))
+  console.log(JSON.stringify({ compared: true, projected, retained, hybrid, why: verdict.why, switched, islands: islands.count, retainedVertices: chosen.length, generated: average(generated), previous: average(prior), selected: average(selected), layerPairs: layerPairs.point.length, layersCrossed: { generated: extremeCounts(generatedScores.layers).reduce((s, x) => s + x, 0), previous: extremeCounts(previousScores.layers).reduce((s, x) => s + x, 0) }, clips: tests.map((t,i) => ({ name:t.name, generated:generated[i], previous:prior[i], selected:selected[i] })) }))
 }

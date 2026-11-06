@@ -97,4 +97,20 @@ describe('the rig report', () => {
     expect(d.find(x => x.stage === 'Pose optimizer')!.choice).toBe('Failed, not used')
     expect(rigMethod(s)).toBe('regions')
   })
+
+  it('the layers fit after the optimizer: kept, said with what it did, and in the method', () => {
+    const s = stages({
+      method: 'heat',
+      optimizer: { ran: true, check: { compared: true, retained: true, why: 'strained Petting Animal 29% more' } },
+      layers: { ran: true, check: { compared: true, retained: false, why: 'kept the layers apart (92% fewer points through the layer under them on the 24 tests, 2% less strain)' } },
+    })
+    const d = rigDecisions(s)
+    expect(d.map(x => x.stage)).toEqual(['Joints', 'Weights', 'Pose optimizer', 'Layers'])
+    expect(d.at(-1)).toEqual({ stage: 'Layers', choice: 'Fitted', why: 'The fitted weights kept the layers apart (92% fewer points through the layer under them on the 24 tests, 2% less strain)' })
+    expect(rigMethod(s)).toBe('heat+layers')
+    const reverted = stages({ layers: { ran: true, check: { compared: true, retained: true, why: 'let 60 more points through the layer under them on the 8 tests' } } })
+    expect(rigDecisions(reverted).at(-1)!.choice).toBe('Reverted')
+    expect(rigMethod(reverted)).toBe('regions')
+    expect(rigDecisions(stages({ layers: { ran: true, failed: 'optimize.py failed' } })).at(-1)!.choice).toBe('Failed, not used')
+  })
 })

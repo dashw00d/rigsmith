@@ -37,13 +37,28 @@ const percent = (a: number, b: number): number => Math.round((a / Math.max(b, 1e
  * retainReference with its reason, for the rig report: what the generated skin did against the reference on the tests
  * (`names`, one per test), as a phrase with no subject ("strained Air squat 15% more", "was no worse on any of the 8
  * tests (6% less strain)"). The first rule that keeps the reference is the one given.
+ * layers: each test's count of points gone through the layer they covered at rest (layers.ts), for both skins. A skin
+ * that lets clearly more through is refused; one that lets clearly fewer through wins whatever it does to the stretch
+ * (said in `why`), unless it strains half as much again in all (a broken fit, not a trade): a stretch can be painted
+ * out, a thigh through a coat can't (the designer, 2026-11-01: "stretching is something i can fix, the layer poking
+ * through i cannot").
  */
-export function explainRetain (generated: number[], reference: number[], severe: number[], referenceSevere: number[], names: string[] = []): { retain: boolean, why: string } {
+export function explainRetain (generated: number[], reference: number[], severe: number[], referenceSevere: number[], names: string[] = [], layers?: { generated: number[], reference: number[] }): { retain: boolean, why: string } {
   const n = generated.length
-  if (n === 0 || [generated, reference, severe, referenceSevere].some(a => a.length !== n || a.some(x => !Number.isFinite(x) || x < 0))) throw new Error('Invalid deformation scores')
+  if (n === 0 || [generated, reference, severe, referenceSevere, ...(layers === undefined ? [] : [layers.generated, layers.reference])].some(a => a.length !== n || a.some(x => !Number.isFinite(x) || x < 0))) throw new Error('Invalid deformation scores')
   const sum = (a: number[]): number => a.reduce((s,x) => s+x, 0)
   const name = (i: number): string => names[i] ?? `test ${i + 1}`
   const tests = n === 1 ? 'the test' : `the ${n} tests`
+  if (layers !== undefined) {
+    // (a couple of points a test either way is noise)
+    const through = sum(layers.generated), before = sum(layers.reference), slack = 2 * n
+    if (through > before * 1.1 + slack) return { retain: true, why: `let ${through - before} more points through the layer under them on ${tests}` }
+    if (through < before * 0.8 - slack) {
+      if (sum(generated) > sum(reference)*1.5) return { retain: true, why: `strained ${tests} ${percent(sum(generated), sum(reference))}% more in all` }
+      const strain = percent(sum(generated), sum(reference))
+      return { retain: false, why: `kept the layers apart (${-percent(through, before)}% fewer points through the layer under them on ${tests}${strain === 0 ? '' : `, ${Math.abs(strain)}% ${strain > 0 ? 'more' : 'less'} strain`})` }
+    }
+  }
   if (sum(generated) > sum(reference)*1.01) return { retain: true, why: `strained ${tests} ${percent(sum(generated), sum(reference))}% more in all` }
   const worse = generated.findIndex((x,i) => x > reference[i]*1.1)
   if (worse >= 0) return { retain: true, why: `strained ${name(worse)} ${percent(generated[worse], reference[worse])}% more` }

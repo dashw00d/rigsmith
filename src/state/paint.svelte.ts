@@ -265,13 +265,18 @@ class Paint {
       e.stopPropagation(); e.preventDefault()
       stage.controls.enabled = false
       this.stroking = true
+      unmark = e.altKey
       this.painter.begin()
       brush(e)
     }
+    // (Heal heals as the button is let go: marking and then pressing Heal was one gesture made two, the designer,
+    // 2026-11-01; an Alt stroke only unmarks)
+    let unmark = false
     const up = (): void => {
       if (!this.stroking) return
       this.stroking = false
       stage.controls.enabled = true
+      if (this.tool === 'area' && !unmark) void this.heal()
     }
     canvas.addEventListener('pointerdown', down, { capture: true })
     window.addEventListener('pointermove', brush)
@@ -340,14 +345,16 @@ class Paint {
     }
   }
 
-  /** Heal the marked area: its weights refilled from the skin round it. */
+  /** Heal the marked area: its weights refilled from the skin round it. Said only when some of it couldn't be (no good
+   * skin left round it); a heal that worked shows on the body. */
   async heal (): Promise<void> {
     const painter = this.painter
-    if (painter === null) return
+    if (painter === null || this.busy) return
     await this.working('Healing the marked skin', () => {
       const n = painter.heal()
       this.redraw()
-      app.toast(n > 0 ? 'ok' : 'error', n > 0 ? `Healed ${n} points from the skin round them${this.marked > 0 ? '; the rest of the marked skin needs some good skin left unmarked round it' : ''}` : 'Leave some good skin unmarked round the area to heal from')
+      if (n === 0) app.toast('error', 'Nothing healed: leave some good skin unmarked round the area to heal from')
+      else if (this.marked > 0) app.toast('error', `Healed ${n} points; the rest of the marked skin needs some good skin left unmarked round it`)
     })
   }
 
@@ -427,6 +434,24 @@ class Paint {
     try {
       const done = await app.jobDone((await api.forgetShape(c.id)).id)
       return done.status === 'done'
+    } catch (error) {
+      app.toast('error', (error as Error).message)
+      return false
+    }
+  }
+
+  /** Start over: every painted weight and lift dropped and the body rigged afresh at once, so its weights are the
+   * auto-rig's again (forgetting alone left the live rig's weights until the next rig, so painting over several
+   * sessions only piled up with no way back; the designer, 2026-10-31). Ask first (the panel does). */
+  async startOver (c: Character): Promise<boolean> {
+    if (this.active && this.characterId === c.id) this.stop()
+    try {
+      for (const drop of [() => api.forgetWeights(c.id), () => api.forgetShape(c.id)]) {
+        const job = await drop()
+        if ((await app.jobDone(job.id)).status !== 'done') return false
+      }
+      const rig = await app.rig(c.id)
+      return rig !== null && (await app.jobDone(rig.id)).status === 'done'
     } catch (error) {
       app.toast('error', (error as Error).message)
       return false

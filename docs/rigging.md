@@ -30,8 +30,11 @@ paint routes write `rigged.glb` skin data or `weight_edits.json`, and they refus
 
 ## Weights (Skin step)
 
-- **Candidates.** Humans and horses compare regional and volume-heat skinning on deformation tests; a re-rig also
-  compares the previous weights carried onto the new joints. Native heat retries failed disconnected surfaces
+- **Candidates.** Humans and horses compare regional and volume-heat skinning on deformation tests. A re-rig never
+  keeps the previous rig's weights: they used to be kept whenever they strained the tests a little less, and carried
+  every old script's, brush's and fit's weights into each fresh rig, Forget and Start over included (the designer,
+  2026-11-01: "the old stuff poisoning current stuff for weeks"). A rig is the auto-rig's weights and the saved
+  painting; the previous rig only says where that painting goes. Native heat retries failed disconnected surfaces
   independently, then fills unbound pieces from the regional solution. Painted edits are re-applied before candidates
   are compared, and a failed build leaves the previous GLB intact. Independent surface islands can keep different
   candidate weights when every test agrees on both strain and extreme deformation; material and UV seams stay
@@ -42,26 +45,12 @@ paint routes write `rigged.glb` skin data or `weight_edits.json`, and they refus
   strokes do not spread onto unpainted triangles. An ambiguous or missing painted point stops the rebuild and keeps
   the previous rig. Rig and remapped paint publication rolls back if the paint record cannot be written
   (`server/weights.ts`).
-- **Lifted skin (Lift brush).** Shape corrections against the covered body's posed surface. Cloth layers and their
-  body correspondences are found in the shape at the start of painting, so a leg poking through during a squat does
-  not become cloth. Gap is applied once, between the body and the innermost cloth, and outer layers keep their
-  starting separation. Each patch has its own clearance: a collision elsewhere in the brush does not inflate it.
-  Body vertices stay fixed, including where cloth and body share an attachment. The reference stays fixed through
-  repeated dabs, undo, saving and reopening. Painter setup reads the saved original positions through GET `/shape`,
-  using only records whose saved destination matches the loaded vertex; stale topology records are ignored. The
-  shape writer keeps sparse original references at the actual vertex addresses in each GLB primitive, including
-  reordered/split vertices found during re-rig. The sidecar uses original positions as keys, so reused indices cannot
-  take another point's origin. Forget resolves those current addresses before restoring positions. The
-  displayed shape and stroke baseline remain the saved shape. Original positions also preserve mirror partners
-  after a one-sided lift. Collision distance is measured to the nearest finite body triangle in a posed BVH, rather
-  than to an infinite plane through a rest correspondence. A limb that moved sideways clear of the cloth must not
-  lift it just because that plane is close; an open boundary is not treated as solid penetration beyond its edge.
-  Each layer already outside its required gap stays fixed (the innermost's Gap plus the outer layer's original
-  separation). Kept as rest positions in `shape_edits.json` with where each vertex first was
+- **Lifted skin (Lift brush).** Not weights but shape: the brushed skin pushed out off the skin under it until it is
+  the panel's Gap clear of it (a cape off the body it follows, so the body and the lining stop showing through), skin
+  already through it lifted past, the cloth's inner side between going out with it; measured on the pose on screen,
+  evened over the brush. Kept as rest positions in `shape_edits.json` with where each vertex first was
   (`server/shapes.ts`): a fresh rig is made from the unlifted model, so the rig job finds them there and lifts them
-  again before the painting is carried over. Forget the lifts puts them back. Body only. This changes every pose:
-  clearing a deep squat can bulge the standing shape. Lift is not an animation collision solver; constant clearance
-  through a bend needs pose-dependent corrections shared by preview and export. Check both poses before saving.
+  again before the painting is carried over. Forget the lifts puts them back. Body only.
 - **Pose correction transport.** Geometry transforms, material merges, head splits and LOD compaction preserve
   morph target coordinates, names, relative mode and loaded default influences. Relative deltas follow the linear
   transform; absolute positions include translation. Normal deltas use the same normal-matrix scale as the base,
@@ -84,6 +73,16 @@ paint routes write `rigged.glb` skin data or `weight_edits.json`, and they refus
   closed, consistently oriented surfaces, so open robes and disconnected parts cannot inflate one another. Creatures
   keep their heat weights: trained on a template's own clips the optimizer tore a horse's chest and flank
   (`server/routes/skin.ts`).
+- **Layers.** After the optimizer, whichever skin won, the rig fits the layers on the GPU (~8 s): where one sheet lies
+  over another at rest (a coat over the thigh, a shirt over the belly, a cape over the back; found by rays along each
+  point's normal, `tools/skin_opt/layers.py`, `layers.ts`), the outer one must keep a quarter of its rest gap in every
+  training pose, and a point over a leg may take that leg's bones. Only those points, the triangles under them and two
+  rings round them change (never an arm or the head); the rest keep their weights exactly. The check after it (and only
+  it: weighed in the other comparisons it picked regional heat and the whole-body optimizer, which tore the healer's
+  chest) counts the points gone through the layer under them on the deformation tests: a skin that lets clearly fewer through is kept
+  whatever its stretch, short of half as much again in all; one that lets more through never wins (the designer,
+  2026-11-01: "stretching is something i can fix, the layer poking through i cannot"). The healer: 93% fewer through,
+  3% less strain. Painting is put back after it, so a brush always wins.
 - Hand retargeting reads bind geometry around the placed wrist and knuckles, so repainting weights does not rotate the
   grip.
 
@@ -91,146 +90,35 @@ paint routes write `rigged.glb` skin data or `weight_edits.json`, and they refus
 
 Pause a deformation test on the frame that shows the problem and paint on the body as it stands
 (`src/engine/weightpaint.ts`, `src/state/paint.svelte.ts`, `server/weights.ts`). Brushes follow the posed surface
-instead of reaching through nearby fingers or cloth. A stroke keeps to the sheet it began on until the button is let
-go: each dab must meet the last dab over the surface, so skin poking out through it (a coat through a cape) is looked
-past. The picked triangle remains an anchor even when the brush is too small to reach its corners. The last contact
-is used rather than the whole stroke's history or the whole connected component: generated layers can join far away
-at the shoulders. The layer tools can continue across a material boundary through the last contact's shared seam
-vertices, while unrelated overlapping layers remain excluded. Follow, Cloth and Lift deliberately reach the cloth
-layers beneath this surface, including separate skinned primitives. Those layers are projected onto the painted
-sheet in shared original bind space and inherit its brush falloff, independently of their posed depth order.
+instead of reaching through nearby fingers or cloth.
 
-Painting pauses playback so a stroke edits one pose. Picking and brush footprints use that stroke's starting surface;
-changing weights cannot move the painted material away from subsequent cursor rays. Solving Lift and evaluating
-surface safety always use current geometry. A new stroke picks the changed surface again. Material transitions
-require a shared edge with surface on opposite sides, so a lining folded back from a common hem is not a continuation.
-Dabs are spaced along the pointer path at 15% of the brush's
-projected radius, including fast drags and the release point. Strength is the maximum blend in one stroke, from the
-weights as that stroke began: overlapping dabs and high event rates do not compound it. Lift the pointer and start a
-new stroke to build more. Mirror shares this maximum, so a weak dab cannot overwrite a stronger dab on the other
-side. Twin coverage is resolved before applying a dab, independently of point iteration order. A partial mirrored
-stroke blends from each side's own weights; it does not replace an asymmetric painted twin with the other side's
-already-blended result. Nonpositive or nonfinite Strength is a no-op. Undo restores the weights, lifts, marked area and unsaved state from before the stroke. Empty gestures do not
-take an undo slot.
-
-Layer brush dabs collect pending proposals before changing any receiver. Shared targets map by bone name across
-different joint palettes; a single pose guard evaluates all receiving meshes together. The covered body remains a
-donor, and gear strokes write only the editable garment meshes. Original bind-frame conversion handles different
-primitive transforms; physical reach does not depend on a primitive's local coordinate scale.
-
-Surface queries use `three-mesh-bvh` on private posed/reference geometries with indirect triangle indexing. The
-posed tree is refitted after skinning; source vertex/triangle numbering and the saved paint format stay intact.
-
-*Start over* (beside Forget the painting and Forget the lifts) drops every painted weight and lift and rigs the body
-afresh at once, so its weights are the auto-rig's again. Forgetting alone leaves the live rig's weights until the next
-rig, so painting over several sessions only piled up with no way back (the designer, 2026-10-31).
-
-- *Heal*: mark the problem skin; Heal refills its weights smoothly from the good skin round it (skin pulled by a wrong
-  bone goes with what surrounds it). Physical seam copies share one neighbourhood across primitives; each mirrored
-  side keeps its own authored boundary. It needs an unmarked boundary; an entirely selected island is left unchanged.
+- *Heal*: brush over the problem skin; when the mouse is let go its weights are refilled smoothly from the good skin round it, no popup unless some couldn't be (skin pulled by a wrong
+  bone goes with what surrounds it). It needs an unmarked boundary; an entirely selected island is left unchanged.
 - *Add*, *Remove*, *Smooth* a chosen bone by hand.
 - *Follow*: the brushed skin takes the weights of the skin it covers (looking in toward its nearest bone at rest: the
   trousers under a coat), or of the nearest bones where nothing is close under it, so the body pushes it (a hem the
-  legs walk through). Covered cloth layers share the painted sheet's target field and brush falloff, but each blends
-  from its own starting weights by Strength. Copying the already-blended outer result wholesale could fully rebind
-  the lining at zero Strength or a nearly-zero brush edge; neither is allowed.
-  The skin it reaches through to keeps its own weights. What it gives that a left bone and
-  its right twin share (cloth between the legs) goes to the bone both hang from, the hips: blended between two legs
-  that part, linear skinning drew the layers there together.
-- *Cloth*: brush where clothing hangs over the legs and it is weighted as cloth from where it hangs at rest, nothing
-  else: the hips at the waist blending down into the legs (0.95 by the knees, all its own side's leg over that leg),
-  below the knee up to 0.6 of the shin, no arm (`tools/rigsmith/skirt_weights.py`'s robe in emberhold, as a
-  brush). Cloth layers below the painted sheet share its target and falloff, while the covered body keeps its own.
-  Shared left/right pulls go to their common parent, as in Follow, including after interpolation through layers.
-  Strength is the same maximum blend per stroke as the other weight brushes.
-- *Brush integrity*: weight and Lift strokes check the paused pose, percentage probes and 120 Hz samples of the playing
-  clip on a private rig copy (long clips use at most 240 regular intervals). Each sample resets the private action,
-  so visiting the clip end cannot pause subsequent samples. Changes that reverse a face relative to its baseline,
-  reduce area below a quarter of the rest area, or grow edges beyond twice
-  their rest length are limited locally. Existing violations have a 2% tolerance so one damaged triangle does not
-  disable the whole brush; mirrored points share their limits. Weight and shape baselines stay fixed through the
-  stroke. This catches both rest-pose paint that eats into the cloth early in a bend and a posed Lift whose inverse
-  skinning would amplify the correction into a long spike at rest. Finite rest-space triangle correspondences also
-  constrain the signed separation between neighbouring layers, including different meshes: two intact sheets can cross without
-  flipping any of their own triangles. A positive gap retains at least a quarter of its rest separation, unless it
-  already has less; existing intersections may improve but cannot materially worsen. Gaps use world units and
-  preserve the original side under reflected transforms. Reference bones and mirror planes use the original bind
-  frame, so changing stage scale after binding does not change the identified layers. Baseline face metrics and
-  unchanged posed points are cached through local limit iterations. The actual finite triangles also check new
-  intersections with nonadjacent faces, including read-only body primitives and folds outside the original layer
-  stack. Each existing intersecting face pair is exempt; it does not disable checks against other faces. Material
-  seam aliases count as shared physical points. A private BVH preserves the source indices, with a fixed stroke
-  baseline and refreshed candidate positions after earlier dabs. Contact queries share immutable topology and
-  pose-independent weight/reference caches, update exact triangle bounds with changed points, and reject adjacent
-  or disjoint candidates before decoding triangles. Ill-conditioned triangles retain the conservative finite
-  predicate's behavior. `ContactBVH` traverses live views of the public version-1 BVH serialization in the stock
-  leaf order; an unfamiliar layout falls back to the library's shapecast. Refit bounds, indirect source addresses,
-  numerical broad-phase padding and pair-specific baseline exemptions stay unchanged. The panel distinguishes contact limits from other
-  surface limits. These checks do not enforce a uniform thickness or continuously sweep between samples. It is a
-  sampled integrity check, not proof of collision-free cloth or a substitute for an animation collision solver.
-  The normal-reversal limit is conservative: a large coherent 3D rotation may be limited even without a physical
-  self-intersection. Repair commands have their own explicit transactions rather than a brush clip snapshot.
-  Interactive dragging checks the paused pose on each dab; release checks the accumulated stroke against the full
-  sampled clip. The preview remains visible while cooperative pose/triangle checks yield to the editor. Candidate
-  evaluation uses the exact stroke source; final commit restores its raw attributes before applying limits as one
-  transaction, including coupled weight/shape edits and different primitives. Undo remains one exact stroke.
-  The user can cancel a pending check; discard/reload invalidates its generation so a late result cannot change a
-  newer painter. A failed check restores only its own stroke. Direct synchronous and asynchronous callers use the
-  same constraint evaluator. The 120 Hz probes include verified contacts missed between the earlier 60 Hz probes;
-  they still do not prove continuous collision freedom. Long clips retain the 240 regular interval work bound.
-  Direct engine callers retain per-dab clip validation unless they explicitly request `deferClip` and finish `end()`.
-  Save and other edit commands are unavailable during a drag. Deferred painting cannot be serialized or marked
-  saved before release, so a second pointer or keyboard command cannot bypass the full-clip check.
-- *Protect*: paint points that must keep their weights and Lift positions; Alt-drag removes protection. Cyan marks
-  the protected points over the Weights view, including their UV aliases. Physical seam copies are pinned together;
-  Mirror repeats the protection gesture but cannot make a later weight or shape brush write a protected twin.
-  Protected points remain available as donors. This also applies to Heal and Copy side. Protection and Clear
-  protection have exact Undo, independent of geometry edits, and cannot change during a pending clip check.
-  The mask belongs to the loaded painter: it survives `saved()` on that painter but is not exported or stored in
-  the weight/shape sidecars, and a new model load/painter clears it. Protection alone does not enable Save.
-  Use it at fused clothing/body boundaries: a geodesic footprint can walk across a shared source edge from lining
-  onto trousers, and the automatic rest-layer test does not certify garment ownership there. A source point shared
-  with protected body faces must stay fixed on both sides of that seam; it cannot move only its cloth triangles.
+  legs walk through).
 - *Bone*: the brushed skin moves with only the bone under the brush, every other pull dropped (a face a hood drags, a
   buckle): the bone already moving most of the skin where the stroke begins, named in the panel as you hover.
-- Seams never part (their vertices are one point); four bones a vertex. *Mirror left and right* repeats the brush on
-  the other side too, swapping its target bones and using each side's own source; middle-line targets are averaged. *Left → right* /
+- Seams never part (their vertices are one point); four bones a vertex. *Mirror left and right* lands every stroke on
+  the other side too, each point's twin taking the other side's bone, the middle line evened; *Left → right* /
   *Right → left* set the whole other side from one (skin with no twin stays as it is).
-- Layer strokes synchronize material-boundary copies with compatible original positions, bone bindings and weights.
-  They share target/coverage and local limits, and Lift shares the rest correction in bind space. A seam that touches
-  a read-only mesh is pinned. Coincident surfaces with different bindings remain independent. Mirror also reaches
-  opposite-side primitives with matching reference points and swaps the source target by bone name.
-- Add/Remove/Smooth/Bone operate across compatible seam and mirror aliases from each recipient's own weights,
-  with palette mapping by bone name and shared maximum coverage. Smooth uses the physical neighbourhood across
-  material boundaries; the Bone brush holds its target by name across the stroke. Missing bones or read-only seam
-  copies pin the shared point. Mark/erase use the same writable aliases. Explicit Copy Side freezes the chosen
-  side's weights, maps them across primitives, and preserves positive tiny influences already present in the source.
-- Save writes actual float weights into the rig and keeps them (`weight_edits.json`): every re-rig puts them back;
-  the brush no longer rounds influences to five decimal places before saving. A body Save submits weights and Lift
-  in one file job and increments the rig revision once, so saving Lift cannot reload away unsaved weight strokes.
-  The candidate rig and both records are staged before publication; observed filesystem failures restore the old
-  bytes, or retain recovery backups when restoration also fails. The painter checkpoints only a successful job.
-  Its loaded rig revision prevents a stale editor from overwriting a newer rig. Canonical Lift origins are shared
-  by the GLB and sidecar, including legacy saves with intermediate `from` positions. Forget drops saved painting.
-- Start over waits for each deletion job to finish before starting the next or re-rigging; it does not submit
-  competing jobs against the same character file lock.
+- Save writes them into the rig and keeps them (`weight_edits.json`): every re-rig puts them back; Forget drops them.
   The Rig button warns first when painted weights exist, and the server checks the paint still maps onto the model
   before it starts.
 
 Gear has its own painted weights (`garments/<id>/weights.json`): skin gear by bone name, pulled gear by `PropRoot` and
 `pull:<handle id>` (which parts follow a pull).
 
-Brush and constraint implementation references:
+*Start over* (beside Forget the painting and Forget the lifts) drops every painted weight and lift and rigs the body
+afresh at once, so its weights are the auto-rig's again. Forgetting alone leaves the live rig's weights until the next
+rig, so painting over several sessions only piled up with no way back (the designer, 2026-10-31).
 
-- [three-mesh-bvh sculpt example](https://github.com/gkjohnson/three-mesh-bvh/blob/master/example/sculpt.js): local
-  queries, spaced strokes and refitting. The runtime dependency is MIT licensed; Rigsmith's stroke implementation
-  retains residual spacing between input events and adds surface tracking and bounded strength.
-- [Blender cloth brush](https://github.com/blender/blender/blob/main/source/blender/editors/sculpt_paint/mesh/sculpt_cloth.cc)
-  and [automasking](https://github.com/blender/blender/blob/main/source/blender/editors/sculpt_paint/mesh/sculpt_automasking.cc):
-  references for local brush influence and cloth constraints; no Blender source is copied into Rigsmith.
-- [PositionBasedDynamics](https://github.com/InteractiveComputerGraphics/PositionBasedDynamics) (MIT) and
-  [Ten Minute Physics 14–15](https://matthias-research.github.io/pages/tenMinutePhysics/): stretch/bend and collision
-  constraint references. These are not currently installed as a runtime cloth solver.
+The brushes are the plain ones of 2026-10-28: the stroke checks against the clip, sheet locks, layer projection and
+contact limits added on 2026-11-01 were taken out the same day (the designer: they undid painting meant to let a coat
+bend and made every brush slow; "we were handling it fine last week"). Cloth over the legs is kept over them by the
+rig's Layers step (Weights, above); robes and cloaks with nothing under them by a script per character in the game's
+repo (tools/rigsmith/skirt_weights.py, cloak_weights.py).
 
 ### Deformation tests
 

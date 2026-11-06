@@ -6,6 +6,7 @@
 //
 // Projection captures are folders (projections/<id>/) of what each view saw, what to repaint and the prompt; each
 // view's result-N comes back from Codex or from the user.
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
@@ -59,14 +60,64 @@ const stackOf = (layers: Stack): Stack => layers.map(l => ({ id: l.id, image: l.
 const signatureOf = (layers: Stack): string => JSON.stringify(stackOf(layers))
 const signature = (c: Character): string => signatureOf(c.look.layers.filter(l => l.enabled))
 
-/** textures/.composed.json: the enabled layers the texture files and model files were last composed from. `layers`
- * is null while a compose is under way: it writes the files in place, so a restart can't tell what they hold. */
-interface ComposedRecord { layers: Stack | null, at: number }
+/** textures/.composed.json: the enabled layers the texture files and model files were last composed from, and the
+ * source they were composed on (its sha256). `layers` is null while a compose is under way: it writes the files in place,
+ * so a restart can't tell what they hold. */
+interface ComposedRecord { layers: Stack | null, at: number, source?: string }
 
 const recordFile = (id: string): string => path.join(paths(id).textures, '.composed.json')
 
-async function writeRecord (id: string, layers: Stack | null): Promise<void> {
-  await writeJson(recordFile(id), { layers: layers === null ? null : stackOf(layers), at: Date.now() } satisfies ComposedRecord)
+/** The sha256 of a character's source file (what its composites and layers were made on). */
+async function sourceSha (c: Character): Promise<string> {
+  return createHash('sha256').update(await readFile(path.join(paths(c.id).dir, c.source.file))).digest('hex')
+}
+
+async function writeRecord (id: string, layers: Stack | null, source?: string): Promise<void> {
+  if (source === undefined) {
+    const c = await getCharacter(id)
+    if (c !== null && existsSync(path.join(paths(id).dir, c.source.file))) source = await sourceSha(c)
+  }
+  await writeJson(recordFile(id), { layers: layers === null ? null : stackOf(layers), at: Date.now(), ...(source !== undefined ? { source } : {}) } satisfies ComposedRecord)
+}
+
+/**
+ * The texture overrides an import or a rig may lay over the source (textures/, its composites), or null for none.
+ * A composite is only ever the source's own images with enabled layers over them, composed on THAT source: one left
+ * from another body (a replaced or re-imported source), or with no enabled layer behind it, is old state, and laid over
+ * a new body it put the old body's texture on it (the shaman healer, 2026-11-01: "old stuff poisoning current stuff for
+ * weeks"). Those are moved to textures/.stale-<time>/ (recoverable, never applied), and when the source changed under
+ * enabled layers, the layers (painted on the old body's UVs) are switched off, saying so in the journal.
+ */
+export async function textureOverrides (id: string, by: string): Promise<string | null> {
+  const c = await getCharacter(id)
+  if (c === null) return null
+  const p = paths(id)
+  const files = await composites(id)
+  const sha = existsSync(path.join(p.dir, c.source.file)) ? await sourceSha(c) : undefined
+  const record = await readRecord(id)
+  const enabled = c.look.layers.filter(l => l.enabled)
+  // (a record from before sources were recorded: trusted only with enabled layers behind it, and stamped now)
+  const moved = record?.source !== undefined && sha !== undefined && record.source !== sha
+  if (!moved && enabled.length > 0 && files.length > 0) {
+    if (record?.source === undefined && sha !== undefined && record !== undefined) await writeJson(recordFile(id), { ...record, source: sha })
+    return p.textures
+  }
+  if (files.length > 0) {
+    const aside = path.join(p.textures, `.stale-${Date.now()}`)
+    await mkdir(aside, { recursive: true })
+    for (const f of files) await rename(path.join(p.textures, `${f}.png`), path.join(aside, `${f}.png`))
+  }
+  await writeJson(recordFile(id), { layers: [], at: Date.now(), ...(sha !== undefined ? { source: sha } : {}) } satisfies ComposedRecord)
+  const lines: string[] = []
+  if (files.length > 0) lines.push(`old texture composite${files.length === 1 ? '' : 's'} set aside, not applied (${files.join(', ')}: ${moved ? 'made on another body' : 'no paint layer behind ' + (files.length === 1 ? 'it' : 'them')}; textures/.stale-*)`)
+  if (moved && enabled.length > 0) lines.push(`${enabled.length} paint layer${enabled.length === 1 ? '' : 's'} switched off: painted on another body's UVs`)
+  if (lines.length > 0) {
+    await updateCharacter(id, x => {
+      if (moved) for (const l of x.look.layers) l.enabled = false
+      x.look.at = Date.now()
+    }, { by, what: 'look', changes: lines })
+  }
+  return null
 }
 
 /** The record, or undefined when the character was never composed. One that can't be read counts as a compose cut off. */
@@ -76,7 +127,7 @@ async function readRecord (id: string): Promise<ComposedRecord | undefined> {
   const r = await readJson<Partial<ComposedRecord> | null>(file, null)
   const list: unknown = r?.layers
   const layers = Array.isArray(list) && list.every(l => typeof l === 'object' && l !== null) ? list as Stack : null
-  return { layers, at: typeof r?.at === 'number' ? r.at : 0 }
+  return { layers, at: typeof r?.at === 'number' ? r.at : 0, ...(typeof r?.source === 'string' ? { source: r.source } : {}) }
 }
 
 /** Lay the character's enabled layers over its source's images and swap the result into its model files. Jobs asked

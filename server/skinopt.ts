@@ -6,6 +6,9 @@
 //                  the GPU for minimal stretch, volume loss and limb wobble, then written back into the GLB. Needs a
 //                  Python with PyTorch (the repo's .venv, or RIGSMITH_TORCH_PYTHON); skipped without one. The check
 //                  after it leaves out every clip it trained on (optimizerExclude).
+//   layers         the same tools fitting only the layers (a coat over the thigh, tools/skin_opt/layers.py): the points
+//                  over another layer and a band round them, whatever skin won, so the coat stays over the legs in every
+//                  pose; the rest of the body keeps its weights exactly. Checked like the optimizer, layers first.
 // And the pure parts the job's report is made of: which clips the optimizer trains on, and the rig's decisions.
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -68,8 +71,8 @@ export interface SkinCheck {
 }
 
 /** validate.ts's arguments. `exclude`: clips it mustn't score on (tools/lib/deformation.ts tops the set up instead). */
-export function validateArgs (candidate: string, previous: string, template: string, exclude: string[] = []): string[] {
-  const args = [path.join(TOOLS, 'validate.ts'), candidate, previous, template]
+export function validateArgs (candidate: string, previous: string, template: string, exclude: string[] = [], layers = false): string[] {
+  const args = [path.join(TOOLS, 'validate.ts'), candidate, previous, template, ...(layers ? ['--layers'] : [])]
   const ids = [...new Set(exclude)].filter(id => id !== '')
   return ids.length > 0 ? [...args, '--exclude', ids.join(',')] : args
 }
@@ -77,9 +80,9 @@ export function validateArgs (candidate: string, previous: string, template: str
 /** Keep previous weights when the new skin regresses on the rig's deformation
  * tests. The comparison uses the new skeleton, so joint edits always take effect.
  * `exclude`: clips not to score on (after the pose optimizer, every clip it trained on: optimizerExclude). */
-export async function validateSkin (candidate: string, previous: string, template: string, signal?: AbortSignal, options: { exclude?: string[] } = {}): Promise<SkinCheck> {
+export async function validateSkin (candidate: string, previous: string, template: string, signal?: AbortSignal, options: { exclude?: string[], layers?: boolean } = {}): Promise<SkinCheck> {
   let result: SkinCheck | undefined
-  await run(process.execPath, validateArgs(candidate, previous, template, options.exclude), line => {
+  await run(process.execPath, validateArgs(candidate, previous, template, options.exclude, options.layers === true), line => {
     if (line.startsWith('{')) result = JSON.parse(line) as SkinCheck
   }, signal)
   if (result === undefined) throw new Error('No skin validation result')
@@ -164,16 +167,16 @@ let queue: Promise<unknown> = Promise.resolve()
  * no PyTorch is available, else the library clip ids it trained on (none when it trained on `clips`).
  * clips: train on this GLB's own animations (creature templates) instead of the humanoid library. always: library
  * clip ids trained on whatever the draw (trainedIds). */
-export async function optimizeSkin (glb: string, onProgress: (progress: number, message: string) => void, clips?: string, always: string[] = [], signal?: AbortSignal): Promise<string[] | null> {
+export async function optimizeSkin (glb: string, onProgress: (progress: number, message: string) => void, clips?: string, always: string[] = [], signal?: AbortSignal, options: { onlyLayers?: boolean } = {}): Promise<string[] | null> {
   const python = torchPython()
   if (python === null) return null
-  onProgress(0, 'Waiting to optimize weights')
-  const turn = queue.then(async () => await optimizeNow(python, glb, onProgress, clips, always, signal))
+  onProgress(0, options.onlyLayers === true ? 'Waiting to fit the layers' : 'Waiting to optimize weights')
+  const turn = queue.then(async () => await optimizeNow(python, glb, onProgress, clips, always, signal, options.onlyLayers === true))
   queue = turn.catch(() => {})
   return await turn
 }
 
-async function optimizeNow (python: string, glb: string, onProgress: (progress: number, message: string) => void, clips: string | undefined, always: string[], signal: AbortSignal | undefined): Promise<string[]> {
+async function optimizeNow (python: string, glb: string, onProgress: (progress: number, message: string) => void, clips: string | undefined, always: string[], signal: AbortSignal | undefined, onlyLayers: boolean): Promise<string[]> {
   if (signal?.aborted === true) throw cancelled(signal)
   const work = path.join(os.tmpdir(), 'rigsmith-skinopt', path.basename(path.dirname(glb)) + '-' + Date.now())
   await mkdir(work, { recursive: true })
@@ -183,14 +186,16 @@ async function optimizeNow (python: string, glb: string, onProgress: (progress: 
     await run(process.execPath, [path.join(TOOLS, 'pose_set.ts'), glb, prefix, '--poses', '256', ...(clips === undefined ? [] : ['--from', clips]), ...(clips === undefined && always.length > 0 ? ['--with', always.join(',')] : [])], undefined, signal)
     // (the clips it drew, beside the ones asked for: a template's own clips are named in its file, not library ids)
     const posed = clips === undefined ? (JSON.parse(await readFile(prefix + '.json', 'utf8')) as { clips?: string[] }).clips ?? [] : []
-    onProgress(0.3, 'Starting weight optimization')
+    const what = onlyLayers ? 'Fitting the layers' : 'Optimizing weights'
+    onProgress(0.3, onlyLayers ? 'Starting to fit the layers' : 'Starting weight optimization')
     let device: string | undefined
-    await run(python, [path.join(TOOLS, 'optimize.py'), prefix, '--iters', '300'], line => {
+    // (the whole fit leaves the layers to the pass after it, which fits nothing else)
+    await run(python, [path.join(TOOLS, 'optimize.py'), prefix, '--iters', '300', ...(onlyLayers ? ['--only-layers'] : ['--w-layers', '0'])], line => {
       if (line.includes('using the CPU') || line === 'device cpu') device = 'CPU'
       else if (line === 'device cuda') device = 'GPU'
-      if (line.startsWith('device ') && device !== undefined) onProgress(0.3, `Optimizing weights on the ${device}`)
+      if (line.startsWith('device ') && device !== undefined) onProgress(0.3, `${what} on the ${device}`)
       const m = /^it\s+(\d+)/.exec(line)
-      if (m !== null) onProgress(0.3 + 0.6 * Number(m[1]) / 300, device === undefined ? 'Optimizing weights' : `Optimizing weights on the ${device}`)
+      if (m !== null) onProgress(0.3 + 0.6 * Number(m[1]) / 300, device === undefined ? what : `${what} on the ${device}`)
     }, signal)
     onProgress(0.95, 'Writing weights')
     await run(process.execPath, [path.join(TOOLS, 'apply.ts'), glb, prefix, glb], undefined, signal)
@@ -219,6 +224,8 @@ export interface RigStages {
   previous?: SkinCheck
   /** The pose optimizer: skipped (why), failed (why), or run and checked against the skin before it. */
   optimizer: { ran: false, why: string } | { ran: true, failed: string } | { ran: true, check: SkinCheck }
+  /** The layers fit after it (a coat kept over the legs): not run (why), failed (why), or run and checked. */
+  layers?: { ran: false, why: string } | { ran: true, failed: string } | { ran: true, check: SkinCheck }
   /** Painted points put back (mapped from the previous rig). */
   painted: number
 }
@@ -260,6 +267,15 @@ export function rigDecisions (s: RigStages): RigDecision[] {
   else if (o.check.retained) out.push({ stage: 'Pose optimizer', choice: 'Reverted', why: `The optimized weights ${o.check.why ?? 'deformed worse on the tests'}` })
   else if (o.check.hybrid === true) out.push({ stage: 'Pose optimizer', choice: 'Optimized, except some parts', why: `The weights before it deformed better on ${islandsText(o.check)}, on every test` })
   else out.push({ stage: 'Pose optimizer', choice: 'Optimized', why: `The optimized weights ${o.check.why ?? 'were no worse on the tests'}` })
+  const l = s.layers
+  if (l !== undefined) {
+    if (!l.ran) out.push({ stage: 'Layers', choice: 'Not fitted', why: l.why })
+    else if ('failed' in l) out.push({ stage: 'Layers', choice: 'Failed, not used', why: l.failed })
+    else if (!l.check.compared) out.push({ stage: 'Layers', choice: 'Fitted', why: `Kept without a check: ${l.check.reason ?? 'it could not be compared'}` })
+    else if (l.check.retained) out.push({ stage: 'Layers', choice: 'Reverted', why: `The fitted weights ${l.check.why ?? 'deformed worse on the tests'}` })
+    else if (l.check.hybrid === true) out.push({ stage: 'Layers', choice: 'Fitted, except some parts', why: `The weights before it deformed better on ${islandsText(l.check)}, on every test` })
+    else out.push({ stage: 'Layers', choice: 'Fitted', why: `The fitted weights ${l.check.why ?? 'were no worse on the tests'}` })
+  }
   if (s.painted > 0) out.push({ stage: 'Painting', choice: 'Put back', why: `${plural(s.painted, 'painted point')} from the previous rig, moved onto the new surface and written last, so they win` })
   return out
 }
@@ -274,5 +290,7 @@ export function rigMethod (s: RigStages): string {
   if (s.previous?.compared === true && (s.previous.retained || s.previous.hybrid === true)) method += '+retained-weights'
   const o = s.optimizer
   if (o.ran && 'check' in o && !o.check.retained) method += o.check.hybrid === true ? '+hybrid-optimized' : '+pose-optimized'
+  const l = s.layers
+  if (l?.ran === true && 'check' in l && !l.check.retained) method += '+layers'
   return method
 }

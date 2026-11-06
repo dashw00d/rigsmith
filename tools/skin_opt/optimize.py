@@ -8,7 +8,11 @@ Linear blend skinning is what Godot runs, so the only freedom is the weights. Ea
 weights among its existing influences (optionally its main bone's neighbors). The quality objective
 combines symmetric edge strain, an extreme-strain penalty, volume of individually closed shells and
 rigid limb regions over the training poses, plus weight smoothness and a weak prior. Open cloth has
-no volume constraint. An ARAP objective (one-ring distortion with rotations factored out) is optional.
+no volume constraint. Layers keep their order (layers.py): a sheet over another at rest (a coat over the thigh)
+stays over it, and a point over a leg may take that leg's bones. --only-layers fits nothing else: the points over
+another layer, the triangles under them and two rings of edges round them, the arms and head left out; every other
+point keeps its weights exactly (the rig job's pass after the optimizer, so the coat is fixed without the head's or the
+arms' weights moving). An ARAP objective (one-ring distortion with rotations factored out) is optional.
 """
 import argparse
 import json
@@ -16,6 +20,8 @@ import time
 
 import numpy as np
 import torch
+
+from layers import find_pairs, limb_of, penalty as layer_penalty, report as layer_report
 
 LEAF = ('_End', '4')
 
@@ -108,6 +114,9 @@ def main():
     p.add_argument('--w-volume', type=float, default=1.0)
     p.add_argument('--w-rigid', type=float, default=1.0)
     p.add_argument('--w-extreme', type=float, default=1.0)
+    p.add_argument('--w-layers', type=float, default=1.0, help='layer order: a sheet over another at rest stays over it (0: off)')
+    p.add_argument('--layer-reach', type=float, default=0.05, help='how far apart two layers may be at rest (of the height)')
+    p.add_argument('--only-layers', action='store_true', help='fit only the layers and the band round them; the rest keeps its weights')
     p.add_argument('--no-mirror', action='store_true', help='let the two sides of the body differ')
     p.add_argument('--stretch-norm', default='rms', choices=['rms', 'abs'])
     p.add_argument('--add-neighbors', action='store_true', help="let a vertex take its main bone's parent and children too")
@@ -146,7 +155,37 @@ def main():
     for b, par in enumerate(meta['parents']):
         if par >= 0:
             children[par].append(b)
-    K = 6
+    # Layers at rest (a coat over the thigh): the point's candidates include the bones of the skin under it, so the
+    # coat can go with the leg it covers.
+    dominant = W0.argmax(1)
+    under = {}
+    if a.w_layers > 0:
+        tl = lambda x, dt=torch.float32: torch.as_tensor(x, device=dev, dtype=dt)  # noqa: E731
+        layers = find_pairs(tl(V / H), tl(T, torch.int64), tl(dominant, torch.int64), names, meta['parents'], reach=a.layer_reach)
+        for i, tri in zip(layers['point'].tolist(), layers['tri'].tolist()):
+            under[i] = [int(dominant[j]) for j in tri]
+        print(f'layers: {len(under)} points over another layer', flush=True)
+    else:
+        layers = None
+    free = None
+    if a.only_layers:
+        if layers is None:
+            raise SystemExit('--only-layers needs --w-layers above 0')
+        # The layers, the triangles under them and two rings of edges round them.
+        free = np.zeros(n, dtype=bool)
+        free[layers['point'].cpu().numpy()] = True
+        free[layers['tri'].cpu().numpy().reshape(-1)] = True
+        ring_e = np.unique(np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1), axis=0)
+        for _ in range(2):
+            grow = free.copy()
+            grow[ring_e[free[ring_e[:, 0]], 1]] = True
+            grow[ring_e[free[ring_e[:, 1]], 0]] = True
+            free = grow
+        # (never an arm or the head: generated bodies fuse the hands to the coat at the hips, and the band would reach
+        # them; the layers are the trunk's and the legs')
+        limbs = limb_of(names, meta['parents'])
+        free &= np.array([limbs[b] == 'trunk' or limbs[b].endswith('UpLeg') for b in dominant])
+    K = 8 if under else 6
     cand = np.zeros((n, K), dtype=np.int64)
     mask = np.zeros((n, K), dtype=bool)
     # Skeleton distance, so a vertex can't keep weight from bones far from its main one (bleed).
@@ -160,7 +199,7 @@ def main():
         have = list(np.flatnonzero(W0[i] > 1e-4)[np.argsort(-W0[i][W0[i] > 1e-4])])
         main = have[0]
         have = [b for b in have if b in within2[main]]
-        near = [meta['parents'][main]] + children[main] if a.add_neighbors else []
+        near = ([meta['parents'][main]] + children[main] if a.add_neighbors else []) + under.get(i, [])
         for b in near:
             if b >= 0 and deform[b] and b not in have:
                 have.append(b)
@@ -204,6 +243,20 @@ def main():
                 mask[best] = mask[i]
                 pairs += 1
         print(f'mirror: {pairs} twin pairs, {int(middle.sum())} on the middle line', flush=True)
+    if free is not None:
+        # A twin of a free point is free too; a fixed point keeps its own bones and weights, unlinked from its twin.
+        linked = np.flatnonzero(src != np.arange(n))
+        either = free[linked] | free[src[linked]]
+        free[linked[either]] = True
+        free[src[linked[either]]] = True
+        for i in np.flatnonzero(~free):
+            src[i] = i
+            have = list(np.flatnonzero(W0[i] > 0)[np.argsort(-W0[i][W0[i] > 0])])[:K]
+            cand[i] = 0
+            mask[i] = False
+            cand[i, :len(have)] = have
+            mask[i, :len(have)] = True
+        print(f'only the layers: {int(free.sum())} of {n} points fitted', flush=True)
 
     # Edges and cotangent-free (uniform) one-rings, normalized by height.
     E = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
@@ -232,6 +285,14 @@ def main():
     src_t = t(src, torch.int64)
     logits = torch.log(t(init) + 1e-3).masked_fill(~mask_t, -1e9).requires_grad_(True)
     W0c = t(init)
+    if free is not None:
+        fixed = np.take_along_axis(W0, cand, 1) * mask
+        W0c[~t(free, torch.bool)] = t(fixed / np.maximum(fixed.sum(1, keepdims=True), 1e-12))[~t(free, torch.bool)]
+    free_t = None if free is None else t(free, torch.bool)
+
+    def weights():
+        W = torch.softmax(logits[src_t], 1)
+        return W if free_t is None else torch.where(free_t[:, None], W, W0c)
     opt = torch.optim.Adam([logits], lr=a.lr)
 
     def energy(W, rotations=None):
@@ -328,7 +389,9 @@ def main():
                if V0 is not None else torch.zeros((), device=dev))
         rig = torch.stack([rigid_residual(Xp, g_) for g_ in groups_t]).mean() if groups_t else torch.zeros((), device=dev)
         extreme = extreme_strain(log_ratio)
-        return a.w_stretch * stretch * 10 + a.w_volume * vol * 10 + a.w_rigid * rig * 100 + a.w_extreme * extreme * 10, (stretch.item(), vol.item(), rig.item(), extreme.item())
+        lay = layer_penalty(Xp, layers) if layers is not None else torch.zeros((), device=dev)
+        return (a.w_stretch * stretch * 10 + a.w_volume * vol * 10 + a.w_rigid * rig * 100 + a.w_extreme * extreme * 10
+                + a.w_layers * lay * 100), (stretch.item(), vol.item(), rig.item(), extreme.item(), lay.item())
 
     def full(W):
         dense = torch.zeros(n, B, device=dev)
@@ -337,11 +400,12 @@ def main():
 
     objective = (lambda W: energy(W)) if a.objective == 'arap' else quality
     with torch.no_grad():
-        e0, parts0 = objective(torch.softmax(logits[src_t], 1))
+        W_start = weights()
+        e0, parts0 = objective(W_start)
     print('start', parts0 if a.objective == 'quality' else '', f'{len(groups)} rigid groups, {len(closed)} closed volume regions')
     generator = torch.Generator(device='cpu').manual_seed(0)
     for it in range(a.iters):
-        W = torch.softmax(logits[src_t], 1)
+        W = weights()
         if a.objective == 'quality' and a.batch < P:
             e, parts = quality(W, torch.randperm(P, generator=generator)[:a.batch].to(dev))
         else:
@@ -357,7 +421,7 @@ def main():
             print(f'it {it:4d}  objective {e.item():.4f} {parts if a.objective == "quality" else ""}  smooth {smooth.item():.4f}  prior {prior.item():.4f}', flush=True)
 
     with torch.no_grad():
-        W = torch.softmax(logits[src_t], 1)
+        W = weights()
         e1, _ = objective(W)
         dense = full(W)
         mid = t(middle, torch.bool)
@@ -370,8 +434,18 @@ def main():
         idx4 = top.indices
     w_out = w4.cpu().numpy()[inverse].astype(np.float32)
     i_out = idx4.cpu().numpy()[inverse].astype(np.uint32)
+    if free is not None:
+        # (every fixed vertex exactly as it was, UV copies included)
+        keep = ~free[inverse]
+        w_out[keep] = skin_w[keep].astype(np.float32)
+        i_out[keep] = skin_i[keep].astype(np.uint32)
     out = np.concatenate([i_out.view(np.uint8).reshape(len(i_out), -1), w_out.view(np.uint8).reshape(len(w_out), -1)], 1)
     open(a.prefix + '.opt.bin', 'wb').write(out.tobytes())
+    if layers is not None:
+        with torch.no_grad():
+            before = layer_report(torch.einsum('nk,pnki->pni', W_start, X), layers)[0].mean().item()
+            after = layer_report(torch.einsum('nk,pnki->pni', W, X), layers)[0].mean().item()
+        print(f'layers crossed before {100 * before:.2f}% after {100 * after:.2f}% (training poses, before the top-4 cut)')
     print(f'objective before {e0.item():.4f} after {e1.item():.4f}  ({n} verts, {P} poses, {time.time() - started:.1f}s)')
 
 

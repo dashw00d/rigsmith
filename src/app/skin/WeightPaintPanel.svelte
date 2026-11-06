@@ -39,7 +39,7 @@
   })
 
   const tools: Array<{ id: PaintTool, label: string, hint: string }> = [
-    { id: 'area', label: 'Heal', hint: 'Mark the problem skin (Alt to unmark), then Heal: its weights refilled smoothly from the good skin round it (skin pulled by a wrong bone goes with what surrounds it)' },
+    { id: 'area', label: 'Heal', hint: 'Brush over the problem skin: when you let go its weights are refilled smoothly from the good skin round it (skin pulled by a wrong bone goes with what surrounds it). Alt unmarks what is still marked' },
     { id: 'add', label: 'Add', hint: 'Give the brushed skin more of the bone' },
     { id: 'remove', label: 'Remove', hint: 'Take the bone off the brushed skin (its share goes to its other bones)' },
     { id: 'smooth', label: 'Smooth', hint: "Blend the brushed skin's weights with its neighbours'" },
@@ -57,6 +57,15 @@
   async function forgetLifts (): Promise<void> {
     const ok = await app.confirm({ title: 'Forget the lifts?', body: 'Every vertex the Lift brush moved goes back where it was.', confirm: 'Forget', danger: true })
     if (ok && await paint.forgetLifts(character)) app.toast('ok', 'Lifts forgotten: the skin is back where it was')
+  }
+  async function startOver (): Promise<void> {
+    const ok = await app.confirm({
+      title: `Start ${character.name}'s weights over?`,
+      body: 'Every painted weight and every lift is dropped and the body is rigged afresh now, so its weights are the auto-rig\'s again. Clips, gear, hands and sounds stay. Robe or tabard weights painted by a script go too.',
+      confirm: 'Start over',
+      danger: true,
+    })
+    if (ok && await paint.startOver(character)) app.toast('ok', 'Started over: the body is rigged afresh, nothing painted')
   }
   async function forget (): Promise<void> {
     const ok = await app.confirm({
@@ -116,8 +125,7 @@
       {#if paint.tool !== 'area'}<label class="field">Strength <input type="range" min="0.05" max="1" step="0.05" bind:value={paint.strength} /></label>{/if}
       {#if paint.tool === 'area'}
         <div class="row">
-          <Button size="sm" variant="primary" disabled={paint.marked === 0 || paint.busy} onclick={() => paint.heal()}><Sparkles size={13} /> Heal {paint.marked > 0 ? `${paint.marked} points` : 'the area'}</Button>
-          <Button size="sm" variant="ghost" disabled={paint.marked === 0} onclick={() => paint.clearArea()}>Clear</Button>
+          {#if paint.marked > 0}<Button size="sm" variant="ghost" disabled={paint.busy} onclick={() => paint.clearArea()}>Clear the {paint.marked} marked points</Button>{/if}
         </div>
       {/if}
       {#if !pulled}
@@ -141,6 +149,7 @@
     {/if}
     {#if painted > 0 && !locked}<button class="link" disabled={paint.busy} onclick={forget}>Forget the painting</button>{/if}
     {#if gear === undefined && !locked}<button class="link" disabled={paint.busy} onclick={forgetLifts}>Forget the lifts</button>{/if}
+    {#if gear === undefined && !locked}<button class="link" disabled={paint.busy} onclick={startOver}>Start over</button>{/if}
   </p>
 </Section>
 
