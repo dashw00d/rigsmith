@@ -5,6 +5,7 @@
 import { untrack } from 'svelte'
 import { applyCommands } from '../model/commands.ts'
 import { api, MODEL_FILE, type Character, type Command, type Job, type JournalEntry, type Settings } from './api.ts'
+import { assets, type FilesChanged } from './assets.svelte.ts'
 import { push, receive, settle, shown, type Track } from './pending.ts'
 
 export type Step = 'import' | 'skeleton' | 'skin' | 'gear' | 'look' | 'motion' | 'ship'
@@ -103,6 +104,10 @@ class AppState {
   async start (): Promise<void> {
     // (listening first: a change made while the list loads arrives as an event and the older list copy is ignored)
     this.listen()
+    // (the selected character's files and the clip library's beside the list: its model loads by them at once)
+    const selected = untrack(() => this.selected_)
+    if (selected !== null) void assets.load(selected)
+    void assets.loadLibrary()
     const [characters, settings] = await Promise.all([api.characters(), api.settings()])
     this.settings = settings
     this.load(characters)
@@ -305,6 +310,7 @@ class AppState {
   }
 
   private setSelected (id: string | null): void {
+    if (id !== null) void assets.load(id)
     this.selected_ = id
     remember('selected', id)
   }
@@ -397,7 +403,10 @@ class AppState {
         else if (finished(job)) this.wake(job)
       }
       // (back after a drop: whatever changed meanwhile came with no event)
-      if (this.helloes++ > 0) void api.characters().then(list => { this.load(list) }, () => { /* gone again: the next hello retries */ })
+      if (this.helloes++ > 0) {
+        void api.characters().then(list => { this.load(list) }, () => { /* gone again: the next hello retries */ })
+        assets.reloadAll()
+      }
     })
     source.addEventListener('job', (e) => { this.updateJob(data<Job>(e)) })
     source.addEventListener('character', (e) => {
@@ -407,7 +416,9 @@ class AppState {
     })
     source.addEventListener('journal', () => { this.journalBeat++ })
     source.addEventListener('game', () => { this.gameBeat++ })
-    source.addEventListener('removed', (e) => { this.forget(data<string>(e)) })
+    source.addEventListener('removed', (e) => { const id = data<string>(e); this.forget(id); assets.forget(id) })
+    // (before the character event that names them: the store tells the files a write made first)
+    source.addEventListener('files', (e) => { assets.receive(data<FilesChanged>(e)) })
     source.onerror = () => { this.connected = false }
   }
 }

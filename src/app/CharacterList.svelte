@@ -4,7 +4,8 @@
   // with the job working on it).
   import { Pencil, Plus, Sparkles, Trash2, UserRound } from '@lucide/svelte'
   import { phaseOf } from '../model/select.ts'
-  import { fileUrl, type Character } from '../state/api.ts'
+  import type { Character } from '../state/api.ts'
+  import { assets } from '../state/assets.svelte.ts'
   import { app } from '../state/app.svelte.ts'
   import Button from '../ui/Button.svelte'
   import EmptyState from '../ui/EmptyState.svelte'
@@ -92,7 +93,7 @@
         <li class:selected={app.selectedId === c.id}>
           <button class="item" aria-current={app.selectedId === c.id ? 'true' : undefined} onclick={() => { void app.select(c.id) }}>
             <span class="thumb">
-              {#if c.files.thumbnail}<img src={fileUrl(c, c.files.thumbnail)} alt="" />{:else}<UserRound size={18} />{/if}
+              {#if c.files.thumbnail}<img src={assets.thumbnail(c)} alt="" />{:else}<UserRound size={18} />{/if}
             </span>
             <span class="meta">
               <span class="name" ondblclick={(e) => { e.stopPropagation(); startRename(c) }} role="presentation">{c.name}</span>

@@ -2,7 +2,9 @@
 // (src/engine/lighting.ts), on the shared offscreen renderer (src/engine/offscreen.ts).
 import * as THREE from 'three'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
+import { versioned } from './assetUrls.ts'
 import { RetargetCache } from './clips.ts'
+import { Lru } from './lru.ts'
 import { light } from './lighting.ts'
 import { encode, offscreen } from './offscreen.ts'
 import { captureRest } from './retarget.ts'
@@ -16,7 +18,8 @@ export class PreviewRenderer {
   private readonly camera = new THREE.PerspectiveCamera(30, 1, 0.01, 100)
   private model: THREE.Object3D | null = null
   private retargets: RetargetCache | null = null
-  private readonly sheets = new Map<string, string>()
+  // (object URLs by the clip's versioned URL: a clip written again gets a new sheet; the oldest let go past a few pages)
+  private readonly sheets = new Lru<string>({ budget: Infinity, max: 400, dispose: url => { URL.revokeObjectURL(url) } })
   private queue: Array<{ url: string, resolve: (u: string | null) => void }> = []
   private working = false
   private key = ''
@@ -26,7 +29,6 @@ export class PreviewRenderer {
     if (key === this.key) return
     this.key = key
     if (this.model !== null) this.scene.remove(this.model)
-    for (const url of this.sheets.values()) URL.revokeObjectURL(url)
     this.sheets.clear()
     // Pending requests stay queued and will render with the new subject.
     const model = cloneSkinned(root)
@@ -53,10 +55,12 @@ export class PreviewRenderer {
 
   /** Object URL of a horizontal sprite sheet (SPRITE_FRAMES frames), or null if cancelled/failed. */
   async sheet (clipUrl: string): Promise<string | null> {
-    const cached = this.sheets.get(clipUrl)
+    const [plain, name] = clipUrl.split('#')
+    const url = name === undefined ? versioned(plain) : `${versioned(plain)}#${name}`
+    const cached = this.sheets.get(url)
     if (cached !== undefined) return cached
     return await new Promise(resolve => {
-      this.queue.push({ url: clipUrl, resolve })
+      this.queue.push({ url, resolve })
       void this.pump()
     })
   }

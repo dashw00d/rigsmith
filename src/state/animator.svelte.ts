@@ -19,9 +19,8 @@ import { gizmo } from './gizmo.svelte.ts'
 import { stableJson } from '../model/entities.ts'
 import { gearKeysFromPaths, gearTracksOf, slotById } from '../model/select.ts'
 import { slotsUnder } from '../model/pieces.ts'
-import { forgetComposites } from '../engine/pieces.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
-import { forgetClip, RetargetCache, type ClipSource } from '../engine/clips.ts'
+import { RetargetCache, type ClipSource } from '../engine/clips.ts'
 import { bakeRide, bakeSlot, boneRest, type BakeContext, type BakedSlot, type BakeSkip, type PullPlan } from '../engine/bake.ts'
 import { freezeClip } from '../engine/mount.ts'
 import { Player } from '../engine/Player.ts'
@@ -708,15 +707,6 @@ class Animator {
     this.usePreviewSubject()
     const now = untrack(() => this.playing)
     if (now !== null && now.kind !== 'clip') void this.run(now, true)
-  }
-
-  /** A clip file written again (an edit saved over it): loaded and retargeted afresh next time it plays. */
-  forgetClip (url: string): void {
-    forgetClip(url)
-    // (a slot built from pieces of it composes them again)
-    forgetComposites()
-    this.cache?.forget(url)
-    this.horse?.cache.forget(url)
   }
 
   // ---- library previews --------------------------------------------------------------------------------------------

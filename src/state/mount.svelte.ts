@@ -10,7 +10,7 @@ import type { CompanionSpec } from '../model/unit.ts'
 import { CharacterView } from '../engine/CharacterView.ts'
 import { companionFor, LOWER_BODY, mountHeights, riderScale, straddle } from '../engine/mount.ts'
 import { animator } from './animator.svelte.ts'
-import { fileUrl } from './api.ts'
+import { asset, assets } from './assets.svelte.ts'
 import { app } from './app.svelte.ts'
 import { gizmo } from './gizmo.svelte.ts'
 import { ship } from './ship.svelte.ts'
@@ -133,7 +133,8 @@ class Seat {
     }
     const horse = app.byId(horseId)
     const rider = this.rider
-    const url = horse === null ? null : fileUrl(horse, horse.files.rigged)
+    if (horse !== null) await assets.load(horse.id)
+    const url = horse === null ? null : asset(horse, horse.files.rigged)
     if (horse === null || url === null || rider === null || this.riderId !== c.id) return
     this.setBusy(`Seating ${c.name} on ${horse.name}`)
     let loaded: CharacterView | null = null

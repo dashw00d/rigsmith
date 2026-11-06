@@ -7,6 +7,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { readGlb, type Gltf } from '../src/engine/glb.ts'
 import type { ClipKey } from '../src/model/types.ts'
+import { libraryManifest } from './files.ts'
 import { LIBRARY, readJson, ROOT } from './store.ts'
 
 export interface Clip {
@@ -50,6 +51,8 @@ export interface Clip {
   propPaths?: Record<string, ClipKey[]>
   /** Absolute URL when the clip lives outside workspace/library (bundled clips). */
   href?: string
+  /** Its file's content hash (server/files.ts), for a library clip: the page loads it as `url?h=<hash>`. */
+  hash?: string
 }
 
 interface Manifest {
@@ -272,6 +275,7 @@ export async function queryLibrary (q: LibraryQuery): Promise<LibraryResult> {
   const page = Math.min(Math.max(Number.isFinite(q.page) ? Math.floor(q.page) : 0, 0), pages - 1)
   const counts = new Map<string, number>()
   for (const c of found) counts.set(c.category, (counts.get(c.category) ?? 0) + 1)
+  const hashes = await libraryManifest()
   return {
     total: matches.length,
     all: all.length,
@@ -281,9 +285,14 @@ export async function queryLibrary (q: LibraryQuery): Promise<LibraryResult> {
     catalog: rig === 'human' ? m.catalog ?? null : null,
     custom: all.filter(c => c.source === 'custom').length,
     categories: CATEGORIES.map(({ id, label }) => ({ id, label, count: counts.get(id) ?? 0 })),
-    clips: matches.slice(page * pageSize, (page + 1) * pageSize).map(c => ({ ...c, url: c.href ?? `/files/library/${c.file}`, problems: findings[c.id]?.problems })),
+    clips: matches.slice(page * pageSize, (page + 1) * pageSize).map(c => ({
+      ...c, url: c.href ?? `/files/library/${c.file}`, problems: findings[c.id]?.problems,
+      ...(c.href === undefined || c.href.startsWith('/files/library/') ? hashField(hashes[c.href?.slice('/files/library/'.length) ?? c.file]) : {}),
+    })),
   }
 }
+
+const hashField = (hash: string | undefined): { hash?: string } => (hash === undefined ? {} : { hash })
 
 /** A clip's category, by id (any rig's: the library's, the bundled, the made ones). */
 export async function categoryOf (id: string): Promise<string | null> {

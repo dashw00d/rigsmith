@@ -5,7 +5,8 @@
   import { ArrowLeftRight, Brush, Camera, Check, Eraser, FolderOpen, Hand, ImageUp, Minus, Paintbrush, Plus, Sparkles, WandSparkles, X } from '@lucide/svelte'
   import { paintTarget } from '../../engine/projection.ts'
   import { phaseOf } from '../../model/select.ts'
-  import { api, fileUrl, type Character, type Job, type Projection } from '../../state/api.ts'
+  import { api, type Character, type Job, type Projection } from '../../state/api.ts'
+  import { asset } from '../../state/assets.svelte.ts'
   import { app } from '../../state/app.svelte.ts'
   import { painter, type PaintTool } from '../../state/painter.svelte.ts'
   import { viewer } from '../../state/viewer.svelte.ts'
@@ -59,8 +60,8 @@
   let sent = $state<Record<number, boolean>>({})
   $effect(() => { void capture?.id; sent = {} })
 
-  const projection = (file: string, version: string | number): string | null =>
-    capture === null ? null : fileUrl(character, `projections/${capture.id}/${file}`, version)
+  const projection = (file: string): string | null =>
+    capture === null ? null : asset(character, `projections/${capture.id}/${file}`)
 
   // ---- earlier captures ----
   let more = $state(false)
@@ -135,10 +136,10 @@
             <figure>
               <button class="shot" disabled={!fresh} onclick={() => { sent = { ...sent, [n]: !sent[n] } }} aria-label={fresh ? (sent[n] ? 'Show its result' : 'Show what was sent') : `View ${n}`}>
                 {#if r !== null && r.fresh && !sent[n]}
-                  <img src={projection(r.file, Math.round(r.at))} alt="View {n}'s result" />
+                  <img src={projection(r.file)} alt="View {n}'s result" />
                 {:else}
-                  <img src={projection(`view-${n}-flat.png`, capture.id)} alt="View {n} as captured" />
-                  <img class="mask" src={projection(`view-${n}-mask.png`, capture.id)} alt="" />
+                  <img src={projection(`view-${n}-flat.png`)} alt="View {n} as captured" />
+                  <img class="mask" src={projection(`view-${n}-mask.png`)} alt="" />
                 {/if}
               </button>
               <figcaption>

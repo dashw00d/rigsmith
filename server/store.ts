@@ -43,6 +43,16 @@ const DEFAULT_GAME_REPO = path.join(homedir(), 'dev', 'games', 'emberhold')
 export const events = new EventEmitter()
 events.setMaxListeners(100)
 
+/** Who hears that a write is on disk before its event goes out (server/files.ts, wired by server/plugin.ts: the
+ * record's stat noted, the watcher's pending writes of the folder read, and for a write that isn't a command the whole
+ * folder looked over, so the page has the files' hashes before the document naming them). */
+export type Written = (id: string, o: { whole: boolean }) => Promise<void>
+let written: Written | null = null
+export function onWritten (fn: Written | null): void { written = fn }
+async function wrote (id: string, whole: boolean): Promise<void> {
+  try { await written?.(id, { whole }) } catch (error) { console.error(`rigsmith: could not note ${id}'s files:`, error) }
+}
+
 export async function ensureWorkspace (): Promise<void> {
   for (const dir of [CHARACTERS, LIBRARY]) await mkdir(dir, { recursive: true })
 }
@@ -243,6 +253,7 @@ export async function writeMigration (id: string, out: Migration, notes: string[
   }
   await writeJson(fileOf(id), character)
   versions.set(id, character.version)
+  await wrote(id, true)
   forgetJournal(id)
   return await append(id, { at: new Date().toISOString(), by, what: 'migrate', changes: [...out.notes, ...notes] })
 }
@@ -303,11 +314,13 @@ export async function commit (id: string, fn: (c: Character) => void | Character
     if (after.id !== id || after.schema !== 4) throw new Error('A write changed the character\'s id or schema')
     const changes = meta?.changes ?? []
     if (changes.length === 0 && JSON.stringify(after) === JSON.stringify(before)) return { id, character: before, entry: null, touched: [] }
-    after.version = before.version + 1
+    // (past the last version handed out too: a file someone else wrote may carry an older one)
+    after.version = Math.max(before.version, versions.get(id) ?? 0) + 1
     after.updatedAt = Date.now()
     const touched = touchedBy(before, after)
     await writeJson(fileOf(id), after)
     versions.set(id, after.version)
+    await wrote(id, meta?.undoable !== true)
     let entry: JournalEntry | null = null
     if (meta !== undefined && meta.journal !== false) {
       entry = await append(id, {
@@ -331,6 +344,29 @@ export async function commit (id: string, fn: (c: Character) => void | Character
     }
   }
   return done
+}
+
+/** A character's record changed on disk by someone else (a tool, a hand edit; server/files.ts hears it): read again
+ * (an older schema migrated), its version moved past the last one handed out (written back, or pages would ignore
+ * it), and sent to every open page. */
+export async function adopt (id: string): Promise<void> {
+  const character = await locked(id, async (): Promise<Character | null> => {
+    const raw = await readJson<Record<string, unknown> | null>(fileOf(id), null)
+    if (raw === null) return null
+    // (migrated: its own event went out)
+    if (raw.schema !== 4) { await loadLocked(id); return null }
+    const c = raw as unknown as Character
+    const known = versions.get(id)
+    if (known !== undefined && c.version <= known) {
+      c.version = known + 1
+      await writeJson(fileOf(id), c)
+    }
+    versions.set(id, c.version)
+    await wrote(id, false)
+    forgetJournal(id)
+    return c
+  })
+  if (character !== null) events.emit('character', { character })
 }
 
 /** commit, answering the document. */
@@ -382,6 +418,7 @@ export async function createCharacter (originalName: string, bytes: Buffer, by =
     }
     await writeJson(fileOf(id), character)
     versions.set(id, character.version)
+    await wrote(id, true)
     forgetJournal(id)
     const entry = await append(id, { at: new Date(now).toISOString(), by, what: 'import', changes: [`imported from ${originalName}`] })
     events.emit('character', { character, entry })

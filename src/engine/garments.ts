@@ -22,6 +22,7 @@ import { gearNode, safeName } from './geom.ts'
 import { HIDE_SHARE, hiddenRegions, regionsOf, type Regions } from './regions.ts'
 import { applyGeometryMatrix } from './geometry-transform.ts'
 import { cloneMorphGeometry, restoreMorphState } from './morph-state.ts'
+import { disposeObject, Lru, MB, objectBytes } from './lru.ts'
 import { garmentMatrix, placementMatrix } from './placement.ts'
 import { clearPulls, defaultPullWeights, PROP_ROOT, pullBoneName, pullWeightKeys, pullWeightName, registerPulls, splitStrand } from './pulls.ts'
 
@@ -56,16 +57,21 @@ const SMOOTHING: Record<SkinPolicy, number> = { body: 3, upper: 3, lower: 3, cap
 export const GARMENT_FLAG = 'rigsmithGarment'
 
 const loader = new GLTFLoader()
-const models = new Map<string, Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }>>()
+type Model = { scene: THREE.Group, animations: THREE.AnimationClip[] }
+/** Pieces' models by URL (a workspace file's carries its content hash: src/engine/assetUrls.ts), the oldest let go
+ * past the budget. A worn piece owns copies of its geometry (meshesOf), so letting one go only costs a download. */
+const models = new Lru<Model>({ budget: 768 * MB, max: 600, size: m => objectBytes(m.scene), dispose: m => { disposeObject(m.scene) } })
 
-async function loadModel (url: string): Promise<{ scene: THREE.Group, animations: THREE.AnimationClip[] }> {
-  let pending = models.get(url)
-  if (pending === undefined) {
-    pending = loader.loadAsync(url).then(g => ({ scene: g.scene, animations: g.animations }))
-    models.set(url, pending)
-    pending.catch(() => models.delete(url))
-  }
-  return await pending
+async function loadModel (url: string): Promise<Model> {
+  return await models.load(url, async () => {
+    const g = await loader.loadAsync(url)
+    return { scene: g.scene, animations: g.animations }
+  })
+}
+
+/** A piece's model fetched and parsed ahead of being worn (an outfit about to be shown), when there is time. */
+export async function preloadModel (url: string): Promise<void> {
+  await loadModel(url)
 }
 
 /** The animations a piece's model carries (a mechanism's), by name. */

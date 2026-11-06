@@ -4,7 +4,8 @@
   // Each is a look.layer.* command; the server lays the enabled ones over the texture again after any of them.
   import { ArrowDown, ArrowUp, Layers as LayersIcon, RotateCcw, Trash2 } from '@lucide/svelte'
   import type { Command } from '../../model/command-types.ts'
-  import { fileUrl, type Character, type Job, type TextureLayer } from '../../state/api.ts'
+  import type { Character, Job, TextureLayer } from '../../state/api.ts'
+  import { asset } from '../../state/assets.svelte.ts'
   import { app } from '../../state/app.svelte.ts'
   import Badge from '../../ui/Badge.svelte'
   import Button from '../../ui/Button.svelte'
@@ -61,7 +62,7 @@
       {@const detail = layerDetail(l, manyImages)}
       <li class:off={!l.enabled}>
         <input type="checkbox" checked={l.enabled} aria-label="Show this layer" use:tooltip={l.enabled ? 'On: switch it off' : 'Off: switch it on'} onchange={() => { toggle(l) }} />
-        <img class="thumb" src={fileUrl(character, l.file, l.id)} alt="" loading="lazy" />
+        <img class="thumb" src={asset(character, l.file)} alt="" loading="lazy" />
         <div class="text">
           <span class="kind">{LAYER_KIND[l.kind]}</span>
           {#if detail !== ''}<span class="faint detail" use:tooltip={detail.length > 40 ? detail : null}>{detail}</span>{/if}

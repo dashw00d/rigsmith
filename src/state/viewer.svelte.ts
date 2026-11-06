@@ -11,8 +11,9 @@ import { CharacterView, type DisplayMode } from '../engine/CharacterView.ts'
 import { riderScale, seatMatrix } from '../engine/mount.ts'
 import { Stage } from '../engine/Stage.ts'
 import { shownFile } from '../app/status.ts'
-import { fileUrl, type Character } from './api.ts'
+import type { Character } from './api.ts'
 import { app, type Step } from './app.svelte.ts'
+import { asset, assets } from './assets.svelte.ts'
 
 export type { DisplayMode }
 
@@ -106,6 +107,9 @@ class Viewer {
         // (the horse's own changes count too: a re-rig or a resize of it seats the rider again)
         const horse = horseId === undefined ? null : app.byId(horseId)
         const step = app.step
+        // (their files: a file changed on disk loads again, a document change that left the files alone doesn't)
+        if (c !== null) void assets.manifestOf(c.id)
+        if (horse !== null) void assets.manifestOf(horse.id)
         // (the game's heights may have changed with its units)
         void app.gameBeat
         untrack(() => { this.request({ c, horse, step }) })
@@ -215,7 +219,7 @@ class Viewer {
     stage.frame(this.mounted === null ? view.box : new THREE.Box3().setFromObject(stage.content))
   }
 
-  /** Load the character's file again (after it failed to, or when its bytes changed under the same revision). */
+  /** Load the character's file again (after it failed to). */
   reload (): void {
     this.forceReload = true
     this.failedUrl = null
@@ -248,7 +252,12 @@ class Viewer {
     const stage = this.stage
     if (stage === null) return
     const c = want.c
-    const url = c === null ? null : fileUrl(c, shownFile(c))
+    // (its files' hashes first, so the model loads once, by what it holds)
+    if (c !== null && !assets.ready(c.id)) {
+      await assets.load(c.id)
+      if (this.stale(want)) return
+    }
+    const url = c === null ? null : asset(c, shownFile(c))
     if (url !== (this.loaded?.url ?? null) || this.forceReload) {
       if (url !== null && url === this.failedUrl && !this.forceReload && this.loaded === null) return
       this.forceReload = false
@@ -363,7 +372,11 @@ class Viewer {
   private async syncMount (stage: Stage, rider: Loaded, want: Want): Promise<void> {
     const m = rider.c.mount
     const horse = m === undefined ? null : want.horse
-    const url = horse === null ? null : fileUrl(horse, shownFile(horse))
+    if (horse !== null && !assets.ready(horse.id)) {
+      await assets.load(horse.id)
+      if (this.stale(want)) return
+    }
+    const url = horse === null ? null : asset(horse, shownFile(horse))
     if (url !== (this.mounted?.url ?? null)) {
       this.unseat()
       if (m === undefined || horse === null || url === null) return
