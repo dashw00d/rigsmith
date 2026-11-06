@@ -16,7 +16,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { RigDecision } from '../src/model/types.ts'
-import { spawnJob } from './jobs.ts'
+import { type GpuNeed, spawnJob, withGpu } from './jobs.ts'
 import { ROOT } from './store.ts'
 import type { WeightEdit } from './weights.ts'
 
@@ -160,8 +160,9 @@ export function optimizerExclude (always: string[], posed: string[] | null): str
   return [...new Set([...always, ...(posed ?? [])])]
 }
 
-// One optimization at a time: they share the GPU (and fall back to the CPU when it's full).
-let queue: Promise<unknown> = Promise.resolve()
+// The optimizer's fit takes its turn on the GPU lane (jobs.ts gpuTurn) with every other GPU job; it falls back to the
+// CPU when the GPU is full anyway, so it asks for little ($RIGSMITH_SKINOPT_VRAM MiB).
+export const SKINOPT_GPU: GpuNeed = { vram: Number(process.env.RIGSMITH_SKINOPT_VRAM ?? 3000), family: 'torch' }
 
 /** Optimize the skin of a rigged GLB (a candidate, never a live rig: apply.ts refuses one) in place. Returns null when
  * no PyTorch is available, else the library clip ids it trained on (none when it trained on `clips`).
@@ -170,10 +171,7 @@ let queue: Promise<unknown> = Promise.resolve()
 export async function optimizeSkin (glb: string, onProgress: (progress: number, message: string) => void, clips?: string, always: string[] = [], signal?: AbortSignal, options: { onlyLayers?: boolean } = {}): Promise<string[] | null> {
   const python = torchPython()
   if (python === null) return null
-  onProgress(0, options.onlyLayers === true ? 'Waiting to fit the layers' : 'Waiting to optimize weights')
-  const turn = queue.then(async () => await optimizeNow(python, glb, onProgress, clips, always, signal, options.onlyLayers === true))
-  queue = turn.catch(() => {})
-  return await turn
+  return await optimizeNow(python, glb, onProgress, clips, always, signal, options.onlyLayers === true)
 }
 
 async function optimizeNow (python: string, glb: string, onProgress: (progress: number, message: string) => void, clips: string | undefined, always: string[], signal: AbortSignal | undefined, onlyLayers: boolean): Promise<string[]> {
@@ -190,13 +188,15 @@ async function optimizeNow (python: string, glb: string, onProgress: (progress: 
     onProgress(0.3, onlyLayers ? 'Starting to fit the layers' : 'Starting weight optimization')
     let device: string | undefined
     // (the whole fit leaves the layers to the pass after it, which fits nothing else)
-    await run(python, [path.join(TOOLS, 'optimize.py'), prefix, '--iters', '300', ...(onlyLayers ? ['--only-layers'] : ['--w-layers', '0'])], line => {
-      if (line.includes('using the CPU') || line === 'device cpu') device = 'CPU'
-      else if (line === 'device cuda') device = 'GPU'
-      if (line.startsWith('device ') && device !== undefined) onProgress(0.3, `${what} on the ${device}`)
-      const m = /^it\s+(\d+)/.exec(line)
-      if (m !== null) onProgress(0.3 + 0.6 * Number(m[1]) / 300, device === undefined ? what : `${what} on the ${device}`)
-    }, signal)
+    await withGpu({ label: onlyLayers ? 'Fitting the layers' : 'The skin optimizer' }, SKINOPT_GPU, signal, async () => {
+      await run(python, [path.join(TOOLS, 'optimize.py'), prefix, '--iters', '300', ...(onlyLayers ? ['--only-layers'] : ['--w-layers', '0'])], line => {
+        if (line.includes('using the CPU') || line === 'device cpu') device = 'CPU'
+        else if (line === 'device cuda') device = 'GPU'
+        if (line.startsWith('device ') && device !== undefined) onProgress(0.3, `${what} on the ${device}`)
+        const m = /^it\s+(\d+)/.exec(line)
+        if (m !== null) onProgress(0.3 + 0.6 * Number(m[1]) / 300, device === undefined ? what : `${what} on the ${device}`)
+      }, signal)
+    }, { onWait: why => { onProgress(0.3, why) } })
     onProgress(0.95, 'Writing weights')
     await run(process.execPath, [path.join(TOOLS, 'apply.ts'), glb, prefix, glb], undefined, signal)
     return posed
