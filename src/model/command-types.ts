@@ -8,10 +8,7 @@
 //
 // Long work (import, rig, finger trace, template fit, texture compose, export) runs as server jobs, which write the
 // document through the same journal (server/store.ts updateCharacter) without being commands.
-import type {
-  Adjustment, BlowFit, ClipEvent, ClipKey, ClipRef, Gear, GearAttach, GearTrack, Handle, HandPose, HandPoseRef, Joints,
-  MarkerBoardState, Mount, Piece, Placement, RetimeMarker, Side, Slot, SlotIk, SlotTime, Vec3,
-} from './types.ts'
+import type { Adjustment, BlowFit, ClipEvent, ClipKey, ClipRef, Gear, GearAttach, GearTrack, HandPose, HandPoseRef, Handle, Joints, MarkerBoardState, Mount, Piece, Placement, RetimeMarker, Side, Skin, Slot, SlotIk, SlotTime, Vec3 } from './types.ts'
 
 export type Command =
   // character
@@ -43,7 +40,10 @@ export type Command =
   | { type: 'gear.add', gear: Gear }
   /** Showing a piece of a swap set hides the others in it. `model` must lie under garments/<id>/ (a re-pivoted or
    * replaced mesh). Renaming 'emberhold:' gear is refused (the game names it). */
-  | { type: 'gear.update', id: string, patch: { name?: string, hidden?: boolean, swapSet?: string | null, model?: string, from?: string | null } }
+  | { type: 'gear.update', id: string, patch: { name?: string, hidden?: boolean, swapSet?: string | null, model?: string, from?: string | null, outfit?: string | null, role?: 'hair' | 'beard' | null, tags?: string[] | null } }
+  /** A dynamic character's outfit shown: its pieces shown, every other outfit's hidden (gear in no outfit untouched);
+   * null hides every outfit. */
+  | { type: 'gear.outfit.show', outfit: string | null }
   /** How it follows the body, replaced whole (a kind change leaves nothing of the old kind behind). Moving it onto
    * or off a hand adds or removes its carry handle. */
   | { type: 'gear.attach', id: string, attach: GearAttach }
@@ -112,6 +112,14 @@ export type Command =
   | { type: 'look.layer.update', id: string, patch: { enabled?: boolean, note?: string } }
   | { type: 'look.layer.remove', id: string }
   | { type: 'look.layer.reorder', ids: string[] }
+  /** The skins replaced whole (a tool bringing in a dynamic character's faces); the one shown is kept if still there. */
+  | { type: 'look.skins.set', skins: Skin[] }
+  /** The skin Rigsmith shows (null: its own texture). */
+  | { type: 'look.skin.show', name: string | null }
+  /** The clothes layers replaced whole; the one shown is kept if still there. */
+  | { type: 'look.clothes.set', clothes: Skin[] }
+  /** The clothes Rigsmith shows over the skin (null: what the skin has painted). */
+  | { type: 'look.clothing.show', name: string | null }
   // mount (owner: Ship)
   | { type: 'mount.set', mount: Mount | null }
   /** null unsets an optional field (scale, hips, skin, gear). */

@@ -22,6 +22,7 @@
 //                                                       pictures of its clips as the game file has them (Blender)
 //   node tools/rig.ts shot WHO [clip=SLOT|CLIP] [frame=15] [mode=shaded|clay|weights|xray] [view=three|front|back|
 //                          left|right|x,y,z] [zoom=1] [at=.5] [drop=albedo,ao,normal,metal] [size=800] [out=FILE.png]
+//                          [dress=1 [outfit=O] [skin=S] [clothing=C] [hair=H|none] [beard=B|none]]
 //                                                       one frame as the viewer draws it (its renderer, lights, the
 //                                                       live rig and textures; headless Chrome, the app's server up):
 //                                                       a slot's library clip or any library clip (id or name),
@@ -553,7 +554,8 @@ async function main (): Promise<void> {
       mkdirSync(path.dirname(out), { recursive: true })
       const file = `/files/characters/${encodeURIComponent(c.id)}/${c.files.rigged ?? c.files.model}?v=${Date.now()}`
       const query: Record<string, string> = { file, clip, frame }
-      for (const k of ['mode', 'view', 'zoom', 'at', 'size', 'fps', 'drop']) if (kv[k] !== undefined) query[k] = kv[k]
+      for (const k of ['mode', 'view', 'zoom', 'at', 'size', 'fps', 'drop', 'outfit', 'skin', 'clothing', 'hair', 'beard']) if (kv[k] !== undefined) query[k] = kv[k]
+      if (kv.dress !== undefined) query.dress = c.id
       await shot(SERVER, query, out)
       console.log(out)
       return

@@ -19,6 +19,7 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import type { Gear, Placement, SkinPolicy } from '../model/types.ts'
 import type { CharacterView } from './CharacterView.ts'
 import { gearNode, safeName } from './geom.ts'
+import { HIDE_SHARE, hiddenRegions, regionsOf, type Regions } from './regions.ts'
 import { applyGeometryMatrix } from './geometry-transform.ts'
 import { cloneMorphGeometry, restoreMorphState } from './morph-state.ts'
 import { garmentMatrix, placementMatrix } from './placement.ts'
@@ -192,33 +193,59 @@ class TriangleGrid {
 }
 
 export interface BodySurface {
+  /** The first of the body's meshes: its skeleton and bind matrix are every one's (one rig). */
   mesh: THREE.SkinnedMesh
+  /** All of the body's skinned meshes (a body of several materials loads as one mesh each), in the view's order. */
+  meshes: THREE.SkinnedMesh[]
+  /** Where each mesh's vertices start in `positions` (and the weights, the index, the regions). */
+  offsets: number[]
   grid: TriangleGrid
   positions: Float32Array
   index: ArrayLike<number>
   skinIndex: THREE.BufferAttribute
   skinWeight: THREE.BufferAttribute
+  /** The pieces the body's seams cut it into (regions.ts): gear hides the body by whole regions. */
+  regions: Regions
 }
 
-/** The body as gear sees it: its rest surface (closest-point queries) and its weights. */
+/** The body as gear sees it: its rest surface (closest-point queries), its weights and its regions, over every one of
+ * its meshes (v6's Skin, Face, Shirt and Trousers are four). */
 export function bodySurface (view: BodyView): BodySurface | null {
-  const mesh = view.skinned.find(m => m.userData[GARMENT_FLAG] === undefined)
-  if (mesh === undefined) return null
-  const geometry = mesh.geometry
-  const positions = new Float32Array(geometry.attributes.position.array.length)
+  const meshes = view.skinned.filter(m => m.userData[GARMENT_FLAG] === undefined)
+  if (meshes.length === 0) return null
+  const counts = meshes.map(m => m.geometry.attributes.position.count)
+  const offsets: number[] = []
+  let total = 0
+  for (const n of counts) { offsets.push(total); total += n }
+  const positions = new Float32Array(total * 3)
+  const skinIndex = new Float32Array(total * 4)
+  const skinWeight = new Float32Array(total * 4)
+  const index: number[] = []
   const v = new THREE.Vector3()
-  for (let i = 0; i < geometry.attributes.position.count; i++) {
-    v.fromBufferAttribute(geometry.attributes.position, i).applyMatrix4(mesh.bindMatrix)
-    positions.set([v.x, v.y, v.z], i * 3)
+  for (const [k, mesh] of meshes.entries()) {
+    const geometry = mesh.geometry
+    const o = offsets[k]
+    for (let i = 0; i < counts[k]; i++) {
+      v.fromBufferAttribute(geometry.attributes.position, i).applyMatrix4(mesh.bindMatrix)
+      positions.set([v.x, v.y, v.z], (o + i) * 3)
+      for (let c = 0; c < 4; c++) {
+        skinIndex[(o + i) * 4 + c] = (geometry.attributes.skinIndex as THREE.BufferAttribute | undefined)?.getComponent(i, c) ?? 0
+        skinWeight[(o + i) * 4 + c] = (geometry.attributes.skinWeight as THREE.BufferAttribute | undefined)?.getComponent(i, c) ?? 0
+      }
+    }
+    const own = (mesh.userData.fullIndex as THREE.BufferAttribute | undefined)?.array ?? geometry.index?.array ?? Array.from({ length: counts[k] }, (_, i) => i)
+    for (let t = 0; t < own.length; t++) index.push(own[t] + o)
   }
-  const index = (mesh.userData.fullIndex as THREE.BufferAttribute | undefined)?.array ?? geometry.index?.array ?? Array.from({ length: geometry.attributes.position.count }, (_, i) => i)
   return {
-    mesh,
+    mesh: meshes[0],
+    meshes,
+    offsets,
     grid: new TriangleGrid(positions, index, view.height / 40),
     positions,
     index,
-    skinIndex: geometry.attributes.skinIndex as THREE.BufferAttribute,
-    skinWeight: geometry.attributes.skinWeight as THREE.BufferAttribute,
+    skinIndex: new THREE.BufferAttribute(skinIndex, 4),
+    skinWeight: new THREE.BufferAttribute(skinWeight, 4),
+    regions: regionsOf(index, total),
   }
 }
 
@@ -400,12 +427,17 @@ function smooth (w: Float32Array, geometry: THREE.BufferGeometry, nb: number, it
 
 // ---- hiding covered body ----------------------------------------------------------------------------
 
-/** Remove body triangles whose corners all sit just under a piece (prevents poke-through). */
-function hideCovered (body: BodySurface, pieces: THREE.BufferGeometry[], view: BodyView): number {
-  const geometry = body.mesh.geometry
-  if (body.mesh.userData.fullIndex === undefined) body.mesh.userData.fullIndex = geometry.index?.clone() ?? null
-  const full = body.mesh.userData.fullIndex as THREE.BufferAttribute | null
-  if (full === null || pieces.length === 0) return 0
+/** How far out a piece may lie over the body (a share of its height: the gear is fitted 4 mm off, chunky boots and
+ * fur further) and how square over it (the cosine of the cone round the normal: a hat's brim is near the face, but
+ * above it). A sole is covered by the boot's sole under it, so boots must reach the floor (gear_finish.py). */
+const COVER_REACH = 0.04
+const COVER_CONE = 0.5
+
+/** Which body vertices (BodySurface order) sit just under one of `pieces` (rest space): the piece lies outside the
+ * surface there, along its normal, within reach. */
+export function coveredVertices (body: BodySurface, pieces: THREE.BufferGeometry[], height: number): Uint8Array {
+  const covered = new Uint8Array(body.positions.length / 3)
+  if (pieces.length === 0) return covered
   const positions: number[] = []
   const index: number[] = []
   for (const g of pieces) {
@@ -414,36 +446,69 @@ function hideCovered (body: BodySurface, pieces: THREE.BufferGeometry[], view: B
     const gi = g.index?.array ?? Array.from({ length: g.attributes.position.count }, (_, i) => i)
     for (let i = 0; i < gi.length; i++) index.push(gi[i] + offset)
   }
-  const grid = new TriangleGrid(new Float32Array(positions), index, view.height / 40)
-  // Use the model's own normals; compute on a copy only if it has none (never touch its shading).
-  let normals = geometry.attributes.normal as THREE.BufferAttribute | undefined
-  if (normals === undefined) {
-    const copy = geometry.clone()
-    copy.computeVertexNormals()
-    normals = copy.attributes.normal as THREE.BufferAttribute
-  }
-  const reach = view.height * 0.05
-  const covered = new Uint8Array(geometry.attributes.position.count)
+  const grid = new TriangleGrid(new Float32Array(positions), index, height / 40)
+  // (a piece lies over a vertex when its nearest point is close and out along the normal, within a cone: a hat's brim
+  // is near the face but above it, not over it)
+  const reach = height * COVER_REACH
+
   const v = new THREE.Vector3()
   const n = new THREE.Vector3()
-  for (let i = 0; i < covered.length; i++) {
-    v.fromArray(body.positions, i * 3)
-    const hit = grid.closest(v, 3)
-    if (hit === null || hit.distance > reach) continue
-    n.fromBufferAttribute(normals, i).normalize()
-    // The piece must lie outside the body here (in front of the surface along its normal).
-    if (hit.point.clone().sub(v).dot(n) >= -reach * 0.15) covered[i] = 1
+  const turn = new THREE.Matrix3()
+  for (const [k, mesh] of body.meshes.entries()) {
+    // Use the model's own normals; compute on a copy only if it has none (never touch its shading).
+    let normals = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined
+    if (normals === undefined) {
+      const copy = mesh.geometry.clone()
+      copy.computeVertexNormals()
+      normals = copy.attributes.normal as THREE.BufferAttribute
+    }
+    turn.getNormalMatrix(mesh.bindMatrix)
+    for (let i = 0; i < normals.count; i++) {
+      const at = body.offsets[k] + i
+      v.fromArray(body.positions, at * 3)
+      n.fromBufferAttribute(normals, i).applyMatrix3(turn).normalize()
+      const hit = grid.closest(v, 3)
+      if (hit === null || hit.distance > reach) continue
+      // The piece must lie outside the body here, out along its normal (or right on it).
+      const out = hit.point.clone().sub(v)
+      if (hit.distance < height * 0.002 || out.dot(n) >= COVER_CONE * hit.distance) covered[at] = 1
+    }
   }
-  const kept: number[] = []
-  for (let t = 0; t < full.count; t += 3) {
-    const a = full.getX(t)
-    const b = full.getX(t + 1)
-    const c = full.getX(t + 2)
-    if (covered[a] === 1 && covered[b] === 1 && covered[c] === 1) continue
-    kept.push(a, b, c)
+  return covered
+}
+
+/** The share of a region a piece must cover to hide it: HIDE_SHARE, or FACE_SHARE for headwear over the face (a great
+ * helm sits tight on the head: the face it closes over would show through where it doesn't quite reach). */
+export const FACE_SHARE = 0.6
+export const hideShareOf = (g: Pick<Gear, 'tags'>): number => ((g.tags ?? []).includes('covers-face') ? FACE_SHARE : HIDE_SHARE)
+
+/** The body regions `pieces` hide: those they cover (nearly) everywhere (regions.ts). */
+export function regionsHidden (body: BodySurface, pieces: THREE.BufferGeometry[], height: number, share = HIDE_SHARE): number[] {
+  return hiddenRegions(body.regions, coveredVertices(body, pieces, height), share)
+}
+
+/** Remove the body regions the pieces cover, whole (prevents poke-through, and the body stops at a seam): each worn
+ * piece's at its own share. */
+function hideCovered (body: BodySurface, worn: Array<{ hides: THREE.BufferGeometry[], share: number }>, view: BodyView): number {
+  if (worn.length === 0) return 0
+  const hidden = [...new Set(worn.flatMap(w => regionsHidden(body, w.hides, view.height, w.share)))]
+  if (hidden.length === 0) return 0
+  let removed = 0
+  for (const [k, mesh] of body.meshes.entries()) {
+    const geometry = mesh.geometry
+    if (mesh.userData.fullIndex === undefined) mesh.userData.fullIndex = geometry.index?.clone() ?? null
+    const full = mesh.userData.fullIndex as THREE.BufferAttribute | null
+    if (full === null) continue
+    const o = body.offsets[k]
+    const kept: number[] = []
+    for (let t = 0; t < full.count; t += 3) {
+      if (hidden.includes(body.regions.of[full.getX(t) + o])) continue
+      kept.push(full.getX(t), full.getX(t + 1), full.getX(t + 2))
+    }
+    removed += (full.count - kept.length) / 3
+    geometry.setIndex(kept)
   }
-  geometry.setIndex(kept)
-  return (full.count - kept.length) / 3
+  return removed
 }
 
 function restoreBody (view: BodyView): void {
@@ -456,7 +521,7 @@ function restoreBody (view: BodyView): void {
 /** The body whole again, then hidden under every worn piece that hides it. */
 export function hideBodyUnder (view: BodyView, worn: Iterable<Worn>): void {
   restoreBody(view)
-  const pieces = [...worn].flatMap(w => w.hides ?? [])
+  const pieces = [...worn].flatMap(w => (w.hides !== undefined && w.hides.length > 0 ? [{ hides: w.hides, share: w.hideShare ?? HIDE_SHARE }] : []))
   if (pieces.length === 0) return
   const body = bodyOf(view)
   if (body !== null) hideCovered(body, pieces, view)
@@ -482,6 +547,8 @@ export interface Worn {
   objects: THREE.Object3D[]
   /** Skin gear hiding the body under it: its geometry at rest. */
   hides?: THREE.BufferGeometry[]
+  /** The share of a region it must cover to hide it (hideShareOf). */
+  hideShare?: number
 }
 
 /** A bone piece's frame on its bone: bone -> the bone's rest frame undone -> the place node (named geom.gearNode, with
@@ -607,7 +674,7 @@ export async function wear (view: WearView, g: Gear, o: WearOptions): Promise<Wo
   }
   return {
     gear: g.id, node: null, meshes: shown, objects: shown,
-    ...(a.kind === 'skin' && a.hideBody === true ? { hides: shown.map(m => m.geometry) } : {}),
+    ...(a.kind === 'skin' && a.hideBody === true && g.role !== 'hair' ? { hides: shown.map(m => m.geometry), hideShare: hideShareOf(g) } : {}),
   }
 }
 

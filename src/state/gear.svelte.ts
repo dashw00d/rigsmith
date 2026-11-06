@@ -16,6 +16,8 @@ import { carrierGrip, handGrip } from '../engine/clipedit.ts'
 import { boneFrame, GARMENT_FLAG, type GarmentEdit, hideBodyUnder, restFrame, takeOff, takeOffAll, tickMechanisms, wear, type Worn } from '../engine/garments.ts'
 import { fistAt, fitMatrix, heldAt, inFist, offBox, onShaft, restPoints, shapeOf, surfacePoints, type HandAt, type Shape } from '../engine/gearfit.ts'
 import { leadKeysMoved } from '../engine/geartracks.ts'
+import { shapeFemale, showSkin, tint } from '../engine/folkview.ts'
+import { longSleeves } from '../engine/folk.ts'
 import { counterpart, mirroredPlacement, nearerMirror, placementFromMatrix, placementMatrix, placementOf } from '../engine/placement.ts'
 import { catalogItem, catalogPlacement, catalogUrl, defaultPlacement, defaultScale, gripPoint, gripToRest } from '../engine/props.ts'
 import { findHolds as holdsOf, strandMiddle, strandSegment, tickPulls } from '../engine/pulls.ts'
@@ -240,6 +242,23 @@ class GearState {
       if (p === undefined) { this.on(w, c, g, key); changed = true } else this.move(w, p, g)
     }
     if (changed) { this.worn++; this.refreshAnimator() }
+    this.dress(w, c)
+  }
+
+  /** A dynamic character's look (engine/folk.ts): its skin shown on the body, its hair and beard tinted to it. */
+  private dress (w: Wearer, c: Character): void {
+    const skin = (c.look.skins ?? []).find(s => s.name === c.look.skin)
+    const clothes = (c.look.clothes ?? []).find(s => s.name === c.look.clothing)
+    void showSkin(w.view.bodySkinned, skin === undefined ? null : fileUrl(c, skin.file, 0), clothes === undefined ? null : fileUrl(c, clothes.file, 0), longSleeves(clothes)).catch((error: unknown) => {
+      app.toast('error', `The skin ${skin?.name ?? ''} didn't load: ${message(error)}`)
+    })
+    for (const p of w.pieces.values()) {
+      if (p.worn === null || p.gear.role === undefined) continue
+      tint(p.worn.meshes, skin?.hair ?? null)
+    }
+    // (a female skin: the body's female shape, the skinned gear taking the same where it sits)
+    const gear = [...w.pieces.values()].flatMap(p => (p.worn !== null && p.gear.attach.kind !== 'bone' ? p.worn.meshes : []))
+    shapeFemale(w.view.bodySkinned, gear, (skin?.tags ?? []).includes('female'), w.view.height)
   }
 
   private on (w: Wearer, c: Character, g: Gear, key: string): void {
@@ -265,6 +284,7 @@ class GearState {
         piece.worn = worn
         if (worn === null) frame?.group.removeFromParent()
         if (g.attach.kind === 'skin') hideBodyUnder(view, this.wornOf(w))
+        if (g.role !== undefined) this.dress(w, c)
         this.worn++
         if (worn !== null && w.rider && this.fresh.delete(g.id)) void this.settle(c.id, g.id)
       })

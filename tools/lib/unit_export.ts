@@ -31,11 +31,13 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { bakeRide, bakeSlot, eventsInClip, gearTracks, type BakeContext, type BakedEvent, type BakedSlot, type GearTrackTarget, type PullPlan } from '../../src/engine/bake.ts'
 import { CharacterView } from '../../src/engine/CharacterView.ts'
 import { budgetOf, budgetRatio, clipProblem, DEFAULT_LODS, gearLeftOut, HIT_AT, meshNameOf, NO_LOD_BELOW } from '../../src/engine/contract.ts'
-import { originMatrix, type GarmentEdit } from '../../src/engine/garments.ts'
+import { bodySurface, hideShareOf, originMatrix, regionsHidden, type GarmentEdit } from '../../src/engine/garments.ts'
+import { regionMask, regionsOf, withoutRegions, type Regions } from '../../src/engine/regions.ts'
+import { BEARD_SET, FEMALE, HAIR_GREY_MEAN, HAIR_SET, LONG_SLEEVE, clothesFor, coversFace, coversHair, femaleOffsets, isFolk, longSleeves, outfitsOf } from '../../src/engine/folk.ts'
 import { safeName } from '../../src/engine/geom.ts'
 import { applyGeometryMatrix } from '../../src/engine/geometry-transform.ts'
 import { cloneMorphGeometry, mergeMorphState, restoreMorphState } from '../../src/engine/morph-state.ts'
-import { baseColorImage, imageBytes, readGlb } from '../../src/engine/glb.ts'
+import { baseColorImage, imageBytes, readGlb, type Glb } from '../../src/engine/glb.ts'
 import { frameTimes } from '../../src/engine/keys.ts'
 import { compact, ready, simplify, triangles, uvSeamLock } from '../../src/engine/lods.ts'
 import { repeat, seatMatrix } from '../../src/engine/mount.ts'
@@ -131,12 +133,23 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   const { scene } = await load(me.file)
   scene.updateMatrixWorld(true)
   const skinned = skinnedIn(scene)
-  if (skinned.length !== 1) throw new Error(`${unit}: expected one skinned mesh, found ${skinned.length}`)
+  if (skinned.length === 0) throw new Error(`${unit}: no skinned mesh`)
   const skeleton = skinned[0].skeleton
+  if (skinned.some(m => m.skeleton.bones.length !== skeleton.bones.length || m.skeleton.bones.some((b, i) => b.name !== skeleton.bones[i].name))) {
+    throw new Error(`${unit}: its skinned meshes don't share one skeleton`)
+  }
   const hips = skeleton.bones.find(b => b.name === 'Hips')
   if (hips === undefined) throw new Error(`${unit}: no Hips bone`)
   if (!(hips.parent?.matrixWorld ?? new THREE.Matrix4()).equals(new THREE.Matrix4())) throw new Error(`${unit}: the skeleton's parent is transformed; not supported`)
-  const geometry = applyGeometryMatrix(cloneMorphGeometry(skinned[0]), skinned[0].matrixWorld)
+  // One body however many meshes it loads as (a body of several materials: v6's Skin, Face, Shirt and Trousers), each
+  // vertex's region (the seams cut it into: regions.ts) and its material kept in its second UVs for the game to hide
+  // regions under a unit's gear by.
+  const body = bodyGeometry(skinned, unit)
+  const geometry = body.geometry
+  const surface = bodySurface(me.view)
+  if (surface === null || surface.regions.of.length !== body.regions.of.length || surface.regions.of.some((r, i) => r !== body.regions.of[i])) {
+    throw new Error(`${unit}: the body's regions differ between its file and the view (meshes in another order?)`)
+  }
   geometry.computeBoundingBox()
   const floor = geometry.boundingBox!.min.y
   const s = spec.height / (geometry.boundingBox!.max.y - floor)
@@ -179,7 +192,11 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   const bones = [...skeleton.bones, root, ...compBones]
   const material = new THREE.MeshStandardMaterial({ name: 'Main' })
   applyGeometryMatrix(geometry, toGame)
-  for (const name of Object.keys(geometry.attributes)) if (!ATTRIBUTES.includes(name)) geometry.deleteAttribute(name)
+  for (const name of Object.keys(geometry.attributes)) if (!ATTRIBUTES.includes(name) && name !== 'uv1') geometry.deleteAttribute(name)
+  // What the gear hides of the body: regions under always-worn skin gear go (its triangles are dropped); an outfit's,
+  // hair's and beard's are the game's to hide per unit (the folk manifest)
+  const alwaysHidden = new Set<number>()
+  const hidesOf = new Map<string, number[]>()
 
   // Its gear, each piece placed as Rigsmith places it (its placement in the character's rest space), then into game
   // space with the body. Bone gear rides its bone rigidly, or a Prop_ bone of its own under it when any clip keys it,
@@ -201,9 +218,19 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     if (!existsSync(file)) { warn(`${g.name}: ${g.painted} painted weights, but no ${path.relative(me.dir, file)}`); return [] }
     return JSON.parse(readFileSync(file, 'utf8')) as GarmentEdit[]
   }
+  // (a dynamic character's unit carries the outfits its kind wears, and the hair and beards unless told not to)
+  const folkOut = (g: Gear): string | null =>
+    g.outfit !== undefined && spec.folk?.outfits !== undefined && !spec.folk.outfits.includes(g.outfit) ? 'another kind\'s outfit'
+      : g.role !== undefined && spec.folk?.hair === false ? 'hair and beards are another unit\'s file\'s' : null
+  // A dynamic character's swapped pieces draw from one atlas per group (an outfit's pieces; the hair; the beards):
+  // each piece's UVs moved into its cell, its own maps written out for the game's map build to lay in (folk.ts)
+  const atlas = folkAtlas(c, spec)
+  const atlasFiles: Record<string, { grid: number, pieces: Array<Record<string, unknown>> }> = {}
   for (const g of c.gear) {
     const a = g.attach
     const name = meshNameOf(g)
+    const notMine = folkOut(g)
+    if (notMine !== null) { gearReport[name] = { left: notMine, kind: KIND[a.kind], group: g.swapSet }; continue }
     const kind = KIND[a.kind]
     const left = gearLeftOut(g) ?? (g.model === undefined ? 'no model of its own'
       : a.kind === 'bone' && a.legacyFrame !== undefined ? 'still placed in the old catalog frame (place it in Gear)' : null)
@@ -220,13 +247,46 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
       const model = await gearModel(file, g, garmentMatrix(a.place), material)
       if (model.geos.length === 0) throw new Error(`${unit}: ${g.name}: no mesh in ${g.model}`)
       const skin = gearSkin(me.view, g, model.geos, a.kind === 'skin' ? editsOf(g) : [], model.animations, bones.map(b => b.name))
+      // (in rest space, before the move into game space: as the viewer hides the body)
+      const swapped = g.outfit !== undefined || g.role !== undefined
+      // (hair hides nothing: the head is one region with the face, and what it may cover under it, the throat, the nape,
+      // shows where it parts)
+      const hides = a.kind === 'skin' && g.role !== 'hair' && (a.hideBody === true || swapped) ? regionsHidden(surface, model.geos, me.view.height, hideShareOf(g)) : []
+      if (swapped) hidesOf.set(name, hides)
+      else if (g.hidden !== true) for (const r of hides) alwaysHidden.add(r)
+      // (a dynamic character's skinned gear takes the body's female shape where it sits, so it follows a female unit's body)
+      if (isFolk(c) && a.kind === 'skin') {
+        for (const geo of model.geos) {
+          if (Object.keys(geo.morphAttributes).length > 0) continue
+          const target = new THREE.Float32BufferAttribute(femaleOffsets(geo.attributes.position.array, me.view.height), 3)
+          target.name = FEMALE
+          geo.morphAttributes.position = [target]
+          geo.morphTargetsRelative = true
+        }
+      }
       model.geos.forEach((geo, i) => setSkin(applyGeometryMatrix(geo, toGame), skin.skins[i].indices, skin.skins[i].weights))
+      const cell = atlas.get(g.id)
+      if (cell !== undefined) {
+        for (const geo of model.geos) intoCell(geo, cell)
+        model.mats = [new THREE.MeshStandardMaterial({ name: `Atlas_folk_${cell.group}` })]
+        const glb = readGlb(readFileSync(file))
+        const out = path.join(o.workDir, unit, 'folk_atlas', cell.group)
+        mkdirSync(out, { recursive: true })
+        const files: Record<string, string> = {}
+        for (const [kind, index] of [['albedo', baseColorImage(glb)], ['normal', normalImage(glb)]] as const) {
+          const bytes = index === null ? null : imageBytes(glb, index)
+          if (bytes === null) continue
+          files[kind] = path.join(out, `${name}_${kind}.png`)
+          writeFileSync(files[kind], bytes)
+        }
+        ;(atlasFiles[cell.group] ??= { grid: cell.grid, pieces: [] }).pieces.push({ mesh: name, cell: [cell.col, cell.row], ...files })
+      }
       if (skin.mechanism !== undefined) warn(`${g.name}: its own animation ${skin.mechanism} isn't exported: it rides ${skin.lead} still`)
       parts.push({ geometry: merged(model.geos, unit, g), material: model.mats.length === 1 ? model.mats[0] : model.mats, name })
       gearReport[name] = {
         bone: skin.lead, ...shown, mesh: sha256(readFileSync(file)), kind, group: g.swapSet,
         policy: a.kind === 'skin' ? a.policy : undefined, spot: skin.spot, painted: a.kind === 'skin' ? skin.painted : undefined,
-        hideBody: a.kind === 'skin' && a.hideBody === true ? 'not applied (the body is whole in the game)' : undefined,
+        hideBody: a.kind === 'skin' && (a.hideBody === true || swapped) ? (swapped ? `the game hides regions ${hides.join(' ') || 'none'} while it shows` : `regions ${hides.join(' ') || 'none'} removed`) : undefined,
         animation: skin.mechanism !== undefined ? `${skin.mechanism} (not exported: still)` : undefined,
       }
       continue
@@ -316,6 +376,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     out.updateMatrixWorld(true)
   }
 
+  if (alwaysHidden.size > 0) geometry.setIndex(withoutRegions(geometry.index!.array, body.regions, alwaysHidden))
   // Levels: the body within what its gear leaves of the budget (swapped parts don't count: one shows at a time).
   await ready
   const bodyBudget = budgetOf(spec.budget, parts.map(p => ({ name: p.name, triangles: triangles(p.geometry) })))
@@ -325,8 +386,8 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   const lod0 = ratio < 1 ? simplify(geometry, ratio, uvSeamLock(geometry), true) : geometry
   const meshes: THREE.SkinnedMesh[] = []
   // (`pulled`: joints whose vertices every level keeps where they are: a pull's, so each level's strand bends as LOD0's)
-  const addLevels = (base: string, geo0: THREE.BufferGeometry, mat: THREE.Material, report: number[], pulled?: Set<number>): void => {
-    let lock: Uint8Array | undefined
+  const addLevels = (base: string, geo0: THREE.BufferGeometry, mat: THREE.Material, report: number[], pulled?: Set<number>, keep?: Uint8Array): void => {
+    let lock: Uint8Array | undefined = keep
     if (pulled !== undefined) {
       const si = geo0.attributes.skinIndex; const sw = geo0.attributes.skinWeight
       lock = new Uint8Array(si.count)
@@ -357,14 +418,32 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     addLevels(unit, compact(lod0, Uint32Array.from(body)), material, lodReport)
     addLevels(spec.head.name, compact(lod0, Uint32Array.from(head)), material, headReport)
   } else {
-    addLevels(unit, lod0, material, lodReport)
+    // (a dynamic character's region borders kept: no lower level's triangle spans two regions, so hiding one never
+    // tears another; any other body's regions are its UV islands, which its levels must be free to cross)
+    if (isFolk(c)) {
+      // A dynamic character's body has no shapes in the game: each of its shapes' mixes baked into a body of its own
+      // (the game shows the one a unit needs; shapes on a skinned mesh cost the GPU every frame, weight 0 or not:
+      // +3.9 ms with every villager one, 2026-11-06), the regions' borders kept so hiding one never tears another.
+      for (const [suffix, weights] of FOLK_BODIES) {
+        const geo = bakedShapes(lod0, weights)
+        addLevels(suffix === '' ? unit : `FolkBody_${suffix}`, geo, material, suffix === '' ? lodReport : [], undefined, regionBorders(geo))
+      }
+    } else {
+      addLevels(unit, lod0, material, lodReport)
+    }
   }
   const partReport: Record<string, number[]> = {}
   for (const part of parts) {
-    if (Array.isArray(part.material)) {
-      out.add(skinnedMesh(part.name, part.geometry, part.material, meshes))
-      partReport[part.name] = [triangles(part.geometry)]
-    } else addLevels(part.name, part.geometry, part.material, (partReport[part.name] = []), part.pulled)
+    // (a dynamic character's piece with the female shape: itself and <name>_F, the shape baked in: no shapes in the game)
+    const variants: Array<[string, THREE.BufferGeometry]> = isFolk(c) && morphIndex(part.geometry, FEMALE) >= 0
+      ? [[part.name, bakedShapes(part.geometry, {})], [`${part.name}_F`, bakedShapes(part.geometry, { [FEMALE]: 1 })]]
+      : [[part.name, part.geometry]]
+    for (const [name, geometry] of variants) {
+      if (Array.isArray(part.material)) {
+        out.add(skinnedMesh(name, geometry, part.material, meshes))
+        partReport[name] = [triangles(geometry)]
+      } else addLevels(name, geometry, part.material, (partReport[name] = []), part.pulled)
+    }
   }
 
   // The companion's mesh: placed as its skeleton, skinned to its bones (after the unit's), its own surface; and its
@@ -577,6 +656,11 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   // (the sound files its events play, beside the build record, for the game's build to install)
   copySounds(events, { unit: me.dir, companion: comp?.dir }, path.join(srcDir, 'sounds'), warn)
   writeFileSync(path.join(o.modelsDir, `${unit}.events.json`), JSON.stringify(events, null, 1) + '\n')
+  if (Object.keys(atlasFiles).length > 0) writeFileSync(path.join(o.workDir, unit, 'folk_atlas.json'), JSON.stringify(atlasFiles, null, 1) + '\n')
+  if (isFolk(c) || (c.look.skins ?? []).length > 0 || (c.look.clothes ?? []).length > 0) {
+    const manifest = folkManifest(c, me.dir, srcDir, body, hidesOf, spec)
+    writeFileSync(path.join(o.modelsDir, `${unit}.folk.json`), JSON.stringify(manifest, null, 1) + '\n')
+  }
   const record: BuildRecord = {
     schema: 4,
     unit,
@@ -1033,3 +1117,194 @@ function commit (): string {
 
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex')
 const round = (x: number, digits: number): number => +x.toFixed(digits)
+
+/** The body as one geometry (its meshes merged in scene order, each placed by its world matrix), the regions its seams
+ * cut it into, and each vertex's region and material in `uv1` (x: region, y: material class, `classes` order). */
+function bodyGeometry (skinned: THREE.SkinnedMesh[], unit: string): { geometry: THREE.BufferGeometry, regions: Regions, classes: string[] } {
+  const classes: string[] = []
+  const owner: number[] = []
+  const geos = skinned.map(m => {
+    const geo = applyGeometryMatrix(cloneMorphGeometry(m), m.matrixWorld)
+    for (const name of Object.keys(geo.attributes)) if (!ATTRIBUTES.includes(name)) geo.deleteAttribute(name)
+    const name = (Array.isArray(m.material) ? m.material[0] : m.material).name
+    if (!classes.includes(name)) classes.push(name)
+    for (let i = 0; i < geo.attributes.position.count; i++) owner.push(classes.indexOf(name))
+    return geo
+  })
+  const geometry = geos.length === 1 ? geos[0] : mergeGeometries(geos, false)
+  if (geometry === null) throw new Error(`${unit}: its body's meshes can't be joined (their attributes differ)`)
+  if (geos.length > 1) mergeMorphState(geos, geometry)
+  if (geometry.index === null) throw new Error(`${unit}: its body has no triangle list`)
+  const count = geometry.attributes.position.count
+  const regions = regionsOf(geometry.index.array, count)
+  const uv1 = new Float32Array(count * 2)
+  for (let i = 0; i < count; i++) { uv1[i * 2] = regions.of[i]; uv1[i * 2 + 1] = owner[i] }
+  geometry.setAttribute('uv1', new THREE.Float32BufferAttribute(uv1, 2))
+  return { geometry, regions, classes }
+}
+
+/** Vertices on a border between regions (where a vertex of one region sits on a vertex of another): locked while a
+ * level is simplified, so no triangle comes to span two regions. */
+function regionBorders (geo: THREE.BufferGeometry): Uint8Array | undefined {
+  const region = geo.attributes.uv1
+  if (region === undefined) return undefined
+  const p = geo.attributes.position
+  const at = new Map<string, number[]>()
+  for (let v = 0; v < p.count; v++) {
+    const key = `${p.getX(v)},${p.getY(v)},${p.getZ(v)}`
+    const list = at.get(key)
+    if (list === undefined) at.set(key, [v])
+    else list.push(v)
+  }
+  const lock = new Uint8Array(p.count)
+  for (const list of at.values()) {
+    if (list.some(v => region.getX(v) !== region.getX(list[0]))) for (const v of list) lock[v] = 1
+  }
+  return lock
+}
+
+/** What the game needs to dress a dynamic character's units (src/engine/folk.ts has the rules): its body regions,
+ * its skins (copied beside the build), its outfits with the regions each hides, its hair and beards. */
+function folkManifest (c: Character, charDir: string, srcDir: string, body: { regions: Regions, classes: string[], geometry: THREE.BufferGeometry }, hidesOf: Map<string, number[]>, spec: UnitSpec): Record<string, unknown> {
+  const skinsDir = path.join(srcDir, 'skins')
+  mkdirSync(skinsDir, { recursive: true })
+  const skins = (c.look.skins ?? []).map(k => {
+    const file = `skins/${safeName(k.name)}${path.extname(k.file)}`
+    copyFileSync(path.join(charDir, k.file), path.join(srcDir, file))
+    return { name: k.name, file, hair: k.hair ?? null, tags: k.tags ?? [] }
+  })
+  const clothes = (c.look.clothes ?? []).map(k => {
+    const file = `clothes/${safeName(k.name)}${path.extname(k.file)}`
+    mkdirSync(path.join(srcDir, 'clothes'), { recursive: true })
+    copyFileSync(path.join(charDir, k.file), path.join(srcDir, file))
+    return { name: k.name, file, longSleeves: longSleeves(k), tags: k.tags ?? [] }
+  })
+  const pieceOf = (g: Gear): Record<string, unknown> => {
+    const mesh = meshNameOf(g)
+    const hides = hidesOf.get(mesh) ?? []
+    return { mesh, hides, mask: regionMask(hides).mask, tags: g.tags ?? [] }
+  }
+  const outfits: Record<string, unknown> = {}
+  for (const outfit of outfitsOf(c.gear).filter(o => spec.folk?.outfits === undefined || spec.folk.outfits.includes(o))) {
+    const pieces = c.gear.filter(g => g.outfit === outfit && gearLeftOut({ ...g, hidden: false }) === null).map(pieceOf)
+    const hides = [...new Set(pieces.flatMap(p => p.hides as number[]))].sort((a, b) => a - b)
+    outfits[outfit] = {
+      pieces, hides, mask: regionMask(hides).mask, coversHair: coversHair(c.gear, outfit), coversFace: coversFace(c.gear, outfit),
+      clothes: clothesFor(c.gear, outfit, c.look.clothes ?? []).map(k => k.name),
+    }
+  }
+  const pool = (role: 'hair' | 'beard'): Array<Record<string, unknown>> => spec.folk?.hair === false ? []
+    : c.gear.filter(g => g.role === role && gearLeftOut({ ...g, hidden: false }) === null).map(pieceOf)
+  const unfit = regionMask(Array.from({ length: body.regions.count }, (_, i) => i)).unfit
+  // (each region's material and middle, in game units: what a mask's bits are)
+  const sums = Array.from({ length: body.regions.count }, () => ({ n: 0, x: 0, y: 0, z: 0, cls: 0 }))
+  const pos = body.geometry.attributes.position; const uv1 = body.geometry.attributes.uv1
+  for (let v = 0; v < pos.count; v++) {
+    const r = body.regions.of[v]
+    if (r < 0) continue
+    const s = sums[r]; s.n++; s.x += pos.getX(v); s.y += pos.getY(v); s.z += pos.getZ(v); s.cls = uv1.getY(v)
+  }
+  const list = sums.map((s, r) => ({ region: r, material: body.classes[s.cls], vertices: s.n, centre: [s.x, s.y, s.z].map(x => +(x / Math.max(s.n, 1)).toFixed(3)) }))
+  return {
+    about: 'A dynamic character (Rigsmith src/engine/folk.ts): every unit wears its kind\'s outfit, and its own skin, hair and beard picked by the rules below. The body\'s UV2 holds each vertex\'s region (x) and material class (y); a unit hides the regions in its outfit\'s mask (bit r = region r) by collapsing those vertices.',
+    rules: [
+      'hair or beard tagged fem: only on a skin tagged female; tagged masc: only on a skin not tagged female',
+      'a skin tagged beardless takes no beard; a beard is worn about half the time otherwise',
+      'an outfit with coversHair takes no hair; with coversFace, no beard; its clothes are the ones it lists (no long sleeves under bracers)',
+      'hair and beard textures are grey: draw them with the skin\'s hair colour divided by hairGreyMean',
+      'clothes (one per unit) are laid over the skin by their alpha; longSleeves: the body\'s longSleeveShape at 1',
+      'a skin tagged female: femaleShape at 1 on the body and every piece (the gear carries the same shape)',
+    ],
+    hairGreyMean: HAIR_GREY_MEAN,
+    regions: { count: body.regions.count, classes: body.classes, unmaskable: unfit, list },
+    skins,
+    clothes,
+    longSleeveShape: LONG_SLEEVE,
+    femaleShape: FEMALE,
+    outfits,
+    [HAIR_SET]: pool('hair'),
+    [BEARD_SET]: pool('beard'),
+  }
+}
+
+interface AtlasCell { group: string, grid: number, col: number, row: number }
+
+/** Each exported swapped piece of a dynamic character, its atlas cell: per group (its outfit; hair; beards) a square
+ * grid, the pieces in the character's gear order. */
+function folkAtlas (c: Character, spec: UnitSpec): Map<string, AtlasCell> {
+  const out = new Map<string, AtlasCell>()
+  if (!isFolk(c)) return out
+  const groups = new Map<string, Gear[]>()
+  for (const g of c.gear) {
+    const group = g.outfit ?? g.role
+    if (group === undefined || g.attach.kind === 'bone' || gearLeftOut({ ...g, hidden: false }) !== null) continue
+    if (g.outfit !== undefined && spec.folk?.outfits !== undefined && !spec.folk.outfits.includes(g.outfit)) continue
+    if (g.role !== undefined && spec.folk?.hair === false) continue
+    const list = groups.get(group) ?? []
+    list.push(g)
+    groups.set(group, list)
+  }
+  for (const [group, list] of groups) {
+    const grid = Math.ceil(Math.sqrt(list.length))
+    list.forEach((g, i) => out.set(g.id, { group, grid, col: i % grid, row: Math.floor(i / grid) }))
+  }
+  return out
+}
+
+/** A piece's UVs moved into its atlas cell (a texel of gutter kept round it), and no body region (uv1 -1: the game
+ * hides and re-skins only the body). */
+function intoCell (geo: THREE.BufferGeometry, cell: AtlasCell): void {
+  const uv = geo.attributes.uv
+  if (uv !== undefined) {
+    const size = 1 / cell.grid
+    const pad = size * 0.004
+    for (let i = 0; i < uv.count; i++) {
+      const u = THREE.MathUtils.clamp(uv.getX(i), 0, 1); const v = THREE.MathUtils.clamp(uv.getY(i), 0, 1)
+      uv.setXY(i, (cell.col + pad / size + u * (1 - 2 * pad / size)) * size, (cell.row + pad / size + v * (1 - 2 * pad / size)) * size)
+    }
+    uv.needsUpdate = true
+  }
+  geo.setAttribute('uv1', new THREE.Float32BufferAttribute(new Float32Array(geo.attributes.position.count * 2).fill(-1), 2))
+}
+
+/** The image a model's first normal map shows, or null. */
+function normalImage (glb: Glb): number | null {
+  const { materials, textures, images } = glb.json as { materials?: Array<{ normalTexture?: { index: number } }>, textures?: Array<{ source?: number }>, images?: Array<{ bufferView?: number }> }
+  const t = materials?.find(m => m.normalTexture !== undefined)?.normalTexture?.index
+  const source = t !== undefined ? textures?.[t]?.source : undefined
+  return source !== undefined && images?.[source]?.bufferView !== undefined ? source : null
+}
+
+/** A dynamic character's bodies in the game: none, the female shape, the long sleeves, both (FolkBody_<suffix>; '' is
+ * the unit's own body). */
+const FOLK_BODIES: Array<[string, Record<string, number>]> = [['', {}], ['F', { [FEMALE]: 1 }], ['L', { [LONG_SLEEVE]: 1 }], ['FL', { [FEMALE]: 1, [LONG_SLEEVE]: 1 }]]
+
+/** A geometry's morph target index by name (-1: none). */
+function morphIndex (geo: THREE.BufferGeometry, name: string): number {
+  const dictionary = (geo.userData.rigsmithMorphState as { dictionary?: Record<string, number> } | undefined)?.dictionary
+  if (dictionary !== undefined && name in dictionary) return dictionary[name]
+  return (geo.morphAttributes.position ?? []).findIndex(t => t.name === name)
+}
+
+/** A copy of `geo` with its named shapes applied at their weights and no shapes left. */
+function bakedShapes (geo: THREE.BufferGeometry, weights: Record<string, number>): THREE.BufferGeometry {
+  const out = geo.clone()
+  out.userData = { ...geo.userData }
+  delete out.userData.rigsmithMorphState
+  const pos = out.attributes.position.clone()
+  for (const [name, w] of Object.entries(weights)) {
+    const k = morphIndex(geo, name)
+    const target = k >= 0 ? geo.morphAttributes.position?.[k] : undefined
+    if (target === undefined || w === 0) continue
+    for (let i = 0; i < pos.count; i++) {
+      for (let c = 0; c < 3; c++) {
+        const base = geo.morphTargetsRelative ? pos.getComponent(i, c) : (1 - w) * pos.getComponent(i, c)
+        pos.setComponent(i, c, base + w * target.getComponent(i, c))
+      }
+    }
+  }
+  out.setAttribute('position', pos)
+  out.morphAttributes = {}
+  out.morphTargetsRelative = false
+  return out
+}

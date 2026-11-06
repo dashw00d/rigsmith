@@ -20,7 +20,9 @@
   import Select from '../../ui/Select.svelte'
   import TextField from '../../ui/TextField.svelte'
   import Toggle from '../../ui/Toggle.svelte'
+  import FolkPanel from '../gear/FolkPanel.svelte'
   import GearList from '../gear/GearList.svelte'
+  import { isFolk } from '../../engine/folk.ts'
   import HandleList from '../gear/HandleList.svelte'
   import OriginFields from '../gear/OriginFields.svelte'
   import PlacementFields from '../gear/PlacementFields.svelte'
@@ -114,6 +116,12 @@
     </div>
   </details>
 </Section>
+
+{#if isFolk(character) || (character.look.skins ?? []).length > 0 || (character.look.clothes ?? []).length > 0}
+  <Section title="Dynamic character">
+    <FolkPanel {character} />
+  </Section>
+{/if}
 
 <Section title="Pose">
   <Select size="sm" options={poses} value={pose} label="Pose" onchange={(v) => { if (v !== 'other') void gearState.setPose(character, v) }} />

@@ -22,6 +22,9 @@ export interface UnitSpec {
   /** Skipped by a build that names no units; cleared by the first export. */
   draft?: boolean
   companion?: CompanionSpec
+  /** A dynamic character's unit (engine/folk.ts): the outfits this kind wears (unset: all of them), and whether its
+   * file carries the hair and beards (default true; false when another unit's file carries them for every kind). */
+  folk?: { outfits?: string[], hair?: boolean }
   [k: string]: unknown
 }
 

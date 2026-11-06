@@ -6,12 +6,46 @@
 //   view    front | back | left | right | three (front-right, from above), or x,y,z: the direction to the eye
 //   zoom    1 the whole body; 2 its middle half (around `at`: 0 feet .. 1 head, default 0.5)
 //   drop    maps left off, to see which one draws something: albedo (a plain white base), ao, normal, metal
+//   dress   a character id: it wears its shown gear (the body hidden under it as the viewer hides it) and its dynamic
+//           look (engine/folk.ts); outfit, skin, clothing, hair, beard pick other ones (names; hair/beard 'none')
 // document.title says DONE (or FAILED: why) when the canvas holds the picture.
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CharacterView, type DisplayMode } from '../engine/CharacterView.ts'
 import { light, place, tone } from '../engine/lighting.ts'
 import { captureRest, retarget } from '../engine/retarget.ts'
+import { hideBodyUnder, wear, type Worn } from '../engine/garments.ts'
+import { shapeFemale, showSkin, tint } from '../engine/folkview.ts'
+import { longSleeves } from '../engine/folk.ts'
+import type { Character, Gear } from '../model/types.ts'
+
+/** The character's gear and look as the shot shows them: its shown gear, or the outfit, hair and beard asked for. */
+async function dress (view: CharacterView, q: URLSearchParams): Promise<void> {
+  const id = q.get('dress')!
+  const c = await (await fetch(`/api/characters/${encodeURIComponent(id)}`, { headers: { 'x-rigsmith-schema': '4' } })).json() as Character
+  const pick = (g: Gear): boolean => {
+    if (g.status !== 'ready' || g.model === undefined) return false
+    const outfit = q.get('outfit')
+    if (g.outfit !== undefined && outfit !== null) return g.outfit === outfit
+    for (const role of ['hair', 'beard'] as const) {
+      const want = q.get(role)
+      if (g.role === role && want !== null) return g.name === want || g.name === `${role[0].toUpperCase()}${role.slice(1)}_${want}`
+    }
+    return g.hidden !== true
+  }
+  const url = (file: string): string => `/files/characters/${encodeURIComponent(c.id)}/${file.split('/').map(encodeURIComponent).join('/')}`
+  const worn: Worn[] = []
+  for (const g of c.gear.filter(pick)) {
+    const w = await wear(view, g, { url: url(g.model!), place: g.attach.place })
+    if (w !== null) worn.push(w)
+    if (w !== null && g.role !== undefined) tint(w.meshes, (c.look.skins ?? []).find(s => s.name === (q.get('skin') ?? c.look.skin))?.hair ?? null)
+  }
+  hideBodyUnder(view, worn)
+  const skin = (c.look.skins ?? []).find(s => s.name === (q.get('skin') ?? c.look.skin))
+  const clothes = (c.look.clothes ?? []).find(s => s.name === (q.get('clothing') ?? c.look.clothing))
+  await showSkin(view.bodySkinned, skin === undefined ? null : url(skin.file), clothes === undefined ? null : url(clothes.file), longSleeves(clothes))
+  shapeFemale(view.bodySkinned, worn.filter(w => w.node === null).flatMap(w => w.meshes), (skin?.tags ?? []).includes('female'), view.height)
+}
 
 const VIEWS: Record<string, [number, number, number]> = {
   front: [0, 0.15, 1], back: [0, 0.15, -1], left: [1, 0.15, 0], right: [-1, 0.15, 0], three: [0.6, 0.35, 1],
@@ -31,6 +65,7 @@ async function shot (): Promise<void> {
   const rig = light(scene, renderer, { shadows: true })
   const view = await CharacterView.load(q.get('file')!)
   scene.add(view.root)
+  if (q.get('dress') !== null) await dress(view, q)
   const h = view.height
   // (the Stage's ground shadow and shadow frame, sized to the subject)
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({ opacity: 0.32 }))

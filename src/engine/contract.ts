@@ -3,9 +3,10 @@
 // for the unit export (tools/lib/unit_export.ts), the Ship step's checks (src/engine/checks.ts) and the scale room.
 import type { Gear } from '../model/types.ts'
 
-/** Parts the game shows by job or look (the villager's tools and loads, spare heads, job wear), by mesh name: exported
- * even while hidden in Rigsmith, and outside the body's triangle budget. */
-export const SWAPPED = /^(Gear|Head|Wear)/
+/** Parts the game shows by job or look (the villager's tools and loads, spare heads, job wear; a dynamic character's
+ * outfits, hair and beards: engine/folk.ts), by mesh name: exported even while hidden in Rigsmith, and outside the
+ * body's triangle budget. */
+export const SWAPPED = /^(Gear|Head|Wear|Outfit_|Hair_|Beard_)/
 
 // What a game clip must look like, by its name: locomotion steps, standing clips stand. Library names can mislead
 // ("Carrying" was "Carrying Someone Idle", "Talking" "Talking While Seated"), so the export checks the motion itself.
