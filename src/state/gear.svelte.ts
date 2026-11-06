@@ -78,6 +78,8 @@ class GearState {
   private refreshing = false
   /** Pieces uploaded here still importing: once worn, each gets an origin on it and goes into the hand (settle). */
   private fresh = new Set<string>()
+  /** Wearers whose body is to be hidden again (hideLater). */
+  private hiding = new Set<Wearer>()
   /** The selected piece's origin, shown on stage (and dragged while placing it). */
   private marker: THREE.Object3D | null = null
   /** The gizmo's mode before placing an origin (it places in Move). */
@@ -283,7 +285,7 @@ class GearState {
         if (w.pieces.get(g.id) !== piece) { if (worn !== null) takeOff(view, worn); return }
         piece.worn = worn
         if (worn === null) frame?.group.removeFromParent()
-        if (g.attach.kind === 'skin') hideBodyUnder(view, this.wornOf(w))
+        if (g.attach.kind === 'skin') this.hideLater(w)
         if (g.role !== undefined) this.dress(w, c)
         this.worn++
         if (worn !== null && w.rider && this.fresh.delete(g.id)) void this.settle(c.id, g.id)
@@ -302,7 +304,7 @@ class GearState {
     if (w.rider && paint.active && p.worn !== null && p.worn.meshes.some(m => (m as THREE.SkinnedMesh).isSkinnedMesh === true)) paint.stop()
     if (p.worn !== null) takeOff(w.view, p.worn)
     else p.frame?.group.removeFromParent()
-    if (p.gear.attach.kind === 'skin') hideBodyUnder(w.view, this.wornOf(w))
+    if (p.gear.attach.kind === 'skin') this.hideLater(w)
   }
 
   /** A bone piece placed elsewhere: its node moves (unless the gizmo is dragging it). */
@@ -317,6 +319,17 @@ class GearState {
     if (!(gizmo.dragging && gizmo.target === node)) placementMatrix(place).decompose(node.position, node.quaternion, node.scale)
     // (the clip playing carries its placement in its gear tracks: bake it again)
     this.refreshAnimator()
+  }
+
+  /** The body hidden again under what is worn, once per burst of pieces going on and off (a Randomize swaps the
+   * outfit, hair and beard together). */
+  private hideLater (w: Wearer): void {
+    if (this.hiding.has(w)) return
+    this.hiding.add(w)
+    queueMicrotask(() => {
+      this.hiding.delete(w)
+      hideBodyUnder(w.view, this.wornOf(w))
+    })
   }
 
   private wornOf (w: Wearer): Worn[] {

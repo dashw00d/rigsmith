@@ -487,12 +487,23 @@ export function regionsHidden (body: BodySurface, pieces: THREE.BufferGeometry[]
   return hiddenRegions(body.regions, coveredVertices(body, pieces, height), share)
 }
 
+/** What one worn piece hides, worked out once: its geometry at rest doesn't change while it is worn, and the coverage
+ * test is the slow part (a closest-point query per body vertex), so swapping one piece must not test every other. */
+const hiddenByPiece = new WeakMap<THREE.BufferGeometry[], { body: BodySurface, share: number, height: number, regions: number[] }>()
+function hiddenBy (body: BodySurface, hides: THREE.BufferGeometry[], height: number, share: number): number[] {
+  const known = hiddenByPiece.get(hides)
+  if (known !== undefined && known.body === body && known.share === share && known.height === height) return known.regions
+  const regions = regionsHidden(body, hides, height, share)
+  hiddenByPiece.set(hides, { body, share, height, regions })
+  return regions
+}
+
 /** Remove the body regions the pieces cover, whole (prevents poke-through, and the body stops at a seam): each worn
  * piece's at its own share. */
 function hideCovered (body: BodySurface, worn: Array<{ hides: THREE.BufferGeometry[], share: number }>, view: BodyView): number {
   if (worn.length === 0) return 0
-  const hidden = [...new Set(worn.flatMap(w => regionsHidden(body, w.hides, view.height, w.share)))]
-  if (hidden.length === 0) return 0
+  const hidden = new Set(worn.flatMap(w => hiddenBy(body, w.hides, view.height, w.share)))
+  if (hidden.size === 0) return 0
   let removed = 0
   for (const [k, mesh] of body.meshes.entries()) {
     const geometry = mesh.geometry
@@ -502,7 +513,7 @@ function hideCovered (body: BodySurface, worn: Array<{ hides: THREE.BufferGeomet
     const o = body.offsets[k]
     const kept: number[] = []
     for (let t = 0; t < full.count; t += 3) {
-      if (hidden.includes(body.regions.of[full.getX(t) + o])) continue
+      if (hidden.has(body.regions.of[full.getX(t) + o])) continue
       kept.push(full.getX(t), full.getX(t + 1), full.getX(t + 2))
     }
     removed += (full.count - kept.length) / 3
