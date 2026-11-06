@@ -81,6 +81,9 @@ function gearOf (c: Character, v: unknown): Gear {
   const from = opt(g.from, x => str(x, 'gear.from'))
   const painted = opt(g.painted, x => num(x, 'gear.painted', { min: 0 }))
   const origin = opt(g.origin, x => vec3(x, 'gear.origin'))
+  const outfit = opt(g.outfit, x => (typeof x === 'string' ? x.trim() : bad('gear.outfit must be text')))
+  const role = opt(g.role, x => oneOf(x, ['hair', 'beard'] as const, 'gear.role'))
+  const tags = opt(g.tags, x => tagsOf(x, 'gear.tags'))
   return {
     id: gid, name: name(g.name, 'gear.name'),
     ...(model !== undefined ? { model } : {}), ...(catalog !== undefined ? { catalog } : {}),
@@ -89,7 +92,13 @@ function gearOf (c: Character, v: unknown): Gear {
     attach: attach(c, g.attach), handles,
     ...(hidden === true ? { hidden } : {}), ...(swapSet ? { swapSet } : {}), ...(from !== undefined ? { from } : {}),
     ...(painted !== undefined ? { painted } : {}),
+    ...(outfit ? { outfit } : {}), ...(role !== undefined ? { role } : {}), ...(tags !== undefined && tags.length > 0 ? { tags } : {}),
   }
+}
+
+/** Tags: short lower-case words, each once. */
+export function tagsOf (v: unknown, what: string): string[] {
+  return [...new Set(list(v, what, (x, w) => (typeof x === 'string' && /^[a-z0-9-]{1,32}$/.test(x.trim()) ? x.trim() : bad(`${w} must be a short lower-case word`))))]
 }
 
 function attachText (a: GearAttach): string {
@@ -264,7 +273,7 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
     }
     case 'gear.update': {
       const g = gearById(c, cmd.id) ?? missing(`No gear ${cmd.id}`)
-      const p = patchOf(cmd.patch, ['name', 'hidden', 'swapSet', 'model', 'from'])
+      const p = patchOf(cmd.patch, ['name', 'hidden', 'swapSet', 'model', 'from', 'outfit', 'role', 'tags'])
       const out: string[] = []
       // (`from` first: a tool may take a piece out of the game's hands and rename it at once)
       if (p.from !== undefined) {
@@ -292,6 +301,30 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
           out.push(`gear ${g.name}: ${set === '' ? 'out of its swap set' : `in swap set ${set}`}`)
         }
       }
+      if (p.outfit !== undefined) {
+        const outfit = p.outfit === null ? '' : typeof p.outfit === 'string' ? p.outfit.trim() : bad('outfit must be text')
+        if (outfit !== (g.outfit ?? '')) {
+          if (outfit === '') delete g.outfit
+          else g.outfit = outfit
+          out.push(`gear ${g.name}: ${outfit === '' ? 'in no outfit' : `in outfit ${outfit}`}`)
+        }
+      }
+      if (p.role !== undefined) {
+        const role = p.role === null ? undefined : oneOf(p.role, ['hair', 'beard'] as const, 'role')
+        if (role !== g.role) {
+          if (role === undefined) delete g.role
+          else g.role = role
+          out.push(`gear ${g.name}: ${role === undefined ? 'no longer hair or beard' : `a unit's ${role}`}`)
+        }
+      }
+      if (p.tags !== undefined) {
+        const tags = p.tags === null ? [] : tagsOf(p.tags, 'tags')
+        if (tags.join(' ') !== (g.tags ?? []).join(' ')) {
+          if (tags.length === 0) delete g.tags
+          else g.tags = tags
+          out.push(`gear ${g.name}: ${tags.length === 0 ? 'no tags' : `tagged ${tags.join(', ')}`}`)
+        }
+      }
       if (p.model !== undefined) {
         const model = under(p.model, `garments/${g.id}/`, 'model')
         if (model !== g.model) {
@@ -311,6 +344,20 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
         }
         if (!hidden) out.push(...showOnly(c, g))
       }
+      return out
+    }
+    case 'gear.outfit.show': {
+      const outfit = cmd.outfit === null ? null : str(cmd.outfit, 'outfit').trim()
+      if (outfit !== null && !c.gear.some(g => g.outfit === outfit)) missing(`No outfit ${outfit}`)
+      const out: string[] = []
+      for (const g of c.gear) {
+        if (g.outfit === undefined) continue
+        const hide = g.outfit !== outfit
+        if (hide === (g.hidden === true)) continue
+        if (hide) g.hidden = true
+        else delete g.hidden
+      }
+      out.push(outfit === null ? 'outfits: none shown' : `outfit ${outfit} shown`)
       return out
     }
     case 'gear.attach': {

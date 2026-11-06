@@ -41,6 +41,8 @@ export function entitiesOf (c: Character): Map<string, unknown> {
   for (const s of c.clips) m.set(`slot:${s.id}`, s)
   m.set('layerOrder', c.look.layers.map(l => l.id))
   for (const l of c.look.layers) m.set(`layer:${l.id}`, l)
+  const { skins, skin, clothes, clothing } = c.look
+  if (skins !== undefined || skin !== undefined || clothes !== undefined || clothing !== undefined) m.set('skins', { skins, skin, clothes, clothing })
   return m
 }
 
@@ -105,6 +107,14 @@ export function restoreEntities (c: Character, undo: UndoRecord): Character {
           }
         }
         out.gear = put(out.gear, itemId, g)
+        break
+      }
+      case 'skins': {
+        const s = was as Pick<Character['look'], 'skins' | 'skin' | 'clothes' | 'clothing'> | null
+        for (const k of ['skins', 'skin', 'clothes', 'clothing'] as const) {
+          if (s?.[k] === undefined) delete out.look[k]
+          else (out.look as unknown as Record<string, unknown>)[k] = s[k]
+        }
         break
       }
       case 'slot': out.clips = put(out.clips, itemId, was as Character['clips'][number] | null); break

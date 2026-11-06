@@ -12,7 +12,9 @@
 
   let { character }: { character: Character } = $props()
 
-  const groups = $derived(swapGroups(character.gear))
+  // (a dynamic character: only the outfit shown and the hair and beard shown are listed; the Folk pickers switch them)
+  const listed = $derived(character.gear.filter(g => !((g.outfit !== undefined || g.role !== undefined) && g.hidden === true)))
+  const groups = $derived(swapGroups(listed))
 
   function hiddenHint (g: Gear): string {
     if (g.hidden !== true) return g.swapSet !== undefined ? `Shown (showing another of ${g.swapSet} hides it)` : 'Shown'

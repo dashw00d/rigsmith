@@ -217,6 +217,14 @@ export interface Gear {
   hidden?: boolean
   /** Of the gear sharing a swap set, showing one hides the others (one tool in hand of several). */
   swapSet?: string
+  /** The outfit it belongs to: a dynamic character (one body every unit shares) wears one outfit at a time, its pieces
+   * together (gear.outfit.show); the game gets every outfit and a unit shows its own (src/engine/folk.ts). */
+  outfit?: string
+  /** A dynamic character's swappable hair or beard: one of each picked per unit, tinted to its skin's hair colour. */
+  role?: 'hair' | 'beard'
+  /** What the per-unit pick matches against a skin's tags: a skin tagged 'beardless' takes no beard; a piece tagged
+   * 'long' or 'short' says its length (src/engine/folk.ts). */
+  tags?: string[]
   /** Brought in by a tool: 'emberhold:<unit>/<part>' (tools/game_import.py; the only gear the game export takes),
    * 'catalog:<file>'. */
   from?: string
@@ -430,8 +438,26 @@ export interface LookSection {
   scan?: { images: TextureImage[], at: number }
   /** Bumped when the composite changes (cache-bust for textures/ URLs). */
   at?: number
-  /** Other colour maps on its own UVs (a horse's coats), by name; a rider's mount picks one. */
-  skins?: Array<{ name: string, file: string }>
+  /** Other colour maps on its own UVs (a horse's coats; a dynamic character's faces and skins), by name; a rider's
+   * mount picks one, a dynamic character's unit one at random. */
+  skins?: Skin[]
+  /** The skin shown in Rigsmith (by name; unset: its own texture). The game picks one per unit. */
+  skin?: string
+  /** A dynamic character's clothes: RGBA layers on the body's own UVs laid over the skin (its shirt and trouser
+   * areas; tagged 'long-sleeves', the forearms too, with the body's long_sleeve shape on). One per unit. */
+  clothes?: Skin[]
+  /** The clothes shown in Rigsmith (by name; unset: what the skin has painted). */
+  clothing?: string
+}
+
+export interface Skin {
+  name: string
+  /** Relative to the character folder. */
+  file: string
+  /** A dynamic character's hair colour (#rrggbb): its hair and beard pieces are tinted to it. */
+  hair?: string
+  /** What its hair and beard picks match (Gear.tags): 'beardless', 'female', 'elderly'... */
+  tags?: string[]
 }
 
 export interface TextureLayer {
@@ -518,7 +544,7 @@ export interface JournalEntry {
 }
 
 /** Entity keys (src/model/entities.ts): 'name', 'skeleton', 'skinLock' ({locked, lockReason}), 'hands', 'mount',
- * 'gear:<id>' (without the job-owned status, error, painted, model), 'slot:<id>', 'layer:<id>' (look layers),
+ * 'gear:<id>' (without the job-owned status, error, painted, model), 'slot:<id>', 'layer:<id>' (look layers), 'skins' ({skins, skin, clothes, clothing}: look's skins and clothes and the ones shown),
  * 'gearOrder', 'slotOrder', 'layerOrder'. Job-owned fields (source, files, status, skin report, look.scan/at...) are
  * not entities. `before` null: it did not exist. `after`: a stable hash of the entity right after the write, so a
  * later change to it is seen as a conflict (order entities never conflict: they merge). */

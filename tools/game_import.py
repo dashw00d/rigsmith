@@ -61,7 +61,7 @@ API = os.environ.get('RIGSMITH_URL', 'http://127.0.0.1:5180')
 BY = os.environ.get('RIGSMITH_BY', 'game_import')
 TRIM_SIZE = 1024        # the shared trim sheets (2048) embedded at this size, as JPEG: a hat needs no more
 ROUGHNESS = 0.82        # the game's matte (emb_rigsmith.ROUGHNESS)
-SWAPPED = ('Gear', 'Head', 'Wear')   # parts the game shows by job or look (src/engine/contract.ts SWAPPED)
+SWAPPED = ('Gear', 'Head', 'Wear', 'Outfit_', 'Hair_', 'Beard_')   # parts the game shows by job or look (src/engine/contract.ts SWAPPED)
 IMPORT_WAIT = 600       # seconds a part's import may take
 
 # --- glTF in ---------------------------------------------------------------------------------------------------------
