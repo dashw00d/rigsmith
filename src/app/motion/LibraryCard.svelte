@@ -34,7 +34,7 @@
   // (asked again when it comes into view, and when previews are made for another character)
   $effect(() => {
     void animator.previewVersion
-    if (!visible) return
+    if (!visible || !compatible) { sheet = null; failed = false; return }
     let cancelled = false
     animator.sprite(clip.url).then(result => { if (!cancelled) { sheet = result; failed = result === null } }, () => { if (!cancelled) failed = true })
     return () => { cancelled = true }
@@ -81,7 +81,7 @@
 <div use:contextMenu={() => [{ label: 'Preview', disabled: !compatible, run: () => { void play() } }, { label: action?.kind === 'remove' ? 'Remove trials' : action?.kind === 'fill' ? 'Fill slot' : 'Add as a trial', disabled: !compatible || action === null, run: () => { void press() } }]} data-testid="lib-clip" data-id={clip.id} data-loop={clip.loop} class="card" class:playing bind:this={node} role="button" tabindex="0" aria-label="Preview {clip.name}"
   onclick={play} onpointerenter={play} onkeydown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) play() }}>
   <div class="preview" style={sheet ? `--sheet: url(${sheet}); --frames: ${SPRITE_FRAMES}` : ''} class:ready={sheet !== null}>
-    {#if sheet === null && !failed}<div class="shimmer"></div>{/if}
+    {#if compatible && sheet === null && !failed}<div class="shimmer"></div>{/if}
     <span class="time mono">{duration}s</span>
     {#if clip.loop}<span class="loop" use:tooltip={'Loops seamlessly'}><Repeat size={11} /></span>{/if}
     {#if clip.source === 'custom'}<span class="custom" use:tooltip={'Made here (the animation editor, or a script)'}>custom</span>{/if}
