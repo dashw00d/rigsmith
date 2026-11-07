@@ -22,6 +22,9 @@
   import Viewport from './Viewport.svelte'
   import CatalogDrawer from './gear/CatalogDrawer.svelte'
   import WardrobeDrawer from './gear/WardrobeDrawer.svelte'
+  import CrowdView from './gear/CrowdView.svelte'
+  import { wardrobe } from './gear/wardrobe.svelte.ts'
+  import { isFolk } from '../engine/folk.ts'
   import { registerAppKeys } from './gear/keys.ts'
   import KeysSheet from './KeysSheet.svelte'
   import { runShortcut } from '../ui/shortcuts.ts'
@@ -114,6 +117,7 @@
       </aside>
       <main class="center">
         <Viewport />
+        {#if ready && wardrobe.crowdOpen && app.step === 'gear' && selected !== null && isFolk(selected)}<CrowdView character={selected} />{/if}
         {#if ready && app.drawer === 'library'}<LibraryDrawer />{/if}
         {#if ready && app.drawer === 'catalog'}<CatalogDrawer />{/if}
         {#if ready && app.drawer === 'wardrobe'}<WardrobeDrawer />{/if}

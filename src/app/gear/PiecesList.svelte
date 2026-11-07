@@ -4,11 +4,12 @@
   // Shift takes the run; the bulk bar acts on all picked at once, each action one command batch (one undo, a toast to
   // take it back): tags, move to a set, hide the body under them, delete. Double-click renames (not the game's own
   // pieces: their names are the game's contract). Rows off screen are skipped by the browser (content-visibility).
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { ChevronDown, EyeOff, Trash2, X } from '@lucide/svelte'
   import type { Command } from '../../model/command-types.ts'
   import type { Character, Gear } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
+  import { dress } from '../../state/dress.svelte.ts'
   import { gear as gearState } from '../../state/gear.svelte.ts'
   import { setsOf } from '../../model/folk.ts'
   import { fromGame } from './text.ts'
@@ -112,6 +113,16 @@
     { id: 'pieces.all', keys: 'ctrl+a', label: 'Pick every piece listed', group: 'Pieces', when: () => order.length > 0, run: () => { wardrobe.picked = [...order] } },
   )
   onDestroy(off)
+
+  // (the first time: every set folded but the one worn, so the list opens short and on what is on stage)
+  $effect(() => {
+    const id = character.id
+    untrack(() => {
+      if (wardrobe.view(id).collapsed !== undefined) return
+      const worn = dress.worn(character).outfit
+      wardrobe.setCollapsed(id, pieceGroups(character).map(g => g.set ?? '').filter(k => k !== worn))
+    })
+  })
 
   const allCollapsed = $derived(groups.every(g => wardrobe.isCollapsed(character.id, g.set ?? '')))
 </script>
