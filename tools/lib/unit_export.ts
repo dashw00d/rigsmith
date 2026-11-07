@@ -33,7 +33,9 @@ import { CharacterView } from '../../src/engine/CharacterView.ts'
 import { budgetOf, budgetRatio, clipProblem, DEFAULT_LODS, gearLeftOut, HIT_AT, meshNameOf, NO_LOD_BELOW } from '../../src/engine/contract.ts'
 import { bodySurface, hideShareOf, originMatrix, regionsHidden, type GarmentEdit } from '../../src/engine/garments.ts'
 import { regionMask, regionsOf, withoutRegions, type Regions } from '../../src/engine/regions.ts'
-import { BEARD_SET, FEMALE, HAIR_GREY_MEAN, HAIR_SET, LONG_SLEEVE, clothesFor, coversFace, coversHair, femaleOffsets, isFolk, longSleeves, outfitsOf } from '../../src/engine/folk.ts'
+import { FEMALE, HAIR_GREY_MEAN, LONG_SLEEVE, femaleOffsets, isFolk } from '../../src/engine/folk.ts'
+import { clothOf } from '../../src/model/folk.ts'
+import { atlasGroupOf, folkLeftOut, folkManifestData, folkScope, isSwapped, type FolkFiles, type FolkScope, type ManifestPiece } from './folk_export.ts'
 import { safeName } from '../../src/engine/geom.ts'
 import { applyGeometryMatrix } from '../../src/engine/geometry-transform.ts'
 import { cloneMorphGeometry, mergeMorphState, restoreMorphState } from '../../src/engine/morph-state.ts'
@@ -219,12 +221,12 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     return JSON.parse(readFileSync(file, 'utf8')) as GarmentEdit[]
   }
   // (a dynamic character's unit carries the outfits its kind wears, and the hair and beards unless told not to)
-  const folkOut = (g: Gear): string | null =>
-    g.outfit !== undefined && spec.folk?.outfits !== undefined && !spec.folk.outfits.includes(g.outfit) ? 'another kind\'s outfit'
-      : g.role !== undefined && spec.folk?.hair === false ? 'hair and beards are another unit\'s file\'s' : null
+  // (its kind's sets and its pools: tools/lib/folk_export.ts folkScope)
+  const scope = isFolk(c) ? folkScope(c, spec, g => gearLeftOut({ ...g, hidden: false }) === null) : null
+  const folkOut = (g: Gear): string | null => scope === null ? null : folkLeftOut(scope, g)
   // A dynamic character's swapped pieces draw from one atlas per group (an outfit's pieces; the hair; the beards):
   // each piece's UVs moved into its cell, its own maps written out for the game's map build to lay in (folk.ts)
-  const atlas = folkAtlas(c, spec)
+  const atlas = folkAtlas(c, scope)
   const atlasFiles: Record<string, { grid: number, pieces: Array<Record<string, unknown>> }> = {}
   for (const g of c.gear) {
     const a = g.attach
@@ -248,10 +250,10 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
       if (model.geos.length === 0) throw new Error(`${unit}: ${g.name}: no mesh in ${g.model}`)
       const skin = gearSkin(me.view, g, model.geos, a.kind === 'skin' ? editsOf(g) : [], model.animations, bones.map(b => b.name))
       // (in rest space, before the move into game space: as the viewer hides the body)
-      const swapped = g.outfit !== undefined || g.role !== undefined
+      const swapped = scope !== null && isSwapped(scope, g)
       // (hair hides nothing: the head is one region with the face, and what it may cover under it, the throat, the nape,
       // shows where it parts)
-      const hides = a.kind === 'skin' && g.role !== 'hair' && (a.hideBody === true || swapped) ? regionsHidden(surface, model.geos, me.view.height, hideShareOf(g)) : []
+      const hides = a.kind === 'skin' && g.role !== 'hair' && scope?.hair.has(g.id) !== true && (a.hideBody === true || swapped) ? regionsHidden(surface, model.geos, me.view.height, hideShareOf(g)) : []
       if (swapped) hidesOf.set(name, hides)
       else if (g.hidden !== true) for (const r of hides) alwaysHidden.add(r)
       // (a dynamic character's skinned gear takes the body's female shape where it sits, so it follows a female unit's body)
@@ -658,7 +660,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   writeFileSync(path.join(o.modelsDir, `${unit}.events.json`), JSON.stringify(events, null, 1) + '\n')
   if (Object.keys(atlasFiles).length > 0) writeFileSync(path.join(o.workDir, unit, 'folk_atlas.json'), JSON.stringify(atlasFiles, null, 1) + '\n')
   if (isFolk(c) || (c.look.skins ?? []).length > 0 || (c.look.clothes ?? []).length > 0) {
-    const manifest = folkManifest(c, me.dir, srcDir, body, hidesOf, spec)
+    const manifest = folkManifest(unit, c, me.dir, srcDir, body, hidesOf, spec)
     writeFileSync(path.join(o.modelsDir, `${unit}.folk.json`), JSON.stringify(manifest, null, 1) + '\n')
   }
   const record: BuildRecord = {
@@ -1163,38 +1165,38 @@ function regionBorders (geo: THREE.BufferGeometry): Uint8Array | undefined {
   return lock
 }
 
-/** What the game needs to dress a dynamic character's units (src/engine/folk.ts has the rules): its body regions,
- * its skins (copied beside the build), its outfits with the regions each hides, its hair and beards. */
-function folkManifest (c: Character, charDir: string, srcDir: string, body: { regions: Regions, classes: string[], geometry: THREE.BufferGeometry }, hidesOf: Map<string, number[]>, spec: UnitSpec): Record<string, unknown> {
-  const skinsDir = path.join(srcDir, 'skins')
-  mkdirSync(skinsDir, { recursive: true })
-  const skins = (c.look.skins ?? []).map(k => {
-    const file = `skins/${safeName(k.name)}${path.extname(k.file)}`
-    copyFileSync(path.join(charDir, k.file), path.join(srcDir, file))
-    return { name: k.name, file, hair: k.hair ?? null, tags: k.tags ?? [] }
-  })
-  const clothes = (c.look.clothes ?? []).map(k => {
-    const file = `clothes/${safeName(k.name)}${path.extname(k.file)}`
-    mkdirSync(path.join(srcDir, 'clothes'), { recursive: true })
-    copyFileSync(path.join(charDir, k.file), path.join(srcDir, file))
-    return { name: k.name, file, longSleeves: longSleeves(k), tags: k.tags ?? [] }
-  })
-  const pieceOf = (g: Gear): Record<string, unknown> => {
+/** What the game needs to dress a dynamic character's units (tools/lib/folk_export.ts folkManifestData, schema 2): its
+ * body regions and bodies, its skins and cloth layers (copied beside the build, with their bare versions, trims and cut
+ * masks), the sets, kinds, pools and stances its file carries with the regions each piece hides, the pick program and
+ * golden picks, and schema 1's view (outfits, clothes, hair, beard). */
+function folkManifest (unit: string, c: Character, charDir: string, srcDir: string, body: { regions: Regions, classes: string[], geometry: THREE.BufferGeometry }, hidesOf: Map<string, number[]>, spec: UnitSpec): Record<string, unknown> {
+  const copy = (from: string, to: string): string => {
+    mkdirSync(path.dirname(path.join(srcDir, to)), { recursive: true })
+    copyFileSync(path.join(charDir, from), path.join(srcDir, to))
+    return to
+  }
+  const ext = (f: string): string => path.extname(f)
+  const files: FolkFiles = { skins: {}, layers: {}, clothes: {} }
+  for (const k of c.look.skins ?? []) {
+    files.skins[k.name] = {
+      file: copy(k.file, `skins/${safeName(k.name)}${ext(k.file)}`),
+      ...(k.bare !== undefined ? { bare: copy(k.bare, `skins/${safeName(k.name)}.bare${ext(k.bare)}`) } : {}),
+    }
+  }
+  for (const k of c.look.clothes ?? []) files.clothes[k.name] = copy(k.file, `clothes/${safeName(k.name)}${ext(k.file)}`)
+  for (const l of clothOf(c)) {
+    const base = `clothes/${safeName(l.name)}`
+    files.layers[l.id] = {
+      file: files.clothes[l.name] !== undefined && (c.look.clothes ?? []).some(k => k.name === l.name && k.file === l.file) ? files.clothes[l.name] : copy(l.file, `${base}${ext(l.file)}`),
+      ...(l.trim !== undefined ? { trim: copy(l.trim, `${base}.trim${ext(l.trim)}`) } : {}),
+      ...(l.cut?.mask !== undefined ? { mask: copy(l.cut.mask, `${base}.mask${ext(l.cut.mask)}`) } : {}),
+    }
+  }
+  const pieceOf = (g: Gear): ManifestPiece => {
     const mesh = meshNameOf(g)
     const hides = hidesOf.get(mesh) ?? []
     return { mesh, hides, mask: regionMask(hides).mask, tags: g.tags ?? [] }
   }
-  const outfits: Record<string, unknown> = {}
-  for (const outfit of outfitsOf(c.gear).filter(o => spec.folk?.outfits === undefined || spec.folk.outfits.includes(o))) {
-    const pieces = c.gear.filter(g => g.outfit === outfit && gearLeftOut({ ...g, hidden: false }) === null).map(pieceOf)
-    const hides = [...new Set(pieces.flatMap(p => p.hides as number[]))].sort((a, b) => a - b)
-    outfits[outfit] = {
-      pieces, hides, mask: regionMask(hides).mask, coversHair: coversHair(c.gear, outfit), coversFace: coversFace(c.gear, outfit),
-      clothes: clothesFor(c.gear, outfit, c.look.clothes ?? []).map(k => k.name),
-    }
-  }
-  const pool = (role: 'hair' | 'beard'): Array<Record<string, unknown>> => spec.folk?.hair === false ? []
-    : c.gear.filter(g => g.role === role && gearLeftOut({ ...g, hidden: false }) === null).map(pieceOf)
   const unfit = regionMask(Array.from({ length: body.regions.count }, (_, i) => i)).unfit
   // (each region's material and middle, in game units: what a mask's bits are)
   const sums = Array.from({ length: body.regions.count }, () => ({ n: 0, x: 0, y: 0, z: 0, cls: 0 }))
@@ -1205,41 +1207,29 @@ function folkManifest (c: Character, charDir: string, srcDir: string, body: { re
     const s = sums[r]; s.n++; s.x += pos.getX(v); s.y += pos.getY(v); s.z += pos.getZ(v); s.cls = uv1.getY(v)
   }
   const list = sums.map((s, r) => ({ region: r, material: body.classes[s.cls], vertices: s.n, centre: [s.x, s.y, s.z].map(x => +(x / Math.max(s.n, 1)).toFixed(3)) }))
-  return {
-    about: 'A dynamic character (Rigsmith src/engine/folk.ts): every unit wears its kind\'s outfit, and its own skin, hair and beard picked by the rules below. The body\'s UV2 holds each vertex\'s region (x) and material class (y); a unit hides the regions in its outfit\'s mask (bit r = region r) by collapsing those vertices.',
-    rules: [
-      'hair or beard tagged fem: only on a skin tagged female; tagged masc: only on a skin not tagged female',
-      'a skin tagged beardless takes no beard; a beard is worn about half the time otherwise',
-      'an outfit with coversHair takes no hair; with coversFace, no beard; its clothes are the ones it lists (no long sleeves under bracers)',
-      'hair and beard textures are grey: draw them with the skin\'s hair colour divided by hairGreyMean',
-      'clothes (one per unit) are laid over the skin by their alpha; longSleeves: the body\'s longSleeveShape at 1',
-      'a skin tagged female: femaleShape at 1 on the body and every piece (the gear carries the same shape)',
-    ],
-    hairGreyMean: HAIR_GREY_MEAN,
+  return folkManifestData(c, spec, {
+    exportable: g => gearLeftOut({ ...g, hidden: false }) === null,
+    pieceOf,
+    regionMask: hides => regionMask(hides).mask,
     regions: { count: body.regions.count, classes: body.classes, unmaskable: unfit, list },
-    skins,
-    clothes,
-    longSleeveShape: LONG_SLEEVE,
+    files,
+    bodies: isFolk(c) ? FOLK_BODIES.map(([suffix, weights]) => ({ mesh: suffix === '' ? unit : `FolkBody_${suffix}`, shapes: Object.keys(weights).sort() })) : [],
+    hairGreyMean: HAIR_GREY_MEAN,
     femaleShape: FEMALE,
-    outfits,
-    [HAIR_SET]: pool('hair'),
-    [BEARD_SET]: pool('beard'),
-  }
+  })
 }
 
 interface AtlasCell { group: string, grid: number, col: number, row: number }
 
 /** Each exported swapped piece of a dynamic character, its atlas cell: per group (its outfit; hair; beards) a square
  * grid, the pieces in the character's gear order. */
-function folkAtlas (c: Character, spec: UnitSpec): Map<string, AtlasCell> {
+function folkAtlas (c: Character, scope: FolkScope | null): Map<string, AtlasCell> {
   const out = new Map<string, AtlasCell>()
-  if (!isFolk(c)) return out
+  if (scope === null) return out
   const groups = new Map<string, Gear[]>()
   for (const g of c.gear) {
-    const group = g.outfit ?? g.role
-    if (group === undefined || g.attach.kind === 'bone' || gearLeftOut({ ...g, hidden: false }) !== null) continue
-    if (g.outfit !== undefined && spec.folk?.outfits !== undefined && !spec.folk.outfits.includes(g.outfit)) continue
-    if (g.role !== undefined && spec.folk?.hair === false) continue
+    const group = isSwapped(scope, g) ? atlasGroupOf(c, g) : undefined
+    if (group === undefined || g.attach.kind === 'bone' || gearLeftOut({ ...g, hidden: false }) !== null || folkLeftOut(scope, g) !== null) continue
     const list = groups.get(group) ?? []
     list.push(g)
     groups.set(group, list)

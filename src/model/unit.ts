@@ -22,9 +22,11 @@ export interface UnitSpec {
   /** Skipped by a build that names no units; cleared by the first export. */
   draft?: boolean
   companion?: CompanionSpec
-  /** A dynamic character's unit (engine/folk.ts): the outfits this kind wears (unset: all of them), and whether its
-   * file carries the hair and beards (default true; false when another unit's file carries them for every kind). */
-  folk?: { outfits?: string[], hair?: boolean }
+  /** A dynamic character's unit (src/engine/folkpick.ts): the unit kind its file carries (Character.folk.kinds' id;
+   * unset: every kind and set), and the pools it carries (pool ids or kinds: 'skin', 'cloth', 'hair', 'beard',
+   * 'accessory'; unset: all; every unit in the game is a node per part, so a kind's file keeps to its own). Schema 4's
+   * `outfits` (the sets it wears, by name) and `hair: false` (no hair or beard pools) are still read. */
+  folk?: { kind?: string, pools?: string[], outfits?: string[], hair?: boolean }
   [k: string]: unknown
 }
 
