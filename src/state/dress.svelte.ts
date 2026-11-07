@@ -94,6 +94,18 @@ class DressState {
   setHair (c: Character, id: string | null): void { this.put(c, { ...this.of(c.id), hair: id }) }
   setBeard (c: Character, id: string | null): void { this.put(c, { ...this.of(c.id), beard: id }) }
 
+  /** Show or hide one folk piece for this preview, without changing the document. */
+  setShown (c: Character, id: string, on: boolean): void {
+    const d = this.of(c.id) ?? {}
+    const off = new Set(d.off ?? [])
+    const shown = new Set(d.on ?? [])
+    if (on) { off.delete(id); shown.add(id) } else { off.add(id); shown.delete(id) }
+    const next: Dress = { ...d }
+    if (off.size > 0) next.off = [...off]; else delete next.off
+    if (shown.size > 0) next.on = [...shown]; else delete next.on
+    this.put(c, next)
+  }
+
   /** Randomize keeps this field (or stops keeping it). */
   toggleLock (c: Character, field: DressField): void {
     const d = this.of(c.id) ?? {}

@@ -73,6 +73,14 @@ describe('the dress', () => {
     expect(c.gear.filter(g => shows(c, g, own, own)).map(g => g.id)).toEqual(['a1', 'h1', 'axe'])
   })
 
+  it('hides a piece only in the preview, and clears overrides on an outfit change', () => {
+    const c = folk()
+    const d = { off: ['a1'] }
+    expect(shows(c, c.gear[0], resolve(c, d), documentDress(c), d)).toBe(false)
+    expect(c.gear[0].hidden).not.toBe(true)
+    expect(wearOutfit(c, d, 'hat_fur').off).toBeUndefined()
+  })
+
   it('takes off what an outfit leaves no room for', () => {
     const c = folk()
     expect(wearOutfit(c, undefined, 'hat_fur')).toEqual({ outfit: 'hat_fur', hair: null })

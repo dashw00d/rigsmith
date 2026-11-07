@@ -30,7 +30,7 @@ import { api, type GearKind } from './api.ts'
 import { app } from './app.svelte.ts'
 import { asset, assets } from './assets.svelte.ts'
 import { dress as dressing } from './dress.svelte.ts'
-import { documentDress, resolve, shows, type Dressed } from './dressing.ts'
+import { documentDress, resolve, setsWith, shows, type Dressed } from './dressing.ts'
 import { mark } from '../engine/perf.ts'
 import { gizmo } from './gizmo.svelte.ts'
 import { hands } from './hands.svelte.ts'
@@ -66,6 +66,8 @@ const sleep = async (ms: number): Promise<void> => { await new Promise(resolve =
 class GearState {
   /** The piece open in the panel. */
   selected = $state<string | null>(null)
+  /** Character whose selection this is, including while its view is still loading. */
+  selectionFor = $state<string | null>(null)
   /** A skin or spot piece shown unbound while it is placed (bound again when done). */
   fitting = $state<string | null>(null)
   picking = $state.raw<Picking | null>(null)
@@ -105,6 +107,15 @@ class GearState {
       viewer.onMountUnload(() => { this.unloadHorse() }),
     ]
     const stopEffects = $effect.root(() => {
+      $effect(() => {
+        const id = app.selectedId
+        untrack(() => {
+          if (this.selectionFor === id) return
+          this.selected = null
+          this.fitting = null
+          this.selectionFor = id
+        })
+      })
       // (every copy of the character on stage and of its horse, the optimistic ones too: what is worn follows at once;
       // another character's change wears nothing, its copy being the same object)
       const rider = $derived(this.onStage.rider === null ? null : app.byId(this.onStage.rider))
@@ -162,7 +173,7 @@ class GearState {
    * beards (browsing: dress.svelte.ts), else as the document has it (reactive). */
   shownOnStage (c: Character, g: Gear): boolean {
     if (this.fitting === g.id) return true
-    return shows(c, g, dressing.worn(c), documentDress(c))
+    return shows(c, g, dressing.worn(c), documentDress(c), dressing.of(c.id))
   }
 
   /** A shown piece on stage (a piece kept fitted while hidden is not there for the panels). */
@@ -174,7 +185,7 @@ class GearState {
   // ---- on stage ------------------------------------------------------------------------------------------------
 
   private load (view: CharacterView, c: Character): () => void {
-    if (this.lastId !== c.id) { this.selected = null; this.fitting = null }
+    if (this.lastId !== c.id && this.selectionFor !== c.id) { this.selected = null; this.fitting = null }
     this.lastId = c.id
     this.stopPicking()
     const rider: Wearer = { view, id: c.id, rider: true, pieces: new Map() }
@@ -242,7 +253,7 @@ class GearState {
    * its rider's mount says (syncHorse). A piece being fitted always shows. */
   private showsOn (c: Character, g: Gear, w: Wearer, worn: Dressed | null, own: Dressed | null): boolean {
     if (w.rider && this.fitting === g.id) return true
-    return worn === null || own === null ? g.hidden !== true : shows(c, g, worn, own)
+    return worn === null || own === null ? g.hidden !== true : shows(c, g, worn, own, dressing.of(c.id))
   }
 
   /** What a piece is worn from: null when it can't be worn. Not whether it shows (a piece kept fitted is only hidden),
@@ -561,16 +572,17 @@ class GearState {
   // ---- actions -------------------------------------------------------------------------------------------------
 
   select (id: string | null): void {
-    if (id === this.selected) return
+    if (id === this.selected && this.selectionFor === app.selectedId) return
     this.stopPicking()
     if (this.fitting !== null && this.fitting !== id) this.fitting = null
     this.selected = id
+    this.selectionFor = app.selectedId
   }
 
   /** Show a skin or spot piece unbound to place it (null: bind it again). */
   fit (id: string | null): void {
     this.stopPicking()
-    if (id !== null) this.selected = id
+    if (id !== null) this.select(id)
     this.fitting = id
     // (worn again, unbound or bound: what it is worn from says whether it is being fitted)
     this.syncAll()
@@ -815,8 +827,11 @@ class GearState {
   }
 
   async setShown (c: Character, g: Gear, shown: boolean): Promise<void> {
-    await app.do(c.id, { type: 'gear.update', id: g.id, patch: { hidden: !shown } })
+    if (setsWith(c, g).length > 0 || g.role !== undefined) dressing.setShown(c, g.id, shown)
+    else await app.do(c.id, { type: 'gear.update', id: g.id, patch: { hidden: !shown } })
   }
+
+  toggleShown (c: Character, g: Gear): Promise<void> { return this.setShown(c, g, !this.shownOnStage(c, g)) }
 
   async rename (c: Character, g: Gear, name: string): Promise<void> {
     const next = name.trim()

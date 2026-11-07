@@ -145,7 +145,7 @@
       <datalist id="gear-swap-sets">{#each sets as s (s)}<option value={s}></option>{/each}</datalist>
     </Field>
     <Toggle label="Shown" hint={piece.swapSet !== undefined ? `Showing it hides the rest of ${piece.swapSet}` : 'Hidden: kept, but not shown or exported'}
-      checked={piece.hidden !== true} onchange={(on) => gearState.setShown(character, piece, on)} />
+      checked={gearState.shownOnStage(character, piece)} onchange={(on) => gearState.setShown(character, piece, on)} />
     {#if a.kind === 'bone'}
       <Field label="Held by" hint="Moving it to the other hand carries it across, held the same way">
         <Select size="sm" options={boneChoices(character, a.bone).map(b => ({ value: b, label: boneLabel(b) }))} value={a.bone} label="Held by"

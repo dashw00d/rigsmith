@@ -40,6 +40,9 @@ export interface Dress {
   hair?: string | null
   /** A beard piece's gear id. */
   beard?: string | null
+  /** Per-piece preview overrides; neither is written by Make default. */
+  off?: string[]
+  on?: string[]
   /** Kept by Randomize. */
   locks?: DressField[]
   seed?: number
@@ -83,9 +86,10 @@ export function resolve (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d:
 
 /** Whether a piece of `c` shows under the dress: a set's pieces with their set (the document's own set as the document
  * shows its pieces, `own`), hair and beard as picked, the rest as the document has them. */
-export function shows (c: Gearing, g: Gear, d: Dressed, own?: Dressed): boolean {
+export function shows (c: Gearing, g: Gear, d: Dressed, own?: Dressed, preview?: Dress): boolean {
+  if (preview?.off?.includes(g.id) === true) return false
   const sets = setsWith(c, g)
-  if (sets.length > 0) return d.outfit !== null && sets.includes(d.outfit) && (own?.outfit !== d.outfit || g.hidden !== true)
+  if (sets.length > 0) return d.outfit !== null && sets.includes(d.outfit) && (preview?.on?.includes(g.id) === true || own?.outfit !== d.outfit || g.hidden !== true)
   if (g.role === 'hair') return g.id === d.hair
   if (g.role === 'beard') return g.id === d.beard
   return g.hidden !== true
@@ -96,6 +100,8 @@ export function shows (c: Gearing, g: Gear, d: Dressed, own?: Dressed): boolean 
 export function wearOutfit (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined, outfit: string | null): Dress {
   const now = resolve(c, d)
   const next: Dress = { ...d, outfit }
+  delete next.off
+  delete next.on
   if (coversHair(c.gear, outfit)) next.hair = null
   if (coversFace(c.gear, outfit)) next.beard = null
   const allowed = clothesFor(c.gear, outfit, c.look.clothes ?? [])
