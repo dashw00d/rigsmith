@@ -42,12 +42,14 @@ async function sha (file: string): Promise<string> {
   return hash.digest('hex')
 }
 /** Validates a complete package; individual defects are reported on its parts. */
-export async function readPackage (dir: string): Promise<{ manifest: IncomingManifest, errors: Array<string | undefined> }> {
+export async function readPackage (dir: string, options: { staging?: boolean } = {}): Promise<{ manifest: IncomingManifest, errors: Array<string | undefined> }> {
   const manifestFile = await safeFile(dir, 'manifest.json')
   const raw: unknown = JSON.parse(await readFile(manifestFile, 'utf8'))
   if (!raw || typeof raw !== 'object' || !Array.isArray((raw as IncomingManifest).parts) || (raw as IncomingManifest).parts.length === 0) throw new Error('Invalid manifest parts')
   const manifest = raw as IncomingManifest
-  const packageError = manifest.schema !== 1 ? 'Unknown schema' : !ID.test(manifest.id ?? '') || manifest.id !== path.basename(dir) ? 'Invalid package id' : manifest.space !== 'v6' ? 'Unknown space' : typeof manifest.at !== 'string' || !Number.isFinite(Date.parse(manifest.at)) || typeof manifest.tool !== 'string' ? 'Invalid package metadata' : undefined
+  const name = path.basename(dir)
+  const matches = manifest.id === name || (options.staging === true && name === `.${manifest.id}.partial`)
+  const packageError = manifest.schema !== 1 ? 'Unknown schema' : !ID.test(manifest.id ?? '') || !matches ? 'Invalid package id' : manifest.space !== 'v6' ? 'Unknown space' : typeof manifest.at !== 'string' || !Number.isFinite(Date.parse(manifest.at)) || typeof manifest.tool !== 'string' ? 'Invalid package metadata' : undefined
   const seen = new Set<string>()
   const errors = await Promise.all(manifest.parts.map(async part => {
     try {

@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -22,6 +24,13 @@ beforeAll(async () => {
 })
 afterAll(async () => { stopIncomingWatch(); await rm(workspace, { recursive: true, force: true }) })
 describe('incoming packages', () => {
+  it('validates a staged partial before publishing', async () => {
+    const staged = path.join(root, '.delivery.partial')
+    await cp(path.join(root, 'delivery'), staged, { recursive: true })
+    const result = await promisify(execFile)(process.execPath, ['tools/incoming.ts', 'validate', staged])
+    expect(result.stdout).toContain('OK delivery')
+    expect((await listIncoming()).packages.map(p => p.id)).toEqual(['delivery'])
+  })
   it('reads published packages and ignores partials and unpublished folders', async () => {
     const list = await listIncoming(); expect(list.packages.map(p => p.id)).toEqual(['delivery']); expect(list.pending).toBe(1)
     expect(list.packages[0].parts[0].damaged).toBeUndefined()
