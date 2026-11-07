@@ -1,0 +1,25 @@
+# Lantern: https://rigsmith.glow (dev daemon: https://rigsmith.glow2:8443)
+id: rigsmith
+name: Rigsmith
+description: Personal character pipeline for Emberhold's units — import, skeleton, skin, gear, look, motion, ship
+kind: tool
+tags: [emberhold, vite, svelte, three]
+
+type: proxy
+run:
+  # The Vite dev server and Rigsmith's API (server/plugin.ts) in one process.
+  cmd: node_modules/.bin/vite --host ${HOST} --port ${PORT} --strictPort
+  env:
+    # Caddy forwards Host: rigsmith.glow; Vite only allows localhost by default.
+    __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: .glow,.glow2
+
+worktree:
+  # Shared with the primary checkout, as the vite config expects. workspace/ (29 GB) is not
+  # shared: each branch keeps its own, like rigsmith-rebuild does.
+  link: [node_modules, .venv]
+
+routing:
+  websocket: true
+  triggers: [rigsmith, rig, character, skeleton, skin, gear, emberhold units]
+
+docs: [README.md, CLAUDE.md]
