@@ -145,6 +145,9 @@ class DressState {
     this.put(c, locks === undefined || locks.length === 0 ? undefined : { locks })
   }
 
+  /** Restore an exact preview snapshot after a temporary hover. */
+  restore (c: Character, snapshot: Dress | undefined): void { this.put(c, snapshot) }
+
   /** The dress written into the document as its own look (today's commands: one undoable entry), then followed again.
    * False when the server refused. */
   async makeDefault (c: Character): Promise<boolean> {
