@@ -34,3 +34,15 @@ it('hashes unchanged files once and invalidates for mtime or inode changes', asy
   expect((await readPackage(dir)).errors[0]).toMatch(/SHA256 mismatch/)
   expect(streams.count).toBe(4)
 })
+it('rehashes same-size content changed with its mtime restored', async () => {
+  const dir = await incomingFixture(workspace, 'ctime')
+  const file = path.join(dir, 'parts', 'piece.glb')
+  const time = new Date(1000000000)
+  await utimes(file, time, time)
+  expect((await readPackage(dir)).errors[0]).toBeUndefined()
+  const bytes = await (await import('node:fs/promises')).readFile(file)
+  bytes[bytes.length - 1] ^= 1
+  await writeFile(file, bytes)
+  await utimes(file, time, time)
+  expect((await readPackage(dir)).errors[0]).toMatch(/SHA256 mismatch/)
+})

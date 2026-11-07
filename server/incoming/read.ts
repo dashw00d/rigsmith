@@ -39,7 +39,7 @@ export async function safeFile (root: string, relative: string): Promise<string>
 const hashes = new Map<string, { signature: string, result: Promise<string> }>()
 async function sha (file: string): Promise<string> {
   const info = await lstat(file)
-  const signature = `${info.size}:${info.mtimeMs}:${info.ino}`
+  const signature = `${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.ino}`
   const cached = hashes.get(file)
   if (cached?.signature === signature) return await cached.result
   const result = hashFile(file)
