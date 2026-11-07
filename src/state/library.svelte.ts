@@ -1,6 +1,8 @@
 // Browsing the clip library (server/library.ts): the rig it shows clips for, the filters (category, source, search)
 // and the page. Another rig starts from no filters: a category or a search of one rig's clips means nothing for another.
-import { api, type LibraryPage } from './api.ts'
+import { api, call, type LibraryPage } from './api.ts'
+import type { LibraryIndexRow } from '../../server/library.ts'
+import { defaultView, viewOf, type ViewState } from '../app/motion/libraryView.ts'
 
 const PAGE_SIZE = 24
 const SEARCH_AFTER = 180
@@ -16,6 +18,20 @@ class LibraryState {
   data = $state.raw<LibraryPage | null>(null)
   loading = $state(false)
   error = $state<string | null>(null)
+  index = $state.raw<LibraryIndexRow[]>([])
+  uses = $state.raw<Record<string, number>>({})
+  options = $state<ViewState>(readPreferences())
+  get rows () { return viewOf(this.index, this.uses, { ...this.options, query: this.query, rig: this.rig }) }
+
+  setViewOptions (change: Partial<ViewState>): void {
+    this.options = { ...this.options, ...change }
+    try { localStorage.setItem('rigsmith.library.view', JSON.stringify({ view: this.options.view, sort: this.options.sort, direction: this.options.direction, group: this.options.group })) } catch { /* storage unavailable */ }
+  }
+  async refreshIndex (): Promise<void> {
+    const [index, uses] = await Promise.all([call<LibraryIndexRow[]>('GET', '/api/library/index'), call<Record<string, number>>('GET', '/api/library/uses')])
+    this.index = index; this.uses = uses
+  }
+  async refreshUses (): Promise<void> { this.uses = await call<Record<string, number>>('GET', '/api/library/uses') }
   private token = 0
   private debounce: ReturnType<typeof setTimeout> | undefined
 
@@ -85,4 +101,15 @@ class LibraryState {
   }
 }
 
+function readPreferences (): ViewState {
+  const defaults = defaultView()
+  try {
+    const saved = JSON.parse(localStorage.getItem('rigsmith.library.view') ?? '{}') as Partial<ViewState>
+    if (saved.view === 'grid' || saved.view === 'list') defaults.view = saved.view
+    if (saved.sort && ['name', 'length', 'recent', 'used'].includes(saved.sort)) defaults.sort = saved.sort
+    if (saved.direction === 'asc' || saved.direction === 'desc') defaults.direction = saved.direction
+    if (saved.group && ['none', 'category', 'source'].includes(saved.group)) defaults.group = saved.group
+  } catch { /* storage unavailable or malformed */ }
+  return defaults
+}
 export const library = new LibraryState()
