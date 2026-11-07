@@ -29,5 +29,7 @@ describe('dressed motion bake', () => {
     expect(withShield.hands.Left.map(x => x.source)).toContain('carry')
     expect(without.hands.Left.map(x => x.source)).not.toContain('carry')
     expect(c.gear[0].hidden).toBe(true)
+    const eyeHidden = await bakeSlot(dressedCharacter(c, 'shield-set', { off: ['shield'] }), slot, context())
+    expect(eyeHidden.hands.Left.map(x => x.source)).not.toContain('carry')
   })
 })
