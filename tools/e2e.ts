@@ -68,9 +68,11 @@ async function main (): Promise<number> {
             await page.setViewport(1280, 800)
             const character = scenario.character ?? workspace.characters[0]
             if (!workspace.characters.includes(character)) throw new Error(`Scenario character ${character} not copied; add it to E2E_CHARACTERS`)
-            await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.clear(); localStorage.setItem('rigsmith.selected', ${JSON.stringify(character)}); localStorage.setItem('rigsmith.step', ${JSON.stringify(scenario.step ?? 'gear')});` })
+            const step = scenario.step ?? 'gear'
+            if (!['import', 'skeleton', 'skin', 'gear', 'look', 'motion', 'ship'].includes(step)) throw new Error(`Unknown scenario step ${step}`)
+            await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.clear(); localStorage.setItem('rigsmith.selected', ${JSON.stringify(character)}); localStorage.setItem('rigsmith.step', ${JSON.stringify(step)});` })
             await page.navigate(url)
-            await page.until(`(() => { const r = window.__rigsmith; return r !== undefined && r.app.selectedId === ${JSON.stringify(character)} && r.app.selected !== null && !r.viewer.loading && r.viewer.shownId === ${JSON.stringify(character)} && r.app.busy === null })()`, 75_000, 'selected character loading')
+            await page.until(`(() => { const r = window.__rigsmith; return r !== undefined && r.app.selectedId === ${JSON.stringify(character)} && r.app.selected !== null && r.app.step === ${JSON.stringify(step)} && !r.viewer.loading && (r.viewer.shownId === ${JSON.stringify(character)} || (r.app.selected.files.model === undefined && r.app.selected.files.rigged === undefined)) && r.app.busy === null })()`, 75_000, 'selected character loading')
             const ui = new UI(page, shots, scenario.name)
             await scenario.run(ui)
             // Allow immediate event-handler errors and unhandled rejections to reach CDP before deciding the result.
