@@ -19,7 +19,7 @@
   const worn = $derived(dress.worn(character))
   const chosen = $derived(new Set(Object.values(worn.layers ?? {}).filter((id): id is string => typeof id === 'string')))
   const skin = $derived(character.look.skins?.find(s => s.name === worn.skin))
-  const missingBare = $derived(skin !== undefined && skin.bare === undefined && layers.some(l => chosen.has(l.id) && l.cut !== undefined))
+  const missingBare = $derived(skin?.bare === undefined && layers.some(l => chosen.has(l.id) && l.cut !== undefined))
 
   function reorder (id: string, direction: number): void {
     const ids = layers.map(l => l.id); const from = ids.indexOf(id); const to = from + direction

@@ -18,6 +18,21 @@
   let timeoutId: ReturnType<typeof setTimeout> | undefined
   const made: string[] = []
 
+  function focusSheet (node: HTMLElement) {
+    const before = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    node.focus({ preventScroll: true })
+    const trap = (event: KeyboardEvent): void => {
+      if (event.key !== 'Tab') return
+      const controls = [...node.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')]
+      if (controls.length === 0) { event.preventDefault(); return }
+      const first = controls[0]; const last = controls[controls.length - 1]
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === node)) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    node.addEventListener('keydown', trap)
+    return { destroy () { node.removeEventListener('keydown', trap); if (before?.isConnected === true) before.focus({ preventScroll: true }) } }
+  }
+
   function spec (skin: Skin): ThumbSpec {
     const bodyFile = character.files.rigged ?? character.files.model
     const body = bodyFile === undefined ? null : assets.asset(character, bodyFile)
@@ -82,7 +97,7 @@
 
 <svelte:window onkeydown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented) onclose() }} />
 <div class="backdrop">
-  <section class="sheet" role="dialog" aria-modal="true" aria-label="All skins" data-testid="look-skin-sheet">
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="All skins" data-testid="look-skin-sheet" tabindex="-1" use:focusSheet>
     <header><h2>All skins</h2><Button size="sm" onclick={onclose}>Close</Button></header>
     {#if error}<p role="status">{error}</p>{/if}
     <div class="grid">
@@ -93,7 +108,7 @@
         </button>
       {/each}
     </div>
-  </section>
+  </div>
 </div>
 
 <style>
