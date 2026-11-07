@@ -8,15 +8,17 @@
 // view's result-N comes back from Codex or from the user.
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { PNG as PngImage } from 'pngjs'
 import { newId } from '../../src/model/ids.ts'
 import type { Character, TextureImage, TextureLayer } from '../../src/model/types.ts'
 import { imageNames, sameImage, swapImages } from '../glbimages.ts'
 import { by, HttpError, readBody, route, send } from '../http.ts'
 import { enqueue, getJob, type Job, listJobs, runBlender, runCodex, runQwenPaint, type Update } from '../jobs.ts'
 import { afterChange, type Change, commit, getCharacter, paths, readJson, updateCharacter, withFiles, writeJson } from '../store.ts'
+import { safeCharacterFolder } from './gear.ts'
 
 async function found (id: string): Promise<Character> {
   const c = await getCharacter(id)
@@ -316,6 +318,34 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/texture\/fill$/, async (req, re
 
 const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 const PART = /^[A-Za-z0-9_-]{1,64}$/
+
+// Mask pixels are content-addressed and never replaced: undo/redo may refer to an older image.
+route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/look\/cloth\/([^/]+)\/mask$/, async (req, res, [id, encoded]) => {
+  const c = await found(id)
+  let layer: string
+  try { layer = decodeURIComponent(encoded) } catch { throw new HttpError(400, 'Bad cloth id') }
+  if (!PART.test(layer)) throw new HttpError(400, 'Bad cloth id')
+  if (!(c.look.cloth ?? []).some(l => l.id === layer)) throw new HttpError(404, 'No such cloth layer')
+  const bytes = await readBody(req, 64 * 1024 * 1024)
+  if (bytes.length < 33 || PNG.some((b, i) => bytes[i] !== b) || bytes.toString('ascii', 12, 16) !== 'IHDR') throw new HttpError(400, 'A cloth mask is a PNG image')
+  const width = bytes.readUInt32BE(16); const height = bytes.readUInt32BE(20)
+  if (width < 1 || height < 1 || width > 8192 || height > 8192) throw new HttpError(400, 'Invalid mask dimensions')
+  try { PngImage.sync.read(bytes) } catch { throw new HttpError(400, 'A cloth mask is a valid PNG image') }
+  let dir: string
+  try { dir = await safeCharacterFolder(id, 'cloth') } catch { throw new HttpError(400, 'Cloth folder must be a real directory') }
+  const hash = createHash('sha256').update(bytes).digest('hex').slice(0, 8)
+  const file = `${layer}.mask.${hash}.png`; const target = path.join(dir, file)
+  const tmp = path.join(dir, `.${file}.${randomUUID()}.tmp`)
+  try {
+    await writeFile(tmp, bytes, { flag: 'wx' })
+    try { await link(tmp, target) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      const info = await lstat(target)
+      if (!info.isFile() || info.isSymbolicLink() || !(await readFile(target)).equals(bytes)) throw new HttpError(409, 'Mask hash collides with an existing file')
+    }
+  } finally { await rm(tmp, { force: true }) }
+  send(res, 200, { path: `cloth/${file}` })
+})
 
 // Bare files are immutable per generation so undo can restore a prior reference without changing its bytes.
 route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/look\/bare\/([^/]+)$/, async (req, res, [id, encoded]) => {
