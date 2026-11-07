@@ -2,7 +2,7 @@
 // character (tools/lib/shot.ts) and the timing scenarios (tools/lib/profile.ts). CHROME names the browser (default
 // google-chrome). Software GL (SwiftShader), so it runs on a machine with no display; a fresh profile each time, removed
 // after.
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -82,7 +82,19 @@ export async function withChrome<T> (fn: (page: Page) => Promise<T>, o: { args?:
       ws.close()
     }
   } finally {
-    chrome.kill()
-    rmSync(profile, { recursive: true, force: true })
+    await stop(chrome)
+    // (Chrome's helpers may still be writing into the profile a moment after it exits)
+    try { rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }) } catch (error) {
+      console.warn(`chrome: left its profile at ${profile}: ${(error as Error).message}`)
+    }
   }
+}
+
+/** Chrome told to quit, and waited for (killed outright after a few seconds). */
+async function stop (chrome: ChildProcess): Promise<void> {
+  if (chrome.exitCode !== null || chrome.signalCode !== null) return
+  const exited = new Promise<void>(resolve => { chrome.once('exit', () => { resolve() }) })
+  chrome.kill('SIGTERM')
+  const late = await Promise.race([exited.then(() => false), sleep(5000).then(() => true)])
+  if (late) { chrome.kill('SIGKILL'); await Promise.race([exited, sleep(2000)]) }
 }

@@ -36,4 +36,5 @@ async function main (): Promise<number> {
   }
 }
 
-process.exitCode = await main()
+// (the dev server's file watchers (server/files.ts, loaded inside vite's bundled config) keep Node alive after close)
+process.exit(await main())
