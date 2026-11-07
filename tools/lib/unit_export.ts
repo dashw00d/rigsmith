@@ -679,7 +679,9 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   writeIfChanged(path.join(o.modelsDir, `${unit}.events.json`), JSON.stringify(events, null, 1) + '\n')
   if (Object.keys(atlasFiles).length > 0) writeIfChanged(path.join(o.workDir, unit, 'folk_atlas.json'), JSON.stringify(atlasFiles, null, 1) + '\n')
   if (isFolk(c) || (c.look.skins ?? []).length > 0 || (c.look.clothes ?? []).length > 0) {
-    const manifest = folkManifest(unit, c, me.dir, srcDir, body, hidesOf, spec, me.view, stancePlans)
+    // Contact geometry may come from uv-physics.glb; cloth must use the UVs actually shipped in me.file.
+    const textureView = clothOf(c).some(layer => layer.cut !== undefined) ? new CharacterView((await load(me.file)).scene) : me.view
+    const manifest = folkManifest(unit, c, me.dir, srcDir, body, hidesOf, spec, textureView, stancePlans)
     writeIfChanged(path.join(o.modelsDir, `${unit}.folk.json`), JSON.stringify(manifest, null, 1) + '\n')
   }
   const record: BuildRecord & { stances?: Record<string, { clips: number, bytes: number }> } = {
