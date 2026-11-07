@@ -82,11 +82,14 @@ export function modelFileOf (repo: string, unit: string, spec: Pick<UnitSpec, 'm
 }
 
 async function readSpec (file: string): Promise<GameSpec | null> {
-  try { return JSON.parse(await readFile(file, 'utf8')) as GameSpec } catch { return null }
+  try { return JSON.parse(await readFile(file, 'utf8')) as GameSpec } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
 }
 
-/** Rigsmith's units; the first time, a copy of the game's. */
-export async function units (): Promise<GameSpec> {
+// Called with the #units lock, so first-time seeding cannot overwrite a concurrent edit.
+async function unitsLocked (): Promise<GameSpec> {
   const own = await readSpec(UNITS_FILE)
   if (own !== null) return own
   const game = await readSpec(gameUnitsFile(await gameRepo()))
@@ -95,10 +98,16 @@ export async function units (): Promise<GameSpec> {
   return seeded
 }
 
+/** Rigsmith's units; the first time, a copy of the game's. */
+export async function units (): Promise<GameSpec> {
+  const own = await readSpec(UNITS_FILE)
+  return own ?? await locked('#units', unitsLocked)
+}
+
 /** Change Rigsmith's units: `fn` edits the spec it is given, which is then saved. One writer at a time. */
 export async function updateUnits<T> (fn: (spec: GameSpec) => T | Promise<T>): Promise<T> {
   return await locked('#units', async () => {
-    const spec = await units()
+    const spec = await unitsLocked()
     const out = await fn(spec)
     await saveUnits(spec)
     return out
@@ -129,7 +138,11 @@ function format (spec: GameSpec): string {
 
 export async function saveUnits (spec: GameSpec): Promise<void> {
   await mkdir(path.dirname(UNITS_FILE), { recursive: true })
-  await writeFile(UNITS_FILE, format(spec))
+  const temp = `${UNITS_FILE}.${randomBytes(8).toString('hex')}.tmp`
+  try {
+    await writeFile(temp, format(spec), { flag: 'wx' })
+    await rename(temp, UNITS_FILE)
+  } finally { await rm(temp, { force: true }) }
 }
 
 /** The game's units.json text with one unit's block replaced (or added, or taken out), every other byte kept. */

@@ -7,11 +7,14 @@
 // back to one shows it at once; while the page is idle the next set is fitted ahead a piece at a time, and the next
 // sets' models and every skin's and clothes' image are fetched.
 import { SvelteMap } from 'svelte/reactivity'
-import type { Character, Gear } from '../model/types.ts'
+import type { Character, ClothSlot, Gear } from '../model/types.ts'
 import { preloadModel } from '../engine/garments.ts'
+import type { FolkInputs, FolkWorld } from '../engine/folkpick.ts'
+import { setsOf as modelSetsOf, setsWith as modelSetsWith } from '../model/folk.ts'
+import { newUid } from '../app/gear/wardrobe.ts'
 import { app } from './app.svelte.ts'
 import { asset } from './assets.svelte.ts'
-import { defaultCommands, differs, randomize, resolve, settled, setsAfter, setsOf, setsWith, wearOutfit, type Dress, type DressField, type Dressed } from './dressing.ts'
+import { anchorOutfit, defaultCommands, differs, randomize, resolve, settled, setsAfter, setsOf, wearOutfit, type Dress, type DressField, type Dressed } from './dressing.ts'
 
 const KEY = 'rigsmith.dress.'
 /** Sets (and hair and beard pieces) worn lately, kept fitted. */
@@ -81,7 +84,7 @@ class DressState {
   /** Whether a piece stays fitted while hidden: its set (or itself) worn lately, or fitted ahead. */
   kept (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, g: Gear): boolean {
     const r = this.recent.get(c.id)
-    if (r !== undefined && setsWith(c, g).some(s => r.sets.includes(s))) return true
+    if (r !== undefined && modelSetsWith(c, g.id).some(s => r.sets.includes(s.id))) return true
     if (r?.pieces.includes(g.id) === true) return true
     return this.ahead.get(c.id)?.includes(g.id) === true
   }
@@ -90,9 +93,37 @@ class DressState {
 
   wearOutfit (c: Character, outfit: string | null): void { this.put(c, wearOutfit(c, this.of(c.id), outfit)) }
   setSkin (c: Character, name: string | null): void { this.put(c, { ...this.of(c.id), skin: name }) }
-  setClothing (c: Character, name: string | null): void { this.put(c, { ...this.of(c.id), clothing: name }) }
+  setClothing (c: Character, name: string | null): void {
+    const next = { ...this.of(c.id), clothing: name }
+    delete next.layers
+    this.put(c, next)
+  }
+  /** Browse layers without changing the document; a layer filling several slots is worn once. */
+  setLayer (c: Character, slot: ClothSlot, id: string | null): void {
+    const layer = id === null ? undefined : c.look.cloth?.find(l => l.id === id && l.slots.includes(slot))
+    if (id !== null && layer === undefined) return
+    const layers = { ...this.of(c.id)?.layers }
+    const displaced = new Set((layer?.slots ?? [slot]).map(s => layers[s]).filter((v): v is string => typeof v === 'string'))
+    for (const s of ['bottom', 'top', 'over'] as const) if (layers[s] !== null && layers[s] !== undefined && displaced.has(layers[s]!)) delete layers[s]
+    if (layer === undefined) layers[slot] = null
+    else for (const s of layer.slots) layers[s] = layer.id
+    this.put(c, { ...this.of(c.id), layers })
+  }
+  setBare (c: Character, on: boolean): void { this.put(c, { ...this.of(c.id), bare: on }) }
   setHair (c: Character, id: string | null): void { this.put(c, { ...this.of(c.id), hair: id }) }
   setBeard (c: Character, id: string | null): void { this.put(c, { ...this.of(c.id), beard: id }) }
+
+  /** Show or hide one folk piece for this preview, without changing the document. */
+  setShown (c: Character, id: string, on: boolean): void {
+    const d = this.of(c.id) ?? {}
+    const off = new Set(d.off ?? [])
+    const shown = new Set(d.on ?? [])
+    if (on) { off.delete(id); shown.add(id) } else { off.add(id); shown.delete(id) }
+    const next: Dress = { ...d }
+    if (off.size > 0) next.off = [...off]; else delete next.off
+    if (shown.size > 0) next.on = [...shown]; else delete next.on
+    this.put(c, next)
+  }
 
   /** Randomize keeps this field (or stops keeping it). */
   toggleLock (c: Character, field: DressField): void {
@@ -103,11 +134,10 @@ class DressState {
     this.put(c, { ...d, locks: [...locks] })
   }
 
-  private rolls = 0
-  /** A unit's look as the game would pick one, the locked fields kept. */
-  randomize (c: Character): void {
-    const seed = (Date.now() + ++this.rolls * 7919) >>> 0
-    this.put(c, randomize(c, this.of(c.id), seed))
+  /** One game-engine pick, with the locked fields kept. Returns the unit actually shown. */
+  randomize (c: Character, uid = newUid(), world?: FolkWorld, inputs: Omit<FolkInputs, 'fixed'> = {}, useLocks = true): Dressed {
+    this.put(c, randomize(c, this.of(c.id), uid, world, inputs, useLocks))
+    return this.worn(c)
   }
 
   /** Back to the document's own look (locks kept). */
@@ -115,6 +145,9 @@ class DressState {
     const locks = this.of(c.id)?.locks
     this.put(c, locks === undefined || locks.length === 0 ? undefined : { locks })
   }
+
+  /** Restore an exact preview snapshot after a temporary hover. */
+  restore (c: Character, snapshot: Dress | undefined): void { this.put(c, snapshot) }
 
   /** The dress written into the document as its own look (today's commands: one undoable entry), then followed again.
    * False when the server refused. */
@@ -134,25 +167,29 @@ class DressState {
     if (d === undefined) this.dresses.delete(c.id)
     else this.dresses.set(c.id, d)
     keep(c.id, d)
-    this.remember(c.id, was, this.worn(c))
+    this.remember(c, was, this.worn(c))
     this.plan(c)
   }
 
   /** What was worn before a change stays fitted (newest first, RECENT of each). */
-  private remember (id: string, was: Dressed, now: Dressed): void {
-    const r = this.recent.get(id) ?? { sets: [], pieces: [] }
-    const sets = [now.outfit, was.outfit].filter((s): s is string => s !== null)
+  private remember (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, was: Dressed, now: Dressed): void {
+    const r = this.recent.get(c.id) ?? { sets: [], pieces: [] }
+    const byName = new Map(modelSetsOf(c).map(s => [s.name, s.id]))
+    const sets = [now.outfit, was.outfit].flatMap(s => s === null ? [] : byName.get(s) ?? [])
     const pieces = [now.hair, now.beard, was.hair, was.beard].filter((s): s is string => s !== null)
     const next = {
       sets: [...new Set([...sets, ...r.sets])].slice(0, RECENT),
       pieces: [...new Set([...pieces, ...r.pieces])].slice(0, RECENT * 2),
     }
-    if (next.sets.join() !== r.sets.join() || next.pieces.join() !== r.pieces.join()) this.recent.set(id, next)
+    if (next.sets.join() !== r.sets.join() || next.pieces.join() !== r.pieces.join()) this.recent.set(c.id, next)
   }
 
   /** While idle: the next sets' models fetched, the next set fitted ahead a piece at a time, every skin's and
    * clothes' image fetched (once each). Planned again when the dress changes. */
   plan (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>): void {
+    const before = this.of(c.id)
+    const anchored = anchorOutfit(c, before)
+    if (anchored !== before && anchored !== undefined) { this.dresses.set(c.id, anchored); keep(c.id, anchored) }
     const sets = setsOf(c)
     const current = this.worn(c).outfit
     const token = `${current ?? ''}|${Date.now()}`

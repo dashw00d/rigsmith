@@ -4,7 +4,7 @@
 // listed once views.json is there, one result a view, results older than the last ask to Codex not counted). Then
 // restart recovery: when a compose is due again (composeStale, against textures/.composed.json) and the fill working
 // folders swept (sweepFills).
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -91,6 +91,43 @@ describe('a repaint layer uploaded', () => {
     const both = (second.body.character as Character).look.layers
     expect(both.map(l => l.id)).toEqual([layers[0].id, expect.any(String)])
     expect(both[1].id).not.toBe(layers[0].id)
+  })
+})
+
+describe('bare PNG route', () => {
+  const skin = '../Bay dark'
+  const valid = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from('IHDR'), Buffer.alloc(17)])
+  const bare = `${of}/look/bare/${encodeURIComponent(skin)}`
+  beforeAll(async () => {
+    const { updateCharacter } = await import('../store.ts')
+    await updateCharacter(c.id, x => { x.look.skins = [{ name: skin, file: 'skins/bay.png' }] })
+  })
+
+  it('refuses missing skins, malformed names and non-PNG bodies without writing files', async () => {
+    expect((await call('PUT', `${of}/look/bare/missing`, valid)).status).toBe(404)
+    expect((await call('PUT', `${of}/look/bare/%ZZ`, valid)).status).toBe(400)
+    expect((await call('PUT', bare, 'not png')).status).toBe(400)
+    expect((await call('PUT', bare, Buffer.concat([valid.subarray(0, 12), Buffer.from('NOPE'), valid.subarray(16)]))).status).toBe(400)
+    expect(existsSync(path.join(folder, 'skins', 'bare'))).toBe(false)
+  })
+
+  it('writes unique immutable files atomically and undo restores a prior reference', async () => {
+    const { runCommands, undo } = await import('../commands.ts')
+    const first = await call('PUT', bare, valid)
+    const secondBytes = Buffer.concat([valid, Buffer.from('second')])
+    const second = await call('PUT', bare, secondBytes)
+    expect(first.status).toBe(200); expect(second.status).toBe(200)
+    expect(first.body.path).toMatch(/^skins\/bare\/[A-Za-z0-9_-]+-[a-f0-9-]+\.png$/)
+    expect(second.body.path).not.toBe(first.body.path)
+    expect(readFileSync(path.join(folder, first.body.path))).toEqual(valid)
+    expect(readFileSync(path.join(folder, second.body.path))).toEqual(secondBytes)
+    expect(readdirSync(path.join(folder, 'skins', 'bare')).every(file => !file.endsWith('.tmp'))).toBe(true)
+    await runCommands(c.id, [{ type: 'look.skin.bare', name: skin, file: first.body.path }])
+    const replacement = await runCommands(c.id, [{ type: 'look.skin.bare', name: skin, file: second.body.path }])
+    const restored = await undo(c.id, replacement.entry!.seq)
+    expect(restored.character.look.skins!.find(s => s.name === skin)?.bare).toBe(first.body.path)
+    expect(readFileSync(path.join(folder, first.body.path))).toEqual(valid)
+    expect(readFileSync(path.join(folder, second.body.path))).toEqual(secondBytes)
   })
 })
 

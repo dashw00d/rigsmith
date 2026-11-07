@@ -2,6 +2,7 @@
 // entry lists the ones it changed (`touched`) and, when it can be undone, keeps them as they were before plus a hash
 // of each right after. Undo puts the before values back, unless a later write moved one of them on (a conflict).
 // Job-owned fields (source, files, status, the rig report, look.scan...) are no entities: undo never rolls them back.
+// A gear model is a separate entity so model replacement is undoable without rolling back unrelated job fields.
 import { fnv1a, hex8 } from './ids.ts'
 import type { Character, ClothLayer, FolkSection, Gear, SkinSection, UndoRecord } from './types.ts'
 
@@ -33,7 +34,7 @@ const isOrder = (key: string): boolean => Object.hasOwn(ORDERS, key)
 const FOLK = { set: 'sets', pool: 'pools', kind: 'kinds', stance: 'stances' } as const
 const folkOf = (c: Character): FolkSection => (c.folk ??= { sets: [], pools: [], kinds: [], stances: [] })
 
-/** What the gear's jobs write (an import's status and model, its painted weights): not part of its entity. */
+/** Fields outside the gear entity; the model has its own entity. */
 const GEAR_JOB_FIELDS = ['status', 'error', 'painted', 'model'] as const
 
 function gearEntity (g: Gear): Partial<Gear> {
@@ -51,7 +52,11 @@ export function entitiesOf (c: Character): Map<string, unknown> {
   m.set('hands', c.hands)
   if (c.mount !== undefined) m.set('mount', c.mount)
   m.set('gearOrder', c.gear.map(g => g.id))
-  for (const g of c.gear) m.set(`gear:${g.id}`, gearEntity(g))
+  for (const g of c.gear) {
+    m.set(`gear:${g.id}`, gearEntity(g))
+    m.set(`gearModel:${g.id}`, g.model ?? null)
+    m.set(`gearPaint:${g.id}`, g.painted ?? null)
+  }
   m.set('slotOrder', c.clips.map(s => s.id))
   for (const s of c.clips) m.set(`slot:${s.id}`, s)
   m.set('layerOrder', c.look.layers.map(l => l.id))
@@ -76,8 +81,8 @@ export function touchedBy (before: Character, after: Character): string[] {
   const b = entitiesOf(before)
   const a = entitiesOf(after)
   const out: string[] = []
-  for (const [key, v] of a) if (!b.has(key) || stableJson(b.get(key)) !== stableJson(v)) out.push(key)
-  for (const key of b.keys()) if (!a.has(key)) out.push(key)
+  for (const [key, v] of a) if ((!(key.startsWith('gearModel:') || key.startsWith('gearPaint:')) || b.has(key)) && (!b.has(key) || stableJson(b.get(key)) !== stableJson(v))) out.push(key)
+  for (const key of b.keys()) if (!a.has(key) && !key.startsWith('gearModel:') && !key.startsWith('gearPaint:')) out.push(key)
   return out
 }
 
@@ -134,6 +139,22 @@ export function restoreEntities (c: Character, undo: UndoRecord): Character {
         out.gear = put(out.gear, itemId, g)
         break
       }
+      case 'gearModel': {
+        const gear = out.gear.find(x => x.id === itemId)
+        if (gear !== undefined) {
+          if (was === null) delete gear.model
+          else gear.model = was as string
+        }
+        break
+      }
+      case 'gearPaint': {
+        const gear = out.gear.find(x => x.id === itemId)
+        if (gear !== undefined) {
+          if (was === null) delete gear.painted
+          else gear.painted = was as number
+        }
+        break
+      }
       case 'skins': {
         const s = was as Pick<Character['look'], 'skins' | 'skin' | 'clothes' | 'clothing'> | null
         for (const k of ['skins', 'skin', 'clothes', 'clothing'] as const) {
@@ -186,5 +207,5 @@ function put<T extends { id: string }> (items: T[], itemId: string, value: T | n
 /** The entities of the record a later write has changed since (their hash moved on). Orders never conflict. */
 export function undoConflicts (current: Character, undo: UndoRecord): string[] {
   const now = entitiesOf(current)
-  return undo.entities.filter(e => !isOrder(e.key) && hashOf(now.get(e.key)) !== e.after).map(e => e.key)
+  return undo.entities.filter(e => !isOrder(e.key) && ((e.key.startsWith('gearModel:') && !now.has(e.key)) || hashOf(now.get(e.key)) !== e.after)).map(e => e.key)
 }

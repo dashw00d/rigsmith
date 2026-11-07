@@ -6,7 +6,7 @@ import { meshNameOf } from '../../src/engine/contract.ts'
 import { makeCharacter, makeGear } from '../../src/model/fixtures.ts'
 import { migrate } from '../../src/model/migrate.ts'
 import type { Character, Gear } from '../../src/model/types.ts'
-import { atlasGroupOf, folkLeftOut, folkManifestData, folkScope, type ManifestPiece } from './folk_export.ts'
+import { atlasGroupOf, clothExportBase, folkLeftOut, folkManifestData, folkScope, scopedGearLeftOut, stanceExportPlan, type ManifestPiece } from './folk_export.ts'
 
 const piece = (id: string, name: string, extra: Partial<Gear> = {}): Gear =>
   makeGear({ id, name, from: `emberhold:gear/${name}`, model: `garments/${id}/model.glb`, attach: { kind: 'skin', policy: 'body', place: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 } }, ...extra })
@@ -43,9 +43,42 @@ const manifest = (c: Character, spec: Parameters<typeof folkManifestData>[1] = {
   bodies: [{ mesh: 'folk', shapes: [] }, { mesh: 'FolkBody_F', shapes: ['female'] }],
   hairGreyMean: 0.62,
   femaleShape: 'female',
+  stancePlans: [],
 })
 
 describe('folkScope', () => {
+  it('exports a kind default stance even when the kind has no set', () => {
+    const c = folk()
+    c.folk!.kinds.push({ id: 'unarmed', name: 'Unarmed', tags: [], sets: [], stance: 'unarmed' })
+    c.folk!.stances.push({ id: 'unarmed', name: 'Unarmed', clips: { Idle: ['idle-s'] } })
+    const plans = stanceExportPlan(c, { folk: { kind: 'unarmed' } }, ['Idle'], ['Idle'])
+    expect(plans).toMatchObject([{ id: 'unarmed', setId: null, clips: { Idle: ['Idle@unarmed'] } }])
+  })
+  it('exports a hidden set-held piece so the stance can wear it', () => {
+    const c = folk(); const piece = c.gear.find(g => g.id === 'helm')!
+    piece.hidden = true; piece.name = 'HeldShield'; piece.from = 'emberhold:gear/HeldShield'
+    expect(scopedGearLeftOut(piece, folkScope(c, {}))).toBeNull()
+    expect(scopedGearLeftOut(piece, null)).toBe('hidden')
+  })
+  it('plans scoped stance overrides and variants and rejects conflicting held pieces', () => {
+    const c = folk()
+    const shield = piece('shield', 'Shield', { attach: { kind: 'bone', bone: 'LeftHand', place: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 } } })
+    c.gear.push(shield)
+    c.folk!.sets[0].stance = 'shield'; c.folk!.sets[0].pieces.push('shield')
+    c.folk!.stances.push({ id: 'shield', name: 'Shield', clips: { Idle: ['idle-s', 'idle'], Walk: ['idle'] } })
+    const plans = stanceExportPlan(c, {}, ['Idle'], ['Idle'])
+    expect(plans).toHaveLength(1)
+    expect(plans[0].setId).toBe(c.folk!.sets[0].id)
+    expect(plans[0].clips).toEqual({ Idle: ['Idle@shield', 'Idle_2@shield'] })
+    expect(plans[0].slots.map(s => [s.id, s.name])).toEqual([['idle-s', 'Idle@shield'], ['idle', 'Idle_2@shield']])
+    c.folk!.sets[1].stance = 'shield'
+    expect(() => stanceExportPlan(c, {}, ['Idle'], ['Idle'])).toThrow(/shield.*mail.*straw/i)
+    c.folk!.sets[1].pieces.push('shield')
+    expect(stanceExportPlan(c, {}, ['Idle'], ['Idle'])).toHaveLength(1)
+    expect(() => stanceExportPlan(c, {}, ['Idle'], ['Idle', 'Idle@shield'])).toThrow(/Idle@shield/)
+    c.folk!.stances[0].clips.Idle = ['missing']
+    expect(() => stanceExportPlan(c, {}, ['Idle'], ['Idle'])).toThrow(/missing/)
+  })
   it('carries every set and pool by default, a kind\'s sets for spec.folk.kind, schema 4\'s outfits and hair: false', () => {
     const c = folk()
     expect(folkScope(c, {}).sets.map(s => s.name)).toEqual(['mail', 'straw'])
@@ -78,6 +111,13 @@ describe('folkScope', () => {
 })
 
 describe('the folk manifest, schema 2', () => {
+  it('keeps images and masks distinct for layers with duplicate names and similar IDs', () => {
+    const a = clothExportBase({ name: 'same layer', id: 'a-b' })
+    const b = clothExportBase({ name: 'same layer', id: 'a_b' })
+    expect(a).not.toBe(b)
+    expect(a).toMatch(/^clothes\//)
+    expect(`${a}.mask.png`).not.toBe(`${b}.mask.png`)
+  })
   it('carries the program, the world and goldens the engine reproduces from the file alone', () => {
     const m = JSON.parse(JSON.stringify(manifest(folk()))) as Record<string, unknown>
     expect(m.schema).toBe(2)
@@ -115,9 +155,29 @@ describe('the folk manifest, schema 2', () => {
     expect(manifest(c, { folk: { hair: false } }).hair).toEqual([])
   })
 
-  it('names a stance\'s clips by slot name', () => {
+  it('lists only scoped baked stance names without a second overlay', () => {
     const c = folk()
-    c.folk!.stances.push({ id: 'shield', name: 'Shield', clips: { Idle: ['idle-s'] }, overlay: 'idle' })
-    expect(manifest(c).stances).toEqual([{ id: 'shield', name: 'Shield', clips: { Idle: ['Idle_shield'] }, overlay: 'Idle' }])
+    c.folk!.sets[0].stance = 'shield'
+    c.folk!.sets[1].stance = 'spear'
+    c.folk!.kinds.push({ id: 'guard', name: 'Guard', tags: [], sets: [{ set: c.folk!.sets[0].id }] })
+    c.folk!.stances.push({ id: 'shield', name: 'Shield', clips: { Idle: ['idle-s', 'idle'] }, overlay: 'idle' },
+      { id: 'spear', name: 'Spear', clips: { Idle: ['idle'] } })
+    const spec = { folk: { kind: 'guard' } }
+    const plans = stanceExportPlan(c, spec, ['Idle'], ['Idle'])
+    const m = folkManifestData(c, spec, {
+      pieceOf, regionMask: () => 0, regions: {}, files: { skins: {}, layers: {}, clothes: {} }, bodies: [], hairGreyMean: 0.62, femaleShape: 'female', stancePlans: plans,
+    })
+    expect(m.stances).toEqual([{ id: 'shield', name: 'Shield', clips: { Idle: ['Idle@shield', 'Idle_2@shield'] } }])
+  })
+
+  it('marks only actually baked cuts and retains the exported bare skin path', () => {
+    const c = folk()
+    c.look.cloth = [{ id: 'shorts', name: 'Shorts', file: 'clothes/plain.png', slots: ['bottom'], cut: { drop: [1] } }]
+    const m = folkManifestData(c, {}, {
+      pieceOf, regionMask: () => 0, regions: {}, bodies: [], hairGreyMean: 0.62, femaleShape: 'female',
+      files: { skins: { bran: { file: 'skins/bran.png', bare: 'skins/bran.bare.png' } }, layers: { shorts: { file: 'clothes/Shorts.png', baked: true } }, clothes: {} }, stancePlans: [],
+    })
+    expect((m.layers as Array<Record<string, unknown>>)[0]).toMatchObject({ file: 'clothes/Shorts.png', cut: { drop: [1], baked: true } })
+    expect((m.skins as Array<Record<string, unknown>>)[1]).toMatchObject({ bare: 'skins/bran.bare.png' })
   })
 })

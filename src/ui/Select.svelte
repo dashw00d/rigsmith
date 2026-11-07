@@ -14,8 +14,9 @@
     disabled?: boolean
     size?: 'sm' | 'md'
     width?: string
+    testid?: string
   }
-  let { options, value = $bindable(), onchange, placeholder, label, disabled = false, size = 'md', width }: Props = $props()
+  let { options, value = $bindable(), onchange, placeholder, label, disabled = false, size = 'md', width, testid }: Props = $props()
 
   const groups = $derived.by(() => {
     const out: Array<{ label: string | null, options: Option[] }> = []
@@ -37,6 +38,7 @@
 
 <span class="select {size}" class:disabled style:width>
   <select
+    data-testid={testid}
     aria-label={label}
     {disabled}
     value={value ?? ''}

@@ -10,16 +10,20 @@ import type { Command } from '../../model/command-types.ts'
 import type { Character } from '../../state/api.ts'
 import { app as appState } from '../../state/app.svelte.ts'
 import { dress } from '../../state/dress.svelte.ts'
-import { DRESS_FIELDS, type Dress, type DressField, type Dressed } from '../../state/dressing.ts'
-import { pick, worldOf, type FolkWorld } from '../../engine/folkpick.ts'
+import { DRESS_FIELDS, wearOutfit, type Dress, type DressField, type Dressed } from '../../state/dressing.ts'
+import { worldOf, type FolkWorld } from '../../engine/folkpick.ts'
 import { mark } from '../../engine/perf.ts'
-import { choicesFor, dressedFromPick, fixedFor, newUid, NO_FILTER, stepChoice, type Filter, type Tab } from './wardrobe.ts'
+import { kindsOf } from '../../model/folk.ts'
+import { cultures } from '../../model/classes.ts'
+import { choicesFor, newUid, NO_FILTER, stepChoice, type Filter, type Tab } from './wardrobe.ts'
 
 const KEY = 'rigsmith.wardrobe.'
 
 /** What is remembered per character. */
 export interface ViewState {
   tab?: Tab
+  kind?: string | null
+  culture?: string | null
   /** The unit shown last (Randomize's or typed) and the dress it gave (to tell when it was changed by hand). */
   uid?: number
   unit?: Dressed
@@ -88,6 +92,16 @@ class WardrobeState {
     this.beat++
   }
 
+  /** The game's preview inputs, scoped to this character and validated against its current data. */
+  ctx (c: Character): { kind?: string, tags: string[] } {
+    const v = this.view(c.id)
+    const kind = kindsOf(c).some(k => k.id === v.kind) ? v.kind ?? undefined : undefined
+    const culture = cultures(c).some(x => x.value === v.culture) ? v.culture : null
+    return { ...(kind !== undefined ? { kind } : {}), tags: culture == null ? [] : [`culture:${culture}`] }
+  }
+  setKind (c: Character, kind: string | null): void { this.update(c.id, { kind }) }
+  setCulture (c: Character, culture: string | null): void { this.update(c.id, { culture }) }
+
   tab (id: string): Tab { return this.view(id).tab ?? 'sets' }
   setTab (id: string, tab: Tab): void { this.update(id, { tab }) }
 
@@ -122,7 +136,11 @@ class WardrobeState {
   /** The dress on stage set to `d` (each slot left out of it untouched). */
   dressUp (c: Character, d: Partial<Dressed>): void {
     const done = mark('wardrobe.dressUp')
-    if (d.outfit !== undefined && d.outfit !== dress.worn(c).outfit) dress.wearOutfit(c, d.outfit)
+    if (d.outfit !== undefined) {
+      const current = dress.of(c.id)
+      const next = wearOutfit(c, current, d.outfit)
+      if (d.outfit !== dress.worn(c).outfit || JSON.stringify(next.layers) !== JSON.stringify(current?.layers)) dress.wearOutfit(c, d.outfit)
+    }
     for (const f of DRESS_FIELDS) {
       if (f === 'outfit' || d[f] === undefined) continue
       const now = app(c)
@@ -138,20 +156,16 @@ class WardrobeState {
 
   /** Randomize: a new unit drawn by the pick engine, the locked slots kept. */
   randomize (c: Character): void {
-    const worn = dress.worn(c)
-    const locks = DRESS_FIELDS.filter(f => dress.locked(c.id, f))
-    const uid = newUid()
-    const p = pick(worldFor(c), uid, { fixed: fixedFor(c, worn, locks) })
-    const unit = dressedFromPick(c, p)
+    let uid = newUid()
+    if (uid === this.view(c.id).uid) uid = uid === 99999 ? 1 : uid + 1
+    const unit = dress.randomize(c, uid, worldFor(c), this.ctx(c))
     this.update(c.id, { uid, unit })
-    this.dressUp(c, unit)
   }
 
   /** Exactly unit `uid` as the game would dress it (no lock applies). */
   showUnit (c: Character, uid: number): void {
-    const unit = dressedFromPick(c, pick(worldFor(c), uid))
+    const unit = dress.randomize(c, uid, worldFor(c), this.ctx(c), false)
     this.update(c.id, { uid, unit })
-    this.dressUp(c, unit)
   }
 
   /** The unit shown, and whether the dress was changed since. */
@@ -165,7 +179,7 @@ class WardrobeState {
   /** The next (or previous) choice of a slot (the keys: [ ] sets, Shift+[ ] skins, , . clothes). */
   step (c: Character, field: DressField, dir: 1 | -1): void {
     const worn = dress.worn(c)
-    const choices = choicesFor(c, worldFor(c), worn, field)
+    const choices = choicesFor(c, worldFor(c), worn, field, this.ctx(c))
     const next = stepChoice(choices, worn[field], dir, field !== 'outfit')
     if (next !== worn[field]) this.set(c, field, next)
   }
@@ -191,7 +205,13 @@ class WardrobeState {
     const b = this.before
     this.before = null
     if (b === null || b.id !== c.id) return
+    // The clothes lane supplies exact snapshot restoration, including its layer and bare state.
+    const restore = (dress as typeof dress & { restore?: (character: Character, snapshot: Dress | undefined) => void }).restore
+    if (restore !== undefined) { restore.call(dress, app(c), b.d); return }
+    // Until that lane is integrated, keep per-piece overrides after restoring the visible slots.
     this.dressUp(app(c), b.worn)
+    for (const id of b.d?.off ?? []) dress.setShown(app(c), id, false)
+    for (const id of b.d?.on ?? []) dress.setShown(app(c), id, true)
   }
 
   /** What the hover shows is kept (a click). */

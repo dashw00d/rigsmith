@@ -7,7 +7,7 @@ import { makeCharacter, makeGear } from '../../model/fixtures.ts'
 import { folkFromLegacy } from '../../model/folk.ts'
 import type { Character, Gear } from '../../model/types.ts'
 import { pick, worldOf } from '../../engine/folkpick.ts'
-import { resolve } from '../../state/dressing.ts'
+import { randomize, resolve } from '../../state/dressing.ts'
 import {
   categoryOf, chipsOf, choicesFor, cleanTag, cultureOf, dressedFromPick, fixedFor, matches, moveCommands, NO_FILTER, partOf, pieceGroups,
   pieceLabel, selectClick, skinLabel, stepChoice, tilesOf,
@@ -171,4 +171,21 @@ describe('the pieces list', () => {
     expect(after.folk!.sets.find(s => s.name === 'norse_a')!.pieces).toEqual(['n1'])
     expect(moveCommands(after, ['n2'], fur.id)).toEqual([])
   })
+})
+
+
+it('applies preview culture and class to random picks and set choices', () => {
+  const c = folk()
+  const norse = c.folk!.sets.find(s => s.name === 'norse_a')!
+  const gael = c.folk!.sets.find(s => s.name === 'hat_fur')!
+  norse.tags = ['culture:norse']; gael.tags = ['culture:gael']
+  c.folk!.kinds.push({ id: 'guard', name: 'Guard', tags: [], sets: [{ set: norse.id }] })
+  const w = worldOf(c)
+  for (let uid = 1; uid <= 300; uid++) {
+    expect(resolve(c, randomize(c, undefined, uid, w, { tags: ['culture:gael'] })).outfit).toBe('hat_fur')
+    expect(resolve(c, randomize(c, undefined, uid, w, { kind: 'guard' })).outfit).toBe('norse_a')
+  }
+  const choices = choicesFor(c, w, resolve(c, undefined), 'outfit', { tags: ['culture:gael'] })
+  expect(choices.find(x => x.value === 'norse_a')).toMatchObject({ ok: false, why: 'not culture:gael' })
+  expect(choices.find(x => x.value === 'hat_fur')?.ok).toBe(true)
 })

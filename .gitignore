@@ -10,3 +10,6 @@ __pycache__/
 
 # python tools (sparse-cubes volume build)
 .venv/
+
+# scratch: e2e runs (screenshots, the runner's Vite cache), lane evidence
+.work/

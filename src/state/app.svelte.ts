@@ -30,9 +30,9 @@ export function stepOf (id: string | null | undefined): Step {
   return STEPS.some(s => s.id === id) ? id as Step : OLD_STEPS[id] ?? 'import'
 }
 
-export type Drawer = 'library' | 'catalog' | 'wardrobe' | 'activity'
+export type Drawer = 'library' | 'wardrobe' | 'incoming' | 'activity'
 // (the step a drawer belongs to: it closes on leaving it; the activity drawer goes with every step)
-const DRAWER_STEP: Partial<Record<Drawer, Step>> = { library: 'motion', catalog: 'gear', wardrobe: 'gear' }
+const DRAWER_STEP: Partial<Record<Drawer, Step>> = { library: 'motion', wardrobe: 'gear' }
 
 export interface Toast { id: number, kind: 'info' | 'ok' | 'error', text: string, action?: ToastAction }
 /** A button on a toast (Undo what was just done for you). */
@@ -99,6 +99,7 @@ class AppState {
   private navigation = 0
   private waiters = new Map<string, Array<(job: Job) => void>>()
   private source: EventSource | null = null
+  private incomingListeners = new Set<() => void>()
   private helloes = 0
   private toastId = 0
 
@@ -393,6 +394,12 @@ class AppState {
 
   // ---- the server's events -------------------------------------------------------------------------------------
 
+  /** Subscribe to Incoming updates on the app's single connection, including reconnects. */
+  onIncoming (listener: () => void): () => void {
+    this.incomingListeners.add(listener)
+    return () => { this.incomingListeners.delete(listener) }
+  }
+
   private listen (): void {
     if (this.source !== null) return
     const source = new EventSource('/api/events?schema=2')
@@ -413,6 +420,7 @@ class AppState {
         void api.characters().then(list => { this.load(list) }, () => { /* gone again: the next hello retries */ })
         assets.reloadAll()
       }
+      for (const listener of this.incomingListeners) listener()
     })
     source.addEventListener('job', (e) => { this.updateJob(data<Job>(e)) })
     source.addEventListener('character', (e) => {
@@ -422,6 +430,7 @@ class AppState {
     })
     source.addEventListener('journal', () => { this.journalBeat++ })
     source.addEventListener('game', () => { this.gameBeat++ })
+    source.addEventListener('incoming', () => { for (const listener of this.incomingListeners) listener() })
     source.addEventListener('removed', (e) => { const id = data<string>(e); this.forget(id); assets.forget(id) })
     // (before the character event that names them: the store tells the files a write made first)
     source.addEventListener('files', (e) => { assets.receive(data<FilesChanged>(e)) })

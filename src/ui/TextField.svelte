@@ -18,10 +18,11 @@
     maxlength?: number
     /** Take the focus with the text selected on mount (an inline rename). */
     autoselect?: boolean
+    testid?: string
   }
   let {
     value = $bindable(''), oncommit, placeholder, label, disabled = false, size = 'md', type = 'text', multiline = false, rows = 3,
-    mono = false, maxlength, autoselect = false,
+    mono = false, maxlength, autoselect = false, testid,
   }: Props = $props()
 
   let node = $state<HTMLInputElement | HTMLTextAreaElement | null>(null)
@@ -50,6 +51,7 @@
 
 {#if multiline}
   <textarea
+    data-testid={testid}
     bind:this={node}
     bind:value
     class="text {size}"
@@ -65,6 +67,7 @@
   ></textarea>
 {:else}
   <input
+    data-testid={testid}
     bind:this={node}
     bind:value
     class="text {size}"

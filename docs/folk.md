@@ -4,78 +4,72 @@ One rigged body that every unit of a kind shares, dressed per unit: a face and s
 per unit, and the kind's outfit (boots, bracers, helmet, armour...). Emberhold's `folk-v6-*` character is the first:
 the shared v6 body (`assets/src3d/shared_character_base/v6`), copied from `base-v6` with its rig, hands and clips.
 
-## What a character holds (src/model/types.ts)
+## What a character holds
 
-| Part | Where | Picked |
+Schema 5 keeps the dressing as data (`src/model/types.ts`, `src/model/folk.ts`):
+
+| Part | Where | Use |
 |---|---|---|
-| skins | `look.skins`: albedos on the body's own UVs, each with `hair` (#rrggbb) and `tags` (`female`, `beardless`, `elderly`) | one per unit |
-| clothes | `look.clothes`: RGBA layers over the skin's shirt and trouser areas; `long-sleeves` ones need the body's `long_sleeve` shape | one per unit |
-| outfits | gear with `outfit`: pieces worn together, skinned to the body (`attach.kind: 'skin'`, `hideBody`) | one per unit kind |
-| hair | gear with `role: 'hair'`, swap set `hair`: grey textures tinted to the skin's hair colour | one or none per unit |
-| beards | gear with `role: 'beard'`, swap set `beard`: the same tint | one or none per unit |
+| Sets | `folk.sets`: piece ids, tags and grants | Gear worn together; sets are per character |
+| Pools | `folk.pools`: weighted items with requirements and exclusions | Skins, cloth layers, hair, beards and accessories |
+| Classes | `folk.kinds`: sets and pools, by list or query | A game unit's class; culture is a runtime input |
+| Stances | `folk.stances`: clip overrides and an optional overlay | A set or class selects a baked stance |
+| Skins | `look.skins`: painted albedo, optional `bare`, tags and hair colour | One per unit |
+| Cloth | `look.cloth`: layers, bottom/top/over slots, optional cuts, masks and trim | Up to one layer per slot |
 
-Rigsmith shows one of each (`look.skin`, `look.clothing`, the outfit and hair and beard shown): the Gear step's
-"Dynamic character" panel picks them and Randomize shows one pick as the game would make it. Commands:
-`gear.outfit.show`, `gear.update` (`outfit`, `role`, `tags`), `look.skins.set`, `look.skin.show`,
-`look.clothes.set`, `look.clothing.show`; undo covers them (entity `skins`).
+The schema 4 `Gear.outfit`, `Gear.role` and `look.clothes` fields remain synchronized for compatibility until legacy
+retirement. Migrated pools carry the old hair, beard and bracer restrictions. The deterministic picker
+`src/engine/folkpick.ts` runs set → skin → bottom → top → over → hair → beard → accessory, using independent salts for
+stable choices. Class and culture context also reaches Crowd and Wardrobe. Browsing is preview state; Make default
+journals the chosen defaults, while per-piece visibility stays a preview.
 
-## Schema 5: the dressing as data (src/model/folk.ts, src/engine/folkpick.ts)
+## Cloth, cuts and bare skin
 
-`Character.folk` holds **sets** (pieces worn together, with tags such as `culture:norse` and grants such as
-`covers-hair`), **pools** (skins, cloth layers, hair, beards, accessories, each item with a weight and
-requires/excludes), **kinds** (villager, spearman: their sets by list or tag query, their pools) and **stances**;
-`look.cloth` the cloth layers (slots bottom, top, over). One engine picks a unit's look by running a program of steps
-(set -> skin -> bottom -> top -> over -> hair -> beard -> accessory) over that data with the unit's id and the game's
-inputs (`culture:<id>`): each step draws with its own salt, so a villager who becomes a spearman keeps his face. The
-export's manifest (schema 2) carries the program, the data and golden picks the game reproduces. The schema 4 fields
-below (Gear.outfit, Gear.role, look.clothes) are kept, and kept in step, until the UI is ported; the rules below are the
-migrated pools' requires/excludes.
+Look edits ordered layers and their slots, per-limb height and feather, region drops, and a painted UV mask. Make bare
+fills the clothes zones on the full body; Make all records the resulting references in one undoable change. The skin
+sheet previews the same dressing. Mask saves publish immutable `cloth/<layer>.mask.<hash8>.png` files and journal the
+reference; undo and redo retain their bytes. An unsaved mask draft survives unrelated edits and closing/reopening the
+editor in the same page. A conflicting mask save is refused with the draft retained. Old mask versions are not swept:
+an upload and its reference are separate requests, so collection needs a transaction or lease to avoid racing a save.
 
-## The rules of a pick (src/engine/folk.ts, once for Rigsmith, the export and the game)
-
-- hair or beard tagged `fem` only on a skin tagged `female`; tagged `masc` only on one that isn't;
-- a skin tagged `beardless` takes no beard; otherwise a beard about half the time;
-- an outfit with a piece tagged `covers-hair` (helmets, hats, hoods) takes no hair; `covers-face` (a great helm), no beard;
-- an outfit with a forearm piece (bracers) takes no long-sleeved clothes (the cuff would show through).
+The stage composes only the selected layer's slot zones. An empty slot keeps the painted skin; a cut worn layer uses
+bare skin only in its cut-away zone. Shirt and trouser regions and their adjoining Skin forearms and ankles are
+included, while unrelated Skin islands such as the face are not. Raster coordinates match the image layout, and cuts
+use the same field and seam gutter during export as on the stage. With no cut, the bare image and cut padding are not
+computed; the appearance of uncut seams still needs visual acceptance. Ship warns when a cut could be used with a
+skin that has no bare image. Bare-leg appearance also still needs a close visual review.
 
 ## Hiding the body under gear (src/engine/regions.ts)
 
-The body's seams (material borders, UV island borders: where its vertices are split) cut it into regions: v6 has 28
-(feet in three, hands in two, the forearm skin, the neck in three, face, back of the head, shirt torso and sleeves,
-trouser legs and the crotch pieces). A piece hides a region when it covers at least `HIDE_SHARE` (97 %) of its
-vertices: it lies within 4 % of the height out along the vertex's normal, inside a 60° cone (`garments.ts
-coveredVertices`: a hat's brim is near the face but above it, not over it; a boot's sole lies under the foot's, so
-boots must reach the floor: Emberhold's `gear_finish.py`). So the body always stops at a seam the piece covers, never
-along a ragged line. Hair hides nothing. Below 97 % a region stays: a hidden region the piece doesn't quite reach is a
-hole, and the gear is skinned like the body anyway, so on the library as it is most pieces hide little (bracers the
-wrist pieces, hoods and some helmets the throat, a few boots a foot piece).
+The body's material and UV seams form regions: v6 has 28. A piece hides a region only when it covers at least
+`HIDE_SHARE` (97 %) of that region's vertices. Hair hides nothing. This stops the body at a seam rather than along a
+ragged edge. The Coverage view reports the largest single piece's share per region, not the union of pieces;
+`node tools/dev/folk_regions.ts CHARACTER [FILTER]` prints the per-piece values.
 
-`node tools/dev/folk_regions.ts CHARACTER [FILTER]` prints every piece's share of each region (`*`: hidden).
+## Export (tools/lib/unit_export.ts)
 
-## The export (tools/lib/unit_export.ts)
+- The body carries region and material class in `TEXCOORD_1`; region borders stay locked while the levels simplify.
+  Sets and pool pieces in scope are exported as swapped meshes, including hidden pieces needed by a stance.
+- The schema 2 `<unit>.folk.json` carries the picker program, data and golden picks, scoped sets and pools, skins,
+  layers, pieces, body regions and a schema 1 compatibility view. A unit may scope its class with `folk.kind`, its
+  pools with `folk.pools`, or legacy outfits by name. `skins[].bare` names the copied bare image when present;
+  `layers[].cut.baked` identifies a layer whose cut was applied to its PNG. Cut and mask baking uses the actual shipped
+  rig's UVs even if a separate physics rig has a different layout.
+- Only stances reachable in the unit's scope are baked. A set's own held pieces are present when its stance is baked;
+  sets sharing a stance must agree on bone-held pieces. Clips are named `<Clip>@<stance>` and
+  `<Clip>_2@<stance>` for subsequent variants; the GLB, events and manifest use those names, and an overlay is already
+  baked into them. Ship uses the same planner and reports conflicting stances.
+- The Look server and export use `pngjs`, a devDependency: development dependencies must be installed wherever those
+  tools run. Output writes are atomic and skip unchanged bytes.
 
-- The body's meshes are merged into one; each vertex's region (x) and material class (y) go in its second UVs
-  (`TEXCOORD_1`, Godot's UV2). Region borders are locked while the levels are simplified, so no lower level's
-  triangle spans two regions.
-- Outfit, hair and beard pieces go in as swapped parts (`contract.ts SWAPPED`: `Outfit_<outfit>_<piece>`,
-  `Hair_<style>`, `Beard_<style>`), outside the body's budget. Always-worn skin gear marked `hideBody` drops the
-  regions it hides from the body.
-- `<unit>.folk.json` beside the GLB: the regions (count, classes, each one's material and middle), the skins and clothes
-  (copied into the work dir: `skins/`, `clothes/`), each outfit (its pieces, the regions each hides and the outfit's
-  `mask`: bit r = region r, `coversHair`, `coversFace`, the clothes it can wear), the hair and beard pools with tags,
-  `hairGreyMean` and the rules.
-- A unit spec's `folk: { outfits: [...], hair: false }` keeps a kind's file to its own outfits (and leaves the hair
-  and beards to one shared file): every part in a GLB is a node per unit in the game.
+The game still needs per-slot bare-base composition below cut layers, and the game-side FolkProgram golden and stance
+playback need verification. The export contract and browser screenshots alone do not establish game parity.
 
 ## Making the parts (Emberhold)
 
-- outfits: `tools/comfy/gen_gear.py` (`--sheets qwen` paints the sheets locally with Qwen-Image-Edit-2511, no Codex
-  quota), then `finish` (`gear_finish.py`: the key green filled, boots down to the floor);
-- hair and beards: `tools/rigsmith/folk_split_hair.py` splits each hair head below the nose and in front of the ears,
-  greys it; the outfits whose head is hair give theirs to the hair and beard pools;
-- clothes: `tools/comfy/folk_clothes/` (MV-Adapter text + geometry on v6, baked onto its own UVs, the shirt and trouser
-  areas kept);
-- all of it into the character: `tools/rigsmith/import_folk.py CHARACTER [--replace]`.
+- Outfits and hair: the Emberhold gear pipeline creates and finishes them before import.
+- Clothes: `tools/comfy/folk_clothes/` paints and bakes onto the body's UVs.
+- `tools/rigsmith/import_folk.py CHARACTER [--replace]` imports the resulting parts into a character.
 
 ## The female shape
 
@@ -88,21 +82,12 @@ skin tagged `female` plays it at 1 (Rigsmith, the game).
 
 ## In the game (Emberhold)
 
-- `assets/models/units/folk.glb` + `folk.folk.json` (this export, a spec with `folk.outfits`), then
-  `tools/rigsmith/folk_maps.py folk`: the body's maps (its mask's red: the tunic's trims, for the clan), the skins
-  and clothes as Texture2DArrays, one atlas per piece group (`assets/textures/models/folk_<group>/`: the export moved
-  each piece's UVs into its cell and gives its surface `Atlas_folk_<group>`; gear has UV2 -1).
-- `unit_folk.gdshader` (entity.gdshaderinc `EMB_FOLK`): one instance value per unit (skin, clothes, hidden-region mask,
-  hair colour), the body's regions collapsed in the vertex shader, the clothes laid over the skin, the hair tinted, the
-  clan on the tunic's trims (hem, collar, sleeve ends) by `data/visual.json folk.clan_on_tunic` (1).
-- No blend shapes reach the game: shapes on a skinned mesh cost the GPU every frame whatever their weight (+3.9 ms with
-  every villager folk, 10.9 -> 14.8 ms, 2026-11-06). The export bakes them: the body as `<unit>` and `FolkBody_F`,
-  `FolkBody_L`, `FolkBody_FL` (female, long sleeves, both), each shaped piece as `<name>` and `<name>_F`. With them every
-  villager folk draws in 10.8 ms (the same as none; `tools/dev/profile/layers.py -- --folk=all`); the file is ~36 MB.
-- `game/view/UnitView.Folk.cs`: picks by the unit's id (the rules above, the manifest), shows its body and pieces of its
-  shape and frees the rest. The plain villagers are drawn as it by default (docs/SWITCHES.md B, `FolkVillagers`; `--folk=off` the four old plain models; `--folk=all` every villager, a load test).
+The existing game pipeline consumes exported models and folk data through `tools/rigsmith/folk_maps.py`, the folk
+shader and `game/view/UnitView.Folk.cs`. The new cut/bare and stance contracts above still require the game-side work
+and validation noted under Export; do not assume the current game renderer handles an empty slot or a baked stance.
+The female and long-sleeve body variants and female piece variants avoid per-frame blend-shape cost in the game.
 
 ## Open
 
-- Whether the trims are enough clan colour at a distance (the whole tunic washed every unit one colour).
-- More gear for women (two styles are tagged fem; the rest unisex) and per-culture outfit lists for a kind.
+- Game-side bare-slot composition, stance playback and FolkProgram golden verification.
+- Bare-leg and uncut seam visual acceptance; trims and per-culture outfit art remain design questions.

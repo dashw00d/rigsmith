@@ -4,7 +4,7 @@
 // fixed choices. The dress (src/state/dressing.ts) names a set by its name and clothes by the old look.clothes name;
 // the engine names a set by its id and clothes by the cloth layer's id: the two meet here only.
 import type { DressField, Dressed } from '../../state/dressing.ts'
-import { candidates, clothOf, setsOf, tagsAfter, type FolkPick, type FolkWorld } from '../../engine/folkpick.ts'
+import { candidates, clothOf, setsOf, tagsAfter, type FolkInputs, type FolkPick, type FolkWorld } from '../../engine/folkpick.ts'
 import { setsWith, type Folkish } from '../../model/folk.ts'
 import type { Gear } from '../../model/types.ts'
 
@@ -110,11 +110,11 @@ export interface Choice {
 /** Every choice of a slot, in the character's order, each marked with what the engine says of it under the dress worn
  * (the set's grants and the skin's tags: a fem hair needs a female skin, no hair under a hat, no long sleeves under
  * bracers). An item no pool lists is ruled out "in no pool". */
-export function choicesFor (c: Folkish, w: FolkWorld, worn: Dressed, field: DressField): Choice[] {
+export function choicesFor (c: Folkish, w: FolkWorld, worn: Dressed, field: DressField, ctx: Omit<FolkInputs, 'fixed'> = {}): Choice[] {
   const set = setIdByName(c, worn.outfit)
   const step = field === 'outfit' ? 'set' : field === 'clothing' ? 'bottom' : field
-  const tags = field === 'outfit' || field === 'skin' ? tagsAfter(w, { set: field === 'skin' ? set : null }) : tagsAfter(w, { set, skin: worn.skin })
-  const found = new Map(candidates(w, step, tags).map(x => [x.ref, x]))
+  const tags = field === 'outfit' || field === 'skin' ? tagsAfter(w, { kind: ctx.kind, inputs: ctx.tags, set: field === 'skin' ? set : null }) : tagsAfter(w, { kind: ctx.kind, inputs: ctx.tags, set, skin: worn.skin })
+  const found = new Map(candidates(w, step, tags, { kind: ctx.kind }).map(x => [x.ref, x]))
   const total = [...found.values()].reduce((t, x) => t + (x.ok ? x.weight : 0), 0)
   const of = (ref: string | null, value: string, name: string): Choice => {
     const x = ref === null ? undefined : found.get(ref)
@@ -141,11 +141,13 @@ export const newUid = (rand: () => number = Math.random): number => 1 + Math.flo
 
 // ---- the drawer's filters ------------------------------------------------------------------------------------------
 
-export type Tab = 'sets' | 'skins' | 'clothes' | 'hair' | 'beards' | 'pieces'
+export type Tab = 'sets' | 'skins' | 'clothes' | 'hair' | 'beards' | 'pieces' | 'props'
 export const TABS: ReadonlyArray<{ id: Tab, label: string }> = [
   { id: 'sets', label: 'Sets' }, { id: 'skins', label: 'Skins' }, { id: 'clothes', label: 'Clothes' },
-  { id: 'hair', label: 'Hair' }, { id: 'beards', label: 'Beards' }, { id: 'pieces', label: 'Pieces' },
+  { id: 'hair', label: 'Hair' }, { id: 'beards', label: 'Beards' }, { id: 'pieces', label: 'Pieces' }, { id: 'props', label: 'Props' },
 ]
+
+export const tabsFor = (folk: boolean): typeof TABS => folk ? TABS : TABS.filter(t => t.id === 'pieces' || t.id === 'props')
 
 /** A tile of the drawer: what it shows and what its filters match. */
 export interface Tile {

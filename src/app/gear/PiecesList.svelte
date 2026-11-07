@@ -4,11 +4,12 @@
   // Shift takes the run; the bulk bar acts on all picked at once, each action one command batch (one undo, a toast to
   // take it back): tags, move to a set, hide the body under them, delete. Double-click renames (not the game's own
   // pieces: their names are the game's contract). Rows off screen are skipped by the browser (content-visibility).
-  import { onDestroy, untrack } from 'svelte'
+  import { onDestroy, tick, untrack } from 'svelte'
   import { ChevronDown, EyeOff, Trash2, X } from '@lucide/svelte'
   import type { Command } from '../../model/command-types.ts'
   import type { Character, Gear } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
+  import { incoming } from '../../state/incoming.svelte.ts'
   import { dress } from '../../state/dress.svelte.ts'
   import { gear as gearState } from '../../state/gear.svelte.ts'
   import { setsOf } from '../../model/folk.ts'
@@ -16,6 +17,8 @@
   import IconButton from '../../ui/IconButton.svelte'
   import { register } from '../../ui/shortcuts.ts'
   import { tooltip } from '../../ui/tooltip.ts'
+  import { contextMenu } from '../../ui/contextmenu.ts'
+  import { addPieceToSet, buildGearMenu } from './menu.ts'
   import { wardrobe } from './wardrobe.svelte.ts'
   import { cleanTag, label, moveCommands, partOf, pieceGroups, selectClick } from './wardrobe.ts'
 
@@ -25,6 +28,7 @@
   const groups = $derived(pieceGroups(character, search))
   const order = $derived(groups.flatMap(g => (wardrobe.isCollapsed(character.id, g.set ?? '') && search === '' ? [] : g.pieces.map(p => p.id))))
   const byId = $derived(new Map(character.gear.map(g => [g.id, g])))
+  const incomingPieces = $derived(incoming.loadedFor !== character.id ? new Set<string>() : new Set(incoming.packages.flatMap(pkg => pkg.parts.flatMap(part => part.status === 'accepted' && part.acceptedGear ? [part.acceptedGear] : []))))
   const picked = $derived(wardrobe.picked.filter(id => byId.has(id)))
   const pickedGear = $derived(picked.map(id => byId.get(id)!))
   const sets = $derived([...setsOf(character)].sort((a, b) => a.name.localeCompare(b.name)))
@@ -106,6 +110,31 @@
     if (keep && name !== '' && name !== g.name) await wardrobe.run(character, [{ type: 'gear.update', id: g.id, patch: { name } }], `${g.name} renamed ${name}`)
   }
 
+  function rowMenu (g: Gear, set: string | null) {
+    const shown = gearState.shownOnStage(character, g)
+    const select = (): void => {
+      wardrobe.picked = [g.id]
+      wardrobe.anchor = g.id
+      gearState.select(g.id)
+      wardrobe.update(character.id, { selected: g.id })
+      if (set !== null) wardrobe.set(character, 'outfit', set)
+    }
+    return buildGearMenu({
+      shown, renameable: !fromGame(g),
+      sets: sets.map(s => ({ id: s.id, name: s.name, contains: s.pieces.includes(g.id) })),
+      select,
+      toggle: () => {
+        if (!shown && set !== null) wardrobe.set(character, 'outfit', set)
+        if (!shown && (g.role === 'hair' || g.role === 'beard')) wardrobe.set(character, g.role, g.id)
+        void gearState.setShown(character, g, !shown)
+      },
+      rename: () => { startRename(g) },
+      addToSet: id => { const command = addPieceToSet(character, id, g.id); if (command !== null) void wardrobe.run(character, [command], `${g.name} added to a set`) },
+      tag: () => { wardrobe.picked = [g.id]; void tick().then(() => { document.querySelector<HTMLInputElement>('[aria-label="Add a tag to them"]')?.focus() }) },
+      remove: () => { void gearState.remove(character, g) },
+    })
+  }
+
   function focusSelect (node: HTMLInputElement): void { node.focus(); node.select() }
 
   const off = register(
@@ -176,10 +205,11 @@
                 onkeydown={(e) => { if (e.key === 'Enter') void finishRename(g, true); else if (e.key === 'Escape') { e.preventDefault(); void finishRename(g, false) } }}
                 onblur={() => { void finishRename(g, true) }} />
             {:else}
-              <button class="row" onclick={(e) => { click(e, g, group.set) }} ondblclick={() => { startRename(g) }}
+              <button draggable="true" ondragstart={(e) => { e.dataTransfer?.setData('application/x-rigsmith-gear', g.id) }} class="row" data-testid="wardrobe-piece-row" data-id={g.id} use:contextMenu={() => rowMenu(g, group.set)} onclick={(e) => { click(e, g, group.set) }} ondblclick={() => { startRename(g) }}
                 aria-pressed={picked.includes(g.id)} use:tooltip={fromGame(g) ? `${g.name} (the game's own piece)` : `${g.name}: double-click to rename`}>
                 <span class="name">{g.name}</span>
                 {#if part !== null}<span class="part">{part}</span>{/if}
+                {#if incomingPieces.has(g.id)}<span class="tag small" data-testid="incoming-piece-new">New</span>{/if}
                 {#each g.tags ?? [] as t (t)}<span class="tag small">{t}</span>{/each}
                 {#if g.attach.kind === 'skin' && g.attach.hideBody === true}<span class="hides" use:tooltip={'Hides the body under it'}><EyeOff size={11} /></span>{/if}
                 {#if g.status !== 'ready'}<span class="state">{g.status}</span>{/if}

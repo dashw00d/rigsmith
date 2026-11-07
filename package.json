@@ -27,18 +27,21 @@
     "verify:units": "node tools/rig.ts check",
     "migrate": "node tools/migrate.ts",
     "migrate:check": "node tools/migrate.ts --check",
-    "perf": "node tools/perf.ts"
+    "perf": "node tools/perf.ts",
+    "e2e": "node tools/e2e.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@types/node": "^26.1.2",
+    "@types/pngjs": "^6.0.5",
     "@types/three": "^0.185.0",
     "@vitest/coverage-v8": "^4.1.0",
     "@vitest/ui": "^4.1.0",
     "eslint": "^10.8.0",
     "globals": "^17.9.0",
     "jsdom": "^30.0.1",
+    "pngjs": "^7.0.0",
     "svelte-check": "^4.7.6",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.66.0",

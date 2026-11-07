@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
 import type { Character, Slot } from '../../src/model/types.ts'
-import { placeCompanionClip, recordSlots, scalePositions, seatClip, wholeCycles } from './unit_export.ts'
+import { overlayStance, placeCompanionClip, recordSlots, scalePositions, seatClip, wholeCycles } from './unit_export.ts'
 
 const vec = (name: string, values: number[]): THREE.KeyframeTrack => new THREE.VectorKeyframeTrack(name, values.length === 3 ? [0] : [0, 1], values)
 const quat = (name: string, q: THREE.Quaternion): THREE.KeyframeTrack => new THREE.QuaternionKeyframeTrack(name, [0], q.toArray())
@@ -11,6 +11,14 @@ const close = (a: number[], b: number[]): void => { expect(a.length).toBe(b.leng
 const QUARTER = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2)
 
 describe('unit export: clips in game units', () => {
+  it('replaces only the overlay keyed bone tracks and scales them to the stance clip duration', () => {
+    const base = new THREE.AnimationClip('Idle@shield', 2, [vec('Spine.position', [0, 0, 0]), quat('LeftArm.quaternion', new THREE.Quaternion())])
+    const overlay = new THREE.AnimationClip('overlay', 1, [vec('Spine.position', [3, 3, 3]), quat('LeftArm.quaternion', QUARTER)])
+    const result = overlayStance(base, overlay, ['LeftArm'])
+    close(track(result, 'Spine.position'), [0, 0, 0])
+    close(track(result, 'LeftArm.quaternion'), QUARTER.toArray())
+    expect(result.name).toBe('Idle@shield')
+  })
   it('scales every move, and lowers the top bone by the floor first, leaving turns and the clip it was given alone', () => {
     const spine = quat('Spine.quaternion', QUARTER)
     const clip = new THREE.AnimationClip('Walk', 1, [vec('Hips.position', [0, 1, 0, 0.5, 2, 0]), vec('Spine.position', [0, 0.2, 0]), spine])

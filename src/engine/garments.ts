@@ -352,7 +352,7 @@ export function regionsHidden (body: BodySurface, pieces: THREE.BufferGeometry[]
 /** What a worn piece covers of a body, by content (its meshes as placed, the body): a piece worn again, or on the
  * body loaded again, isn't tested again. For pieces worn without their regions (Worn.hidden). */
 const coverage = new Lru<Int32Array>({ budget: 16 * MB, max: 4000, size: h => h.byteLength })
-function hiddenBy (body: BodySurface, view: BodyView, hides: THREE.BufferGeometry[], share: number): number[] {
+function hitsBy (body: BodySurface, view: BodyView, hides: THREE.BufferGeometry[]): Int32Array {
   const { core, key } = bodyCore(body, view)
   const meshes = hides.map(meshCore)
   const name = `${meshesKey(meshes)}-${key}`
@@ -361,7 +361,7 @@ function hiddenBy (body: BodySurface, view: BodyView, hides: THREE.BufferGeometr
     hits = timed('coverVertices', () => regionHits(core.regionOf, core.regionVertices.length, coverVertices(core, meshes)))
     coverage.set(name, hits)
   }
-  return hiddenAt(hits, core.regionVertices, share)
+  return hits
 }
 
 /** The body's own triangles, before any was hidden (set aside the first time it is). */
@@ -398,7 +398,10 @@ export function hideBodyUnder (view: BodyView, worn: Iterable<Worn>): void {
   const body = pieces.length === 0 ? null : bodyOf(view)
   const hidden = new Set<number>()
   if (body !== null) {
-    for (const w of pieces) for (const r of w.hidden ?? hiddenBy(body, view, w.hides!, w.hideShare ?? HIDE_SHARE)) hidden.add(r)
+    for (const w of pieces) {
+      if (w.hits === undefined && w.hides !== undefined) w.hits = hitsBy(body, view, w.hides)
+      for (const r of w.hidden ?? hiddenAt(w.hits!, body.regions.vertices, w.hideShare ?? HIDE_SHARE)) hidden.add(r)
+    }
   }
   if (hidden.size === 0 || body === null) { restoreBody(view); return }
   const key = [...hidden].sort((a, b) => a - b).join(',')
@@ -442,6 +445,8 @@ export interface Worn {
   /** The body regions it hides (at its share), worked out when it was worn (derived data): hideBodyUnder takes these
    * and tests nothing. */
   hidden?: number[]
+  /** Body vertices covered in each region, before applying the hiding threshold. */
+  hits?: Int32Array
 }
 
 /** A bone piece's frame on its bone: bone -> the bone's rest frame undone -> the place node (named geom.gearNode, with
@@ -576,7 +581,7 @@ export async function wear (view: WearView, g: Gear, o: WearOptions): Promise<Wo
   const share = hideShareOf(g)
   return {
     gear: g.id, node: null, meshes: shown, objects: shown,
-    ...(hides ? { hides: shown.map(m => m.geometry), hideShare: share, ...(derived?.hits != null ? { hidden: hiddenAt(derived.hits, body.regions.vertices, share) } : {}) } : {}),
+    ...(hides ? { hides: shown.map(m => m.geometry), hideShare: share, ...(derived?.hits != null ? { hits: derived.hits, hidden: hiddenAt(derived.hits, body.regions.vertices, share) } : {}) } : {}),
   }
 }
 

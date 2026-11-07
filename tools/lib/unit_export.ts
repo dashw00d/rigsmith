@@ -23,7 +23,7 @@
 //                                    installs them into its mix as sounds of their own)
 import { execSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { copyIfChanged, writeIfChanged } from './atomic.ts'
 import path from 'node:path'
 import * as THREE from 'three'
@@ -31,12 +31,15 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { bakeRide, bakeSlot, eventsInClip, gearTracks, type BakeContext, type BakedEvent, type BakedSlot, type GearTrackTarget, type PullPlan } from '../../src/engine/bake.ts'
 import { CharacterView } from '../../src/engine/CharacterView.ts'
+import { clothBody } from '../../src/engine/folkview.ts'
+import { writeClothPng } from './clothbake.ts'
 import { budgetOf, budgetRatio, clipProblem, DEFAULT_LODS, gearLeftOut, HIT_AT, meshNameOf, NO_LOD_BELOW } from '../../src/engine/contract.ts'
 import { bodySurface, hideShareOf, originMatrix, regionsHidden, type GarmentEdit } from '../../src/engine/garments.ts'
 import { regionMask, regionsOf, withoutRegions, type Regions } from '../../src/engine/regions.ts'
 import { FEMALE, HAIR_GREY_MEAN, LONG_SLEEVE, femaleOffsets, isFolk } from '../../src/engine/folk.ts'
-import { clothOf } from '../../src/model/folk.ts'
-import { atlasGroupOf, folkLeftOut, folkManifestData, folkScope, isSwapped, type FolkFiles, type FolkScope, type ManifestPiece } from './folk_export.ts'
+import { clothOf, folkOf } from '../../src/model/folk.ts'
+import { gearWeightsFile } from '../../src/model/gearweights.ts'
+import { atlasGroupOf, clothExportBase, folkLeftOut, folkManifestData, folkScope, isSwapped, scopedGearLeftOut, stanceExportPlan, type FolkFiles, type FolkScope, type ManifestPiece, type StanceExportPlan } from './folk_export.ts'
 import { safeName } from '../../src/engine/geom.ts'
 import { applyGeometryMatrix } from '../../src/engine/geometry-transform.ts'
 import { cloneMorphGeometry, mergeMorphState, restoreMorphState } from '../../src/engine/morph-state.ts'
@@ -51,6 +54,7 @@ import { pelvisName } from '../../src/engine/retarget.ts'
 import { retime, sample, stride } from '../../src/engine/timing.ts'
 import { gearEvents, holdTracks, withTracks as withHoldTracks, type HoldTarget } from '../../src/engine/geartracks.ts'
 import { gearById, slotByName } from '../../src/model/select.ts'
+import { dressedCharacter } from '../../src/model/stances.ts'
 import { exportClash, exportName, gameNameOf, variantsField, withVariants } from '../../src/model/variants.ts'
 import type { Character, ClipKey, Gear, HandPose, Mount, Slot } from '../../src/model/types.ts'
 import type { BuildRecord, BuiltClip, BuiltCompanion, BuiltGear, CompanionSpec, UnitEvent, UnitEvents, UnitSpec } from '../../src/model/unit.ts'
@@ -91,11 +95,25 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   const slots = stored.map(s => (s.name === exportName(s.name, spec.clips) ? s : { ...s, name: exportName(s.name, spec.clips) }))
   const clash = exportClash(stored, spec.clips)
   if (clash !== null) throw new Error(`${unit}: ${c.name}'s clips ${clash.join(' and ')} both play as ${exportName(clash[0], spec.clips)} in the game; rename one in Rigsmith`)
-  const gameName = (name: string): string => gameNameOf(name, spec.clips)
+  const gameName = (name: string): string => gameNameOf(name.split('@')[0], spec.clips)
+  const stancePlans = isFolk(c) ? stanceExportPlan(c, spec, spec.clips, slots.map(s => s.name)) : []
 
   // Its clips as the viewer bakes them, on the character in its own units (the export keys its own gear bones, below).
   const baked = new Map<string, BakedSlot>()
   for (const slot of slots) baked.set(slot.name, await bakeSlot(c, slot, me.ctx, { gearNodes: false }))
+  for (const plan of stancePlans) {
+    const set = folkOf(c).sets.find(s => s.id === plan.setId)
+    const dressed = dressedCharacter(c, plan.setId, { on: set?.pieces ?? [] })
+    const overlay = plan.overlay === undefined ? undefined : await bakeSlot(dressed, plan.overlay, me.ctx, { gearNodes: false })
+    const muted = new Set(plan.overlay?.muted ?? [])
+    const keys = muted.has('bones') ? [] : Object.entries(plan.overlay?.bones ?? {}).filter(([bone, entries]) => entries.length > 0 && !muted.has(`bone:${bone}`)).map(([bone]) => bone)
+    for (const slot of plan.slots) {
+      const built = await bakeSlot(dressed, slot, me.ctx, { gearNodes: false })
+      if (overlay !== undefined && keys.length > 0) built.clip = overlayStance(built.clip, overlay.clip, keys)
+      baked.set(slot.name, built)
+      slots.push(slot)
+    }
+  }
   // (as each slot plays alone, before a ride fits it: what the record says of its keys and holds)
   const alone = new Map(baked)
   const audit = readAudit(o.workspace)
@@ -217,7 +235,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   const pullBones: PullBone[] = []
   const editsOf = (g: Gear): GarmentEdit[] => {
     if ((g.painted ?? 0) === 0) return []
-    const file = path.join(me.dir, 'garments', g.id, 'weights.json')
+    const file = path.join(me.dir, gearWeightsFile(g))
     if (!existsSync(file)) { warn(`${g.name}: ${g.painted} painted weights, but no ${path.relative(me.dir, file)}`); return [] }
     return JSON.parse(readFileSync(file, 'utf8')) as GarmentEdit[]
   }
@@ -235,7 +253,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     const notMine = folkOut(g)
     if (notMine !== null) { gearReport[name] = { left: notMine, kind: KIND[a.kind], group: g.swapSet }; continue }
     const kind = KIND[a.kind]
-    const left = gearLeftOut(g) ?? (g.model === undefined ? 'no model of its own'
+    const left = scopedGearLeftOut(g, scope) ?? (g.model === undefined ? 'no model of its own'
       : a.kind === 'bone' && a.legacyFrame !== undefined ? 'still placed in the old catalog frame (place it in Gear)' : null)
     if (left !== null) {
       if (left !== 'hidden') warn(`${g.name} left out: ${left}`)
@@ -653,6 +671,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   }, {
     gear: new Map(slots.map(slot => [slot.name, gearEvents(c, baked.get(slot.name)?.gearHolds, id => exportedGear.has(id))])),
     variants: variantsField(c, spec.clips),
+    stances: Object.fromEntries(stancePlans.map(plan => [plan.id, plan.clips])),
     own: ownFits,
     companion: comp === null ? undefined : { prefix: comp.spec.prefix, events: compEvents },
   })
@@ -661,10 +680,12 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   writeIfChanged(path.join(o.modelsDir, `${unit}.events.json`), JSON.stringify(events, null, 1) + '\n')
   if (Object.keys(atlasFiles).length > 0) writeIfChanged(path.join(o.workDir, unit, 'folk_atlas.json'), JSON.stringify(atlasFiles, null, 1) + '\n')
   if (isFolk(c) || (c.look.skins ?? []).length > 0 || (c.look.clothes ?? []).length > 0) {
-    const manifest = folkManifest(unit, c, me.dir, srcDir, body, hidesOf, spec)
+    // Contact geometry may come from uv-physics.glb; cloth must use the UVs actually shipped in me.file.
+    const textureView = clothOf(c).some(layer => layer.cut !== undefined) ? new CharacterView((await load(me.file)).scene) : me.view
+    const manifest = folkManifest(unit, c, me.dir, srcDir, body, hidesOf, spec, textureView, stancePlans)
     writeIfChanged(path.join(o.modelsDir, `${unit}.folk.json`), JSON.stringify(manifest, null, 1) + '\n')
   }
-  const record: BuildRecord = {
+  const record: BuildRecord & { stances?: Record<string, { clips: number, bytes: number }> } = {
     schema: 4,
     unit,
     generator: 'rigsmith tools/game_export.ts',
@@ -675,6 +696,11 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     bones: bones.length,
     triangles: { source: tris0, budget: spec.budget, lods: lodReport, head: headReport.length > 0 ? headReport : undefined, parts: partReport },
     clips: clipReport,
+    ...(stancePlans.length === 0 ? {} : { stances: Object.fromEntries(stancePlans.map(plan => {
+      const names = new Set(plan.slots.map(slot => slot.name))
+      const selected = clips.filter(clip => names.has(clip.name))
+      return [plan.id, { clips: selected.length, bytes: selected.reduce((total, clip) => total + clip.tracks.reduce((n, track) => n + track.times.byteLength + track.values.byteLength, 0), 0) }]
+    })) }),
     gear: gearReport,
     companion: compReport,
     // (a rider's stride is his horse's)
@@ -696,6 +722,19 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
 }
 
 // ---- clips in game units (pure) ---------------------------------------------------------------------------------
+
+/** Replace the keyed bones with the overlay's baked tracks, mapping its duration to the target's phase. */
+export function overlayStance (clip: THREE.AnimationClip, overlay: THREE.AnimationClip, bones: readonly string[]): THREE.AnimationClip {
+  const wanted = new Set(bones)
+  const boneOf = (track: THREE.KeyframeTrack): string => track.name.slice(0, track.name.lastIndexOf('.'))
+  const replacements = overlay.tracks.filter(track => wanted.has(boneOf(track))).map(track => {
+    const copy = track.clone()
+    if (overlay.duration > 0) for (let i = 0; i < copy.times.length; i++) copy.times[i] *= clip.duration / overlay.duration
+    return copy
+  })
+  const replaced = new Set(replacements.map(track => track.name))
+  return new THREE.AnimationClip(clip.name, clip.duration, [...clip.tracks.filter(track => !replaced.has(track.name)), ...replacements])
+}
 
 /** A clip in game units: every move scaled by `s`, the top bone's (the one under the unit's root) lowered by `floor`
  * first, so the soles stand at 0 as the body does. */
@@ -808,9 +847,10 @@ export function fitEvents (events: BakedEvent[], fit: EventFit): BakedEvent[] {
 export function eventsFile (unit: string, slots: Slot[], clips: THREE.AnimationClip[], baked: Map<string, BakedSlot>, strides: { walk: number | null, run: number | null },
   more: {
     gear?: Map<string, Array<{ t: number, name: string, bone?: string }>>, variants?: Record<string, string[]>
+    stances?: Record<string, Record<string, string[]>>
     own?: Map<string, EventFit>, companion?: { prefix: string, events: Map<string, BakedEvent[]> }
-  } = {}): UnitEvents {
-  const out: UnitEvents = { unit, schema: 1, clips: {}, walkStride: strides.walk, runStride: strides.run, ...(more.variants !== undefined ? { variants: more.variants } : {}) }
+  } = {}): UnitEvents & { stances?: Record<string, Record<string, string[]>> } {
+  const out: UnitEvents & { stances?: Record<string, Record<string, string[]>> } = { unit, schema: 1, clips: {}, walkStride: strides.walk, runStride: strides.run, ...(more.variants !== undefined ? { variants: more.variants } : {}), ...(more.stances !== undefined && Object.keys(more.stances).length > 0 ? { stances: more.stances } : {}) }
   slots.forEach((slot, i) => {
     const b = baked.get(slot.name)
     const fit = more.own?.get(slot.name)
@@ -1170,10 +1210,10 @@ function regionBorders (geo: THREE.BufferGeometry): Uint8Array | undefined {
  * body regions and bodies, its skins and cloth layers (copied beside the build, with their bare versions, trims and cut
  * masks), the sets, kinds, pools and stances its file carries with the regions each piece hides, the pick program and
  * golden picks, and schema 1's view (outfits, clothes, hair, beard). */
-function folkManifest (unit: string, c: Character, charDir: string, srcDir: string, body: { regions: Regions, classes: string[], geometry: THREE.BufferGeometry }, hidesOf: Map<string, number[]>, spec: UnitSpec): Record<string, unknown> {
+function folkManifest (unit: string, c: Character, charDir: string, srcDir: string, body: { regions: Regions, classes: string[], geometry: THREE.BufferGeometry }, hidesOf: Map<string, number[]>, spec: UnitSpec, view: CharacterView, stancePlans: readonly StanceExportPlan[]): Record<string, unknown> {
   const copy = (from: string, to: string): string => {
     mkdirSync(path.dirname(path.join(srcDir, to)), { recursive: true })
-    copyFileSync(path.join(charDir, from), path.join(srcDir, to))
+    copyIfChanged(path.join(charDir, from), path.join(srcDir, to))
     return to
   }
   const ext = (f: string): string => path.extname(f)
@@ -1186,9 +1226,21 @@ function folkManifest (unit: string, c: Character, charDir: string, srcDir: stri
   }
   for (const k of c.look.clothes ?? []) files.clothes[k.name] = copy(k.file, `clothes/${safeName(k.name)}${ext(k.file)}`)
   for (const l of clothOf(c)) {
-    const base = `clothes/${safeName(l.name)}`
+    const base = clothExportBase(l)
+    let file: string
+    if (l.cut !== undefined) {
+      // A cut is layer-specific: never overwrite the uncut schema-1 clothes or another layer sharing its image.
+      file = `${base}.png`
+      mkdirSync(path.dirname(path.join(srcDir, file)), { recursive: true })
+      const source = clothBody(view.bodySkinned)
+      writeClothPng(path.join(charDir, l.file), path.join(srcDir, file), source.geometry, source.regions, view.height, l.cut,
+        l.cut.mask === undefined ? undefined : path.join(charDir, l.cut.mask), { slots: l.slots, regions: source.list })
+    } else {
+      file = files.clothes[l.name] !== undefined && (c.look.clothes ?? []).some(k => k.name === l.name && k.file === l.file) ? files.clothes[l.name] : copy(l.file, `${base}${ext(l.file)}`)
+    }
     files.layers[l.id] = {
-      file: files.clothes[l.name] !== undefined && (c.look.clothes ?? []).some(k => k.name === l.name && k.file === l.file) ? files.clothes[l.name] : copy(l.file, `${base}${ext(l.file)}`),
+      file,
+      ...(l.cut !== undefined ? { baked: true } : {}),
       ...(l.trim !== undefined ? { trim: copy(l.trim, `${base}.trim${ext(l.trim)}`) } : {}),
       ...(l.cut?.mask !== undefined ? { mask: copy(l.cut.mask, `${base}.mask${ext(l.cut.mask)}`) } : {}),
     }
@@ -1217,6 +1269,7 @@ function folkManifest (unit: string, c: Character, charDir: string, srcDir: stri
     bodies: isFolk(c) ? FOLK_BODIES.map(([suffix, weights]) => ({ mesh: suffix === '' ? unit : `FolkBody_${suffix}`, shapes: Object.keys(weights).sort() })) : [],
     hairGreyMean: HAIR_GREY_MEAN,
     femaleShape: FEMALE,
+    stancePlans,
   })
 }
 

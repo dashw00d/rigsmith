@@ -105,7 +105,7 @@
   }
 </script>
 
-<Drawer open side="right" title="Activity" width="min(380px, 94%)" scrim={false} onclose={() => { app.drawer = null }}>
+<Drawer testid="activity-drawer" open side="right" title="Activity" width="min(380px, 94%)" scrim={false} onclose={() => { app.drawer = null }}>
   <div class="tabs">
     <Tabs size="sm" label="Activity" bind:value={tab} tabs={[
       { id: 'history', label: 'History' },

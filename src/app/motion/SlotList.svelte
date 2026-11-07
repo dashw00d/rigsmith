@@ -8,6 +8,11 @@
   import { animator } from '../../state/animator.svelte.ts'
   import { slots } from '../../state/slots.svelte.ts'
   import { slotByName } from '../../model/select.ts'
+  import { clipSlots } from '../../model/stances.ts'
+  import { folkOf } from '../../model/folk.ts'
+  import { stance } from '../../state/stance.svelte.ts'
+  import { app } from '../../state/app.svelte.ts'
+  import Chips from '../../ui/Chips.svelte'
   import Button from '../../ui/Button.svelte'
   import EmptyState from '../../ui/EmptyState.svelte'
   import IconButton from '../../ui/IconButton.svelte'
@@ -19,8 +24,10 @@
 
   let { character }: { character: Character } = $props()
 
+  const stanceId = $derived(stance.current(character.id))
+  const activeStance = $derived(folkOf(character).stances.find(s => s.id === stanceId))
   const game = $derived(slots.game)
-  const names = $derived(slots.names)
+  const names = $derived(game === null && activeStance !== undefined ? character.clips.map(s => s.name) : slots.names)
   const trials = $derived(character.clips.filter(s => isTrial(s, names)))
   // (a game clip's variants, "Attack 2": listed under it; the game picks one of them at random)
   const variants = (name: string): Slot[] => character.clips.filter(s => variantOf(s.name, names) === name)
@@ -71,17 +78,18 @@
     onclick={() => slots.arm(target(slot, name))}><Crosshair size={13} /></IconButton>
 {/snippet}
 
-{#if game !== null}
+{#if game !== null || activeStance !== undefined}
   <div class="group">
-    <h4>In the game: {game.unit}{game.role === 'companion' ? ' (its companion)' : ''}</h4>
+    <h4>{game === null ? 'Clip names' : `In the game: ${game.unit}${game.role === 'companion' ? ' (its companion)' : ''}`}</h4>
     <ul class="set">
       {#each names as name (name)}
         {@const s = slotByName(character, name)}
+        {@const playable = clipSlots(character, stanceId, name)}
         <li class="slot-row" class:playing={s !== undefined && playingId === s.id} class:selected={s !== undefined && slots.selectedId === s.id}
           class:armed={slots.isArmed(s?.id ?? null, name)} class:empty={s === undefined}>
           <div class="line">
-            <IconButton label="Play {name}" size="sm" disabled={s === undefined} onclick={() => { if (s !== undefined) void slots.play(character, s.id) }}><Play size={12} /></IconButton>
-            <button class="slot" disabled={s === undefined} onclick={() => { if (s !== undefined) void slots.play(character, s.id) }}>{name}</button>
+            <IconButton label="Play {name}" size="sm" disabled={playable.length === 0} onclick={() => { if (playable[0] !== undefined) void slots.play(character, playable[0].id) }}><Play size={12} /></IconButton>
+            <button class="slot" disabled={playable.length === 0} onclick={() => { if (playable[0] !== undefined) void slots.play(character, playable[0].id) }}>{name}</button>
             {#if s !== undefined}{@render controls(s)}{/if}
             {#if previewing !== null}
               <button class="use" onclick={() => use(target(s, name))} use:tooltip={`Use ${previewing.label} for ${name}`}>Use</button>
@@ -89,6 +97,16 @@
             {@render arm(s, name)}
             {#if s !== undefined}<IconButton label="Empty {name}" size="sm" variant="danger" onclick={() => slots.remove(character, s.id)}><X size={13} /></IconButton>{/if}
           </div>
+          {#if activeStance !== undefined}
+            <div class="stance-override" data-testid="motion-stance-row" data-id={name}>
+              <span>{activeStance.clips[name] === undefined ? '↩ base' : `plays: ${playable.map(slot => slot.name).join(', ')}`}</span>
+              <details><summary data-testid="motion-override-open">Override</summary>
+                <Chips testid="motion-override-slots" label="Slots for {name}" options={character.clips.map(slot => ({ value: slot.id, label: slot.name }))} value={activeStance.clips[name] ?? []}
+                  onchange={(ids) => { void app.do(character.id, { type: 'folk.stance.clip', id: activeStance.id, clip: name, slots: ids.length ? ids : null }) }} />
+              </details>
+              {#if activeStance.clips[name] !== undefined}<Button size="sm" variant="ghost" onclick={() => { void app.do(character.id, { type: 'folk.stance.clip', id: activeStance.id, clip: name, slots: null }) }}>Clear</Button>{/if}
+            </div>
+          {/if}
           <div class="sub">
             <span class="clip" use:tooltip={s?.note ?? s?.clip.id ?? 'No clip yet'}>{s !== undefined ? clipLabel(s.clip) : 'empty'}</span>
             {#if s !== undefined && VARIED.includes(name)}<AddVariant {character} {name} {names} />{/if}
@@ -147,6 +165,8 @@
 </div>
 
 <style>
+  .stance-override { margin-left: 28px; font-size: 11px; color: var(--text-2); }
+  .stance-override summary { cursor: pointer; }
   .group { display: flex; flex-direction: column; gap: 4px; }
   .group + .group { margin-top: 10px; }
   .group-head { display: flex; align-items: center; justify-content: space-between; }

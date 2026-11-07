@@ -298,3 +298,31 @@ const hashField = (hash: string | undefined): { hash?: string } => (hash === und
 export async function categoryOf (id: string): Promise<string | null> {
   return (await allClips()).find(c => c.id === id)?.category ?? null
 }
+
+/** Compact catalog for local sorting and filtering. Added time is the actual clip file's mtime in milliseconds. */
+export interface LibraryIndexRow {
+  id: string, name: string, description?: string, category: string, source: string, rig: string,
+  duration: number, loop: boolean, inPlace: boolean, tags: string[], url: string, hash?: string,
+  addedAt: number, nameSource?: string, problems?: Clip['problems'], variant?: Clip['variant'], candidates?: Clip['candidates']
+}
+let indexCache: { key: string, rows: LibraryIndexRow[] } | null = null
+export async function libraryIndex (rig?: string): Promise<LibraryIndexRow[]> {
+  const clips = await allClips()
+  const findings = await auditFindings()
+  const stamp = async (file: string): Promise<number> => (await stat(file).catch(() => null))?.mtimeMs ?? 0
+  const key = JSON.stringify([cache?.mtime, creatures?.mtime, [...bundled.entries()].map(([f, x]) => [f, x.mtime]), audit?.mtime])
+  if (indexCache?.key !== key) {
+    const hashes = await libraryManifest()
+    const times = new Map<string, Promise<number>>()
+    const rows = await Promise.all(clips.map(async c => {
+      const file = c.source === 'bundled' ? path.join(ROOT, 'static', 'animations', c.file) : path.join(LIBRARY, c.file)
+      if (!times.has(file)) times.set(file, stamp(file))
+      const hash = c.href === undefined || c.href.startsWith('/files/library/') ? hashes[c.href?.slice('/files/library/'.length) ?? c.file] : undefined
+      return { id: c.id, name: c.name, description: c.description, category: c.category, source: c.source, rig: c.rig ?? 'human',
+        duration: c.duration, loop: c.loop, inPlace: c.inPlace, tags: c.tags ?? [], url: c.href ?? `/files/library/${c.file}`,
+        ...(hash === undefined ? {} : { hash }), addedAt: await times.get(file)!, nameSource: c.nameSource, variant: c.variant, candidates: c.candidates, problems: findings[c.id]?.problems }
+    }))
+    indexCache = { key, rows }
+  }
+  return rig === undefined || rig === '' || rig === 'all' ? indexCache.rows : indexCache.rows.filter(c => c.rig === rig)
+}

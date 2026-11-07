@@ -299,6 +299,7 @@ export function reduceFolk (c: Character, cmd: FolkCommand): string[] {
     case 'folk.set.add': {
       const s = setOf(c, cmd.set, 'set')
       if (c.folk?.sets.some(x => x.id === s.id) === true) conflict(`Set id ${s.id} is taken`)
+      if (c.folk?.sets.some(x => x.name === s.name) === true) conflict(`A set named ${s.name} already exists`)
       insertAt(section(c).sets, s, cmd.index)
       return [`set ${s.name}: added (${plural(s.pieces.length, 'piece')}${s.grants.length > 0 ? `; ${s.grants.join(', ')}` : ''})`]
     }
@@ -307,7 +308,7 @@ export function reduceFolk (c: Character, cmd: FolkCommand): string[] {
       const p = patchOf(cmd.patch, ['name', 'tags', 'grants', 'stance', 'weight', 'note'] satisfies Array<keyof SetPatch>)
       const out: string[] = []
       const was = s.name
-      if (p.name !== undefined) { const n = name(p.name, 'name'); if (n !== s.name) { s.name = n; out.push(`set ${was}: renamed ${n}`) } }
+      if (p.name !== undefined) { const n = name(p.name, 'name'); if (n !== s.name) { if (c.folk!.sets.some(other => other.id !== s.id && other.name === n)) conflict(`A set named ${n} already exists`); s.name = n; out.push(`set ${was}: renamed ${n}`) } }
       if (p.tags !== undefined) { const t = folkTags(p.tags ?? [], 'tags'); if (!same(t, s.tags)) { s.tags = t; out.push(`set ${s.name}: ${t.length > 0 ? `tagged ${t.join(', ')}` : 'no tags'}`) } }
       if (p.grants !== undefined) { const g = folkTags(p.grants ?? [], 'grants').sort(); if (!same(g, s.grants)) { s.grants = g; out.push(`set ${s.name}: ${g.length > 0 ? `grants ${g.join(', ')}` : 'grants nothing'}`) } }
       if (p.stance !== undefined) {
@@ -347,6 +348,7 @@ export function reduceFolk (c: Character, cmd: FolkCommand): string[] {
       const newId = id(cmd.newId, 'newId')
       if (c.folk!.sets.some(x => x.id === newId)) conflict(`Set id ${newId} is taken`)
       const n = cmd.name === undefined ? uniqueName(`${s.name} copy`, x => c.folk!.sets.some(o => o.name === x)) : name(cmd.name, 'name')
+      if (c.folk!.sets.some(other => other.name === n)) conflict(`A set named ${n} already exists`)
       const copy: OutfitSet = { ...structuredClone(s), id: newId, name: n }
       c.folk!.sets.splice(c.folk!.sets.indexOf(s) + 1, 0, copy)
       return [`set ${n}: a copy of ${s.name}`]

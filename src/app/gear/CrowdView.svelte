@@ -34,7 +34,7 @@
   })
 
   function lookOf (c: Character, uid: number): UnitLook {
-    const p = pick(worldFor(c), uid)
+    const p = pick(worldFor(c), uid, wardrobe.ctx(c))
     const byId = new Map(c.gear.map(g => [g.id, g]))
     const set = setsOf(c).find(s => s.id === p.picks.set)
     const ids = [...(set?.pieces ?? []), p.picks.hair, p.picks.beard].filter((id): id is string => id !== null && id !== undefined)
@@ -104,7 +104,7 @@
 
 <div class="crowd" bind:this={box}>
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <canvas bind:this={canvas} {onclick} {onpointermove} onpointerleave={() => { hovered = null }}></canvas>
+  <canvas data-testid="crowd-canvas" bind:this={canvas} {onclick} {onpointermove} onpointerleave={() => { hovered = null }}></canvas>
   <div class="bar">
     <strong>Crowd</strong>
     <div class="sizes" role="radiogroup" aria-label="How many">
@@ -112,9 +112,9 @@
         <button role="radio" aria-checked={size === n} class:active={size === n} onclick={() => { wardrobe.update(character.id, { crowd: n }) }}>{n}</button>
       {/each}
     </div>
-    <Button size="sm" variant="ghost" onclick={rerollAll} title="Every unit drawn again (R)"><Dices size={13} /> Again</Button>
+    <Button size="sm" variant="ghost" keys="crowd.reroll" onclick={rerollAll} title="Every unit drawn again (R)"><Dices size={13} /> Again</Button>
     <span class="hint">{hovered !== null ? `Unit #${hovered}: click draws it again, Alt-click puts it on stage` : 'Click a unit to draw it again; Alt-click puts it on stage'}</span>
-    <IconButton size="sm" label="Close" hint="Close (C, Esc)" onclick={close}><X size={14} /></IconButton>
+    <IconButton size="sm" label="Close" keys="dress.crowd" hint="Close (C, Esc)" onclick={close}><X size={14} /></IconButton>
   </div>
 </div>
 

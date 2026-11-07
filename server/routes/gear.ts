@@ -10,9 +10,10 @@
 // Painted weights (garments/<gid>/weights.json; skin gear by bone name, pulled gear by 'PropRoot' / 'pull:<handle id>')
 // are written by lock 'files' jobs under withFiles. Removing a piece never deletes its folder: undo can bring it back,
 // and the store's orphan sweep moves folders nothing refers to into trash/.
+import { gearWeightsFile } from '../../src/model/gearweights.ts'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Command } from '../../src/model/command-types.ts'
 import { gearById, hierarchyOf } from '../../src/model/select.ts'
@@ -21,7 +22,7 @@ import { runCommands } from '../commands.ts'
 import { view } from '../compat.ts'
 import { by, HttpError, readBody, readJsonBody, route, send } from '../http.ts'
 import { enqueue, type Job, runBlender } from '../jobs.ts'
-import { getCharacter, paths, readJson, updateCharacter, withFiles, writeJson } from '../store.ts'
+import { characterDir, getCharacter, paths, readJson, updateCharacter, withFiles, writeJson, WORKSPACE } from '../store.ts'
 
 /** A painted vertex of a piece: its mesh (the model's mesh order), and its weights by bone name or pull key. */
 interface GearEdit { mesh: number, vertex: number, weights: Array<[string, number]> }
@@ -64,6 +65,50 @@ export function importGarment (id: string, gid: string, name: string, source: st
   }, { lock: 'files' })
 }
 
+/** Permit workspace aliases, but not symlinks within the workspace. */
+export async function safeCharacterFolder (id: string, ...parts: string[]): Promise<string> {
+  let dir = paths(id).dir
+  const workspace = await realpath(WORKSPACE)
+  if (await realpath(dir) !== path.join(workspace, path.relative(WORKSPACE, dir))) throw new Error('Character path contains a symlink')
+  for (const part of parts) {
+    if (!/^[A-Za-z0-9_-]+$/.test(part)) throw new Error('Invalid character folder')
+    dir = path.join(dir, part)
+    await mkdir(dir).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'EEXIST') throw error })
+    const info = await lstat(dir)
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Character folder is not a real directory')
+  }
+  return dir
+}
+
+/** Keep an uploaded source in a new private garment folder. */
+async function writeUploadSource (id: string, gid: string, file: string, bytes: Buffer): Promise<string> {
+  const dir = paths(id).garment(gid)
+  await safeCharacterFolder(id, 'garments')
+  await mkdir(dir)
+  try {
+    const source = path.join(dir, `source${path.extname(file).toLowerCase()}`)
+    await writeFile(source, bytes, { flag: 'wx' })
+    return source
+  } catch (error) { await rm(dir, { recursive: true, force: true }); throw error }
+}
+
+/** Stage and inspect a piece without changing the character. The caller owns the eventual command batch. */
+export async function uploadPiece (id: string, bytes: Buffer, file: string, from?: string, signal?: AbortSignal): Promise<Gear> {
+  if (!MODEL.test(file)) throw new HttpError(400, 'Supported files: FBX, GLB, OBJ, DAE or ZIP')
+  const c = await found(id)
+  const name = path.basename(file).replace(/\.[^.]+$/, '').trim()
+  if (!name) throw new HttpError(400, 'The file needs a name')
+  let gid = randomBytes(4).toString('hex')
+  while (gearById(c, gid) !== undefined || existsSync(paths(id).garment(gid))) gid = randomBytes(4).toString('hex')
+  const dir = paths(id).garment(gid)
+  const source = await writeUploadSource(id, gid, file, bytes)
+  try {
+    await runBlender('jobs/inspect.py', ['--input', source, '--out', dir, '--animations', '--no-joints'], undefined, { signal })
+    if (!existsSync(path.join(dir, 'model.glb'))) throw new Error('the import wrote no model (is there a mesh in it?)')
+    return { id: gid, name, status: 'ready', handles: [], attach: { kind: 'skin', policy: 'body', place: AT_REST }, model: `garments/${gid}/model.glb`, ...(from ? { from } : {}) }
+  } catch (error) { await rm(dir, { recursive: true, force: true }); throw error }
+}
+
 /** How an upload is worn, from the route's `kind` (what the game's scripts and the app send): clothing unless said. */
 function attachOf (c: Character, kind: string | null, bone: string | null): GearAttach {
   if (kind === 'part') return { kind: 'spot', place: AT_REST }
@@ -94,11 +139,9 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/garments$/, async (req, res, [i
   const command: Command = { type: 'gear.add', gear }
   const done = await runCommands(id, [command], { by: by(req), what: 'gear.add', changes: [`gear ${name}: uploaded from ${path.basename(file)}`] })
   const added = done.character.gear.find(g => g.id === gid)
-  const dir = paths(id).garment(gid)
-  const source = path.join(dir, `source${path.extname(file).toLowerCase()}`)
+  let source: string
   try {
-    await mkdir(dir, { recursive: true })
-    await writeFile(source, bytes)
+    source = await writeUploadSource(id, gid, file, bytes)
   } catch (error) {
     await setStatus(id, gid, g => { g.status = 'error'; g.error = `its upload couldn't be kept: ${message(error)}` })
     throw error
@@ -138,14 +181,15 @@ route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/garments\/([A-Za-z0-9_-]+)\/weig
   const body = await readJsonBody<{ edits?: unknown }>(req)
   const edits = checkEdits(body.edits, keys)
   const who = by(req)
-  const file = path.join(paths(id).garment(gid), 'weights.json')
   send(res, 202, enqueue('paint', `Save ${g.name}'s painted weights`, c.id, async (_job, update, signal) => {
     update({ message: 'Writing the weights' })
     await withFiles(id, async () => {
       // (against the piece as it is now: its pulls may have changed since the request)
       const now = await paintable(id, gid)
       checkEdits(edits, now.keys)
+      if (now.g.model !== g.model) throw new Error('The gear mesh changed while the painting was queued')
       signal.throwIfAborted()
+      const file = path.join(characterDir(id), gearWeightsFile(now.g))
       const kept = new Map<string, GearEdit>()
       for (const e of await readJson<GearEdit[]>(file, [])) kept.set(`${e.mesh}:${e.vertex}`, e)
       for (const e of edits) kept.set(`${e.mesh}:${e.vertex}`, e)
@@ -153,7 +197,8 @@ route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/garments\/([A-Za-z0-9_-]+)\/weig
       await writeJson(file, [...kept.values()])
       await updateCharacter(id, x => {
         const piece = gearById(x, gid)
-        if (piece !== undefined) piece.painted = kept.size
+        if (piece === undefined || piece.model !== now.g.model) throw new Error('The gear mesh changed while saving its painting')
+        piece.painted = kept.size
       }, { by: who, what: 'gear.weights', changes: [`gear ${now.g.name}: weights painted on ${edits.length} vertices (${kept.size} kept)`] })
     })
   }, { lock: 'files' }))
@@ -165,14 +210,17 @@ route('DELETE', /^\/api\/characters\/([a-z0-9-]+)\/garments\/([A-Za-z0-9_-]+)\/w
   const g = gearById(c, gid)
   if (g === undefined) throw new HttpError(404, 'No such gear')
   const who = by(req)
-  const file = path.join(paths(id).garment(gid), 'weights.json')
   send(res, 202, enqueue('paint', `Forget ${g.name}'s painting`, c.id, async () => {
     await withFiles(id, async () => {
+      const now = await paintable(id, gid)
+      if (now.g.model !== g.model) throw new Error('The gear mesh changed while forgetting its painting')
+      const file = path.join(characterDir(id), gearWeightsFile(now.g))
       const had = existsSync(file) ? (JSON.parse(await readFile(file, 'utf8')) as unknown[]).length : 0
       await rm(file, { force: true })
       await updateCharacter(id, x => {
         const piece = gearById(x, gid)
-        if (piece !== undefined) delete piece.painted
+        if (piece === undefined || piece.model !== now.g.model) throw new Error('The gear mesh changed while forgetting its painting')
+        delete piece.painted
       }, { by: who, what: 'gear.weights', changes: [`gear ${g.name}: painted weights forgotten${had > 0 ? ` (${had} vertices)` : ''}`] })
     })
   }, { lock: 'files' }))

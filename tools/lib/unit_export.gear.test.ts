@@ -26,4 +26,10 @@ describe('unit export: gear events and variants in the events file', () => {
     expect(out.clips.Attack_2.events).toEqual([{ t: 0.45, name: 'hit' }])
     expect(out.variants).toEqual({ Attack: ['Attack', 'Attack_2'] })
   })
+
+  it('lists stance clip names beside their timed events', () => {
+    const out = eventsFile('u', slots, clips, baked, strides, { stances: { shield: { Attack: ['Attack@shield', 'Attack_2@shield'] } } })
+    expect(out.stances).toEqual({ shield: { Attack: ['Attack@shield', 'Attack_2@shield'] } })
+    expect(out.clips.Attack.events).toEqual([{ t: 0.45, name: 'hit' }])
+  })
 })

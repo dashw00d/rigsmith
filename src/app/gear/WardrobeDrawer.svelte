@@ -14,24 +14,26 @@
   import EmptyState from '../../ui/EmptyState.svelte'
   import { tooltip } from '../../ui/tooltip.ts'
   import PiecesList from './PiecesList.svelte'
+  import PropsTab from './PropsTab.svelte'
+  import { CATALOG } from '../../engine/props.ts'
   import Thumb from './Thumb.svelte'
   import { thumbs, type ThumbAsk } from './thumbs.svelte.ts'
   import { wardrobe, worldFor } from './wardrobe.svelte.ts'
-  import { chipsOf, choicesFor, matches, NO_FILTER, TABS, tilesOf, type Choice, type Filter, type Tab } from './wardrobe.ts'
+  import { chipsOf, choicesFor, matches, NO_FILTER, TABS, tabsFor, tilesOf, type Choice, type Filter, type Tab } from './wardrobe.ts'
 
   const character = $derived(app.selected)
   const folk = $derived(character !== null && isFolk(character))
-  const tab = $derived(character === null ? 'sets' : wardrobe.tab(character.id))
-  const FIELD: Record<Exclude<Tab, 'pieces'>, DressField> = { sets: 'outfit', skins: 'skin', clothes: 'clothing', hair: 'hair', beards: 'beard' }
-  const field = $derived(tab === 'pieces' ? null : FIELD[tab])
-  const tiles = $derived(character === null || tab === 'pieces' ? [] : tilesOf(character, tab))
+  const tab = $derived(character === null ? 'sets' : !folk && !['pieces', 'props'].includes(wardrobe.tab(character.id)) ? 'props' : wardrobe.tab(character.id))
+  const FIELD: Record<Exclude<Tab, 'pieces' | 'props'>, DressField> = { sets: 'outfit', skins: 'skin', clothes: 'clothing', hair: 'hair', beards: 'beard' }
+  const field = $derived(tab === 'pieces' || tab === 'props' ? null : FIELD[tab])
+  const tiles = $derived(character === null || tab === 'pieces' || tab === 'props' ? [] : tilesOf(character, tab))
   const chips = $derived(chipsOf(tiles))
   const shown = $derived(tiles.filter(t => matches(t, wardrobe.filter)))
   // (the dress the tiles are judged under: the one kept, not a hover's)
   const pinned = $derived(character === null ? null : wardrobe.pinned(character))
   const rules = $derived(character === null || field === null || pinned === null ? new Map<string, Choice>()
-    : new Map(choicesFor(character, worldFor(character), pinned, field).map(x => [x.value, x])))
-  const counts = $derived(character === null ? {} : Object.fromEntries(TABS.map(t => [t.id, t.id === 'pieces' ? character.gear.filter(g => g.role === undefined).length : tilesOf(character, t.id).length])))
+    : new Map(choicesFor(character, worldFor(character), pinned, field, wardrobe.ctx(character)).map(x => [x.value, x])))
+  const counts = $derived(character === null ? {} : Object.fromEntries(TABS.map(t => [t.id, t.id === 'pieces' ? character.gear.filter(g => g.role === undefined).length : t.id === 'props' ? CATALOG.length : tilesOf(character, t.id).length])))
 
   // (a new tab or character: its own chips)
   $effect(() => { void tab; void character?.id; untrack(() => { wardrobe.filter = { ...NO_FILTER, search: wardrobe.filter.search } }) })
@@ -48,19 +50,19 @@
   const groups: Array<[keyof Omit<Filter, 'search'>, string]> = [['cultures', 'Culture'], ['categories', 'Kind'], ['parts', 'Body part'], ['tags', 'Tag']]
 </script>
 
-<Drawer open={app.drawer === 'wardrobe'} onclose={() => app.toggleDrawer('wardrobe')} title="Wardrobe" scrim={false} width="min(560px, 94%)">
-  {#if character === null || !folk}
-    <EmptyState title="Not a dynamic character" body="The Wardrobe dresses a dynamic character: one body, dressed per unit." compact />
+<Drawer testid="wardrobe-drawer" open={app.drawer === 'wardrobe'} onclose={() => app.toggleDrawer('wardrobe')} title="Wardrobe" scrim={false} width="min(560px, 94%)">
+  {#if character === null}
+    <EmptyState title="No character" body="Pick a character to give it gear." compact />
   {:else}
     {@const c = character}
     <div class="top">
       <div class="tabs" role="tablist" aria-label="What to look at">
-        {#each TABS as t (t.id)}
-          <button role="tab" aria-selected={tab === t.id} class:active={tab === t.id} onclick={() => { wardrobe.setTab(c.id, t.id) }}>
+        {#each tabsFor(folk) as t (t.id)}
+          <button role="tab" data-testid="wardrobe-tab" data-id={t.id} aria-selected={tab === t.id} class:active={tab === t.id} onclick={() => { wardrobe.setTab(c.id, t.id) }}>
             {t.label} <span class="n">{counts[t.id]}</span></button>
         {/each}
       </div>
-      {#if tab !== 'pieces'}
+      {#if tab !== 'pieces' && tab !== 'props'}
         <label class="search"><Search size={13} />
           <input type="search" placeholder="Search" value={wardrobe.filter.search} aria-label="Search"
             oninput={(e) => { wardrobe.filter = { ...wardrobe.filter, search: e.currentTarget.value } }} /></label>
@@ -78,6 +80,8 @@
     </div>
     {#if tab === 'pieces'}
       <PiecesList character={c} />
+    {:else if tab === 'props'}
+      <PropsTab character={c} />
     {:else if field !== null}
       {@const f = field}
       {@const worn = dress.worn(c)}
@@ -85,7 +89,7 @@
         {#each shown as t (t.value)}
           {@const rule = rules.get(t.value)}
           {@const on = pinned?.[f] === t.value}
-          <button class="tile" class:on class:out={rule !== undefined && !rule.ok} class:showing={worn[f] === t.value && !on} role="option" aria-selected={on}
+          <button data-testid="wardrobe-tile" data-id={t.value ?? ''} class="tile" class:on class:out={rule !== undefined && !rule.ok} class:showing={worn[f] === t.value && !on} role="option" aria-selected={on}
             use:tooltip={rule !== undefined && !rule.ok ? `${t.label}: ruled out, ${rule.why ?? ''}` : t.label}
             onpointerenter={() => { wardrobe.preview(c, { [f]: t.value }, tab === 'sets' ? 260 : 120) }}
             onclick={() => { wardrobe.pin(c, { [f]: t.value }) }}>

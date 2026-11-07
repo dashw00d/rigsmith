@@ -17,8 +17,9 @@
     /** Buttons in its header, before the close button. */
     actions?: Snippet
     children: Snippet
+    testid?: string
   }
-  let { open, onclose, side = 'left', title, width = 'min(420px, 92%)', scrim = true, actions, children }: Props = $props()
+  let { open, onclose, side = 'left', title, width = 'min(420px, 92%)', scrim = true, actions, children, testid }: Props = $props()
 
   function holdFocus (node: HTMLElement) {
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -44,7 +45,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="scrim" onclick={onclose}></div>
   {/if}
-  <aside class="drawer {side}" style:width aria-label={title} tabindex="-1" use:holdFocus>
+  <aside data-testid={testid} class="drawer {side}" style:width aria-label={title} tabindex="-1" use:holdFocus>
     <header>
       <h2>{title}</h2>
       <div class="actions">

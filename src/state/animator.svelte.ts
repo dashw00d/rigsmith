@@ -17,6 +17,9 @@ import { app, type Step } from './app.svelte.ts'
 import { viewer, type MountView } from './viewer.svelte.ts'
 import { gizmo } from './gizmo.svelte.ts'
 import { stableJson } from '../model/entities.ts'
+import { isFolkCharacter, setsOf } from '../model/folk.ts'
+import { dressedCharacter } from '../model/stances.ts'
+import { dress } from './dress.svelte.ts'
 import { gearKeysFromPaths, gearTracksOf, slotById } from '../model/select.ts'
 import { slotsUnder } from '../model/pieces.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
@@ -147,6 +150,8 @@ class Animator {
   private closing = false
   /** The Idle the preview into Idle blends to (baked once a slot set: by the Idle slot's bake inputs). */
   private idle: { key: string, clip: THREE.AnimationClip } | null = null
+  private idleToken = 0
+  private idlePending: { key: string, promise: Promise<THREE.AnimationClip | null> } | null = null
   private idleAction: THREE.AnimationAction | null = null
   private idleTime = 0
 
@@ -156,6 +161,14 @@ class Animator {
     this.installed = [
       viewer.onLoad((view, c) => { this.attach(view, c); return () => { this.detach() } }, 20),
       viewer.onSync((_view, c, step) => { untrack(() => { this.sync(c, step) }) }),
+      $effect.root(() => {
+        $effect(() => {
+          const c = app.selected
+          if (c === null) return
+          void dress.of(c.id)
+          untrack(() => { this.sync(c, app.step) })
+        })
+      }),
     ]
   }
 
@@ -209,6 +222,9 @@ class Animator {
 
   private detach (): void {
     this.token++
+    this.idleToken++
+    this.idle = null
+    this.idlePending = null
     for (const off of this.offs.splice(0)) off()
     this.dropHorse(false)
     this.player?.dispose()
@@ -244,7 +260,12 @@ class Animator {
     const slot = now.kind === 'slot' ? slotById(c, now.slotId ?? '') : undefined
     // (what its bake reads of the other slots: the one it paces like, those it plays as pieces, theirs in turn)
     const under = slot === undefined ? [] : slotsUnder(c, slot)
-    return stableJson({ slot, under, gear: c.gear, hands: c.hands, mount: c.mount, shared: app.settings?.handPoses ?? null })
+    const folk = isFolkCharacter(c)
+    const outfit = folk ? dress.worn(c).outfit : undefined
+    const set = outfit == null ? null : setsOf(c).find(s => s.name === outfit)?.id ?? null
+    const d = folk ? dress.of(c.id) : undefined
+    const preview = d === undefined ? null : { off: d.off, on: d.on, hair: d.hair, beard: d.beard }
+    return stableJson({ slot, under, set, preview, gear: c.gear, hands: c.hands, mount: c.mount, shared: app.settings?.handPoses ?? null })
   }
 
   // ---- what plays --------------------------------------------------------------------------------------------------
@@ -447,6 +468,9 @@ class Animator {
   private async run (now: NowPlaying, keepTime: boolean): Promise<boolean> {
     if (this.player === null) return false
     const token = ++this.token
+    this.idleToken++
+    this.idle = null
+    this.idlePending = null
     this.setNow(now)
     this.setLoading(true)
     this.error = null
@@ -469,6 +493,7 @@ class Animator {
       this.duration = built.clip.duration
       this.signature = built.signature
       this.track()
+      if (this.intoIdle) void this.idleClip()
       // (changed while it baked: the sync then saw nothing to compare with)
       const c = app.byId(now.characterId)
       if (c !== null && this.inputs(now, c) !== built.signature) queueMicrotask(() => { if (token === this.token) void this.run(now, true) })
@@ -486,11 +511,20 @@ class Animator {
     }
   }
 
+  /** The preview and its blended Idle must use exactly the stage's current dress. */
+  private bakeCharacter (c: Character): Character {
+    if (!isFolkCharacter(c)) return c
+    const outfit = dress.worn(c).outfit
+    const setId = outfit === null ? null : setsOf(c).find(s => s.name === outfit)?.id ?? null
+    return dressedCharacter(c, setId, dress.of(c.id))
+  }
+
   private async build (now: NowPlaying): Promise<{ clip: THREE.AnimationClip, baked: BakedSlot, horse: THREE.AnimationClip | null, cycles: number, signature: string, loop: boolean | null }> {
     const c = app.byId(now.characterId)
     const ctx = this.bakeContext()
     if (c === null || ctx === null) throw new Error('The character is not on stage')
     const signature = this.inputs(now, c)
+    const dressed = this.bakeCharacter(c)
     const ride = this.riding(c)
     let slot: Slot
     let o: { skip?: BakeSkip, autoGround?: boolean } = {}
@@ -511,7 +545,7 @@ class Animator {
     } else {
       return fail('Nothing to bake')
     }
-    const baked = await bakeSlot(c, slot, ctx, { ...o, mirror: this.mirror })
+    const baked = await bakeSlot(dressed, slot, ctx, { ...o, mirror: this.mirror })
     const loop = now.kind === 'slot' ? slot.loop : null
     if (ride === null || c.mount === undefined) return { clip: baked.clip, baked, horse: null, cycles: 1, signature, loop }
     const attack = now.kind === 'slot' && slot.time?.fit?.enabled === true
@@ -632,9 +666,16 @@ class Animator {
     if (c === null || idle === undefined || ctx === null || now?.slotId === idle.id) return null
     const key = this.inputs(new NowPlaying({ kind: 'slot', characterId: c.id, slotId: idle.id, label: 'Idle' }), c)
     if (this.idle?.key === key) return this.idle.clip
-    const clip = (await bakeSlot(c, idle, ctx)).clip
-    this.idle = { key, clip }
-    return clip
+    if (this.idlePending?.key === key) return await this.idlePending.promise
+    const token = this.idleToken
+    const promise = (async (): Promise<THREE.AnimationClip | null> => {
+      const clip = (await bakeSlot(this.bakeCharacter(c), idle, ctx)).clip
+      if (token !== this.idleToken || this.inputs(new NowPlaying({ kind: 'slot', characterId: c.id, slotId: idle.id, label: 'Idle' }), app.byId(c.id) ?? c) !== key) return null
+      this.idle = { key, clip }
+      return clip
+    })()
+    this.idlePending = { key, promise }
+    try { return await promise } finally { if (this.idlePending?.promise === promise) this.idlePending = null }
   }
 
   /** The clip played once has ended: the Idle blended in over BLEND seconds (as the game does). */
@@ -741,13 +782,13 @@ class Animator {
   }
 
   /** A library clip's sprite sheet on the character (or the mannequin), as an object URL; null when it was dropped. */
-  async sprite (url: string): Promise<string | null> {
+  async sprite (url: string, signal?: AbortSignal): Promise<string | null> {
     if (this.previews === null) {
       this.previews = new PreviewRenderer()
       this.usePreviewSubject()
       if (this.shown === null) await this.loadMannequin()
     }
-    return await this.previews.sheet(url)
+    return await this.previews.sheet(url, signal)
   }
 
   cancelSprites (): void { this.previews?.cancelPending() }

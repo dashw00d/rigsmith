@@ -5,13 +5,17 @@
   import { onMount } from 'svelte'
   import { Check, CircleQuestionMark, Plus, Repeat, TriangleAlert } from '@lucide/svelte'
   import type { Character, LibraryClip } from '../../state/api.ts'
+  import type { LibraryIndexRow } from '../../../server/library.ts'
   import { animator } from '../../state/animator.svelte.ts'
   import { slots } from '../../state/slots.svelte.ts'
+  import { contextMenu } from '../../ui/contextmenu.ts'
   import { SPRITE_FRAMES } from '../../engine/PreviewRenderer.ts'
   import { tooltip } from '../../ui/tooltip.ts'
   import { cardAction, usesOf } from './rules.ts'
+  import { playLibraryPreview } from './libraryPreview.ts'
 
-  let { clip, character }: { clip: LibraryClip, character: Character | null } = $props()
+  let { clip, character, resolve }: { clip: LibraryIndexRow & Pick<LibraryClip, 'variant' | 'candidates'>, character: Character | null, resolve: (clip: LibraryIndexRow) => Promise<LibraryClip> } = $props()
+  const compatible = $derived(character !== null && (character.skeleton.template ?? 'human') === clip.rig)
   let sheet = $state<string | null>(null)
   let failed = $state(false)
   let visible = $state(false)
@@ -19,9 +23,7 @@
 
   onMount(() => {
     const observer = new IntersectionObserver(entries => {
-      if (!entries.some(e => e.isIntersecting)) return
-      observer.disconnect()
-      visible = true
+      visible = entries.some(e => e.isIntersecting)
     }, { rootMargin: '200px' })
     observer.observe(node)
     return () => { observer.disconnect() }
@@ -30,10 +32,10 @@
   // (asked again when it comes into view, and when previews are made for another character)
   $effect(() => {
     void animator.previewVersion
-    if (!visible) return
-    let cancelled = false
-    animator.sprite(clip.url).then(result => { if (!cancelled) { sheet = result; failed = result === null } }, () => { if (!cancelled) failed = true })
-    return () => { cancelled = true }
+    if (!visible || !compatible) { sheet = null; failed = false; return }
+    const controller = new AbortController()
+    animator.sprite(clip.url, controller.signal).then(result => { if (!controller.signal.aborted) { sheet = result; failed = result === null } }, () => { if (!controller.signal.aborted) failed = true })
+    return () => { controller.abort() }
   })
 
   const playing = $derived(animator.playing?.kind === 'library' && animator.playing.library?.id === clip.id)
@@ -61,27 +63,29 @@
     return { label: 'Add as a trial', hint: slotNames.length > 0 ? `Add as a trial (${slotNames.join(', ')} already plays it)` : 'Add as a trial' }
   })
 
-  async function press (e: MouseEvent): Promise<void> {
-    e.stopPropagation()
-    if (character === null || action === null) return
-    if (action.kind === 'fill') await slots.fill(character, action.target, clip)
+  async function press (e?: MouseEvent): Promise<void> {
+    e?.stopPropagation()
+    if (character === null || action === null || !compatible) return
+    let full: LibraryClip
+    try { full = await resolve(clip) } catch { return }
+    if (action.kind === 'fill') await slots.fill(character, action.target, full)
     else if (action.kind === 'remove') await slots.removeTrials(character, action.trials, clip.name)
-    else await slots.addTrial(character, clip)
+    else await slots.addTrial(character, full)
   }
 
-  function play (): void { void animator.playLibrary(clip) }
+  async function play (): Promise<void> { await playLibraryPreview(clip, resolve, compatible) }
 </script>
 
-<div class="card" class:playing bind:this={node} role="button" tabindex="0" aria-label="Preview {clip.name}"
-  onclick={play} onkeydown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) play() }}>
+<div use:contextMenu={() => [{ label: 'Preview', disabled: !compatible, run: () => { void play() } }, { label: action?.kind === 'remove' ? 'Remove trials' : action?.kind === 'fill' ? 'Fill slot' : 'Add as a trial', disabled: !compatible || action === null, run: () => { void press() } }]} data-testid="lib-clip" data-id={clip.id} data-loop={clip.loop} class="card" class:playing bind:this={node} role="button" tabindex="0" aria-label="Preview {clip.name}"
+  onclick={play} onpointerenter={play} onkeydown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) play() }}>
   <div class="preview" style={sheet ? `--sheet: url(${sheet}); --frames: ${SPRITE_FRAMES}` : ''} class:ready={sheet !== null}>
-    {#if sheet === null && !failed}<div class="shimmer"></div>{/if}
+    {#if compatible && sheet === null && !failed}<div class="shimmer"></div>{/if}
     <span class="time mono">{duration}s</span>
     {#if clip.loop}<span class="loop" use:tooltip={'Loops seamlessly'}><Repeat size={11} /></span>{/if}
     {#if clip.source === 'custom'}<span class="custom" use:tooltip={'Made here (the animation editor, or a script)'}>custom</span>{/if}
     {#if warning}<span class="warn" use:tooltip={warning} aria-label={warning}><TriangleAlert size={12} /></span>{/if}
     {#if button !== null && action !== null}
-      <button class="add" class:on={action.kind === 'remove'} class:slot={action.kind === 'fill'} onclick={press} aria-label={button.label} use:tooltip={button.hint}>
+      <button class="add" class:on={action.kind === 'remove'} class:slot={action.kind === 'fill'} disabled={!compatible} title={!compatible ? `Requires ${clip.rig} rig` : undefined} onclick={press} aria-label={button.label} use:tooltip={button.hint}>
         {#if action.kind === 'fill'}<span class="slotname">{action.target.name}</span>{:else if action.kind === 'remove'}<Check size={14} strokeWidth={3} />{:else}<Plus size={15} />{/if}
       </button>
     {/if}

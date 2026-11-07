@@ -4,8 +4,11 @@
 import { describe, expect, it } from 'vitest'
 import { applyCommands } from '../model/commands.ts'
 import { makeCharacter, makeGear } from '../model/fixtures.ts'
+import { folkFromLegacy } from '../model/folk.ts'
+import { pick, worldOf } from '../engine/folkpick.ts'
+import { dressedFromPick, fixedFor } from '../app/gear/wardrobe.ts'
 import type { Character, Gear } from '../model/types.ts'
-import { defaultCommands, differs, documentDress, randomize, resolve, settled, setsAfter, setsOf, shows, wearOutfit } from './dressing.ts'
+import { anchorOutfit, defaultCommands, differs, documentDress, randomize, resolve, settled, setsAfter, setsOf, shows, wearOutfit } from './dressing.ts'
 
 const skinPiece = (id: string, over: Partial<Gear>): Gear => makeGear({ id, name: id, attach: { kind: 'skin', policy: 'body', place: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 } }, ...over })
 
@@ -58,6 +61,13 @@ describe('the dress', () => {
     expect(resolve(c, { hair: 'axe' }).hair).toBe('h1')
   })
 
+  it('keeps valid per-slot layer and bare preview state, dropping stale layer ids', () => {
+    const c = folk()
+    c.look.cloth = [{ id: 'shorts', name: 'Shorts', file: 'shorts.png', slots: ['bottom'] }]
+    expect(resolve(c, { layers: { bottom: 'shorts', top: 'removed', over: null }, bare: true })).toMatchObject({ layers: { bottom: 'shorts', over: null }, bare: true })
+    expect(c.look.clothing).toBe('long_blue')
+  })
+
   it('shows a set\'s pieces with their set, the hair and beard picked, the rest as the document has them', () => {
     const c = folk()
     const d = resolve(c, { outfit: 'hat_fur', hair: 'h2' })
@@ -73,6 +83,31 @@ describe('the dress', () => {
     expect(c.gear.filter(g => shows(c, g, own, own)).map(g => g.id)).toEqual(['a1', 'h1', 'axe'])
   })
 
+  it('hides a piece only in the preview, and clears overrides on an outfit change', () => {
+    const c = folk()
+    const d = { off: ['a1'] }
+    expect(shows(c, c.gear[0], resolve(c, d), documentDress(c), d)).toBe(false)
+    expect(c.gear[0].hidden).not.toBe(true)
+    expect(wearOutfit(c, d, 'hat_fur').off).toBeUndefined()
+    expect(defaultCommands(c, d)).toEqual(defaultCommands(c, undefined))
+  })
+
+  it('can show a document-hidden piece for this preview without changing its default', () => {
+    const c = folk()
+    c.gear[1].hidden = true
+    const d = { on: ['a2'] }
+    expect(shows(c, c.gear[1], resolve(c, d), documentDress(c), d)).toBe(true)
+    expect(c.gear[1].hidden).toBe(true)
+    expect(wearOutfit(c, d, 'hat_fur').on).toBeUndefined()
+  })
+
+  it('obeys the saved set grants even when legacy gear tags disagree', () => {
+    const c = folk()
+    c.folk = folkFromLegacy(c)!.folk
+    c.folk.sets.find(s => s.name === 'arm_leather')!.grants = ['covers-hair', 'covers-face']
+    expect(wearOutfit(c, undefined, 'arm_leather')).toMatchObject({ hair: null, beard: null })
+  })
+
   it('takes off what an outfit leaves no room for', () => {
     const c = folk()
     expect(wearOutfit(c, undefined, 'hat_fur')).toEqual({ outfit: 'hat_fur', hair: null })
@@ -82,10 +117,35 @@ describe('the dress', () => {
 })
 
 describe('randomize', () => {
+  it('retains every layer the folk picker chose in its occupied slots', () => {
+    const c = folk()
+    c.look.cloth = [
+      { id: 'bottom', name: 'Bottom', file: 'bottom.png', slots: ['bottom'] },
+      { id: 'top', name: 'Top', file: 'top.png', slots: ['top', 'over'] },
+    ]
+    c.folk = { sets: [], kinds: [], stances: [], pools: [
+      { id: 'bottoms', name: 'Bottoms', kind: 'cloth', slot: 'bottom', items: [{ ref: 'bottom' }] },
+      { id: 'tops', name: 'Tops', kind: 'cloth', slot: 'top', items: [{ ref: 'top' }] },
+    ] }
+    const world = worldOf(c)
+    const picked = pick(world, 42)
+    const expected = Object.fromEntries(picked.layers.flatMap(id => world.layers.find(l => l.id === id)!.slots.map(slot => [slot, id])))
+    expect(randomize(c, undefined, 42, world).layers).toEqual(expected)
+    expect(picked.layers.length).toBeGreaterThan(0)
+  })
+  it('uses the same pick engine and fixed fields as the Wardrobe', () => {
+    const c = folk()
+    const d = { skin: 'asha', locks: ['skin' as const] }
+    const world = worldOf(c)
+    const expected = dressedFromPick(c, pick(world, 42, { fixed: fixedFor(c, resolve(c, d), d.locks) }))
+    expect(resolve(c, randomize(c, d, 42))).toEqual(expected)
+  })
+
   it('picks as the game would, the same roll the same pick', () => {
     const c = folk()
-    const a = randomize(c, undefined, 42)
-    expect(randomize(c, undefined, 42)).toEqual(a)
+    const locked = { locks: ['outfit' as const] }
+    const a = randomize(c, locked, 42)
+    expect(randomize(c, locked, 42)).toEqual(a)
     expect(a.seed).toBe(42)
     expect(a.outfit).toBe('arm_leather')
   })
@@ -122,4 +182,64 @@ describe('make default', () => {
   it('has nothing to do for the document\'s own look', () => {
     expect(defaultCommands(folk(), undefined)).toEqual([])
   })
+})
+
+it('keeps a previewed set through rename and undo, preserving eye overrides', () => {
+  const c = folk()
+  c.folk = folkFromLegacy(c)!.folk
+  const set = c.folk.sets.find(s => s.name === 'hat_fur')!
+  const preview = { ...wearOutfit(c, undefined, set.name), off: ['b1'] }
+  const renamed = applyCommands(c, [{ type: 'folk.set.update', id: set.id, patch: { name: 'fur renamed' } }]).character
+  expect(resolve(renamed, preview).outfit).toBe('fur renamed')
+  expect(shows(renamed, renamed.gear.find(g => g.id === 'b1')!, resolve(renamed, preview), documentDress(renamed), preview)).toBe(false)
+  expect(resolve(c, preview).outfit).toBe('hat_fur')
+})
+
+
+it('upgrades old stored names to set ids and writes a renamed set as the document default', () => {
+  const c = folk()
+  c.folk = folkFromLegacy(c)!.folk
+  const set = c.folk.sets.find(s => s.name === 'hat_fur')!
+  const d = anchorOutfit(c, { outfit: 'hat_fur' })!
+  expect(d.outfitId).toBe(set.id)
+  const renamed = applyCommands(c, [{ type: 'folk.set.update', id: set.id, patch: { name: 'fur renamed' } }]).character
+  const commands = defaultCommands(renamed, d)
+  expect(commands.every(cmd => cmd.type !== 'gear.outfit.show')).toBe(true)
+  const saved = applyCommands(renamed, commands).character
+  expect(documentDress(saved).outfit).toBe('fur renamed')
+  expect(defaultCommands(saved, d)).toEqual([])
+  expect(settled(saved, d)).toEqual({})
+})
+
+it('removes every slot of a long-sleeve layer when selecting bracers', () => {
+  const c = folk()
+  c.folk = folkFromLegacy(c)!.folk
+  c.folk.sets.find(s => s.name === 'arm_plate')!.grants = ['bracers']
+  c.look.cloth = [
+    { id: 'sleeved', name: 'Sleeved', file: 'sleeved.png', slots: ['top', 'over'], shapes: ['long_sleeve'] },
+    { id: 'trousers', name: 'Trousers', file: 'trousers.png', slots: ['bottom'] },
+    { id: 'tagged', name: 'Tagged', file: 'tagged.png', slots: ['top'], tags: ['long-sleeves'] },
+  ]
+  const first = wearOutfit(c, { layers: { top: 'sleeved', over: 'sleeved', bottom: 'trousers' } }, 'arm_plate')
+  expect(first.layers).toEqual({ top: null, over: null, bottom: 'trousers' })
+  const second = wearOutfit(c, { layers: { top: 'tagged' } }, 'arm_plate')
+  expect(second.layers).toEqual({ top: null })
+  expect(wearOutfit(c, { layers: { top: 'tagged' } }, 'arm_leather').layers).toEqual({ top: 'tagged' })
+})
+
+it('refuses adding a set with another set’s name', () => {
+  const c = folk(); c.folk = folkFromLegacy(c)!.folk
+  expect(() => applyCommands(c, [{ type: 'folk.set.add', set: { id: 'duplicate', name: 'hat_fur', pieces: [], tags: [], grants: [] } }])).toThrow()
+})
+
+it('refuses renaming a set to another set’s name', () => {
+  const c = folk(); c.folk = folkFromLegacy(c)!.folk
+  const set = c.folk.sets.find(s => s.name === 'arm_plate')!
+  expect(() => applyCommands(c, [{ type: 'folk.set.update', id: set.id, patch: { name: 'hat_fur' } }])).toThrow()
+})
+
+it('refuses duplicating a set with another set’s explicit name', () => {
+  const c = folk(); c.folk = folkFromLegacy(c)!.folk
+  const set = c.folk.sets.find(s => s.name === 'arm_plate')!
+  expect(() => applyCommands(c, [{ type: 'folk.set.duplicate', id: set.id, newId: 'copy1', name: 'hat_fur' }])).toThrow()
 })

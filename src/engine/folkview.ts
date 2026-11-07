@@ -3,6 +3,9 @@
 import * as THREE from 'three'
 import { FEMALE, femaleOffsets, hairTint, LONG_SLEEVE } from './folk.ts'
 import { Lru, MB, textureBytes } from './lru.ts'
+import { regionsOf } from './regions.ts'
+import type { BodyGeometry, RegionInfo } from './clothcut.ts'
+import type { ClothCut, ClothSlot } from '../model/types.ts'
 
 type Picture = ImageBitmap | HTMLImageElement | HTMLCanvasElement
 
@@ -64,6 +67,131 @@ export async function preloadPictures (urls: Iterable<string>): Promise<void> {
 // (the newest call per body wins: a skin that loads after the next was picked is not put on)
 const turns = new WeakMap<object, number>()
 
+interface ClothBody { geometry: BodyGeometry, regions: Int32Array, list: RegionInfo[] }
+const bodies = new WeakMap<THREE.Mesh, ClothBody>()
+
+/** The full rest body and its stable seam-region IDs, in the same mesh order as garment hiding. */
+export function clothBody (body: readonly THREE.SkinnedMesh[]): ClothBody {
+  const first = body[0]
+  if (first === undefined) throw new Error('The body has no meshes')
+  const cached = bodies.get(first)
+  if (cached !== undefined) return cached
+  const count = body.reduce((sum, mesh) => sum + mesh.geometry.getAttribute('position').count, 0)
+  const positions = new Float32Array(count * 3); const uv = new Float32Array(count * 2)
+  const triangles: number[] = []; const materials: string[] = []
+  let offset = 0
+  const point = new THREE.Vector3()
+  for (const mesh of body) {
+    const position = mesh.geometry.getAttribute('position'); const coords = mesh.geometry.getAttribute('uv')
+    if (coords === undefined || position === undefined) throw new Error('Body needs positions and UVs')
+    const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
+    for (let i = 0; i < position.count; i++) {
+      point.set(position.getX(i), position.getY(i), position.getZ(i)).applyMatrix4(mesh.bindMatrix)
+      positions.set([point.x, point.y, point.z], (offset + i) * 3)
+      uv.set([coords.getX(i), coords.getY(i)], (offset + i) * 2)
+      materials[offset + i] = material.name
+    }
+    const full = mesh.userData.fullIndex as THREE.BufferAttribute | null | undefined
+    const index = full === undefined ? mesh.geometry.index : full
+    for (let i = 0; i < (index?.count ?? position.count); i++) triangles.push(offset + (index?.getX(i) ?? i))
+    offset += position.count
+  }
+  const index = Uint32Array.from(triangles); const regions = regionsOf(index, count)
+  const sums = new Float64Array(regions.count); const sizes = new Uint32Array(regions.count)
+  const minX = new Float64Array(regions.count).fill(Infinity); const maxX = new Float64Array(regions.count).fill(-Infinity)
+  const names = new Array<string>(regions.count).fill('')
+  let minY = Infinity; let maxY = -Infinity
+  for (let i = 0; i < count; i++) {
+    const id = regions.of[i]
+    if (id < 0) continue
+    sums[id] += positions[i * 3]; sizes[id]++; names[id] ||= materials[i]
+    minX[id] = Math.min(minX[id], positions[i * 3]); maxX[id] = Math.max(maxX[id], positions[i * 3])
+    minY = Math.min(minY, positions[i * 3 + 1]); maxY = Math.max(maxY, positions[i * 3 + 1])
+  }
+  const sideMargin = Math.max(0, maxY - minY) * 0.01
+  const list: RegionInfo[] = Array.from({ length: regions.count }, (_, id) => ({ id, material: names[id], x: sizes[id] === 0 ? 0 : sums[id] / sizes[id], minX: minX[id], maxX: maxX[id], sideMargin }))
+  // UV seams split neighbouring body surfaces into different regions (and often different materials).
+  // Match their rest-space boundary vertices: a Skin forearm or ankle touching a garment belongs to that
+  // garment's zone. Restrict it to lateral islands so the neck/face adjoining a shirt remains untouched.
+  const points = new Map<string, Set<number>>()
+  for (let i = 0; i < count; i++) {
+    const id = regions.of[i]
+    if (id < 0) continue
+    const key = [0, 1, 2].map(k => Math.round(positions[i * 3 + k] * 100000)).join(',')
+    const ids = points.get(key) ?? new Set<number>(); ids.add(id); points.set(key, ids)
+  }
+  const neighbours = new Map<number, Set<'top' | 'bottom'>>()
+  for (const ids of points.values()) for (const id of ids) {
+    const r = list[id]
+    if (!/skin/i.test(r.material) || !(minX[id] > sideMargin || maxX[id] < -sideMargin)) continue
+    for (const other of ids) {
+      const material = names[other].toLowerCase()
+      const zone = /shirt|sleeve|top/.test(material) ? 'top' : /trouser|pants|bottom|leg/.test(material) ? 'bottom' : null
+      if (zone !== null) {
+        const found = neighbours.get(id) ?? new Set<'top' | 'bottom'>(); found.add(zone); neighbours.set(id, found)
+        // A trouser leg can approach the midline inside the margin without crossing it. A seam to a
+        // lateral ankle identifies that side without admitting a central or split torso island.
+        if (zone === 'bottom' && minX[id] > sideMargin && minX[other] > 0) list[other].limbSide = 'left'
+        if (zone === 'bottom' && maxX[id] < -sideMargin && maxX[other] < 0) list[other].limbSide = 'right'
+      }
+    }
+  }
+  for (const [id, zones] of neighbours) if (zones.size === 1) list[id].zone = [...zones][0]
+  const result = { geometry: { positions, uv, index }, regions: regions.of, list }
+  bodies.set(first, result)
+  return result
+}
+
+export interface DressedLayer { id: string, slots: ClothSlot[], url: string, cut?: ClothCut, mask?: string }
+export interface DressedView { skin: string | null, bare: string | null, previewBare: boolean, layers: DressedLayer[], height: number, long?: boolean }
+
+/** Composite selected slots in a worker; cuts reveal bare only in the affected slot's zone. */
+export async function showDressed (body: readonly THREE.SkinnedMesh[], view: DressedView): Promise<void> {
+  const first = body[0]
+  if (first === undefined) return
+  const baseUrl = view.previewBare && view.bare !== null ? view.bare : view.skin
+  if (view.layers.length === 0) { await showSkin(body, baseUrl, null, view.long === true); return }
+  const turn = (turns.get(first) ?? 0) + 1
+  turns.set(first, turn)
+  const mat = (Array.isArray(first.material) ? first.material[0] : first.material) as Textured
+  const ownMap = (mat.userData.ownMap as THREE.Texture | null | undefined) ?? mat.map ?? null
+  const ownImage = ownMap?.image as Picture | undefined
+  if (baseUrl === null && ownImage === undefined) throw new Error('Body has no base texture')
+  const bodyKey = body.map(m => `${m.geometry.uuid}:${m.bindMatrix.toArray().join(',')}`).join('|')
+  const bare = view.layers.some(layer => layer.cut !== undefined) ? view.bare : null
+  const key = JSON.stringify({ base: baseUrl ?? `own:${ownMap!.uuid}`, bare, bodyKey, height: view.height, layers: view.layers })
+  const tex = await textures.load(key, async () => {
+    const data = clothBody(body)
+    const base = baseUrl ?? await createImageBitmap(ownImage!)
+    const image = await new Promise<ImageBitmap>((resolve, reject) => {
+      const worker = new Worker(new URL('./workers/bare.worker.ts', import.meta.url), { type: 'module', name: 'rigsmith-cloth' })
+      worker.onerror = e => { worker.terminate(); reject(new Error(e.message)) }
+      worker.onmessage = (event: MessageEvent<{ bitmap?: ImageBitmap, error?: string }>) => {
+        if (event.data.error !== undefined) { worker.terminate(); reject(new Error(event.data.error)) }
+        else if (event.data.bitmap !== undefined) { worker.terminate(); resolve(event.data.bitmap) }
+      }
+      try { worker.postMessage({ kind: 'compose', base, bare, layers: view.layers, geometry: data.geometry, regions: data.regions, list: data.list, height: view.height }, typeof base === 'string' ? [] : [base]) }
+      catch (error) { worker.terminate(); reject(error) }
+    })
+    return glTexture(new THREE.Texture(image))
+  })
+  if (turns.get(first) !== turn) return
+  applySkin(body, tex, view.long === true)
+}
+
+function applySkin (body: readonly THREE.Mesh[], tex: THREE.Texture | null, long: boolean): void {
+  for (const mesh of body) {
+    const k = mesh.morphTargetDictionary?.[LONG_SLEEVE]
+    if (k !== undefined && mesh.morphTargetInfluences !== undefined) mesh.morphTargetInfluences[k] = long ? 1 : 0
+    for (const m of (Array.isArray(mesh.material) ? mesh.material : [mesh.material]) as Textured[]) {
+      if (!('map' in m)) continue
+      if (m.userData.ownMap === undefined) m.userData.ownMap = m.map ?? null
+      const next = tex ?? (m.userData.ownMap as THREE.Texture | null)
+      if (m.map !== next) { if ((m.map == null) !== (next === null)) m.needsUpdate = true; m.map = next }
+    }
+  }
+}
+
 /** The body's meshes wear the skin at `url` (null: their own texture again), with the clothes at `clothes` over it
  * (null: none) and the long-sleeve shape on or off. */
 export async function showSkin (body: readonly THREE.Mesh[], url: string | null, clothes: string | null = null, long = false): Promise<void> {
@@ -77,17 +205,7 @@ export async function showSkin (body: readonly THREE.Mesh[], url: string | null,
   const base = url ?? (ownImage !== undefined && ownImage !== null && 'width' in ownImage ? { own: ownImage, key: `own:${ownMap!.uuid}` } : null)
   const tex = clothes !== null && base !== null ? await dressed(base, clothes) : url === null ? null : await texture(url)
   if (turns.get(first) !== turn) return
-  for (const mesh of body) {
-    const k = mesh.morphTargetDictionary?.[LONG_SLEEVE]
-    if (k !== undefined && mesh.morphTargetInfluences !== undefined) mesh.morphTargetInfluences[k] = long ? 1 : 0
-    for (const m of (Array.isArray(mesh.material) ? mesh.material : [mesh.material]) as Textured[]) {
-      if (!('map' in m)) continue
-      if (m.userData.ownMap === undefined) m.userData.ownMap = m.map ?? null
-      const next = tex ?? (m.userData.ownMap as THREE.Texture | null)
-      // (a map for a map needs no new shader; none for one, or one for none, does)
-      if (m.map !== next) { if ((m.map == null) !== (next === null)) m.needsUpdate = true; m.map = next }
-    }
-  }
+  applySkin(body, tex, long)
 }
 
 /** A piece's meshes drawn in `hex` (#rrggbb; null: their own colour). Each gets its own material copy first: models

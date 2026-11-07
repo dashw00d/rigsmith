@@ -4,8 +4,8 @@
   // Tabs over one panel (`children`, the chosen tab's content, rendered by the caller). The arrow keys, Home and End
   // move between tabs and choose them.
   interface Tab { id: T, label: string, icon?: Component, count?: number | string, disabled?: boolean }
-  interface Props { tabs: Tab[], value: T, onchange?: (value: T) => void, label?: string, size?: 'sm' | 'md', children?: Snippet }
-  let { tabs, value = $bindable(), onchange, label, size = 'md', children }: Props = $props()
+  interface Props { tabs: Tab[], value: T, onchange?: (value: T) => void, label?: string, size?: 'sm' | 'md', children?: Snippet, testid?: string }
+  let { tabs, value = $bindable(), onchange, label, size = 'md', children, testid }: Props = $props()
   const id = $props.id()
 
   // (the tab the keyboard lands on: the chosen one, else the first that can be)
@@ -34,7 +34,7 @@
 </script>
 
 <div class="tabs {size}">
-  <div class="list" role="tablist" aria-label={label} tabindex="-1" {onkeydown}>
+  <div data-testid={testid} class="list" role="tablist" aria-label={label} tabindex="-1" {onkeydown}>
     {#each tabs as tab (tab.id)}
       <button
         type="button"

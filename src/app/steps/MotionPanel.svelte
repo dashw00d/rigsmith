@@ -23,6 +23,9 @@
   import CopySet from '../motion/CopySet.svelte'
   import SelectionInspector from '../motion/SelectionInspector.svelte'
   import SlotList from '../motion/SlotList.svelte'
+  import StancePicker from '../motion/StancePicker.svelte'
+  import DressedAs from '../motion/DressedAs.svelte'
+  import { isFolk } from '../../engine/folk.ts'
   import { motionAction, motionKeyAllowed } from '../motion/keys.ts'
 
   let { character }: { character: Character } = $props()
@@ -137,6 +140,8 @@
         <LibraryBig size={13} /> Library
       </Button>
     {/snippet}
+    {#if isFolk(character)}<DressedAs {character} />{/if}
+    <StancePicker {character} />
     <SlotList {character} />
   </Section>
 

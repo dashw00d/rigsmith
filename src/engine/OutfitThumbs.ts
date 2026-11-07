@@ -6,7 +6,7 @@
 import * as THREE from 'three'
 import type { Gear, Placement } from '../model/types.ts'
 import { CharacterView } from './CharacterView.ts'
-import { showSkin, tint } from './folkview.ts'
+import { shapeFemale, showDressed, showSkin, tint, type DressedLayer } from './folkview.ts'
 import { takeOff, wear, type Worn } from './garments.ts'
 import { light } from './lighting.ts'
 import { encode, grab, offscreen } from './offscreen.ts'
@@ -25,6 +25,11 @@ export interface ThumbSpec {
   /** A skin's image (null: the body's own texture), clothes' image over it. */
   skin?: string | null
   clothes?: string | null
+  /** D4 layer selections and the bare base for cut layers. */
+  layers?: DressedLayer[]
+  bare?: string | null
+  previewBare?: boolean
+  female?: boolean
   long?: boolean
   /** The hair colour the hair and beard pieces are tinted to (#rrggbb). */
   hair?: string | null
@@ -42,9 +47,17 @@ export class OutfitThumbs {
   private readonly camera = new THREE.PerspectiveCamera(24, 1, 0.01, 100)
   private lit = false
   private body: { url: string, view: Promise<CharacterView> } | null = null
+  private held: { key: string, view: CharacterView, pieces: Worn[] } | null = null
+
+  private dropHeld (): void {
+    if (this.held === null) return
+    for (const piece of this.held.pieces) takeOff(this.held.view, piece, this)
+    this.held = null
+  }
 
   private async viewOf (url: string): Promise<CharacterView> {
     if (this.body?.url !== url) {
+      this.dropHeld()
       const old = this.body
       this.body = { url, view: CharacterView.load(url) }
       void old?.view.then(release, () => {})
@@ -53,23 +66,34 @@ export class OutfitThumbs {
   }
 
   /** A WebP picture of the spec. */
-  async render (spec: ThumbSpec): Promise<Blob> {
+  async render (spec: ThumbSpec, reusePieces = false): Promise<Blob> {
     const view = await this.viewOf(spec.body)
     const done = mark('OutfitThumbs.render', spec.framing)
-    const worn: Worn[] = []
+    const key = JSON.stringify(spec.pieces.map(p => [p.gear, p.url, p.place]))
+    if (!reusePieces || this.held?.key !== key || this.held.view !== view) this.dropHeld()
+    const worn: Worn[] = this.held?.pieces ?? []
+    let complete = this.held !== null
     try {
-      for (const p of spec.pieces) {
-        const w = await wear(view, p.gear, { url: p.url, place: p.place, fitting: p.gear.attach.kind !== 'bone', owner: this })
-        if (w !== null) worn.push(w)
+      if (!complete) {
+        for (const p of spec.pieces) {
+          const w = await wear(view, p.gear, { url: p.url, place: p.place, fitting: p.gear.attach.kind !== 'bone', owner: this })
+          if (w !== null) worn.push(w)
+        }
+        complete = true
+        if (reusePieces) this.held = { key, view, pieces: worn }
       }
       const meshes = worn.flatMap(w => w.meshes)
+      // Bone-held pieces and fitting meshes are in their own local frames, not the body's rest space.
+      const shaped = worn.filter(w => w.node === null && spec.pieces.find(p => p.gear.id === w.gear)?.gear.attach.kind !== 'bone').flatMap(w => w.meshes)
+      shapeFemale(view.bodySkinned, shaped, spec.female === true, view.height)
       if (spec.hair !== undefined) {
         const hairy = worn.filter(w => spec.pieces.find(p => p.gear.id === w.gear)?.gear.role !== undefined).flatMap(w => w.meshes)
         // (their materials are copies already: wear copies them)
         for (const m of hairy) m.userData.ownTintMaterial = true
         tint(hairy, spec.hair ?? null)
       }
-      await showSkin(view.bodySkinned, spec.skin ?? null, spec.clothes ?? null, spec.long === true)
+      if (spec.layers !== undefined) await showDressed(view.bodySkinned, { skin: spec.skin ?? null, bare: spec.bare ?? null, previewBare: spec.previewBare === true, layers: spec.layers, height: view.height, long: spec.long })
+      else await showSkin(view.bodySkinned, spec.skin ?? null, spec.clothes ?? null, spec.long === true)
       const alone = spec.framing === 'piece'
       for (const m of view.meshes) m.visible = !alone
       view.root.updateMatrixWorld(true)
@@ -86,7 +110,7 @@ export class OutfitThumbs {
       })
       return await encode(picture, 'image/webp', 0.85)
     } finally {
-      for (const w of worn) takeOff(view, w, this)
+      if (!reusePieces || !complete) for (const w of worn) takeOff(view, w, this)
       for (const m of view.meshes) m.visible = true
       done()
     }
@@ -114,6 +138,7 @@ export class OutfitThumbs {
 
   /** Let the body go. */
   dispose (): void {
+    this.dropHeld()
     void this.body?.view.then(release, () => {})
     this.body = null
   }

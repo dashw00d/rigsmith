@@ -6,58 +6,23 @@
 // skins, layers, pieces; gear named by its mesh) and ~32 golden picks the game's interpreter must reproduce, beside the
 // schema 1 view the current game reads (`outfits`, `clothes`, `hair`, `beard`, `rules`).
 import { candidates, goldens, PROGRAM, RNG, tagsAfter, type FolkWorld } from '../../src/engine/folkpick.ts'
-import { meshNameOf } from '../../src/engine/contract.ts'
-import { clothOf, folkOf, kindSets, LONG_SLEEVE_SHAPE } from '../../src/model/folk.ts'
-import type { Character, ClothLayer, Gear, OutfitSet, Pool, Skin, UnitKind } from '../../src/model/types.ts'
+import { gearLeftOut, meshNameOf } from '../../src/engine/contract.ts'
+import { clothOf, folkOf, LONG_SLEEVE_SHAPE } from '../../src/model/folk.ts'
+import { folkScope, type FolkScope, type StanceExportPlan } from '../../src/model/folk-export.ts'
+export { folkScope, stanceExportPlan, type FolkScope, type StanceExportPlan } from '../../src/model/folk-export.ts'
+import { safeName } from '../../src/model/select.ts'
+import type { Character, ClothLayer, Gear, OutfitSet, Skin } from '../../src/model/types.ts'
 import type { UnitSpec } from '../../src/model/unit.ts'
-
-/** The sets, kinds, pools and swapped gear a unit's file carries. */
-export interface FolkScope {
-  sets: OutfitSet[]
-  kinds: UnitKind[]
-  pools: Pool[]
-  /** Gear ids of every swapped piece (in a set or a gear pool) of the character. */
-  swapped: Set<string>
-  /** Of those, the ones this file carries (its scope's, and exportable). */
-  carried: Set<string>
-  /** Gear ids in a hair pool (hair hides no body region). */
-  hair: Set<string>
-}
 
 const GEAR_POOLS = new Set(['hair', 'beard', 'accessory'])
 
-/** What a unit's file carries of a dynamic character: its kind's sets (spec.folk.kind; schema 4's folk.outfits by name;
- * neither: all), the kinds of those, its pools (spec.folk.pools by id or kind; hair: false leaves out hair and beards),
- * and the gear in them that can be exported (`exportable`: the unit export's contract, shown or not). */
-export function folkScope (c: Character, spec: Pick<UnitSpec, 'folk'>, exportable: (g: Gear) => boolean = () => true): FolkScope {
-  const f = folkOf(c)
-  const want = spec.folk
-  let sets = f.sets
-  let kinds = f.kinds
-  if (want?.kind !== undefined) {
-    const kind = f.kinds.find(k => k.id === want.kind)
-    if (kind === undefined) throw new Error(`folk kind ${want.kind} is not one of ${c.name}'s (${f.kinds.map(k => k.id).join(', ') || 'none'})`)
-    const mine = new Set(kindSets(f.sets, kind).map(x => x.set.id))
-    sets = f.sets.filter(s => mine.has(s.id))
-    kinds = [kind]
-  } else if (want?.outfits !== undefined) {
-    sets = f.sets.filter(s => want.outfits!.includes(s.name))
-    const ids = new Set(sets.map(s => s.id))
-    kinds = f.kinds.filter(k => !Array.isArray(k.sets) || k.sets.some(e => ids.has(e.set)))
-  }
-  const pools = f.pools.filter(p => want?.pools !== undefined ? (want.pools.includes(p.id) || want.pools.includes(p.kind))
-    : !(want?.hair === false && (p.kind === 'hair' || p.kind === 'beard')))
-  const gearIn = (ps: readonly Pool[]): string[] => ps.filter(p => GEAR_POOLS.has(p.kind)).flatMap(p => p.items.map(i => i.ref))
-  return {
-    sets, kinds, pools,
-    swapped: new Set([...f.sets.flatMap(s => s.pieces), ...gearIn(f.pools)]),
-    carried: new Set([...sets.flatMap(s => s.pieces), ...gearIn(pools)].filter(id => { const g = c.gear.find(x => x.id === id); return g !== undefined && exportable(g) })),
-    hair: new Set(gearIn(f.pools.filter(p => p.kind === 'hair'))),
-  }
-}
-
 /** Whether a piece is swapped per unit (a set's or a pool's: the game shows it on the units that pick it). */
 export const isSwapped = (scope: FolkScope, g: Gear): boolean => scope.swapped.has(g.id) || g.outfit !== undefined || g.role !== undefined
+
+/** Swapped pieces in the exported scope are worn by picks even if hidden in the character's document. */
+export function scopedGearLeftOut (g: Gear, scope: FolkScope | null): string | null {
+  return gearLeftOut(scope?.carried.has(g.id) === true ? { ...g, hidden: false } : g)
+}
 
 /** Why a swapped piece of this file's scope isn't in it for its kind or pools (null: it is in scope, or it isn't
  * swapped; the contract's own reasons are gearLeftOut's). */
@@ -82,12 +47,18 @@ export interface ManifestPiece { mesh: string, hides: number[], mask: number, ta
 export interface FolkFiles {
   /** Where each skin's image (and bare image) went, by skin name; each cloth layer's (and trim's), by layer id. */
   skins: Record<string, { file: string, bare?: string }>
-  layers: Record<string, { file: string, trim?: string, mask?: string }>
+  layers: Record<string, { file: string, trim?: string, mask?: string, baked?: boolean }>
   /** Schema 4's clothes (look.clothes) by name. */
   clothes: Record<string, string>
 }
 
 export interface FolkBody { mesh: string, shapes: string[] }
+
+/** Distinct layer files even when names collide; validated ids retain their hyphens and underscores. */
+export function clothExportBase (layer: Pick<ClothLayer, 'id' | 'name'>): string {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(layer.id)) throw new Error(`Invalid cloth layer id ${layer.id}`)
+  return `clothes/${safeName(layer.name)}-${layer.id}`
+}
 
 /** The world the game runs (folkpick FolkWorld) as this file carries it: gear named by mesh. */
 export function manifestWorld (c: Character, scope: FolkScope, meshOf: (g: Gear) => string = meshNameOf): FolkWorld {
@@ -121,6 +92,7 @@ export function folkManifestData (c: Character, spec: Pick<UnitSpec, 'folk'>, o:
   hairGreyMean: number
   femaleShape: string
   meshOf?: (g: Gear) => string
+  stancePlans: readonly StanceExportPlan[]
 }): Record<string, unknown> {
   const scope = folkScope(c, spec, o.exportable)
   const meshOf = o.meshOf ?? meshNameOf
@@ -130,7 +102,6 @@ export function folkManifestData (c: Character, spec: Pick<UnitSpec, 'folk'>, o:
   const setPieces = (s: OutfitSet): ManifestPiece[] => s.pieces.map(id => byId.get(id)).filter(exported).map(o.pieceOf)
   const hidesOf = (pieces: ManifestPiece[]): number[] => [...new Set(pieces.flatMap(p => p.hides))].sort((a, b) => a - b)
   const layers = clothOf(c)
-  const slotNames = new Map(c.clips.map(s => [s.id, s.name]))
   const sets = scope.sets.map(s => {
     const pieces = setPieces(s)
     const hides = hidesOf(pieces)
@@ -156,7 +127,7 @@ export function folkManifestData (c: Character, spec: Pick<UnitSpec, 'folk'>, o:
   const layer = (l: ClothLayer, i: number): Record<string, unknown> => ({
     id: l.id, name: l.name, index: i, file: o.files.layers[l.id]?.file ?? l.file, slots: l.slots, tags: l.tags ?? [], shapes: l.shapes ?? [],
     ...(o.files.layers[l.id]?.trim !== undefined ? { trim: o.files.layers[l.id].trim } : {}),
-    ...(l.cut !== undefined ? { cut: { ...l.cut, ...(o.files.layers[l.id]?.mask !== undefined ? { mask: o.files.layers[l.id].mask } : {}) } } : {}),
+    ...(l.cut !== undefined ? { cut: { ...l.cut, ...(o.files.layers[l.id]?.mask !== undefined ? { mask: o.files.layers[l.id].mask } : {}), ...(o.files.layers[l.id]?.baked === true ? { baked: true } : {}) } } : {}),
   })
   return {
     schema: 2,
@@ -175,10 +146,8 @@ export function folkManifestData (c: Character, spec: Pick<UnitSpec, 'folk'>, o:
     kinds: world.kinds,
     pools: world.pools,
     pieces: world.pieces,
-    stances: folkOf(c).stances.map(s => ({
-      id: s.id, name: s.name,
-      clips: Object.fromEntries(Object.entries(s.clips).map(([clip, slots]) => [clip, slots.map(id => slotNames.get(id) ?? id)])),
-      ...(s.overlay !== undefined ? { overlay: slotNames.get(s.overlay) ?? s.overlay } : {}),
+    stances: o.stancePlans.map(plan => ({
+      id: plan.id, name: folkOf(c).stances.find(s => s.id === plan.id)?.name ?? plan.id, clips: plan.clips,
     })),
     golden: goldens(world),
     hairGreyMean: o.hairGreyMean,

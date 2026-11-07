@@ -1,6 +1,31 @@
 {
-  "//": "Type-checks the node tools (npm run check:tools): every script in tools/, tools/lib, tools/dev and tools/skin_opt, and the contract tests in tests/; the app's own files come in through what they import.",
+  "//": "Type-checks the node tools (npm run check:tools): every script in tools/, tools/lib, tools/dev and tools/skin_opt, and the contract tests in tests/; the app's own files come in through what they import. `paths`: e2e scenarios import the app's modules inside the page by their served path (/engine/..., Vite's root is src/): typed from the real files.",
   "extends": "../tsconfig.json",
-  "compilerOptions": { "types": ["node"] },
-  "include": ["*.ts", "lib/**/*.ts", "dev/**/*.ts", "skin_opt/**/*.ts", "../tests/**/*.ts"]
+  "compilerOptions": {
+    "types": [
+      "node",
+      "vite/client"
+    ],
+    "paths": {
+      "/engine/*": [
+        "../src/engine/*"
+      ],
+      "/state/*": [
+        "../src/state/*"
+      ],
+      "/model/*": [
+        "../src/model/*"
+      ],
+      "/app/*": [
+        "../src/app/*"
+      ]
+    }
+  },
+  "include": [
+    "*.ts",
+    "lib/**/*.ts",
+    "dev/**/*.ts",
+    "skin_opt/**/*.ts",
+    "../tests/**/*.ts"
+  ]
 }

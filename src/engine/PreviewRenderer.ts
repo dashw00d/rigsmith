@@ -20,7 +20,7 @@ export class PreviewRenderer {
   private retargets: RetargetCache | null = null
   // (object URLs by the clip's versioned URL: a clip written again gets a new sheet; the oldest let go past a few pages)
   private readonly sheets = new Lru<string>({ budget: Infinity, max: 400, dispose: url => { URL.revokeObjectURL(url) } })
-  private queue: Array<{ url: string, resolve: (u: string | null) => void }> = []
+  private queue: Array<{ url: string, signal?: AbortSignal, resolve: (u: string | null) => void, cancel: () => void, cleanup: () => void }> = []
   private working = false
   private key = ''
 
@@ -54,48 +54,58 @@ export class PreviewRenderer {
   }
 
   /** Object URL of a horizontal sprite sheet (SPRITE_FRAMES frames), or null if cancelled/failed. */
-  async sheet (clipUrl: string): Promise<string | null> {
+  async sheet (clipUrl: string, signal?: AbortSignal): Promise<string | null> {
+    if (signal?.aborted === true) return null
     const [plain, name] = clipUrl.split('#')
     const url = name === undefined ? versioned(plain) : `${versioned(plain)}#${name}`
     const cached = this.sheets.get(url)
     if (cached !== undefined) return cached
     return await new Promise(resolve => {
-      this.queue.push({ url, resolve })
-      void this.pump()
+      const job = { url, signal, resolve, cancel: () => {}, cleanup: () => {} }
+      job.cleanup = () => { signal?.removeEventListener('abort', job.cancel) }
+      job.cancel = () => {
+        const index = this.queue.indexOf(job)
+        if (index >= 0) this.queue.splice(index, 1)
+        job.cleanup(); resolve(null)
+      }
+      signal?.addEventListener('abort', job.cancel, { once: true })
+      this.queue.push(job)
+      if (signal?.aborted === true) job.cancel()
+      else void this.pump()
     })
   }
 
   /** Drop pending requests (e.g. when the library page changes). */
   cancelPending (): void {
-    this.queue.forEach(q => { q.resolve(null) })
-    this.queue = []
+    for (const job of [...this.queue]) job.cancel()
   }
 
   private async pump (): Promise<void> {
     if (this.working) return
     this.working = true
-    while (this.queue.length > 0) {
-      const job = this.queue.shift()!
-      try {
-        job.resolve(await this.render(job.url))
-      } catch {
-        job.resolve(null)
+    try {
+      while (this.queue.length > 0) {
+        const job = this.queue.shift()!
+        try {
+          const cached = this.sheets.get(job.url)
+          job.resolve(job.signal?.aborted === true ? null : cached ?? await this.render(job.url, 3, job.signal))
+        } catch { job.resolve(null) } finally { job.cleanup() }
+        await new Promise(resolve => setTimeout(resolve, 0))
       }
-      await new Promise(resolve => setTimeout(resolve, 0))
-    }
-    this.working = false
+    } finally { this.working = false }
   }
 
-  private async render (url: string, tries = 3): Promise<string | null> {
-    if (this.model === null || this.retargets === null || tries <= 0) return null
+  private async render (url: string, tries = 3, signal?: AbortSignal): Promise<string | null> {
+    const cancelled = (): boolean => signal?.aborted === true
+    if (cancelled() || this.model === null || this.retargets === null || tries <= 0) return null
     let key = this.key
     let clip = await this.retargets.get(url, { inPlace: true, samples: SPRITE_FRAMES + 1 })
-    while (key !== this.key && this.retargets !== null) {
+    while (key !== this.key && this.retargets !== null && !cancelled()) {
       // The subject changed while baking: bake again for the new one.
       key = this.key
       clip = await this.retargets.get(url, { inPlace: true, samples: SPRITE_FRAMES + 1 })
     }
-    if (this.model === null) return null
+    if (this.model === null || cancelled()) return null
     const model = this.model
     const sheet = document.createElement('canvas')
     sheet.width = SIZE * SPRITE_FRAMES
@@ -103,13 +113,14 @@ export class PreviewRenderer {
     const ctx = sheet.getContext('2d')!
     const drawn = await offscreen(SIZE, SIZE, renderer => {
       // (another character took the stage while this waited its turn: its sheet is baked again for that one)
-      if (model !== this.model) return false
+      if (model !== this.model || cancelled()) return false
       if (!this.lit) { light(this.scene, renderer); this.lit = true }
       const mixer = new THREE.AnimationMixer(model)
       const action = mixer.clipAction(clip)
       action.play()
       try {
         for (let i = 0; i < SPRITE_FRAMES; i++) {
+          if (cancelled()) return false
           mixer.setTime((clip.duration * i) / SPRITE_FRAMES)
           renderer.render(this.scene, this.camera)
           ctx.drawImage(renderer.domElement, i * SIZE, 0)
@@ -120,10 +131,11 @@ export class PreviewRenderer {
       }
       return true
     })
-    if (!drawn) return await this.render(url, tries - 1)
+    if (cancelled()) return null
+    if (!drawn) return await this.render(url, tries - 1, signal)
     let blob: Blob | null
     try { blob = await encode(sheet, 'image/webp', 0.85) } catch { blob = null }
-    if (blob === null || key !== this.key) return null
+    if (blob === null || key !== this.key || cancelled()) return null
     const objectUrl = URL.createObjectURL(blob)
     this.sheets.set(url, objectUrl)
     return objectUrl

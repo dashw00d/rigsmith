@@ -1,6 +1,7 @@
 // The Ship step's words and small rules, kept pure so they can be tested: a unit's state against the game's copy, its
 // clip names against the character's slots, its levels, the strides as the game's UnitView.cs takes them, what a
 // build record flags, how long ago a build ran.
+import { kindsOf } from '../../model/folk.ts'
 import type { BuildRecord } from '../../model/unit.ts'
 import type { Check } from '../../engine/checks.ts'
 
@@ -75,4 +76,14 @@ export function ago (at: number, now: number): string {
 export function took (from: number, to: number): string {
   const s = Math.max(0, Math.round((to - from) / 1000))
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`
+}
+
+/** The classes available on a unit's own dynamic body, retaining a missing saved id. */
+export function classChoices (owner: import('../../model/types.ts').Character, spec: import('../../model/unit.ts').UnitSpec): Array<{ value: string, label: string }> {
+  const kinds = kindsOf(owner)
+  const missing = spec.folk?.kind
+  return [{ value: '', label: 'Any' }, ...kinds.map(k => ({ value: k.id, label: k.name })), ...(missing && !kinds.some(k => k.id === missing) ? [{ value: missing, label: `${missing} (missing)` }] : [])]
+}
+export function classNote (unit: string, kind: string | undefined): string | null {
+  return kind !== undefined && kind !== unit ? `The game selects a class by unit id; ${unit} differs from ${kind}.` : null
 }

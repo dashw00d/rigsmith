@@ -1,12 +1,12 @@
 <script lang="ts">
   // The top bar: the seven steps (each with a tick: done, or needs something, from src/app/status.ts; Ship's from the
-  // game units in src/state/ship.svelte.ts), the Forge's button (its board over the workspace), the activity
+  // game units in src/state/ship.svelte.ts), the activity
   // button (jobs running, the server connection; opens the activity drawer) and the settings.
   import { onMount, tick } from 'svelte'
-  import { Activity, Anvil, Check, LoaderCircle, Settings2 } from '@lucide/svelte'
+  import { Activity, Check, Inbox, LoaderCircle, Settings2 } from '@lucide/svelte'
   import { app, STEPS, type Step } from '../state/app.svelte.ts'
-  import { forge } from '../state/forge.svelte.ts'
   import { ship } from '../state/ship.svelte.ts'
+  import { incoming } from '../state/incoming.svelte.ts'
   import { tooltip } from '../ui/tooltip.ts'
   import SettingsPopover from './SettingsPopover.svelte'
   import { stepMark, type ShipFacts, type StepMark } from './status.ts'
@@ -14,17 +14,39 @@
   let settingsOpen = $state(false)
   let nav = $state<HTMLElement | null>(null)
 
+  const offsets = new Map<HTMLElement, { left: number, width: number }>()
+  let navWidth = 0
+  let overflows = false
+  let scrollPosition = 0
   function revealStep (): void {
+    if (!overflows) return
     const button = nav?.querySelector<HTMLElement>('[aria-current="step"]')
-    if (nav !== null && button) nav.scrollLeft = button.offsetLeft - (nav.clientWidth - button.offsetWidth) / 2
+    const position = button === undefined || button === null ? undefined : offsets.get(button)
+    if (nav !== null && position !== undefined && (position.left < scrollPosition || position.left + position.width > scrollPosition + navWidth)) nav.scrollLeft = position.left - (navWidth - position.width) / 2
   }
-
+  function measureSteps (): void {
+    if (nav === null) return
+    navWidth = nav.clientWidth
+    scrollPosition = nav.scrollLeft
+    overflows = nav.scrollWidth > navWidth
+    for (const button of nav.querySelectorAll<HTMLElement>('[data-testid^="bar-step-"]')) {
+      offsets.set(button, { left: button.offsetLeft, width: button.offsetWidth })
+    }
+    revealStep()
+  }
+  function recordScroll (): void { if (nav !== null) scrollPosition = nav.scrollLeft }
   $effect(() => { void app.step; void tick().then(revealStep) })
   onMount(() => {
-    const observer = new ResizeObserver(revealStep)
-    if (nav !== null) observer.observe(nav)
-    return () => { observer.disconnect() }
+    const observer = new ResizeObserver(measureSteps)
+    if (nav !== null) {
+      observer.observe(nav)
+      nav.addEventListener('scroll', recordScroll, { passive: true })
+      for (const child of nav.children) observer.observe(child)
+    }
+    return () => { observer.disconnect(); nav?.removeEventListener('scroll', recordScroll); offsets.clear() }
   })
+  onMount(() => incoming.start())
+  $effect(() => { void app.selectedId; void incoming.refresh() })
 
   const job = $derived(app.selected === null ? undefined : app.jobFor(app.selected.id))
 
@@ -70,7 +92,7 @@
   <nav class="steps" aria-label="Workflow" bind:this={nav}>
     {#each STEPS as step, i (step.id)}
       {@const mark = marks.get(step.id) ?? null}
-      <button class="step {mark ?? ''}" class:active={app.step === step.id} aria-current={app.step === step.id ? 'step' : undefined}
+      <button data-testid="bar-step-{step.id}" class="step {mark ?? ''}" class:active={app.step === step.id} aria-current={app.step === step.id ? 'step' : undefined}
         onclick={() => { void app.go(step.id) }} use:tooltip={hint(step)}>
         <span class="num">
           {#if mark === 'done' && app.step !== step.id}<Check size={11} strokeWidth={3} />{:else}{i + 1}{/if}
@@ -84,12 +106,10 @@
   </nav>
 
   <div class="tools">
-    <button class="chip" class:open={forge.open} aria-pressed={forge.open} onclick={() => { forge.toggle() }}
-      use:tooltip={forge.open ? 'Back to the character' : 'The Forge: sets of gear made stage by stage'}>
-      <Anvil size={14} />
-      <span>Forge</span>
+    <button data-testid="bar-incoming" class="chip" class:open={app.drawer === 'incoming'} aria-label="Incoming: {incoming.pending} pending" aria-pressed={app.drawer === 'incoming'} onclick={() => { app.toggleDrawer('incoming') }} use:tooltip={'Incoming deliveries (I)'}>
+      <Inbox size={14} /><span>Incoming</span><span class="failed" data-testid="incoming-count">{incoming.pending}</span>
     </button>
-    <button class="chip" class:busy={running > 0} class:open={app.drawer === 'activity'} aria-pressed={app.drawer === 'activity'}
+    <button data-testid="bar-activity" class="chip" class:busy={running > 0} class:open={app.drawer === 'activity'} aria-pressed={app.drawer === 'activity'}
       aria-label="Activity: {running > 0 ? `${running} running` : app.connected ? 'connected' : 'offline'}"
       onclick={() => { app.toggleDrawer('activity') }}
       use:tooltip={app.connected ? 'Activity: jobs and this character\'s history' : 'The server is not answering: reconnecting'}>

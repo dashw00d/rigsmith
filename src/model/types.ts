@@ -646,6 +646,8 @@ export interface Settings {
   /** The ComfyUI server's address (http://host:port) the GPU lane uses ($COMFY_URL wins; unset: the game's forge.json
    * `comfy`, else 127.0.0.1:8188). */
   comfyUrl?: string
+  /** Where the gear tool delivers finished parts (docs/incoming.md); unset: <workspace>/incoming. */
+  incomingDir?: string
 }
 
 /** A line of a character's journal (characters/<id>/journal.jsonl): a command (or a batch of them), a job's
@@ -674,7 +676,7 @@ export interface JournalEntry {
 }
 
 /** Entity keys (src/model/entities.ts): 'name', 'skeleton', 'skinLock' ({locked, lockReason}), 'hands', 'mount',
- * 'gear:<id>' (without the job-owned status, error, painted, model), 'slot:<id>', 'layer:<id>' (look layers), 'skins' ({skins, skin, clothes, clothing}: look's skins and clothes and the ones shown),
+ * 'gear:<id>' (without status, error, painted, model), 'gearModel:<id>' (the model path), 'gearPaint:<id>' (painted count), 'slot:<id>', 'layer:<id>' (look layers), 'skins' ({skins, skin, clothes, clothing}: look's skins and clothes and the ones shown),
  * 'gearOrder', 'slotOrder', 'layerOrder'; a dynamic character's 'set:<id>', 'pool:<id>', 'kind:<id>', 'stance:<id>'
  * (Character.folk's), 'cloth:<id>' (look.cloth's), 'setOrder', 'clothOrder' (pools, kinds and stances keep their
  * order with their entity: 'poolOrder', 'kindOrder', 'stanceOrder'). Job-owned fields (source, files, status, skin report, look.scan/at...) are

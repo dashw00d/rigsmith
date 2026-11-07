@@ -110,3 +110,14 @@ describe('the Ship checks', () => {
     expect(rule(unitChecks({ unit: 'x', spec: ridden, character: rider, companion: null }), 'companion')[0].status).toBe('fail')
   })
 })
+
+it('warns when a cut layer can meet a skin without a bare image and clears the warning when provided', () => {
+  const c = makeRigged({ clips: [makeSlot()], look: { skins: [{ name: 'A', file: 'skins/a.png' }, { name: 'B', file: 'skins/b.png', bare: 'skins/b-bare.png' }],
+    cloth: [{ id: 'shorts', name: 'Shorts', file: 'clothes/shorts.png', slots: ['bottom'], cut: { drop: [1] } }] } })
+  const checks = () => rule(unitChecks({ unit: 'x', spec: spec(), character: c }), 'cut-bare')
+  expect(checks()).toEqual([{ rule: 'cut-bare', status: 'warn', text: 'Shorts has a cut but skin A has no bare version' }])
+  c.look.skins![0].bare = 'skins/a-bare.png'
+  expect(checks()).toEqual([])
+  delete c.look.cloth![0].cut; delete c.look.skins![0].bare
+  expect(checks()).toEqual([])
+})

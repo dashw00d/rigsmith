@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte'
+  import { onMount, type Snippet } from 'svelte'
+  import { keyLabel, onShortcuts, shortcuts } from './shortcuts.ts'
   import type { HTMLButtonAttributes } from 'svelte/elements'
 
   interface Props extends HTMLButtonAttributes {
@@ -8,15 +9,24 @@
     icon?: boolean
     block?: boolean
     loading?: boolean
+    keys?: string
     children: Snippet
   }
 
-  let { variant = 'secondary', size = 'md', icon = false, block = false, loading = false, children, disabled, ...rest }: Props = $props()
+  let { variant = 'secondary', size = 'md', icon = false, block = false, loading = false, keys, children, disabled, ...rest }: Props = $props()
+  let shortcutsVersion = $state(0)
+  onMount(() => onShortcuts(() => { shortcutsVersion++ }))
+  const keyText = $derived.by(() => {
+    void shortcutsVersion
+    const shortcut = shortcuts().find(s => s.id === keys)
+    return shortcut === undefined ? '' : keyLabel(shortcut.keys).join(' ')
+  })
 </script>
 
 <button class="btn {variant} {size}" class:icon class:block class:loading disabled={disabled || loading} {...rest}>
   {#if loading}<span class="spinner" aria-hidden="true"></span>{/if}
   {@render children()}
+  {#if keyText !== ''}<kbd aria-hidden="true">{keyText}</kbd>{/if}
 </button>
 
 <style>
@@ -35,6 +45,7 @@
     transition: background var(--fast), border-color var(--fast), color var(--fast), transform var(--fast), box-shadow var(--fast);
     user-select: none;
   }
+  kbd { padding: 1px 3px; border: 1px solid currentColor; border-radius: 3px; opacity: .65; font: inherit; font-size: 10px; line-height: 1; }
   .btn:active:not(:disabled) { transform: translateY(1px); }
   .btn:disabled { opacity: 0.45; cursor: default; }
   .sm { height: 26px; padding: 0 9px; font-size: 12px; border-radius: var(--r-1); }

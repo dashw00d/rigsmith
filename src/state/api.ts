@@ -193,6 +193,11 @@ export const api = {
   codex: async (id: string, pid: string) => await call<Job>('POST', `${of(id)}/projections/${encodeURIComponent(pid)}/codex`),
   qwen: async (id: string, pid: string) => await call<Job>('POST', `${of(id)}/projections/${encodeURIComponent(pid)}/qwen`),
 
+  // ---- incoming ----
+  incoming: async (character?: string) => await call<{ packages: import('../../server/incoming/read.ts').PackageView[], pending: number }>('GET', `/api/incoming${character ? `?character=${encodeURIComponent(character)}` : ''}`),
+  acceptIncoming: async (body: import('../../server/incoming/ingest.ts').AcceptRequest) => await call<Job>('POST', '/api/incoming/accept', body),
+  rejectIncoming: async (packageId: string, parts: string[]) => await call<{ packages: import('../../server/incoming/read.ts').PackageView[], pending: number }>('POST', '/api/incoming/reject', { package: packageId, parts }),
+  restoreIncoming: async (packageId: string, parts: string[]) => await call<{ packages: import('../../server/incoming/read.ts').PackageView[], pending: number }>('POST', '/api/incoming/restore', { package: packageId, parts }),
   // ---- motion, editor ----
   library: async (params: LibraryQuery) => await call<LibraryPage>('GET', `/api/library?${query({ ...params })}`),
   /** Every slot that plays a library clip (the editor forks a shared custom clip rather than change it under them). */
