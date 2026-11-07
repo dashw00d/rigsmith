@@ -9,7 +9,7 @@
 import { SvelteMap } from 'svelte/reactivity'
 import type { Character, ClothSlot, Gear } from '../model/types.ts'
 import { preloadModel } from '../engine/garments.ts'
-import type { FolkWorld } from '../engine/folkpick.ts'
+import type { FolkInputs, FolkWorld } from '../engine/folkpick.ts'
 import { setsOf as modelSetsOf, setsWith as modelSetsWith } from '../model/folk.ts'
 import { newUid } from '../app/gear/wardrobe.ts'
 import { app } from './app.svelte.ts'
@@ -135,8 +135,8 @@ class DressState {
   }
 
   /** One game-engine pick, with the locked fields kept. Returns the unit actually shown. */
-  randomize (c: Character, uid = newUid(), world?: FolkWorld): Dressed {
-    this.put(c, randomize(c, this.of(c.id), uid, world))
+  randomize (c: Character, uid = newUid(), world?: FolkWorld, inputs: Omit<FolkInputs, 'fixed'> = {}, useLocks = true): Dressed {
+    this.put(c, randomize(c, this.of(c.id), uid, world, inputs, useLocks))
     return this.worn(c)
   }
 

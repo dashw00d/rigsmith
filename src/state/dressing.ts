@@ -9,7 +9,7 @@ import type { Command } from '../model/command-types.ts'
 import type { Character, ClothSlot, Gear } from '../model/types.ts'
 import { BRACERS, COVERS_FACE, COVERS_HAIR, setsOf as modelSetsOf, setsWith as modelSetsWith } from '../model/folk.ts'
 import { longSleeves } from '../engine/folk.ts'
-import { pick, worldOf, type FolkWorld } from '../engine/folkpick.ts'
+import { pick, worldOf, type FolkInputs, type FolkWorld } from '../engine/folkpick.ts'
 import { dressedFromPick, fixedFor } from '../app/gear/wardrobe.ts'
 
 /** A set of pieces worn together (today: an outfit). */
@@ -151,13 +151,13 @@ export function anchorOutfit (c: Gearing, d: Dress | undefined): Dress | undefin
 }
 
 /** The game's pick for a unit, with locked slots fixed to the current dress. */
-export function randomize (c: Character, d: Dress | undefined, seed: number, world: FolkWorld = worldOf(c)): Dress {
+export function randomize (c: Character, d: Dress | undefined, seed: number, world: FolkWorld = worldOf(c), inputs: Omit<FolkInputs, 'fixed'> = {}, useLocks = true): Dress {
   const now = resolve(c, d)
-  const fixed = fixedFor(c, now, d?.locks ?? [])
-  if (d?.locks?.includes('clothing') === true && now.layers !== undefined) {
+  const fixed = fixedFor(c, now, useLocks ? d?.locks ?? [] : [])
+  if (useLocks && d?.locks?.includes('clothing') === true && now.layers !== undefined) {
     for (const slot of ['bottom', 'top', 'over'] as const) fixed[slot] = now.layers[slot] ?? null
   }
-  const picked = pick(world, seed, { fixed })
+  const picked = pick(world, seed, { ...inputs, fixed })
   const unit = dressedFromPick(c, picked)
   if (c.look.cloth !== undefined) {
     const layers: NonNullable<Dress['layers']> = {}
