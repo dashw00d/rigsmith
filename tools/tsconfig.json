@@ -1,6 +1,6 @@
 {
   "//": "Type-checks the node tools (npm run check:tools): every script in tools/, tools/lib, tools/dev and tools/skin_opt, and the contract tests in tests/; the app's own files come in through what they import.",
   "extends": "../tsconfig.json",
-  "compilerOptions": { "types": ["node"] },
+  "compilerOptions": { "types": ["node", "vite/client"] },
   "include": ["*.ts", "lib/**/*.ts", "dev/**/*.ts", "skin_opt/**/*.ts", "../tests/**/*.ts"]
 }
