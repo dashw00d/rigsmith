@@ -24,8 +24,9 @@
   const sources = $derived([...new Set(library.index.map(c => c.source))].sort().map(v => ({ value: v, label: v })))
   const rigs = $derived([...new Set(library.index.map(c => c.rig))].sort())
   const tags = $derived([...new Set(library.index.flatMap(c => c.tags))].sort().map(v => ({ value: v, label: v })))
+  const selection = $derived(JSON.stringify([app.selected?.id ?? null, app.selected?.skeleton.template ?? 'human']))
   const set = (change: Partial<ViewState>): void => { library.setViewOptions(change) }
-  $effect(() => { if (open) { const rig = app.selected?.skeleton.template ?? 'human'; untrack(() => library.setRig(rig)) } })
+  $effect(() => { if (open) { const [, rig] = JSON.parse(selection) as [string | null, string]; untrack(() => library.setRig(rig)) } })
   $effect(() => { if (open) void slots.load(app.selected?.id ?? null) })
   $effect(() => { if (open) return () => { animator.cancelSprites(); cancelLibraryPreview() } })
 
