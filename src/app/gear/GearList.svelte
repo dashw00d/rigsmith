@@ -131,8 +131,7 @@
 {/each}
 
 <style>
-  .search, .edit { height: 28px; padding: 0 8px; border-radius: var(--r-1); border: 1px solid var(--line); background: var(--bg-2); color: var(--text-1); font: inherit; font-size: 12px; }
-  .search { width: 100%; }
+  .edit { height: 28px; padding: 0 8px; border-radius: var(--r-1); border: 1px solid var(--line); background: var(--bg-2); color: var(--text-1); font: inherit; font-size: 12px; }
   .edit { flex: 1; min-width: 0; }
   ul { list-style: none; margin: 0 -6px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
   li { display: flex; align-items: center; gap: 2px; padding-right: 4px; border-radius: var(--r-1); border: 1px solid transparent; }
