@@ -9,8 +9,28 @@
   import IconButton from '../../ui/IconButton.svelte'
   import { tooltip } from '../../ui/tooltip.ts'
   import { originOf, swapGroups, wearText } from './text.ts'
+  import { untrack } from 'svelte'
+  import { wardrobe } from './wardrobe.svelte.ts'
 
   let { character }: { character: Character } = $props()
+
+  // The piece last opened is remembered per character (wardrobe.svelte.ts) and opened again on coming back. (The stage
+  // drops the selection when the character's view loads, a moment after the switch: it is put back for a while.)
+  let restoring: { id: string, until: number } | null = null
+  $effect(() => {
+    const id = character.id
+    untrack(() => { restoring = { id, until: performance.now() + 4000 } })
+  })
+  $effect(() => {
+    const selected = gearState.selected
+    untrack(() => {
+      const id = character.id
+      const want = wardrobe.view(id).selected ?? null
+      if (selected !== null) { if (character.gear.some(g => g.id === selected) && selected !== want) { wardrobe.update(id, { selected }); restoring = null } return }
+      if (restoring?.id !== id || performance.now() > restoring.until) return
+      if (want !== null && character.gear.some(g => g.id === want)) gearState.select(want)
+    })
+  })
 
   // (a dynamic character: only the outfit and the hair and beard on stage are listed; the Folk pickers switch them)
   const listed = $derived(character.gear.filter(g => !((g.outfit !== undefined || g.role !== undefined) && !gearState.shownOnStage(character, g))))

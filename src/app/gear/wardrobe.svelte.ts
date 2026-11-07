@@ -7,6 +7,7 @@
 // it takes off what it leaves no room for). A hover preview keeps the dress before it and puts it back on leave.
 import { SvelteMap } from 'svelte/reactivity'
 import { untrack } from 'svelte'
+import type { Command } from '../../model/command-types.ts'
 import type { Character } from '../../state/api.ts'
 import { app as appState } from '../../state/app.svelte.ts'
 import { dress } from '../../state/dress.svelte.ts'
@@ -103,6 +104,17 @@ class WardrobeState {
     this.update(id, { collapsed: [...collapsed] })
   }
   setCollapsed (id: string, groups: string[]): void { this.update(id, { collapsed: groups }) }
+
+  // ---- edits ----------------------------------------------------------------------------------------------------------
+
+  /** Commands sent as one batch (one journal entry, one undo), with a toast that takes it back. False when refused. */
+  async run (c: Character, commands: Command[], text: string): Promise<boolean> {
+    if (commands.length === 0) return true
+    const entry = await appState.do(c.id, commands, 'wardrobe')
+    if (entry === null) return false
+    appState.toast('ok', `${text}.`, 6000, { label: 'Undo', run: () => { void appState.undo(c.id, entry.seq) } })
+    return true
+  }
 
   // ---- the dress ------------------------------------------------------------------------------------------------------
 
