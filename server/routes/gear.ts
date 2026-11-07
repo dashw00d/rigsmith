@@ -10,6 +10,7 @@
 // Painted weights (garments/<gid>/weights.json; skin gear by bone name, pulled gear by 'PropRoot' / 'pull:<handle id>')
 // are written by lock 'files' jobs under withFiles. Removing a piece never deletes its folder: undo can bring it back,
 // and the store's orphan sweep moves folders nothing refers to into trash/.
+import { gearWeightsFile } from '../../src/model/gearweights.ts'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
@@ -21,7 +22,7 @@ import { runCommands } from '../commands.ts'
 import { view } from '../compat.ts'
 import { by, HttpError, readBody, readJsonBody, route, send } from '../http.ts'
 import { enqueue, type Job, runBlender } from '../jobs.ts'
-import { getCharacter, paths, readJson, updateCharacter, withFiles, writeJson, WORKSPACE } from '../store.ts'
+import { characterDir, getCharacter, paths, readJson, updateCharacter, withFiles, writeJson, WORKSPACE } from '../store.ts'
 
 /** A painted vertex of a piece: its mesh (the model's mesh order), and its weights by bone name or pull key. */
 interface GearEdit { mesh: number, vertex: number, weights: Array<[string, number]> }
@@ -180,14 +181,15 @@ route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/garments\/([A-Za-z0-9_-]+)\/weig
   const body = await readJsonBody<{ edits?: unknown }>(req)
   const edits = checkEdits(body.edits, keys)
   const who = by(req)
-  const file = path.join(paths(id).garment(gid), 'weights.json')
   send(res, 202, enqueue('paint', `Save ${g.name}'s painted weights`, c.id, async (_job, update, signal) => {
     update({ message: 'Writing the weights' })
     await withFiles(id, async () => {
       // (against the piece as it is now: its pulls may have changed since the request)
       const now = await paintable(id, gid)
       checkEdits(edits, now.keys)
+      if (now.g.model !== g.model) throw new Error('The gear mesh changed while the painting was queued')
       signal.throwIfAborted()
+      const file = path.join(characterDir(id), gearWeightsFile(now.g))
       const kept = new Map<string, GearEdit>()
       for (const e of await readJson<GearEdit[]>(file, [])) kept.set(`${e.mesh}:${e.vertex}`, e)
       for (const e of edits) kept.set(`${e.mesh}:${e.vertex}`, e)
@@ -195,7 +197,8 @@ route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/garments\/([A-Za-z0-9_-]+)\/weig
       await writeJson(file, [...kept.values()])
       await updateCharacter(id, x => {
         const piece = gearById(x, gid)
-        if (piece !== undefined) piece.painted = kept.size
+        if (piece === undefined || piece.model !== now.g.model) throw new Error('The gear mesh changed while saving its painting')
+        piece.painted = kept.size
       }, { by: who, what: 'gear.weights', changes: [`gear ${now.g.name}: weights painted on ${edits.length} vertices (${kept.size} kept)`] })
     })
   }, { lock: 'files' }))
@@ -207,14 +210,17 @@ route('DELETE', /^\/api\/characters\/([a-z0-9-]+)\/garments\/([A-Za-z0-9_-]+)\/w
   const g = gearById(c, gid)
   if (g === undefined) throw new HttpError(404, 'No such gear')
   const who = by(req)
-  const file = path.join(paths(id).garment(gid), 'weights.json')
   send(res, 202, enqueue('paint', `Forget ${g.name}'s painting`, c.id, async () => {
     await withFiles(id, async () => {
+      const now = await paintable(id, gid)
+      if (now.g.model !== g.model) throw new Error('The gear mesh changed while forgetting its painting')
+      const file = path.join(characterDir(id), gearWeightsFile(now.g))
       const had = existsSync(file) ? (JSON.parse(await readFile(file, 'utf8')) as unknown[]).length : 0
       await rm(file, { force: true })
       await updateCharacter(id, x => {
         const piece = gearById(x, gid)
-        if (piece !== undefined) delete piece.painted
+        if (piece === undefined || piece.model !== now.g.model) throw new Error('The gear mesh changed while forgetting its painting')
+        delete piece.painted
       }, { by: who, what: 'gear.weights', changes: [`gear ${g.name}: painted weights forgotten${had > 0 ? ` (${had} vertices)` : ''}`] })
     })
   }, { lock: 'files' }))

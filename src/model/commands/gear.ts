@@ -333,6 +333,9 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
         const model = under(p.model, `garments/${g.id}/`, 'model')
         if (model !== g.model) {
           g.model = model
+          const hadPainting = (g.painted ?? 0) > 0
+          delete g.painted
+          if (hadPainting) out.push(`gear ${g.name}: previous mesh weights cleared`)
           // (the origin was a point of the old file: the new one comes with its own)
           const had = g.origin !== undefined
           delete g.origin

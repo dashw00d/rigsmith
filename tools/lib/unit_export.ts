@@ -38,6 +38,7 @@ import { bodySurface, hideShareOf, originMatrix, regionsHidden, type GarmentEdit
 import { regionMask, regionsOf, withoutRegions, type Regions } from '../../src/engine/regions.ts'
 import { FEMALE, HAIR_GREY_MEAN, LONG_SLEEVE, femaleOffsets, isFolk } from '../../src/engine/folk.ts'
 import { clothOf, folkOf } from '../../src/model/folk.ts'
+import { gearWeightsFile } from '../../src/model/gearweights.ts'
 import { atlasGroupOf, clothExportBase, folkLeftOut, folkManifestData, folkScope, isSwapped, scopedGearLeftOut, stanceExportPlan, type FolkFiles, type FolkScope, type ManifestPiece, type StanceExportPlan } from './folk_export.ts'
 import { safeName } from '../../src/engine/geom.ts'
 import { applyGeometryMatrix } from '../../src/engine/geometry-transform.ts'
@@ -234,7 +235,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   const pullBones: PullBone[] = []
   const editsOf = (g: Gear): GarmentEdit[] => {
     if ((g.painted ?? 0) === 0) return []
-    const file = path.join(me.dir, 'garments', g.id, 'weights.json')
+    const file = path.join(me.dir, gearWeightsFile(g))
     if (!existsSync(file)) { warn(`${g.name}: ${g.painted} painted weights, but no ${path.relative(me.dir, file)}`); return [] }
     return JSON.parse(readFileSync(file, 'utf8')) as GarmentEdit[]
   }

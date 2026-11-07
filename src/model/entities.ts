@@ -55,6 +55,7 @@ export function entitiesOf (c: Character): Map<string, unknown> {
   for (const g of c.gear) {
     m.set(`gear:${g.id}`, gearEntity(g))
     m.set(`gearModel:${g.id}`, g.model ?? null)
+    m.set(`gearPaint:${g.id}`, g.painted ?? null)
   }
   m.set('slotOrder', c.clips.map(s => s.id))
   for (const s of c.clips) m.set(`slot:${s.id}`, s)
@@ -80,8 +81,8 @@ export function touchedBy (before: Character, after: Character): string[] {
   const b = entitiesOf(before)
   const a = entitiesOf(after)
   const out: string[] = []
-  for (const [key, v] of a) if ((!key.startsWith('gearModel:') || b.has(key)) && (!b.has(key) || stableJson(b.get(key)) !== stableJson(v))) out.push(key)
-  for (const key of b.keys()) if (!a.has(key) && !key.startsWith('gearModel:')) out.push(key)
+  for (const [key, v] of a) if ((!(key.startsWith('gearModel:') || key.startsWith('gearPaint:')) || b.has(key)) && (!b.has(key) || stableJson(b.get(key)) !== stableJson(v))) out.push(key)
+  for (const key of b.keys()) if (!a.has(key) && !key.startsWith('gearModel:') && !key.startsWith('gearPaint:')) out.push(key)
   return out
 }
 
@@ -143,6 +144,14 @@ export function restoreEntities (c: Character, undo: UndoRecord): Character {
         if (gear !== undefined) {
           if (was === null) delete gear.model
           else gear.model = was as string
+        }
+        break
+      }
+      case 'gearPaint': {
+        const gear = out.gear.find(x => x.id === itemId)
+        if (gear !== undefined) {
+          if (was === null) delete gear.painted
+          else gear.painted = was as number
         }
         break
       }

@@ -7,7 +7,7 @@
   let { part, packageId }: { part: PartView, packageId: string } = $props()
   const preview = $derived(part.preview ? `/files/incoming/${encodeURIComponent(packageId)}/${part.preview.split('/').map(encodeURIComponent).join('/')}` : null)
   const painted = $derived(part.from ? app.selected?.gear.find(g => g.from === part.from)?.painted ?? 0 : 0)
-  const canAccept = $derived(app.selected !== null && isFolk(app.selected) && !part.damaged && painted === 0)
+  const canAccept = $derived(app.selected !== null && isFolk(app.selected) && !part.damaged)
 </script>
 <div class="part" data-testid="incoming-part" data-id={part.id}>
   {#if preview}<img src={preview} alt="Preview of {part.name}" />{/if}
@@ -16,7 +16,7 @@
     <span class="badge">{part.damaged ? 'Damaged' : part.status === 'pending' ? (part.effect === 'update' ? 'Update' : 'New') : part.status === 'accepted' ? 'Accepted' : 'Rejected'}</span>
     {#if part.damaged}<p role="alert">{part.damaged}</p>{/if}
     {#if part.effect === 'update' && !part.damaged}<p>Existing placement is kept.</p>{/if}
-    {#if painted > 0}<p>Update unavailable while this piece has painted weights.</p>{/if}
+    {#if painted > 0}<p>Replacing this mesh clears its painted weights; undo restores them.</p>{/if}
     <div class="actions">
       {#if part.status === 'pending'}
         <Button size="sm" variant="primary" disabled={!canAccept || incoming.busy !== null} onclick={() => incoming.change('accept', packageId, part.id)}>Accept</Button>

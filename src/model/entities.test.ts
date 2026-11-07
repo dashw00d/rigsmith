@@ -32,14 +32,14 @@ describe('entities', () => {
   it('cuts a character into its entities, leaving out what jobs own', () => {
     const c = base()
     const keys = [...entitiesOf(c).keys()]
-    expect(keys).toEqual(['name', 'skeleton', 'skinLock', 'hands', 'gearOrder', 'gear:axe', 'gearModel:axe', 'gear:cap', 'gearModel:cap', 'slotOrder', 'slot:walk', 'slot:run', 'layerOrder', 'layer:l1'])
+    expect(keys).toEqual(['name', 'skeleton', 'skinLock', 'hands', 'gearOrder', 'gear:axe', 'gearModel:axe', 'gearPaint:axe', 'gear:cap', 'gearModel:cap', 'gearPaint:cap', 'slotOrder', 'slot:walk', 'slot:run', 'layerOrder', 'layer:l1'])
     expect(entitiesOf(c).get('gear:axe')).not.toHaveProperty('model')
     expect(entitiesOf(c).get('gear:axe')).not.toHaveProperty('status')
     expect(entitiesOf(c).get('skinLock')).toEqual({ locked: false })
     expect(entitiesOf({ ...c, mount: { character: 'h', bone: 'b', position: [0, 0, 0], rotation: [0, 0, 0], freeze: [], pose: {} } }).has('mount')).toBe(true)
   })
 
-  it("sees which entities a write touched, not a job's fields", () => {
+  it("tracks painted counts while ignoring other job fields", () => {
     const c = base()
     const after = applyCommands(c, [{ type: 'gear.place', id: 'axe', place: { position: [1, 1, 1], rotation: [0, 0, 0], scale: 1 } }]).character
     expect(touchedBy(c, after)).toEqual(['gear:axe'])
@@ -48,7 +48,7 @@ describe('entities', () => {
     job.gear[0].painted = 3
     job.status = 'rigged'
     job.source.scale = 2
-    expect(touchedBy(c, job)).toEqual([])
+    expect(touchedBy(c, job)).toEqual(['gearPaint:axe'])
     expect(touchedBy(c, applyCommands(c, [{ type: 'slot.reorder', ids: ['run', 'walk'] }]).character)).toEqual(['slotOrder'])
   })
 })

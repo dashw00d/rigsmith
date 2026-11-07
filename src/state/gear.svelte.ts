@@ -11,6 +11,7 @@ import * as THREE from 'three'
 import { untrack } from 'svelte'
 import type { Command } from '../model/command-types.ts'
 import { newId } from '../model/ids.ts'
+import { gearWeightsFile } from '../model/gearweights.ts'
 import { carryHandle, gearById, handSide, heightOf, hierarchyOf, slotById } from '../model/select.ts'
 import { originOf } from '../model/origin.ts'
 import type { Character, ClipKey, Gear, GearAttach, Handle, Placement, Side, Vec3, Window } from '../model/types.ts'
@@ -395,7 +396,7 @@ class GearState {
     const heavy = g.attach.kind !== 'bone' && !fitting && shown
     if (heavy) this.busy(1)
     const url = this.urlOf(c, g)!
-    const weights = (g.painted ?? 0) > 0 ? asset(c, `garments/${g.id}/weights.json`) : null
+    const weights = (g.painted ?? 0) > 0 ? asset(c, gearWeightsFile(g)) : null
     const edits = async (): Promise<GarmentEdit[]> => {
       if (weights === null) return []
       const res = await fetch(weights)

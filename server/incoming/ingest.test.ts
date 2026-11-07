@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, expect, it } from 'vitest'
 import { makeCharacter, makeGear } from '../../src/model/fixtures.ts'
+import { gearWeightsFile } from '../../src/model/gearweights.ts'
 import type { Character, Gear } from '../../src/model/types.ts'
 import type { Command } from '../../src/model/command-types.ts'
 
@@ -82,7 +83,7 @@ it('replacement must undo its model change', async () => {
   await undo(c.id, undone.entry!.seq)
   expect((await getCharacter(c.id))!.gear[0]).toMatchObject({ model: next.gear[0].model, attach: old.attach })
 })
-it.fails('replacement disables old painted weights and undo restores them with the old model', async () => {
+it('replacement disables old painted weights and undo restores them with the old model', async () => {
   const old = makeGear({ id: 'old', name: 'old', painted: 2, from: 'emberhold:gear/painted', model: 'garments/old/model.glb', attach: { kind: 'skin', policy: 'lower', place } })
   const c = body('test-painted-update', [old]); await putCharacter(c)
   const dir = path.join(ws, 'characters', c.id, 'garments', old.id)
@@ -126,4 +127,38 @@ it('honors an explicit replacement even when the source identity is new', async 
   await ingest({ package: 'chosen', parts: ['coat'], character: c.id, replace: { coat: 'old' } }, { sink: importer })
   expect((await getCharacter(c.id))!.gear[0]).toMatchObject({ id: 'old', from: 'emberhold:gear/new', attach: old.attach })
   expect(importer.batches).toHaveLength(1)
+})
+
+it('repainting a replacement keeps the previous mesh weights separate', async () => {
+  const { createServer } = await import('node:http')
+  const { handle } = await import('../http.ts')
+  const { getJob } = await import('../jobs.ts')
+  await import('../routes/gear.ts')
+  const old = makeGear({ id: 'old', name: 'old', painted: 1, from: 'emberhold:gear/repaint', model: 'garments/old/model.glb', attach: { kind: 'skin', policy: 'lower', place } })
+  const c = body('test-repaint', [old]); await putCharacter(c)
+  const dir = path.join(ws, 'characters', c.id, 'garments', old.id); await mkdir(dir, { recursive: true })
+  const weights = [{ mesh: 0, vertex: 7, weights: [['Hips', 1]] }]
+  await writeFile(path.join(dir, 'weights.json'), JSON.stringify(weights))
+  await delivery('repaint', [{ id: 'coat', type: 'piece', from: old.from }])
+  await ingest({ package: 'repaint', parts: ['coat'], character: c.id }, { sink: fake() })
+  const server = createServer((req, res) => { void handle(req, res) })
+  await new Promise<void>(resolve => { server.listen(0, '127.0.0.1', resolve) })
+  try {
+    const port = (server.address() as { port: number }).port
+    const response = await fetch(`http://127.0.0.1:${port}/api/characters/${c.id}/garments/old/weights`, {
+      method: 'PUT', headers: { 'content-type': 'application/json', 'x-rigsmith': '1' },
+      body: JSON.stringify({ edits: [{ mesh: 0, vertex: 2, weights: [['Hips', 1]] }] }),
+    })
+    expect(response.status).toBe(202)
+    const job = await response.json() as { id: string }
+    for (let i = 0; i < 200 && !['done', 'failed', 'cancelled'].includes(getJob(job.id)?.status ?? ''); i++) await new Promise(resolve => setTimeout(resolve, 10))
+    expect(getJob(job.id)?.status).toBe('done')
+    const current = (await getCharacter(c.id))!.gear[0]
+    expect(current.painted).toBe(1)
+    expect(JSON.parse(await readFile(path.join(ws, 'characters', c.id, gearWeightsFile(current)), 'utf8'))).toEqual([{ mesh: 0, vertex: 2, weights: [['Hips', 1]] }])
+    expect(JSON.parse(await readFile(path.join(dir, 'weights.json'), 'utf8'))).toEqual(weights)
+    await expect(undo(c.id)).rejects.toMatchObject({ status: 409 })
+    expect((await getCharacter(c.id))!.gear[0].model).toBe(current.model)
+
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())) }
 })
