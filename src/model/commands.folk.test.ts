@@ -170,6 +170,18 @@ describe('folk.kind.* and folk.stance.*', () => {
 })
 
 describe('look.cloth.* and look.skin.bare', () => {
+  it('renames a skin and its selected and pool references, validates hair, and undoes', () => {
+    const c = folk()
+    c.look.skin = 'asha'
+    const next = run(c, { type: 'look.skin.update', name: 'asha', patch: { name: 'asha-new', hair: '#AABBCC' } })
+    expect(next.look.skin).toBe('asha-new')
+    expect(next.look.skins!.find(s => s.name === 'asha-new')?.hair).toBe('#aabbcc')
+    expect(next.folk!.pools.filter(p => p.kind === 'skin').flatMap(p => p.items.map(i => i.ref))).toContain('asha-new')
+    expect(next.folk!.pools.filter(p => p.kind === 'skin').flatMap(p => p.items.map(i => i.ref))).not.toContain('asha')
+    fails(c, { type: 'look.skin.update', name: 'asha', patch: { hair: 'red' } }, 400, /hair/)
+    fails(c, { type: 'look.skin.update', name: 'asha', patch: { name: 'bran' } }, 409)
+    expect(undo(c, next)).toEqual(c)
+  })
   it('adds, updates, reorders and removes cloth layers; a removed one leaves the pools', () => {
     const c = folk()
     const pool = c.folk!.pools.find(p => p.kind === 'cloth')!
