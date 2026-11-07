@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import type { Scenario } from './ui.ts'
 export default { name: 'classes.sets', character: 'folk-v6-0ba482', async run (ui) {
-  await ui.click({ role: 'tab', name: 'Dynamic classes 1' }); await ui.click({ testid: 'class-row', id: 'folk' }); await ui.waitFor({ testid: 'class-section' })
+  await ui.click({ role: 'tab', name: 'Dynamic classes 1' }); await ui.click({ testid: 'class-row', id: 'folk-v6-0ba482:folk' }); await ui.waitFor({ testid: 'class-section' })
   await ui.click({ role: 'radio', name: 'Listed' })
   const set = await ui.eval(r => r.app.selected!.folk!.sets[0].id)
   await ui.fill({ testid: `class-weight-${set}` }, '0'); await ui.key('Enter')

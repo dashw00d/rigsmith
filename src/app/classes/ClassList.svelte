@@ -49,9 +49,9 @@
         {#each kindsOf(c).filter(k => matches(c, k)) as k (k.id)}
           {@const units = ship.unitsOf(c.id).filter(u => u.role === 'unit' && u.ours.folk?.kind === k.id)}
           <div class="row">
-            <button class="open" data-testid="class-row" data-id={k.id} data-kind={k.id} onclick={() => classes.openClass(c.id, k.id)}><strong>{k.name}</strong><small>{setSummary(c, k)}{units.length ? ` · ${units.map(u => u.name).join(', ')}` : ''}</small></button>
+            <button class="open" data-testid="class-row" data-id={`${c.id}:${k.id}`} data-kind={k.id} onclick={() => classes.openClass(c.id, k.id)}><strong>{k.name}</strong><small>{setSummary(c, k)}{units.length ? ` · ${units.map(u => u.name).join(', ')}` : ''}</small></button>
             <Button size="sm" variant="ghost" onclick={() => { renaming = `${c.id}:${k.id}`; name = k.name }}>Rename</Button>
-            <Button size="sm" variant="ghost" data-testid="class-remove" data-id={k.id} onclick={() => remove(c, k)}>Remove</Button>
+            <Button size="sm" variant="ghost" data-testid="class-remove" data-id={`${c.id}:${k.id}`} onclick={() => remove(c, k)}>Remove</Button>
           </div>
           {#if renaming === `${c.id}:${k.id}`}<TextField label="Class name" bind:value={name} autoselect oncommit={() => rename(c, k)} />{/if}
         {/each}
