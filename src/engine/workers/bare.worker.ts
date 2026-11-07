@@ -1,11 +1,58 @@
 /// <reference lib="webworker" />
-import { bodyField, makeBare } from '../clothcut.ts'
+import { bodyField, composeCloth, cutAlpha, makeBare, type BodyGeometry } from '../clothcut.ts'
 import { regionsOf } from '../regions.ts'
+import type { ClothCut, ClothSlot } from '../../model/types.ts'
 
 interface MeshData { positions: Float32Array, uv: Float32Array, index: Uint32Array | Uint16Array | null, matrix: number[], material: string }
 interface Request { url: string, meshes: MeshData[], height: number }
+interface ComposeRequest {
+  kind: 'compose'
+  base: string | ImageBitmap
+  layers: Array<{ id: string, slots: ClothSlot[], url: string, cut?: ClothCut, mask?: string }>
+  geometry: BodyGeometry
+  regions: Int32Array
+  height: number
+}
 const worker = self as unknown as DedicatedWorkerGlobalScope
-worker.onmessage = (event: MessageEvent<Request>) => { void run(event.data).catch((error: unknown) => worker.postMessage({ error: error instanceof Error ? error.message : String(error) })) }
+worker.onmessage = (event: MessageEvent<Request | ComposeRequest>) => {
+  const request = event.data
+  void ('kind' in request ? compose(request) : run(request)).catch((error: unknown) => worker.postMessage({ error: error instanceof Error ? error.message : String(error) }))
+}
+
+async function loadImage (source: string | ImageBitmap): Promise<ImageBitmap> {
+  if (typeof source !== 'string') return source
+  const response = await fetch(source)
+  if (!response.ok) throw new Error(`Image HTTP ${response.status}: ${source}`)
+  return await createImageBitmap(await response.blob(), { imageOrientation: 'none', premultiplyAlpha: 'none', colorSpaceConversion: 'none' })
+}
+
+async function compose (request: ComposeRequest): Promise<void> {
+  const baseImage = await loadImage(request.base)
+  const width = baseImage.width; const height = baseImage.height
+  const canvas = new OffscreenCanvas(width, height)
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (ctx === null) throw new Error('Cannot read cloth images')
+  const pixels = async (image: string | ImageBitmap): Promise<Uint8ClampedArray> => {
+    const bitmap = await loadImage(image)
+    ctx.clearRect(0, 0, width, height); ctx.drawImage(bitmap, 0, 0, width, height); bitmap.close()
+    return ctx.getImageData(0, 0, width, height).data
+  }
+  const base = { rgba: await pixels(baseImage), width, height }
+  const field = request.layers.some(l => l.cut !== undefined)
+    ? bodyField(request.geometry, request.regions, request.height, { width, height }) : null
+  const layers = []
+  for (const layer of request.layers) {
+    const rgba = await pixels(layer.url)
+    const mask = layer.mask === undefined ? undefined : await pixels(layer.mask)
+    layers.push({ id: layer.id, slots: layer.slots, width, height, rgba: layer.cut === undefined || field === null ? rgba : cutAlpha(rgba, width, height, field, layer.cut, mask) })
+  }
+  const result = composeCloth({ base, layers })
+  const output = ctx.createImageData(width, height)
+  output.data.set(result.rgba)
+  ctx.putImageData(output, 0, 0)
+  const bitmap = canvas.transferToImageBitmap()
+  worker.postMessage({ bitmap }, [bitmap])
+}
 async function run ({ url, meshes, height }: Request): Promise<void> {
   worker.postMessage({ progress: 0.05 })
   const response = await fetch(url)

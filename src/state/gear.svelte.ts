@@ -341,7 +341,27 @@ class GearState {
     const look = worn ?? resolve(c, undefined)
     const skin = (c.look.skins ?? []).find(s => s.name === look.skin)
     const clothes = (c.look.clothes ?? []).find(s => s.name === look.clothing)
-    void showSkin(w.view.bodySkinned, skin === undefined ? null : asset(c, skin.file), clothes === undefined ? null : asset(c, clothes.file), longSleeves(clothes)).catch((error: unknown) => {
+    const skinUrl = skin === undefined ? null : asset(c, skin.file)
+    const bareUrl = skin?.bare === undefined ? null : asset(c, skin.bare)
+    const selected = new Set(Object.values(look.layers ?? {}).filter((id): id is string => typeof id === 'string'))
+    const layers = (c.look.cloth ?? []).filter(layer => selected.has(layer.id)).map(layer => ({
+      id: layer.id, slots: layer.slots, url: asset(c, layer.file), cut: layer.cut,
+      mask: layer.cut?.mask === undefined ? undefined : asset(c, layer.cut.mask),
+      long: layer.shapes?.includes('long_sleeve') === true,
+    }))
+    const show = import('../engine/folkview.ts').then(async ({ showDressed }) => {
+        if (look.layers === undefined) {
+          await showSkin(w.view.bodySkinned, look.bare === true && bareUrl !== null ? bareUrl : skinUrl, clothes === undefined ? null : asset(c, clothes.file), longSleeves(clothes))
+          return
+        }
+        if (layers.some(l => l.url === null || (l.cut?.mask !== undefined && l.mask === null))) throw new Error('A selected cloth image is unavailable')
+        await showDressed(w.view.bodySkinned, {
+          skin: skinUrl, bare: bareUrl, previewBare: look.bare === true, height: w.view.height,
+          long: layers.some(l => l.long),
+          layers: layers.map(l => ({ id: l.id, slots: l.slots, url: l.url!, ...(l.cut !== undefined ? { cut: l.cut } : {}), ...(l.mask != null ? { mask: l.mask } : {}) })),
+        })
+      })
+    void show.catch((error: unknown) => {
       app.toast('error', `The skin ${skin?.name ?? ''} didn't load: ${message(error)}`)
     })
     for (const p of w.pieces.values()) {
