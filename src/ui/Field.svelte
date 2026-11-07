@@ -3,12 +3,12 @@
 
   // A labelled control: the label (and a hint under it) on the left and the control on the right, or above it with
   // `stack`. A single control is labelled by nesting it; a group of them (a Segmented, a row of buttons) says `group`.
-  interface Props { label: string, hint?: string, error?: string | null, stack?: boolean, group?: boolean, children: Snippet }
-  let { label, hint, error = null, stack = false, group = false, children }: Props = $props()
+  interface Props { label: string, hint?: string, error?: string | null, stack?: boolean, group?: boolean, children: Snippet, testid?: string }
+  let { label, hint, error = null, stack = false, group = false, children, testid }: Props = $props()
   const id = $props.id()
 </script>
 
-<svelte:element this={group ? 'div' : 'label'} class="field" class:stack role={group ? 'group' : undefined} aria-labelledby={group ? `${id}-label` : undefined}>
+<svelte:element data-testid={testid} this={group ? 'div' : 'label'} class="field" class:stack role={group ? 'group' : undefined} aria-labelledby={group ? `${id}-label` : undefined}>
   <span class="text">
     <span class="label" id="{id}-label">{label}</span>
     {#if hint}<span class="hint">{hint}</span>{/if}

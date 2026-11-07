@@ -70,7 +70,7 @@
   <nav class="steps" aria-label="Workflow" bind:this={nav}>
     {#each STEPS as step, i (step.id)}
       {@const mark = marks.get(step.id) ?? null}
-      <button class="step {mark ?? ''}" class:active={app.step === step.id} aria-current={app.step === step.id ? 'step' : undefined}
+      <button data-testid="bar-step-{step.id}" class="step {mark ?? ''}" class:active={app.step === step.id} aria-current={app.step === step.id ? 'step' : undefined}
         onclick={() => { void app.go(step.id) }} use:tooltip={hint(step)}>
         <span class="num">
           {#if mark === 'done' && app.step !== step.id}<Check size={11} strokeWidth={3} />{:else}{i + 1}{/if}
@@ -89,7 +89,7 @@
       <Anvil size={14} />
       <span>Forge</span>
     </button>
-    <button class="chip" class:busy={running > 0} class:open={app.drawer === 'activity'} aria-pressed={app.drawer === 'activity'}
+    <button data-testid="bar-activity" class="chip" class:busy={running > 0} class:open={app.drawer === 'activity'} aria-pressed={app.drawer === 'activity'}
       aria-label="Activity: {running > 0 ? `${running} running` : app.connected ? 'connected' : 'offline'}"
       onclick={() => { app.toggleDrawer('activity') }}
       use:tooltip={app.connected ? 'Activity: jobs and this character\'s history' : 'The server is not answering: reconnecting'}>

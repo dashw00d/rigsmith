@@ -1,11 +1,11 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
 
-  interface Props { title?: string, action?: Snippet, children: Snippet, flush?: boolean }
-  let { title, action, children, flush = false }: Props = $props()
+  interface Props { title?: string, action?: Snippet, children: Snippet, flush?: boolean, testid?: string }
+  let { title, action, children, flush = false, testid }: Props = $props()
 </script>
 
-<section class:flush>
+<section data-testid={testid ?? (title ? `section-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}` : undefined)} class:flush>
   {#if title || action}
     <header>
       {#if title}<h3>{title}</h3>{/if}

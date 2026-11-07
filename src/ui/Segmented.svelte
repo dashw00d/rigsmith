@@ -3,9 +3,9 @@
   import { tooltip } from './tooltip.ts'
 
   interface Option { value: T, label: string, icon?: Component, hint?: string }
-  interface Props { options: Option[], value: T, size?: 'sm' | 'md', iconsOnly?: boolean, label?: string, onchange?: (value: T) => void }
+  interface Props { options: Option[], value: T, size?: 'sm' | 'md', iconsOnly?: boolean, label?: string, onchange?: (value: T) => void, testid?: string }
 
-  let { options, value = $bindable(), size = 'md', iconsOnly = false, label, onchange }: Props = $props()
+  let { options, value = $bindable(), size = 'md', iconsOnly = false, label, onchange, testid }: Props = $props()
 
   function onKey (event: KeyboardEvent, index: number): void {
     let next: number
@@ -22,7 +22,7 @@
   }
 </script>
 
-<div class="seg {size}" role="radiogroup" aria-label={label}>
+<div data-testid={testid} class="seg {size}" role="radiogroup" aria-label={label}>
   {#each options as option, index (option.value)}
     <button
       role="radio"

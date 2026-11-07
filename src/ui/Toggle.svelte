@@ -1,6 +1,6 @@
 <script lang="ts">
-  interface Props { checked: boolean, label: string, hint?: string, disabled?: boolean, onchange?: (checked: boolean) => void }
-  let { checked = $bindable(), label, hint, disabled = false, onchange }: Props = $props()
+  interface Props { checked: boolean, label: string, hint?: string, disabled?: boolean, onchange?: (checked: boolean) => void, testid?: string }
+  let { checked = $bindable(), label, hint, disabled = false, onchange, testid }: Props = $props()
 </script>
 
 <label class="toggle" class:disabled>
@@ -8,7 +8,7 @@
     <span>{label}</span>
     {#if hint}<span class="hint">{hint}</span>{/if}
   </span>
-  <input type="checkbox" bind:checked {disabled} onchange={() => onchange?.(checked)} />
+  <input data-testid={testid} type="checkbox" bind:checked {disabled} onchange={() => onchange?.(checked)} />
   <span class="track" aria-hidden="true"><span class="thumb"></span></span>
 </label>
 

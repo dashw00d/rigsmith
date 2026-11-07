@@ -16,8 +16,9 @@
     disabled?: boolean
     size?: 'sm' | 'md'
     width?: string
+    testid?: string
   }
-  let { value, onchange, min, max, step = 1, digits, unit, label, disabled = false, size = 'md', width = '84px' }: Props = $props()
+  let { value, onchange, min, max, step = 1, digits, unit, label, disabled = false, size = 'md', width = '84px', testid }: Props = $props()
 
   let draft = $state('')
   let editing = $state(false)
@@ -64,6 +65,7 @@
 
 <span class="number {size}" class:disabled style:width>
   <input
+    data-testid={testid}
     type="text"
     inputmode="decimal"
     role="spinbutton"

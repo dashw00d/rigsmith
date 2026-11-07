@@ -76,7 +76,7 @@
   </header>
 
   {#if app.characters.length > 0}
-    <div class="search"><TextField type="search" size="sm" bind:value={query} placeholder="Find a character" label="Find a character" /></div>
+    <div class="search"><TextField testid="chars-search" type="search" size="sm" bind:value={query} placeholder="Find a character" label="Find a character" /></div>
   {/if}
 
   {#if app.characters.length === 0}
@@ -91,7 +91,7 @@
         {@const job = app.jobFor(c.id)}
         {@const s = phaseOf(c, job)}
         <li class:selected={app.selectedId === c.id}>
-          <button class="item" aria-current={app.selectedId === c.id ? 'true' : undefined} onclick={() => { void app.select(c.id) }}>
+          <button data-testid="chars-row" data-id={c.id} class="item" aria-current={app.selectedId === c.id ? 'true' : undefined} onclick={() => { void app.select(c.id) }}>
             <span class="thumb">
               {#if c.files.thumbnail}<img src={assets.thumbnail(c)} alt="" />{:else}<UserRound size={18} />{/if}
             </span>
