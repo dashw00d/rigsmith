@@ -12,7 +12,7 @@
 // and the store's orphan sweep moves folders nothing refers to into trash/.
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Command } from '../../src/model/command-types.ts'
 import { gearById, hierarchyOf } from '../../src/model/select.ts'
@@ -64,6 +64,49 @@ export function importGarment (id: string, gid: string, name: string, source: st
   }, { lock: 'files' })
 }
 
+/** Create a character subdirectory without following any symlink, including in its ancestors. */
+export async function safeCharacterFolder (id: string, ...parts: string[]): Promise<string> {
+  let dir = paths(id).dir
+  if (await realpath(dir) !== path.resolve(dir)) throw new Error('Character path contains a symlink')
+  for (const part of parts) {
+    if (!/^[A-Za-z0-9_-]+$/.test(part)) throw new Error('Invalid character folder')
+    dir = path.join(dir, part)
+    await mkdir(dir).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'EEXIST') throw error })
+    const info = await lstat(dir)
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Character folder is not a real directory')
+  }
+  return dir
+}
+
+/** Keep an uploaded source in a new private garment folder. */
+async function writeUploadSource (id: string, gid: string, file: string, bytes: Buffer): Promise<string> {
+  const dir = paths(id).garment(gid)
+  await safeCharacterFolder(id, 'garments')
+  await mkdir(dir)
+  try {
+    const source = path.join(dir, `source${path.extname(file).toLowerCase()}`)
+    await writeFile(source, bytes, { flag: 'wx' })
+    return source
+  } catch (error) { await rm(dir, { recursive: true, force: true }); throw error }
+}
+
+/** Stage and inspect a piece without changing the character. The caller owns the eventual command batch. */
+export async function uploadPiece (id: string, bytes: Buffer, file: string, from?: string, signal?: AbortSignal): Promise<Gear> {
+  if (!MODEL.test(file)) throw new HttpError(400, 'Supported files: FBX, GLB, OBJ, DAE or ZIP')
+  const c = await found(id)
+  const name = path.basename(file).replace(/\.[^.]+$/, '').trim()
+  if (!name) throw new HttpError(400, 'The file needs a name')
+  let gid = randomBytes(4).toString('hex')
+  while (gearById(c, gid) !== undefined || existsSync(paths(id).garment(gid))) gid = randomBytes(4).toString('hex')
+  const dir = paths(id).garment(gid)
+  const source = await writeUploadSource(id, gid, file, bytes)
+  try {
+    await runBlender('jobs/inspect.py', ['--input', source, '--out', dir, '--animations', '--no-joints'], undefined, { signal })
+    if (!existsSync(path.join(dir, 'model.glb'))) throw new Error('the import wrote no model (is there a mesh in it?)')
+    return { id: gid, name, status: 'ready', handles: [], attach: { kind: 'skin', policy: 'body', place: AT_REST }, model: `garments/${gid}/model.glb`, ...(from ? { from } : {}) }
+  } catch (error) { await rm(dir, { recursive: true, force: true }); throw error }
+}
+
 /** How an upload is worn, from the route's `kind` (what the game's scripts and the app send): clothing unless said. */
 function attachOf (c: Character, kind: string | null, bone: string | null): GearAttach {
   if (kind === 'part') return { kind: 'spot', place: AT_REST }
@@ -94,11 +137,9 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/garments$/, async (req, res, [i
   const command: Command = { type: 'gear.add', gear }
   const done = await runCommands(id, [command], { by: by(req), what: 'gear.add', changes: [`gear ${name}: uploaded from ${path.basename(file)}`] })
   const added = done.character.gear.find(g => g.id === gid)
-  const dir = paths(id).garment(gid)
-  const source = path.join(dir, `source${path.extname(file).toLowerCase()}`)
+  let source: string
   try {
-    await mkdir(dir, { recursive: true })
-    await writeFile(source, bytes)
+    source = await writeUploadSource(id, gid, file, bytes)
   } catch (error) {
     await setStatus(id, gid, g => { g.status = 'error'; g.error = `its upload couldn't be kept: ${message(error)}` })
     throw error

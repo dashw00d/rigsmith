@@ -22,6 +22,7 @@
   import Toggle from '../../ui/Toggle.svelte'
   import FolkPanel from '../gear/FolkPanel.svelte'
   import ClassSection from '../gear/ClassSection.svelte'
+  import { wardrobe } from '../gear/wardrobe.svelte.ts'
   import GearList from '../gear/GearList.svelte'
   import { isFolk } from '../../engine/folk.ts'
   import HandleList from '../gear/HandleList.svelte'
@@ -103,7 +104,7 @@
       {#if isFolk(character)}
         <Button size="sm" data-testid="wardrobe-button" keys="dress.wardrobe" variant={app.drawer === 'wardrobe' ? 'primary' : 'ghost'} onclick={() => app.toggleDrawer('wardrobe')}><Shirt size={13} /> Wardrobe</Button>
       {/if}
-      <Button size="sm" variant={app.drawer === 'catalog' ? 'primary' : 'ghost'} onclick={() => app.toggleDrawer('catalog')}
+      <Button size="sm" variant={app.drawer === 'wardrobe' && wardrobe.tab(character.id) === 'props' ? 'primary' : 'ghost'} onclick={() => { wardrobe.setTab(character.id, 'props'); app.drawer = 'wardrobe' }}
         title="Weapons, shields and tools that come with Rigsmith"><Library size={13} /> Catalog</Button>
       <Button size="sm" variant="ghost" loading={uploading} onclick={() => choose('bone')} title="Your own model (FBX, GLB, OBJ, DAE or ZIP), on a bone">
         <Upload size={13} /> Upload</Button>

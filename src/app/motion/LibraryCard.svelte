@@ -5,13 +5,16 @@
   import { onMount } from 'svelte'
   import { Check, CircleQuestionMark, Plus, Repeat, TriangleAlert } from '@lucide/svelte'
   import type { Character, LibraryClip } from '../../state/api.ts'
+  import type { LibraryIndexRow } from '../../../server/library.ts'
   import { animator } from '../../state/animator.svelte.ts'
   import { slots } from '../../state/slots.svelte.ts'
+  import { contextMenu } from '../../ui/contextmenu.ts'
   import { SPRITE_FRAMES } from '../../engine/PreviewRenderer.ts'
   import { tooltip } from '../../ui/tooltip.ts'
   import { cardAction, usesOf } from './rules.ts'
 
-  let { clip, character }: { clip: LibraryClip, character: Character | null } = $props()
+  let { clip, character, resolve }: { clip: LibraryIndexRow, character: Character | null, resolve: (clip: LibraryIndexRow) => Promise<LibraryClip> } = $props()
+  const compatible = $derived(character !== null && (character.skeleton.template ?? 'human') === clip.rig)
   let sheet = $state<string | null>(null)
   let failed = $state(false)
   let visible = $state(false)
@@ -44,10 +47,10 @@
   const uncertain = $derived(clip.nameSource === 'motion-candidate')
   // (Mixamo's description, when it says more than the name: "Walking" -> "Walking With A Briefcase")
   const description = $derived(clip.description !== undefined && clip.description.toLowerCase() !== clip.name.toLowerCase() ? clip.description : '')
-  const detail = $derived([description, clip.variant].filter(Boolean).join(' · '))
+  const detail = $derived([description, undefined].filter(Boolean).join(' · '))
   const hint = $derived.by(() => {
     if (detail === '' && !uncertain) return null
-    const alternatives = (clip.candidates ?? []).map(c => c.name).filter(n => n !== clip.name)
+    const alternatives = ([] as string[]).filter(n => n !== clip.name)
     const unsure = uncertain ? ` · Uncertain name${alternatives.length > 0 ? `; could also be ${[...new Set(alternatives)].join(', ')}` : ''}` : ''
     return `${clip.name}${detail === '' ? '' : ` — ${detail}`}${unsure}`
   })
@@ -61,19 +64,21 @@
     return { label: 'Add as a trial', hint: slotNames.length > 0 ? `Add as a trial (${slotNames.join(', ')} already plays it)` : 'Add as a trial' }
   })
 
-  async function press (e: MouseEvent): Promise<void> {
-    e.stopPropagation()
-    if (character === null || action === null) return
-    if (action.kind === 'fill') await slots.fill(character, action.target, clip)
+  async function press (e?: MouseEvent): Promise<void> {
+    e?.stopPropagation()
+    if (character === null || action === null || !compatible) return
+    let full: LibraryClip
+    try { full = await resolve(clip) } catch { return }
+    if (action.kind === 'fill') await slots.fill(character, action.target, full)
     else if (action.kind === 'remove') await slots.removeTrials(character, action.trials, clip.name)
-    else await slots.addTrial(character, clip)
+    else await slots.addTrial(character, full)
   }
 
-  function play (): void { void animator.playLibrary(clip) }
+  async function play (): Promise<void> { try { if (compatible) await animator.playLibrary(await resolve(clip)) } catch { /* resolve reports the error */ } }
 </script>
 
-<div class="card" class:playing bind:this={node} role="button" tabindex="0" aria-label="Preview {clip.name}"
-  onclick={play} onkeydown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) play() }}>
+<div use:contextMenu={() => [{ label: 'Preview', disabled: !compatible, run: () => { void play() } }, { label: action?.kind === 'remove' ? 'Remove trials' : action?.kind === 'fill' ? 'Fill slot' : 'Add as a trial', disabled: !compatible || action === null, run: () => { void press() } }]} data-testid="lib-clip" data-id={clip.id} data-loop={clip.loop} class="card" class:playing bind:this={node} role="button" tabindex="0" aria-label="Preview {clip.name}"
+  onclick={play} onpointerenter={play} onkeydown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) play() }}>
   <div class="preview" style={sheet ? `--sheet: url(${sheet}); --frames: ${SPRITE_FRAMES}` : ''} class:ready={sheet !== null}>
     {#if sheet === null && !failed}<div class="shimmer"></div>{/if}
     <span class="time mono">{duration}s</span>
@@ -81,7 +86,7 @@
     {#if clip.source === 'custom'}<span class="custom" use:tooltip={'Made here (the animation editor, or a script)'}>custom</span>{/if}
     {#if warning}<span class="warn" use:tooltip={warning} aria-label={warning}><TriangleAlert size={12} /></span>{/if}
     {#if button !== null && action !== null}
-      <button class="add" class:on={action.kind === 'remove'} class:slot={action.kind === 'fill'} onclick={press} aria-label={button.label} use:tooltip={button.hint}>
+      <button class="add" class:on={action.kind === 'remove'} class:slot={action.kind === 'fill'} disabled={!compatible} title={!compatible ? `Requires ${clip.rig} rig` : undefined} onclick={press} aria-label={button.label} use:tooltip={button.hint}>
         {#if action.kind === 'fill'}<span class="slotname">{action.target.name}</span>{:else if action.kind === 'remove'}<Check size={14} strokeWidth={3} />{:else}<Plus size={15} />{/if}
       </button>
     {/if}

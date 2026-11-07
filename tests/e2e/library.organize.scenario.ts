@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict'
+import type { Scenario } from './ui.ts'
+
+export default {
+  name: 'library.organize', step: 'motion',
+  async run (ui) {
+    await ui.click({ role: 'button', name: 'Library' })
+    await ui.waitFor(() => Number(document.querySelector('[data-testid="lib-count"]')?.textContent?.replace(/[^0-9]/g, '')) >= 2400, 60_000)
+    assert.ok(await ui.count({ testid: 'lib-clip' }) < 80)
+    const all = await ui.text({ testid: 'lib-count' })
+    await ui.fill({ testid: 'lib-search' }, 'walk')
+    await ui.waitFor(() => [...document.querySelectorAll('[data-testid="lib-clip"]')].some(e => e.textContent?.toLowerCase().includes('walk')))
+    assert.notEqual(await ui.text({ testid: 'lib-count' }), all)
+    assert.match((await ui.eval(() => document.querySelector('[data-testid="lib-clip"]')?.textContent ?? '')).toLowerCase(), /walk/)
+    await ui.fill({ testid: 'lib-search' }, '')
+    await ui.click({ role: 'button', name: 'List' })
+    await ui.click({ role: 'combobox', name: 'Sort clips' }); await ui.key('ArrowDown'); await ui.key('Enter')
+    assert.equal(await ui.eval(() => (document.querySelector('[aria-label="Sort clips"]') as HTMLSelectElement).value), 'length')
+    assert.equal(await ui.eval(() => document.querySelector('[data-testid="lib-clip"]')?.getBoundingClientRect().height), 30)
+    assert.ok(await ui.eval(() => { const d = [...document.querySelectorAll<HTMLElement>('[data-testid="lib-clip"]')].map(e => Number(e.dataset.duration)); return d.every((v, i) => i === 0 || d[i - 1] <= v) }))
+    await ui.click({ role: 'combobox', name: 'Group clips' }); await ui.key('ArrowDown'); await ui.key('Enter')
+    await ui.waitFor({ testid: 'lib-group' })
+    const group = await ui.eval(() => document.querySelector<HTMLElement>('[data-testid="lib-group"]')?.dataset.id ?? null)
+    assert.ok(group)
+    const first = await ui.eval(() => document.querySelector<HTMLElement>('[data-testid="lib-clip"]')?.dataset.id ?? null)
+    await ui.click({ testid: 'lib-group', id: group })
+    assert.equal(await ui.eval((_, id) => document.querySelector(`[data-testid="lib-group"][data-id="${id}"]`)?.getAttribute('aria-expanded'), group), 'false')
+    assert.notEqual(await ui.eval(() => document.querySelector<HTMLElement>('[data-testid="lib-clip"]')?.dataset.id ?? null), first)
+    await ui.click({ role: 'combobox', name: 'Group clips' }); await ui.key('ArrowUp'); await ui.key('Enter')
+    await ui.click({ role: 'combobox', name: 'Loop filter' }); await ui.key('ArrowDown'); await ui.key('Enter')
+    await ui.click({ role: 'combobox', name: 'Use filter' }); await ui.key('ArrowDown'); await ui.key('ArrowDown'); await ui.key('Enter')
+    assert.ok(await ui.count({ testid: 'lib-clip' }) > 0)
+    assert.ok(await ui.eval(() => [...document.querySelectorAll<HTMLElement>('[data-testid="lib-clip"]')].every(e => e.dataset.loop === 'true' && e.dataset.uses === '0')))
+    await ui.click({ role: 'combobox', name: 'Group clips' }); await ui.key('ArrowDown'); await ui.key('Enter')
+    await ui.shot('list')
+    const saved = await ui.eval(() => JSON.parse(localStorage.getItem('rigsmith.library.view') ?? '{}') as { view: string, sort: string, group: string })
+    assert.deepEqual(saved, { view: 'list', sort: 'length', direction: 'asc', group: 'category' })
+    await ui.press('ctrl+r')
+    await ui.waitFor(r => r.app.step === 'motion', 60_000)
+    await ui.click({ role: 'button', name: 'Library' })
+    await ui.waitFor({ testid: 'lib-drawer' })
+    assert.equal(await ui.eval(() => (document.querySelector('[aria-label="Sort clips"]') as HTMLSelectElement).value), 'length')
+    assert.equal(await ui.eval(() => (document.querySelector('[aria-label="Group clips"]') as HTMLSelectElement).value), 'category')
+    assert.equal(await ui.eval(() => [...document.querySelectorAll('button')].find(b => b.textContent === 'List')?.getAttribute('aria-pressed')), 'true')
+  },
+} satisfies Scenario

@@ -141,11 +141,13 @@ export const newUid = (rand: () => number = Math.random): number => 1 + Math.flo
 
 // ---- the drawer's filters ------------------------------------------------------------------------------------------
 
-export type Tab = 'sets' | 'skins' | 'clothes' | 'hair' | 'beards' | 'pieces'
+export type Tab = 'sets' | 'skins' | 'clothes' | 'hair' | 'beards' | 'pieces' | 'props'
 export const TABS: ReadonlyArray<{ id: Tab, label: string }> = [
   { id: 'sets', label: 'Sets' }, { id: 'skins', label: 'Skins' }, { id: 'clothes', label: 'Clothes' },
-  { id: 'hair', label: 'Hair' }, { id: 'beards', label: 'Beards' }, { id: 'pieces', label: 'Pieces' },
+  { id: 'hair', label: 'Hair' }, { id: 'beards', label: 'Beards' }, { id: 'pieces', label: 'Pieces' }, { id: 'props', label: 'Props' },
 ]
+
+export const tabsFor = (folk: boolean): typeof TABS => folk ? TABS : TABS.filter(t => t.id === 'pieces' || t.id === 'props')
 
 /** A tile of the drawer: what it shows and what its filters match. */
 export interface Tile {

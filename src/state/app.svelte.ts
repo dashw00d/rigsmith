@@ -30,9 +30,9 @@ export function stepOf (id: string | null | undefined): Step {
   return STEPS.some(s => s.id === id) ? id as Step : OLD_STEPS[id] ?? 'import'
 }
 
-export type Drawer = 'library' | 'catalog' | 'wardrobe' | 'activity'
+export type Drawer = 'library' | 'wardrobe' | 'incoming' | 'activity'
 // (the step a drawer belongs to: it closes on leaving it; the activity drawer goes with every step)
-const DRAWER_STEP: Partial<Record<Drawer, Step>> = { library: 'motion', catalog: 'gear', wardrobe: 'gear' }
+const DRAWER_STEP: Partial<Record<Drawer, Step>> = { library: 'motion', wardrobe: 'gear' }
 
 export interface Toast { id: number, kind: 'info' | 'ok' | 'error', text: string, action?: ToastAction }
 /** A button on a toast (Undo what was just done for you). */

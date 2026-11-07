@@ -1,11 +1,13 @@
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
-import { CONTENT_TYPES, HttpError, readJsonBody, route, send } from '../http.ts'
-import { getCharacter, events } from '../store.ts'
+import { by, CONTENT_TYPES, HttpError, readJsonBody, route, send } from '../http.ts'
+import { getCharacter, events, withFiles } from '../store.ts'
 import { incomingDir, listIncoming, safeFile } from '../incoming/read.ts'
 import { changeState } from '../incoming/state.ts'
 import { startIncomingWatch } from '../incoming/watch.ts'
+import { enqueue } from '../jobs.ts'
+import { ingest, validateAccept, type AcceptRequest } from '../incoming/ingest.ts'
 
 void startIncomingWatch().catch(error => { console.error('rigsmith: incoming watcher:', error) })
 route('GET', /^\/api\/incoming$/, async (_req, res, _params, url) => {
@@ -13,6 +15,15 @@ route('GET', /^\/api\/incoming$/, async (_req, res, _params, url) => {
   const character = id === null ? null : await getCharacter(id)
   if (id !== null && character === null) throw new HttpError(404, 'No such character')
   send(res, 200, await listIncoming(character))
+})
+route('POST', /^\/api\/incoming\/accept$/, async (req, res) => {
+  const body = await readJsonBody<AcceptRequest>(req)
+  await validateAccept(body)
+  const who = by(req)
+  send(res, 202, enqueue('incoming', 'Accept incoming parts', body.character, async (_job, update, signal) => {
+    await validateAccept(body)
+    await withFiles(body.character, async () => await ingest(body, { by: who, signal, progress: (progress, message) => { update({ progress, message }) } }))
+  }, { lock: 'files' }))
 })
 for (const action of ['reject', 'restore'] as const) route('POST', new RegExp(`^/api/incoming/${action}$`), async (req, res) => {
   const body = await readJsonBody<{ package?: unknown, parts?: unknown }>(req)
