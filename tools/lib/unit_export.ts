@@ -38,7 +38,7 @@ import { bodySurface, hideShareOf, originMatrix, regionsHidden, type GarmentEdit
 import { regionMask, regionsOf, withoutRegions, type Regions } from '../../src/engine/regions.ts'
 import { FEMALE, HAIR_GREY_MEAN, LONG_SLEEVE, femaleOffsets, isFolk } from '../../src/engine/folk.ts'
 import { clothOf } from '../../src/model/folk.ts'
-import { atlasGroupOf, clothExportBase, folkLeftOut, folkManifestData, folkScope, isSwapped, scopedGearLeftOut, stanceExportPlan, type FolkFiles, type FolkScope, type ManifestPiece } from './folk_export.ts'
+import { atlasGroupOf, clothExportBase, folkLeftOut, folkManifestData, folkScope, isSwapped, scopedGearLeftOut, stanceExportPlan, type FolkFiles, type FolkScope, type ManifestPiece, type StanceExportPlan } from './folk_export.ts'
 import { safeName } from '../../src/engine/geom.ts'
 import { applyGeometryMatrix } from '../../src/engine/geometry-transform.ts'
 import { cloneMorphGeometry, mergeMorphState, restoreMorphState } from '../../src/engine/morph-state.ts'
@@ -678,7 +678,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   writeIfChanged(path.join(o.modelsDir, `${unit}.events.json`), JSON.stringify(events, null, 1) + '\n')
   if (Object.keys(atlasFiles).length > 0) writeIfChanged(path.join(o.workDir, unit, 'folk_atlas.json'), JSON.stringify(atlasFiles, null, 1) + '\n')
   if (isFolk(c) || (c.look.skins ?? []).length > 0 || (c.look.clothes ?? []).length > 0) {
-    const manifest = folkManifest(unit, c, me.dir, srcDir, body, hidesOf, spec, me.view)
+    const manifest = folkManifest(unit, c, me.dir, srcDir, body, hidesOf, spec, me.view, stancePlans)
     writeIfChanged(path.join(o.modelsDir, `${unit}.folk.json`), JSON.stringify(manifest, null, 1) + '\n')
   }
   const record: BuildRecord & { stances?: Record<string, { clips: number, bytes: number }> } = {
@@ -1206,7 +1206,7 @@ function regionBorders (geo: THREE.BufferGeometry): Uint8Array | undefined {
  * body regions and bodies, its skins and cloth layers (copied beside the build, with their bare versions, trims and cut
  * masks), the sets, kinds, pools and stances its file carries with the regions each piece hides, the pick program and
  * golden picks, and schema 1's view (outfits, clothes, hair, beard). */
-function folkManifest (unit: string, c: Character, charDir: string, srcDir: string, body: { regions: Regions, classes: string[], geometry: THREE.BufferGeometry }, hidesOf: Map<string, number[]>, spec: UnitSpec, view: CharacterView): Record<string, unknown> {
+function folkManifest (unit: string, c: Character, charDir: string, srcDir: string, body: { regions: Regions, classes: string[], geometry: THREE.BufferGeometry }, hidesOf: Map<string, number[]>, spec: UnitSpec, view: CharacterView, stancePlans: readonly StanceExportPlan[]): Record<string, unknown> {
   const copy = (from: string, to: string): string => {
     mkdirSync(path.dirname(path.join(srcDir, to)), { recursive: true })
     copyIfChanged(path.join(charDir, from), path.join(srcDir, to))
@@ -1265,6 +1265,7 @@ function folkManifest (unit: string, c: Character, charDir: string, srcDir: stri
     bodies: isFolk(c) ? FOLK_BODIES.map(([suffix, weights]) => ({ mesh: suffix === '' ? unit : `FolkBody_${suffix}`, shapes: Object.keys(weights).sort() })) : [],
     hairGreyMean: HAIR_GREY_MEAN,
     femaleShape: FEMALE,
+    stancePlans,
   })
 }
 

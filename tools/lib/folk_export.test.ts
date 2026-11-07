@@ -43,6 +43,7 @@ const manifest = (c: Character, spec: Parameters<typeof folkManifestData>[1] = {
   bodies: [{ mesh: 'folk', shapes: [] }, { mesh: 'FolkBody_F', shapes: ['female'] }],
   hairGreyMean: 0.62,
   femaleShape: 'female',
+  stancePlans: [],
 })
 
 describe('folkScope', () => {
@@ -154,10 +155,19 @@ describe('the folk manifest, schema 2', () => {
     expect(manifest(c, { folk: { hair: false } }).hair).toEqual([])
   })
 
-  it('names a stance\'s clips by slot name', () => {
+  it('lists only scoped baked stance names without a second overlay', () => {
     const c = folk()
-    c.folk!.stances.push({ id: 'shield', name: 'Shield', clips: { Idle: ['idle-s'] }, overlay: 'idle' })
-    expect(manifest(c).stances).toEqual([{ id: 'shield', name: 'Shield', clips: { Idle: ['Idle_shield'] }, overlay: 'Idle' }])
+    c.folk!.sets[0].stance = 'shield'
+    c.folk!.sets[1].stance = 'spear'
+    c.folk!.kinds.push({ id: 'guard', name: 'Guard', tags: [], sets: [{ set: c.folk!.sets[0].id }] })
+    c.folk!.stances.push({ id: 'shield', name: 'Shield', clips: { Idle: ['idle-s', 'idle'] }, overlay: 'idle' },
+      { id: 'spear', name: 'Spear', clips: { Idle: ['idle'] } })
+    const spec = { folk: { kind: 'guard' } }
+    const plans = stanceExportPlan(c, spec, ['Idle'], ['Idle'])
+    const m = folkManifestData(c, spec, {
+      pieceOf, regionMask: () => 0, regions: {}, files: { skins: {}, layers: {}, clothes: {} }, bodies: [], hairGreyMean: 0.62, femaleShape: 'female', stancePlans: plans,
+    })
+    expect(m.stances).toEqual([{ id: 'shield', name: 'Shield', clips: { Idle: ['Idle@shield', 'Idle_2@shield'] } }])
   })
 
   it('marks only actually baked cuts and retains the exported bare skin path', () => {
@@ -165,7 +175,7 @@ describe('the folk manifest, schema 2', () => {
     c.look.cloth = [{ id: 'shorts', name: 'Shorts', file: 'clothes/plain.png', slots: ['bottom'], cut: { drop: [1] } }]
     const m = folkManifestData(c, {}, {
       pieceOf, regionMask: () => 0, regions: {}, bodies: [], hairGreyMean: 0.62, femaleShape: 'female',
-      files: { skins: { bran: { file: 'skins/bran.png', bare: 'skins/bran.bare.png' } }, layers: { shorts: { file: 'clothes/Shorts.png', baked: true } }, clothes: {} },
+      files: { skins: { bran: { file: 'skins/bran.png', bare: 'skins/bran.bare.png' } }, layers: { shorts: { file: 'clothes/Shorts.png', baked: true } }, clothes: {} }, stancePlans: [],
     })
     expect((m.layers as Array<Record<string, unknown>>)[0]).toMatchObject({ file: 'clothes/Shorts.png', cut: { drop: [1], baked: true } })
     expect((m.skins as Array<Record<string, unknown>>)[1]).toMatchObject({ bare: 'skins/bran.bare.png' })

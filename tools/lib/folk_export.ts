@@ -182,6 +182,7 @@ export function folkManifestData (c: Character, spec: Pick<UnitSpec, 'folk'>, o:
   hairGreyMean: number
   femaleShape: string
   meshOf?: (g: Gear) => string
+  stancePlans: readonly StanceExportPlan[]
 }): Record<string, unknown> {
   const scope = folkScope(c, spec, o.exportable)
   const meshOf = o.meshOf ?? meshNameOf
@@ -191,7 +192,6 @@ export function folkManifestData (c: Character, spec: Pick<UnitSpec, 'folk'>, o:
   const setPieces = (s: OutfitSet): ManifestPiece[] => s.pieces.map(id => byId.get(id)).filter(exported).map(o.pieceOf)
   const hidesOf = (pieces: ManifestPiece[]): number[] => [...new Set(pieces.flatMap(p => p.hides))].sort((a, b) => a - b)
   const layers = clothOf(c)
-  const slotNames = new Map(c.clips.map(s => [s.id, s.name]))
   const sets = scope.sets.map(s => {
     const pieces = setPieces(s)
     const hides = hidesOf(pieces)
@@ -236,10 +236,8 @@ export function folkManifestData (c: Character, spec: Pick<UnitSpec, 'folk'>, o:
     kinds: world.kinds,
     pools: world.pools,
     pieces: world.pieces,
-    stances: folkOf(c).stances.map(s => ({
-      id: s.id, name: s.name,
-      clips: Object.fromEntries(Object.entries(s.clips).map(([clip, slots]) => [clip, slots.map(id => slotNames.get(id) ?? id)])),
-      ...(s.overlay !== undefined ? { overlay: slotNames.get(s.overlay) ?? s.overlay } : {}),
+    stances: o.stancePlans.map(plan => ({
+      id: plan.id, name: folkOf(c).stances.find(s => s.id === plan.id)?.name ?? plan.id, clips: plan.clips,
     })),
     golden: goldens(world),
     hairGreyMean: o.hairGreyMean,
