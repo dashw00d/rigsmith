@@ -14,6 +14,7 @@
   import LibraryCard from './LibraryCard.svelte'
   import LibraryRow from './LibraryRow.svelte'
   import { viewOf, type Row, type ViewState } from './libraryView.ts'
+  import { cancelLibraryPreview } from './libraryPreview.ts'
 
   const open = $derived(app.drawer === 'library')
   const options = $derived(library.options)
@@ -26,7 +27,7 @@
   const set = (change: Partial<ViewState>): void => { library.setViewOptions(change) }
   $effect(() => { if (open) { const rig = app.selected?.skeleton.template ?? 'human'; untrack(() => library.setRig(rig)) } })
   $effect(() => { if (open) void slots.load(app.selected?.id ?? null) })
-  $effect(() => { if (open) return () => animator.cancelSprites() })
+  $effect(() => { if (open) return () => { animator.cancelSprites(); cancelLibraryPreview() } })
 
   // The compact index deliberately omits animation metadata. Resolve a full clip only when it is played or kept.
   const full = new Map<string, Promise<LibraryClip>>()

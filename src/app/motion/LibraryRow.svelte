@@ -2,7 +2,7 @@
   import { Check, Plus, Repeat } from '@lucide/svelte'
   import type { LibraryIndexRow } from '../../../server/library.ts'
   import type { Character, LibraryClip } from '../../state/api.ts'
-  import { animator } from '../../state/animator.svelte.ts'
+  import { playLibraryPreview } from './libraryPreview.ts'
   import { slots } from '../../state/slots.svelte.ts'
   import { contextMenu } from '../../ui/contextmenu.ts'
   import { cardAction } from './rules.ts'
@@ -10,7 +10,7 @@
   let { clip, character, uses, resolve }: { clip: LibraryIndexRow, character: Character | null, uses: number, resolve: (clip: LibraryIndexRow) => Promise<LibraryClip> } = $props()
   const compatible = $derived(character !== null && (character.skeleton.template ?? 'human') === clip.rig)
   const action = $derived(character === null ? null : cardAction(character, clip.id, slots.names, slots.armed))
-  async function play (): Promise<void> { try { if (compatible) await animator.playLibrary(await resolve(clip)) } catch { /* resolve reports the error */ } }
+  async function play (): Promise<void> { await playLibraryPreview(clip, resolve, compatible) }
   async function press (e?: MouseEvent): Promise<void> {
     e?.stopPropagation()
     if (!character || !action || !compatible) return

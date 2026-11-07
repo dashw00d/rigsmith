@@ -12,6 +12,7 @@
   import { SPRITE_FRAMES } from '../../engine/PreviewRenderer.ts'
   import { tooltip } from '../../ui/tooltip.ts'
   import { cardAction, usesOf } from './rules.ts'
+  import { playLibraryPreview } from './libraryPreview.ts'
 
   let { clip, character, resolve }: { clip: LibraryIndexRow, character: Character | null, resolve: (clip: LibraryIndexRow) => Promise<LibraryClip> } = $props()
   const compatible = $derived(character !== null && (character.skeleton.template ?? 'human') === clip.rig)
@@ -74,7 +75,7 @@
     else await slots.addTrial(character, full)
   }
 
-  async function play (): Promise<void> { try { if (compatible) await animator.playLibrary(await resolve(clip)) } catch { /* resolve reports the error */ } }
+  async function play (): Promise<void> { await playLibraryPreview(clip, resolve, compatible) }
 </script>
 
 <div use:contextMenu={() => [{ label: 'Preview', disabled: !compatible, run: () => { void play() } }, { label: action?.kind === 'remove' ? 'Remove trials' : action?.kind === 'fill' ? 'Fill slot' : 'Add as a trial', disabled: !compatible || action === null, run: () => { void press() } }]} data-testid="lib-clip" data-id={clip.id} data-loop={clip.loop} class="card" class:playing bind:this={node} role="button" tabindex="0" aria-label="Preview {clip.name}"
