@@ -915,7 +915,7 @@ class GearState {
     const place = this.placeOf(g)
     const attach: GearAttach = kind === 'bone' ? { kind: 'bone', bone: this.boneFor(c), place }
       : kind === 'skin' ? { kind: 'skin', policy: 'body', place } : { kind: 'spot', place }
-    if (this.fitting === g.id) this.fitting = null
+    if (this.fitting === g.id) { this.fitting = null; this.fitStart = null }
     await app.do(c.id, { type: 'gear.attach', id: g.id, attach })
   }
 

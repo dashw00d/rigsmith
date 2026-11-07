@@ -112,9 +112,9 @@
         <button role="radio" aria-checked={size === n} class:active={size === n} onclick={() => { wardrobe.update(character.id, { crowd: n }) }}>{n}</button>
       {/each}
     </div>
-    <Button size="sm" variant="ghost" onclick={rerollAll} title="Every unit drawn again (R)"><Dices size={13} /> Again</Button>
+    <Button size="sm" variant="ghost" keys="crowd.reroll" onclick={rerollAll} title="Every unit drawn again (R)"><Dices size={13} /> Again</Button>
     <span class="hint">{hovered !== null ? `Unit #${hovered}: click draws it again, Alt-click puts it on stage` : 'Click a unit to draw it again; Alt-click puts it on stage'}</span>
-    <IconButton size="sm" label="Close" hint="Close (C, Esc)" onclick={close}><X size={14} /></IconButton>
+    <IconButton size="sm" label="Close" keys="dress.crowd" hint="Close (C, Esc)" onclick={close}><X size={14} /></IconButton>
   </div>
 </div>
 

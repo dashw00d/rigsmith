@@ -107,7 +107,7 @@
         {:else}
         <button class="row" use:contextMenu={() => menu(g)} data-testid="gear-row" data-id={g.id} data-hidden={!shown} onclick={() => gearState.select(gearState.selected === g.id ? null : g.id)} aria-pressed={gearState.selected === g.id}>
           <span class="name">{g.name}</span>
-          <span class="detail">
+          <span class="detail" use:tooltip={wearText(g)}>
             {#if g.status === 'importing'}<LoaderCircle size={12} class="spin" /> importing
             {:else if g.status === 'error'}<span class="failed" use:tooltip={g.error ?? 'The import failed'}><CircleAlert size={12} /> failed</span>
             {:else}{wearText(g)}{/if}
@@ -140,7 +140,7 @@
   li.hidden .name { color: var(--text-3); }
   .row { flex: 1; min-width: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border: 0; background: transparent; text-align: left; color: inherit; }
   .name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .detail { flex: none; display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--text-3); }
+  .detail { flex: 0 1 80px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--text-3); }
   .failed { display: inline-flex; gap: 4px; align-items: center; color: var(--danger); }
   .origin { display: inline-flex; }
   .set-head { margin: 8px 0 2px; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); }

@@ -21,7 +21,7 @@ export default {
     const eye = { testid: 'gear-eye', id: piece.id }
     await ui.click(row)
     assert.equal(await ui.eval(r => r.gear.selected), piece.id)
-    await ui.waitFor({ role: 'heading', name: piece.name })
+    await ui.waitFor({ role: 'heading', name: piece.name.toUpperCase() })
     // Deselecting immediately must not be undone by the restore effect.
     await ui.click(row)
     assert.equal(await ui.eval(r => r.gear.selected), null)

@@ -208,6 +208,7 @@
 
 <style>
   .adds { display: flex; gap: 2px; }
+  .adds :global(button) { padding-inline: 5px; gap: 4px; }
   .note { margin: 0; font-size: 12px; color: var(--text-3); display: flex; align-items: center; gap: 4px; }
   .error { margin: 0; font-size: 12px; color: var(--danger); }
   .more summary { cursor: pointer; font-size: 12px; color: var(--text-3); }

@@ -82,6 +82,16 @@ describe('the dress', () => {
     expect(shows(c, c.gear[0], resolve(c, d), documentDress(c), d)).toBe(false)
     expect(c.gear[0].hidden).not.toBe(true)
     expect(wearOutfit(c, d, 'hat_fur').off).toBeUndefined()
+    expect(defaultCommands(c, d)).toEqual(defaultCommands(c, undefined))
+  })
+
+  it('can show a document-hidden piece for this preview without changing its default', () => {
+    const c = folk()
+    c.gear[1].hidden = true
+    const d = { on: ['a2'] }
+    expect(shows(c, c.gear[1], resolve(c, d), documentDress(c), d)).toBe(true)
+    expect(c.gear[1].hidden).toBe(true)
+    expect(wearOutfit(c, d, 'hat_fur').on).toBeUndefined()
   })
 
   it('obeys the saved set grants even when legacy gear tags disagree', () => {
