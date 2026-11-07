@@ -89,7 +89,7 @@
         {#each shown as t (t.value)}
           {@const rule = rules.get(t.value)}
           {@const on = pinned?.[f] === t.value}
-          <button class="tile" class:on class:out={rule !== undefined && !rule.ok} class:showing={worn[f] === t.value && !on} role="option" aria-selected={on}
+          <button data-testid="wardrobe-tile" data-id={t.value ?? ''} class="tile" class:on class:out={rule !== undefined && !rule.ok} class:showing={worn[f] === t.value && !on} role="option" aria-selected={on}
             use:tooltip={rule !== undefined && !rule.ok ? `${t.label}: ruled out, ${rule.why ?? ''}` : t.label}
             onpointerenter={() => { wardrobe.preview(c, { [f]: t.value }, tab === 'sets' ? 260 : 120) }}
             onclick={() => { wardrobe.pin(c, { [f]: t.value }) }}>

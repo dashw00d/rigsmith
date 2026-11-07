@@ -14,12 +14,7 @@ export default {
     await ui.click({ testid: 'wardrobe-button' })
     await ui.waitFor({ testid: 'wardrobe-drawer' })
     await ui.fill({ role: 'searchbox', name: 'Search', within: { testid: 'wardrobe-drawer' } }, fixture.set)
-    const name = await ui.eval(() => {
-      const options = [...document.querySelectorAll<HTMLElement>('[data-testid="wardrobe-drawer"] [role="option"]')]
-      if (options.length !== 1) throw new Error(`Expected one filtered set, got ${options.length}`)
-      return options[0].innerText.replace(/\s+/g, ' ').trim()
-    })
-    await ui.click({ role: 'option', name, within: { testid: 'wardrobe-drawer' } })
+    await ui.click({ testid: 'wardrobe-tile', id: fixture.set, within: { testid: 'wardrobe-drawer' } })
     await ui.waitFor(r => r.dress.worn(r.app.selected!).outfit === 'arm_brigandine')
     for (const slot of fixture.slots) assert.equal(await ui.eval((r, s) => r.dress.worn(r.app.selected!).layers?.[s as 'top' | 'bottom' | 'over'], slot), null)
     await ui.click({ testid: 'wardrobe-button' })
