@@ -3,7 +3,7 @@ import tseslint from 'typescript-eslint'
 import globals from 'globals'
 
 export default [
-  { ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'workspace/**', 'blender/**', '**/*.svelte'] },
+  { ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'workspace/**', '.work/**', 'blender/**', '**/*.svelte'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ['src/**/*.ts'], languageOptions: { globals: globals.browser } },
