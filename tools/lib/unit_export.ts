@@ -1230,7 +1230,7 @@ function folkManifest (unit: string, c: Character, charDir: string, srcDir: stri
       mkdirSync(path.dirname(path.join(srcDir, file)), { recursive: true })
       const source = clothBody(view.bodySkinned)
       writeClothPng(path.join(charDir, l.file), path.join(srcDir, file), source.geometry, source.regions, view.height, l.cut,
-        l.cut.mask === undefined ? undefined : path.join(charDir, l.cut.mask))
+        l.cut.mask === undefined ? undefined : path.join(charDir, l.cut.mask), { slots: l.slots, regions: source.list })
     } else {
       file = files.clothes[l.name] !== undefined && (c.look.clothes ?? []).some(k => k.name === l.name && k.file === l.file) ? files.clothes[l.name] : copy(l.file, `${base}${ext(l.file)}`)
     }
