@@ -36,7 +36,21 @@ export async function safeFile (root: string, relative: string): Promise<string>
   if (info.size > MAX) throw new Error('File exceeds 200 MB')
   return current
 }
+const hashes = new Map<string, { signature: string, result: Promise<string> }>()
 async function sha (file: string): Promise<string> {
+  const info = await lstat(file)
+  const signature = `${info.size}:${info.mtimeMs}:${info.ino}`
+  const cached = hashes.get(file)
+  if (cached?.signature === signature) return await cached.result
+  const result = hashFile(file)
+  hashes.set(file, { signature, result })
+  if (hashes.size > 4096) hashes.delete(hashes.keys().next().value!)
+  try { return await result } catch (error) {
+    if (hashes.get(file)?.result === result) hashes.delete(file)
+    throw error
+  }
+}
+async function hashFile (file: string): Promise<string> {
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer)
   return hash.digest('hex')

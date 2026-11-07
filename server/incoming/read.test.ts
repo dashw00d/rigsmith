@@ -53,7 +53,9 @@ describe('incoming packages', () => {
   it('emits incoming when a package is published', async () => {
     await startIncomingWatch()
     const event = new Promise<unknown>((resolve, reject) => { const timer = setTimeout(() => { events.off('incoming', handler); reject(new Error('No incoming event')) }, 3000); const handler = (value: unknown) => { clearTimeout(timer); events.off('incoming', handler); resolve(value) }; events.on('incoming', handler) })
-    await mkdir(path.join(root, '.new.partial')); await rename(path.join(root, '.new.partial'), path.join(root, 'new'))
-    expect(await event).toMatchObject({ pending: 1 })
+    await cp(path.join(root, 'delivery'), path.join(root, '.new.partial'), { recursive: true })
+    await writeFile(path.join(root, '.new.partial', 'manifest.json'), JSON.stringify({ ...manifest, id: 'new' }))
+    await rename(path.join(root, '.new.partial'), path.join(root, 'new'))
+    expect(await event).toMatchObject({ pending: 2 })
   })
 })

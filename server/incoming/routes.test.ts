@@ -34,7 +34,7 @@ it('forwards incoming watcher notifications on the event stream', async () => {
   const reader = response.body!.getReader()
   const first = await reader.read()
   expect(new TextDecoder().decode(first.value)).toContain('event: hello')
-  const fixture = await incomingFixture(path.join(workspace, 'incoming'), 'new-delivery')
+  const fixture = await incomingFixture(path.join(workspace, 'staging'), 'published')
   const renamed = path.join(workspace, 'incoming', 'published')
   await rename(fixture, renamed)
   try {
