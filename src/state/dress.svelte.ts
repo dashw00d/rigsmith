@@ -11,7 +11,7 @@ import type { Character, Gear } from '../model/types.ts'
 import { preloadModel } from '../engine/garments.ts'
 import { app } from './app.svelte.ts'
 import { asset } from './assets.svelte.ts'
-import { defaultCommands, differs, randomize, resolve, setOf, settled, setsAfter, setsOf, wearOutfit, type Dress, type DressField, type Dressed } from './dressing.ts'
+import { defaultCommands, differs, randomize, resolve, settled, setsAfter, setsOf, setsWith, wearOutfit, type Dress, type DressField, type Dressed } from './dressing.ts'
 
 const KEY = 'rigsmith.dress.'
 /** Sets (and hair and beard pieces) worn lately, kept fitted. */
@@ -79,12 +79,11 @@ class DressState {
   }
 
   /** Whether a piece stays fitted while hidden: its set (or itself) worn lately, or fitted ahead. */
-  kept (id: string, g: Gear): boolean {
-    const r = this.recent.get(id)
-    const s = setOf(g)
-    if (s !== null && r?.sets.includes(s) === true) return true
+  kept (c: Pick<Character, 'id' | 'gear'>, g: Gear): boolean {
+    const r = this.recent.get(c.id)
+    if (r !== undefined && setsWith(c, g).some(s => r.sets.includes(s))) return true
     if (r?.pieces.includes(g.id) === true) return true
-    return this.ahead.get(id)?.includes(g.id) === true
+    return this.ahead.get(c.id)?.includes(g.id) === true
   }
 
   // ---- browsing ----------------------------------------------------------------------------------------------------

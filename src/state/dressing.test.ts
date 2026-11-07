@@ -62,7 +62,7 @@ describe('the dress', () => {
     const c = folk()
     const d = resolve(c, { outfit: 'hat_fur', hair: 'h2' })
     const own = documentDress(c)
-    const on = c.gear.filter(g => shows(g, d, own)).map(g => g.id)
+    const on = c.gear.filter(g => shows(c, g, d, own)).map(g => g.id)
     expect(on).toEqual(['b1', 'h2', 'axe'])
   })
 
@@ -70,7 +70,7 @@ describe('the dress', () => {
     const c = folk()
     c.gear[1].hidden = true
     const own = documentDress(c)
-    expect(c.gear.filter(g => shows(g, own, own)).map(g => g.id)).toEqual(['a1', 'h1', 'axe'])
+    expect(c.gear.filter(g => shows(c, g, own, own)).map(g => g.id)).toEqual(['a1', 'h1', 'axe'])
   })
 
   it('takes off what an outfit leaves no room for', () => {

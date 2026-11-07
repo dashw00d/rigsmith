@@ -160,7 +160,7 @@ class GearState {
    * beards (browsing: dress.svelte.ts), else as the document has it (reactive). */
   shownOnStage (c: Character, g: Gear): boolean {
     if (this.fitting === g.id) return true
-    return shows(g, dressing.worn(c), documentDress(c))
+    return shows(c, g, dressing.worn(c), documentDress(c))
   }
 
   /** A shown piece on stage (a piece kept fitted while hidden is not there for the panels). */
@@ -238,9 +238,9 @@ class GearState {
 
   /** Whether a piece shows: the rider's as its dress says (the gear list's own hidden for the rest), the horse's as
    * its rider's mount says (syncHorse). A piece being fitted always shows. */
-  private showsOn (g: Gear, w: Wearer, worn: Dressed | null, own: Dressed | null): boolean {
+  private showsOn (c: Character, g: Gear, w: Wearer, worn: Dressed | null, own: Dressed | null): boolean {
     if (w.rider && this.fitting === g.id) return true
-    return worn === null || own === null ? g.hidden !== true : shows(g, worn, own)
+    return worn === null || own === null ? g.hidden !== true : shows(c, g, worn, own)
   }
 
   /** What a piece is worn from: null when it can't be worn. Not whether it shows (a piece kept fitted is only hidden),
@@ -279,8 +279,8 @@ class GearState {
     const own = w.rider ? documentDress(c) : null
     const wanted = new Map<string, { g: Gear, key: string, shown: boolean }>()
     for (const g of list) {
-      const shown = this.showsOn(g, w, worn, own)
-      if (!shown && !(w.rider && dressing.kept(c.id, g))) continue
+      const shown = this.showsOn(c, g, w, worn, own)
+      if (!shown && !(w.rider && dressing.kept(c, g))) continue
       const key = this.keyOf(g, c, w)
       if (key !== null) wanted.set(g.id, { g, key, shown })
     }

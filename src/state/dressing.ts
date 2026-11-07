@@ -3,8 +3,8 @@
 // the default the game and the thumbnail use, and "Make default" writes the dress into it (defaultCommands). Pure, so
 // it is tested and the gear on stage (gear.svelte.ts) and the Folk panel agree.
 //
-// Set membership is read here only (setsOf, setOf): the model's sets and pools will replace Gear.outfit, and this is
-// the one place that changes.
+// Set membership is read here only (setsOf, setsWith): the model's sets and pools (src/model/folk.ts on dress/model)
+// replace Gear.outfit, and these two are the one place that changes.
 import type { Command } from '../model/command-types.ts'
 import type { Character, Gear } from '../model/types.ts'
 import { clothesFor, coversFace, coversHair, pickFolk, seeded } from '../engine/folk.ts'
@@ -14,20 +14,20 @@ export interface DressSet { name: string, pieces: readonly string[] }
 
 type Gearing = Pick<Character, 'gear'>
 
-/** The set a piece belongs to (null: none). */
-export function setOf (g: Pick<Gear, 'outfit'>): string | null {
-  return g.outfit ?? null
+/** The sets a piece is in, by name ([]: none). */
+export function setsWith (_c: Gearing, g: Pick<Gear, 'outfit'>): string[] {
+  return g.outfit === undefined ? [] : [g.outfit]
 }
 
 /** The character's sets, by name, each with its pieces (gear ids) in gear order. */
 export function setsOf (c: Gearing): DressSet[] {
   const by = new Map<string, string[]>()
   for (const g of c.gear) {
-    const s = setOf(g)
-    if (s === null) continue
-    const list = by.get(s) ?? []
-    list.push(g.id)
-    by.set(s, list)
+    for (const s of setsWith(c, g)) {
+      const list = by.get(s) ?? []
+      list.push(g.id)
+      by.set(s, list)
+    }
   }
   return [...by].sort(([a], [b]) => a.localeCompare(b)).map(([name, pieces]) => ({ name, pieces }))
 }
@@ -55,10 +55,10 @@ export type Dressed = Record<DressField, string | null>
 
 /** The document's own look: the set with a piece shown, its skin and clothes, the hair and beard shown. */
 export function documentDress (c: Pick<Character, 'gear' | 'look'>): Dressed {
-  const shownSet = c.gear.find(g => setOf(g) !== null && g.hidden !== true)
+  const shownSet = c.gear.find(g => g.hidden !== true && setsWith(c, g).length > 0)
   const shownRole = (role: 'hair' | 'beard'): string | null => c.gear.find(g => g.role === role && g.hidden !== true)?.id ?? null
   return {
-    outfit: shownSet === undefined ? null : setOf(shownSet),
+    outfit: shownSet === undefined ? null : setsWith(c, shownSet)[0],
     skin: c.look.skin ?? null,
     clothing: c.look.clothing ?? null,
     hair: shownRole('hair'),
@@ -70,7 +70,7 @@ export function documentDress (c: Pick<Character, 'gear' | 'look'>): Dressed {
 export function resolve (c: Pick<Character, 'gear' | 'look'>, d: Dress | undefined): Dressed {
   const own = documentDress(c)
   if (d === undefined) return own
-  const sets = new Set(c.gear.flatMap(g => { const s = setOf(g); return s === null ? [] : [s] }))
+  const sets = new Set(setsOf(c).map(s => s.name))
   const skins = new Set((c.look.skins ?? []).map(s => s.name))
   const clothes = new Set((c.look.clothes ?? []).map(s => s.name))
   const piece = (role: 'hair' | 'beard', id: string | null): boolean => id === null || c.gear.some(g => g.id === id && g.role === role)
@@ -87,11 +87,11 @@ export function resolve (c: Pick<Character, 'gear' | 'look'>, d: Dress | undefin
   }
 }
 
-/** Whether a piece shows under the dress: a set's pieces with their set (the document's own set as the document
+/** Whether a piece of `c` shows under the dress: a set's pieces with their set (the document's own set as the document
  * shows its pieces, `own`), hair and beard as picked, the rest as the document has them. */
-export function shows (g: Gear, d: Dressed, own?: Dressed): boolean {
-  const s = setOf(g)
-  if (s !== null) return s === d.outfit && (own?.outfit !== s || g.hidden !== true)
+export function shows (c: Gearing, g: Gear, d: Dressed, own?: Dressed): boolean {
+  const sets = setsWith(c, g)
+  if (sets.length > 0) return d.outfit !== null && sets.includes(d.outfit) && (own?.outfit !== d.outfit || g.hidden !== true)
   if (g.role === 'hair') return g.id === d.hair
   if (g.role === 'beard') return g.id === d.beard
   return g.hidden !== true
@@ -144,7 +144,10 @@ export function defaultCommands (c: Pick<Character, 'gear' | 'look'>, d: Dress |
   const want = resolve(c, d)
   const own = documentDress(c)
   const out: Command[] = []
-  const outfitShown = (name: string | null): boolean => c.gear.every(g => setOf(g) === null || (setOf(g) === name) === (g.hidden !== true))
+  const outfitShown = (name: string | null): boolean => c.gear.every(g => {
+    const sets = setsWith(c, g)
+    return sets.length === 0 || (name !== null && sets.includes(name)) === (g.hidden !== true)
+  })
   if (want.outfit !== own.outfit || !outfitShown(want.outfit)) out.push({ type: 'gear.outfit.show', outfit: want.outfit })
   if (want.skin !== own.skin) out.push({ type: 'look.skin.show', name: want.skin })
   if (want.clothing !== own.clothing) out.push({ type: 'look.clothing.show', name: want.clothing })
