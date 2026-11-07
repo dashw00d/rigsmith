@@ -40,7 +40,7 @@ async function compose (request: ComposeRequest): Promise<void> {
     return ctx.getImageData(0, 0, width, height).data
   }
   const base = { rgba: await pixels(baseImage), width, height }
-  const bare = request.bare === null ? null : { rgba: await pixels(request.bare), width, height }
+  const bare = request.bare === null || !request.layers.some(layer => layer.cut !== undefined) ? null : { rgba: await pixels(request.bare), width, height }
   const field = bodyField(request.geometry, request.regions, request.height, { width, height })
   const layers = []
   for (const layer of request.layers) {

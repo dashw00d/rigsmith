@@ -41,3 +41,25 @@ it('composes and cuts a Skin forearm adjoining a shirt without painting the face
   const result = composeSlots({ base: pixel(20), bare: null, field: { width: 2, height: 1, region: Int16Array.from([armId, body.regions[6]]), y: Float32Array.from([0.5, 1]) }, regions: body.list, layers: [{ ...pixel(200), id: 'sleeve', slots: ['top'] }] })
   expect([result.rgba[0], result.rgba[4]]).toEqual([200, 20])
 })
+
+it('does not send a bare image to the compositor when no worn layer has a cut', async () => {
+  const { vi } = await import('vitest')
+  const sent: Array<{ bare: string | null }> = []
+  class FakeWorker {
+    onerror: ((event: { message: string }) => void) | null = null
+    onmessage: ((event: { data: { bitmap: ImageBitmap } }) => void) | null = null
+    postMessage (data: { bare: string | null }): void {
+      sent.push(data)
+      queueMicrotask(() => this.onmessage?.({ data: { bitmap: { width: 1, height: 1 } as ImageBitmap } }))
+    }
+    terminate (): void {}
+  }
+  vi.stubGlobal('Worker', FakeWorker)
+  try {
+    const { showDressed } = await import('./folkview.ts')
+    await showDressed([mesh('Shirt', 2)], { skin: '/skin-uncut.png', bare: '/bare-uncut.png', previewBare: false,
+      height: 1, layers: [{ id: 'shirt', slots: ['top'], url: '/shirt-uncut.png' }] })
+    expect(sent).toHaveLength(1)
+    expect(sent[0].bare).toBeNull()
+  } finally { vi.unstubAllGlobals() }
+})

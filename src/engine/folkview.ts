@@ -152,7 +152,8 @@ export async function showDressed (body: readonly THREE.SkinnedMesh[], view: Dre
   const ownImage = ownMap?.image as Picture | undefined
   if (baseUrl === null && ownImage === undefined) throw new Error('Body has no base texture')
   const bodyKey = body.map(m => `${m.geometry.uuid}:${m.bindMatrix.toArray().join(',')}`).join('|')
-  const key = JSON.stringify({ base: baseUrl ?? `own:${ownMap!.uuid}`, bare: view.bare, bodyKey, height: view.height, layers: view.layers })
+  const bare = view.layers.some(layer => layer.cut !== undefined) ? view.bare : null
+  const key = JSON.stringify({ base: baseUrl ?? `own:${ownMap!.uuid}`, bare, bodyKey, height: view.height, layers: view.layers })
   const tex = await textures.load(key, async () => {
     const data = clothBody(body)
     const base = baseUrl ?? await createImageBitmap(ownImage!)
@@ -163,7 +164,7 @@ export async function showDressed (body: readonly THREE.SkinnedMesh[], view: Dre
         if (event.data.error !== undefined) { worker.terminate(); reject(new Error(event.data.error)) }
         else if (event.data.bitmap !== undefined) { worker.terminate(); resolve(event.data.bitmap) }
       }
-      try { worker.postMessage({ kind: 'compose', base, bare: view.bare, layers: view.layers, geometry: data.geometry, regions: data.regions, list: data.list, height: view.height }, typeof base === 'string' ? [] : [base]) }
+      try { worker.postMessage({ kind: 'compose', base, bare, layers: view.layers, geometry: data.geometry, regions: data.regions, list: data.list, height: view.height }, typeof base === 'string' ? [] : [base]) }
       catch (error) { worker.terminate(); reject(error) }
     })
     return glTexture(new THREE.Texture(image))

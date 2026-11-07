@@ -40,3 +40,12 @@ it('extends cut edges into unmapped seam padding without affecting mapped skin',
     layers: [{ ...image(200), id: 'shorts', slots: ['bottom'], cut: { below: [{ regions: [1], y: 0.5, feather: 0 }] } }] })
   expect([0, 1, 2, 3].map(i => result.rgba[i * 4])).toEqual([100, 100, 100, 40])
 })
+
+it('does not extend cut padding for uncut layers', () => {
+  const image = (v: number): Pixels => ({ width: 4, height: 1, rgba: Uint8ClampedArray.from(Array.from({ length: 4 }, () => [v, v, v, 255]).flat()) })
+  const field: BodyField = { width: 4, height: 1, region: Int16Array.from([1, -1, -1, 2]), y: Float32Array.from([0.2, 0, 0, 0.9]) }
+  const result = composeSlots({ base: image(40), bare: null, field,
+    regions: [{ id: 1, material: 'Trousers', x: 1 }, { id: 2, material: 'Face', x: 0 }],
+    layers: [{ ...image(200), id: 'trousers', slots: ['bottom'] }] })
+  expect([0, 1, 2, 3].map(i => result.rgba[i * 4])).toEqual([200, 40, 40, 40])
+})

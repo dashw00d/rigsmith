@@ -104,8 +104,9 @@ export function composeSlots ({ base, bare, field, regions, layers }: {
     else if (/shirt|sleeve|top/.test(material)) zones.set(r.id, 'top')
   }
   // Give islands a two-pixel gutter for bilinear sampling. Never replace another mapped body region.
-  let region = new Int16Array(field.region); let heights = new Float32Array(field.y)
-  for (let pass = 0; pass < 2; pass++) {
+  let region = field.region; let heights = field.y
+  const needsCut = layers.some(layer => layer.cut !== undefined)
+  for (let pass = 0; needsCut && pass < 2; pass++) {
     const nextRegion = new Int16Array(region); const nextHeights = new Float32Array(heights)
     for (let p = 0; p < region.length; p++) if (region[p] === -1) {
       const x = p % width; const y = Math.floor(p / width)
