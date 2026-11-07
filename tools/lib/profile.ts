@@ -66,19 +66,26 @@ async function measure (page: Page, action: string | undefined): Promise<Run> {
   return { longTasks: report.longTasks, wall, marks: summary(report.spans) }
 }
 
-/** Run the scenarios on the app at `server` with `character` selected (null: whichever the app picks). */
+/** Run the scenarios on the app at `server` with `character` selected (left out: the first dynamic character, with
+ * outfits, else the first). Answers the results and the character they ran on. */
 export async function profile (server: string, scenarios: readonly Scenario[], budget: Budget,
-  o: { character?: string | null, step?: string, log?: (line: string) => void } = {}): Promise<Result[]> {
+  o: { character?: string, step?: string, log?: (line: string) => void } = {}): Promise<{ character: string | null, results: Result[] }> {
   const log = o.log ?? (() => {})
+  let character = o.character ?? null
   return await withChrome(async page => {
     const results: Result[] = []
     // (the page's own storage: the character and the step it opens on)
     const open = async (): Promise<void> => {
       await page.navigate(`${server}/`)
       await page.until('document.readyState === "complete"', 60_000, 'the page loading')
-      await page.value(`(() => { localStorage.clear(); ${o.character != null ? `localStorage.setItem('rigsmith.selected', ${JSON.stringify(o.character)});` : ''} localStorage.setItem('rigsmith.step', ${JSON.stringify(o.step ?? 'gear')}) })()`)
+      await page.value(`(() => { localStorage.clear(); ${character !== null ? `localStorage.setItem('rigsmith.selected', ${JSON.stringify(character)});` : ''} localStorage.setItem('rigsmith.step', ${JSON.stringify(o.step ?? 'gear')}) })()`)
       await page.navigate(`${server}/`)
       await page.until(ready, 120_000, 'the app starting')
+      if (character === null) {
+        character = await page.value(inPage(`const folk = r.app.characters.find(x => x.gear.some(g => g.outfit !== undefined)) ?? r.app.characters[0]
+          await r.app.select(folk.id); return folk.id`)) as string
+        log(`on ${character}`)
+      }
     }
     for (const s of scenarios) {
       const limit = s.kind === 'load' ? budget.load : budget.click
@@ -105,7 +112,7 @@ export async function profile (server: string, scenarios: readonly Scenario[], b
       if (result.worst > limit) result.ok = false
       results.push(result)
     }
-    return results
+    return { character, results }
   })
 }
 

@@ -351,12 +351,10 @@ export async function commit (id: string, fn: (c: Character) => void | Character
  * it), and sent to every open page. */
 export async function adopt (id: string): Promise<void> {
   const character = await locked(id, async (): Promise<Character | null> => {
-    const raw = await readJson<Record<string, unknown> | null>(fileOf(id), null)
-    if (raw === null) return null
-    // (migrated: its own event went out)
-    if (raw.schema !== 4) { await loadLocked(id); return null }
-    const c = raw as unknown as Character
     const known = versions.get(id)
+    // (an older schema is migrated on the way, its version past the known one)
+    const c = await loadLocked(id)
+    if (c === null) return null
     if (known !== undefined && c.version <= known) {
       c.version = known + 1
       await writeJson(fileOf(id), c)

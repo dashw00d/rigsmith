@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { makeCharacter } from '../src/model/fixtures.ts'
 import type { FilesChanged } from './files.ts'
 
 const dir = mkdtempSync(path.join(tmpdir(), 'rigsmith-files-'))
@@ -37,12 +38,8 @@ async function heard (character: string | null, file: string, ms = 3000): Promis
   })
 }
 
-const character = {
-  schema: 4, id: ID, name: 'Knight', createdAt: 1, updatedAt: 1, version: 3, revision: 0, files: { model: 'model.glb' },
-  status: 'ready', source: { file: 'source/original.glb', originalName: 'k.glb', bytes: 1, kind: 'mesh', scale: 1, warnings: [] },
-  skeleton: { template: 'human', fingerLevel: 'full', overrides: {} }, skin: { locked: false }, hands: { poses: [] },
-  gear: [], clips: [], look: { layers: [] },
-}
+// (the current schema, whatever it is: makeCharacter follows it)
+const character = makeCharacter({ id: ID, name: 'Knight', version: 3 })
 
 beforeAll(async () => {
   put(at('character.json'), JSON.stringify(character))

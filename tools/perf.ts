@@ -22,12 +22,12 @@ async function main (): Promise<number> {
   try {
     await server.listen()
     const url = (server.resolvedUrls?.local[0] ?? 'http://127.0.0.1:5190/').replace(/\/$/, '')
-    const list = await (await fetch(`${url}/api/characters`, { headers: { 'x-rigsmith-schema': '4' } })).json() as Array<{ id: string, gear: Array<{ outfit?: string }> }>
-    const character = typeof kv.character === 'string' ? kv.character : (list.find(c => c.gear.some(g => g.outfit !== undefined)) ?? list[0])?.id ?? null
     const only = typeof kv.only === 'string' ? kv.only.toLowerCase() : null
     const chosen = scenarios.filter(s => only === null || s.name.toLowerCase().includes(only))
-    console.log(`perf: ${chosen.length} scenario${chosen.length === 1 ? '' : 's'} on ${character ?? 'no character'} at ${url}`)
-    const results = await profile(url, chosen, budget, { character, log: line => { console.log(`  ${line}`) } })
+    console.log(`perf: ${chosen.length} scenario${chosen.length === 1 ? '' : 's'} at ${url}`)
+    const { character, results } = await profile(url, chosen, budget, {
+      ...(typeof kv.character === 'string' ? { character: kv.character } : {}), log: line => { console.log(`  ${line}`) },
+    })
     for (const line of describe(results)) console.log(line)
     if (typeof kv.out === 'string') writeFileSync(kv.out, JSON.stringify({ at: new Date().toISOString(), character, budget, results }, null, 1))
     return results.every(r => r.ok) ? 0 : 1
