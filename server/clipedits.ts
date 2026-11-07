@@ -8,7 +8,8 @@
 // A made clip is saved over in place only when no slot but the one it was saved from plays it (usesOf): otherwise the
 // save forks it under a new id, so editing one character's clip never changes another's.
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import type { Character, ClipKey } from '../src/model/types.ts'
 import { spawnJob } from './jobs.ts'
@@ -66,6 +67,16 @@ export function editName (name: string): string {
 /** Every slot of `characters` that plays clip `clipId`. */
 export function usesOf (characters: readonly Character[], clipId: string): ClipUse[] {
   return characters.flatMap(c => c.clips.filter(s => s.clip.id === clipId).map(s => ({ character: c.id, characterName: c.name, slot: s.id, slotName: s.name })))
+}
+
+/** Slot counts for all clips in one traversal of the character documents. */
+export function clipUseCounts (characters: readonly Character[]): Record<string, number> {
+  const counts: Record<string, number> = Object.create(null) as Record<string, number>
+  for (const character of characters) for (const slot of character.clips) {
+    const id = slot.clip.id
+    if (id) counts[id] = (counts[id] ?? 0) + 1
+  }
+  return counts
 }
 
 /** The slots playing `clipId` other than `slot` of character `characterId`: what saving over it would change. */
@@ -210,7 +221,7 @@ export async function saveEdit (id: string, e: SavedEdit, update: (progress: num
     const hadRecord = existsSync(file) ? await readFile(file, 'utf8') : null
     const hadSources = existsSync(sourcesFile) ? await readFile(sourcesFile, 'utf8') : null
     try {
-      await writeFile(file, JSON.stringify(edit))
+      await atomicWrite(file, JSON.stringify(edit))
       // its line in the sources: the build makes it with blender/clips/edit.py
       const sources = await readJson<Array<Record<string, unknown>>>(sourcesFile, [])
       const line = {
@@ -219,7 +230,7 @@ export async function saveEdit (id: string, e: SavedEdit, update: (progress: num
         description: edit.description, tags: edit.tags, category: edit.category,
       }
       await mkdir(path.dirname(sourcesFile), { recursive: true })
-      await writeFile(sourcesFile, JSON.stringify([...sources.filter(s => s.id !== id), line], null, 1))
+      await atomicWrite(sourcesFile, JSON.stringify([...sources.filter(s => s.id !== id), line], null, 1))
       update(0.2, 'Writing it into the library (Blender)')
       await run('python3', [path.join(ROOT, 'blender', 'library', 'build.py'), 'convert', '--sources', 'custom'], l => { if (/making|convert done/.test(l)) update(0.5, l.replace(/^\S+ /, '').slice(0, 100)) }, signal)
       if (!existsSync(path.join(LIBRARY, 'clips', `${id}.glb`))) throw new Error('Blender wrote no clip (see workspace/library/failures.json)')
@@ -227,9 +238,9 @@ export async function saveEdit (id: string, e: SavedEdit, update: (progress: num
       await run('python3', [path.join(ROOT, 'blender', 'library', 'build.py'), 'aggregate'], () => {}, signal)
     } catch (error) {
       if (hadRecord === null) await rm(file, { force: true })
-      else await writeFile(file, hadRecord)
+      else await atomicWrite(file, hadRecord)
       if (hadSources === null) await rm(sourcesFile, { force: true })
-      else await writeFile(sourcesFile, hadSources)
+      else await atomicWrite(sourcesFile, hadSources)
       throw error
     }
     update(1, `${name} is in the library (${id}, ${edit.category ?? 'its own category'})`)
@@ -276,7 +287,7 @@ async function writeCreatureClip (p: CreatureClip, glb: Buffer): Promise<{ id: s
   }
   await mkdir(path.join(dir, p.rig), { recursive: true })
   const file = `creatures/${p.rig}/${id}.glb`
-  await writeFile(path.join(LIBRARY, file), glb)
+  await atomicWrite(path.join(LIBRARY, file), glb)
   const frames = Math.round(p.duration * 30) + 1
   index.clips = [...index.clips.filter(c => c.id !== id), {
     id, name, description: `Made in Rigsmith's animation editor from ${p.base}.`, source: 'custom', nameSource: 'source', file, fps: 30, frames,
@@ -284,6 +295,12 @@ async function writeCreatureClip (p: CreatureClip, glb: Buffer): Promise<{ id: s
     loop: p.loop, inPlace: p.inPlace, rig: p.rig, base: p.base, ...(p.propPaths !== undefined && Object.keys(p.propPaths).length > 0 ? { propPaths: p.propPaths } : {}),
     createdAt: (own?.createdAt as string | undefined) ?? new Date().toISOString(), ...(own !== undefined ? { updatedAt: new Date().toISOString() } : {}),
   }]
-  await writeFile(indexFile, JSON.stringify(index, null, 1))
+  await atomicWrite(indexFile, JSON.stringify(index, null, 1))
   return { id, url: `/files/library/${file}` }
+}
+
+/** Replace library files without mutating any hard-linked workspace copy. */
+async function atomicWrite (file: string, contents: string | Buffer): Promise<void> {
+  const temp = `${file}.${randomBytes(8).toString('hex')}.tmp`
+  try { await writeFile(temp, contents); await rename(temp, file) } finally { await rm(temp, { force: true }) }
 }

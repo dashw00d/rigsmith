@@ -1,14 +1,13 @@
 <script lang="ts">
   // The frame (DESIGN.md §5): the top bar; the characters on the left, always (a drawer on a narrow window); the
   // viewport in the middle, with the clip library or the gear catalog sliding over its left edge; the step's inspector
-  // on the right; the activity drawer over the right side; the Forge (a set's board, not a character's) over all of it
-  // while it is open. The confirm dialog, the keys sheet, the toasts and the drop target are mounted here once, and the
+  // on the right; the activity drawer over the right side. The confirm dialog, keys sheet, toasts and drop target
+  // are mounted here once, and the
   // registered keys (src/ui/shortcuts.ts) are run from here.
   import { onMount } from 'svelte'
   import { PanelLeft, PanelRight, RefreshCw } from '@lucide/svelte'
   import { phaseOf } from '../model/select.ts'
   import { app } from '../state/app.svelte.ts'
-  import { forge } from '../state/forge.svelte.ts'
   import { thumbnails } from '../state/thumbnails.svelte.ts'
   import Badge from '../ui/Badge.svelte'
   import Button from '../ui/Button.svelte'
@@ -29,7 +28,6 @@
   import KeysSheet from './KeysSheet.svelte'
   import { runShortcut } from '../ui/shortcuts.ts'
   import LibraryDrawer from './motion/LibraryDrawer.svelte'
-  import ForgeBoard from './forge/ForgeBoard.svelte'
 
   let ready = $state(false)
   let starting = $state(false)
@@ -125,7 +123,6 @@
       <aside id="workspace-inspector" class="right" class:drawer={narrow} aria-label="Inspector" aria-hidden={!rightShown} inert={!rightShown}>
         {#if ready}<Inspector />{/if}
       </aside>
-      {#if ready && forge.open}<ForgeBoard />{/if}
       {#if ready && app.drawer === 'activity'}<ActivityDrawer />{/if}
     </div>
   {/if}
