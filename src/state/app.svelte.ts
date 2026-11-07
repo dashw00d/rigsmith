@@ -99,6 +99,7 @@ class AppState {
   private navigation = 0
   private waiters = new Map<string, Array<(job: Job) => void>>()
   private source: EventSource | null = null
+  private incomingListeners = new Set<() => void>()
   private helloes = 0
   private toastId = 0
 
@@ -393,6 +394,12 @@ class AppState {
 
   // ---- the server's events -------------------------------------------------------------------------------------
 
+  /** Subscribe to Incoming updates on the app's single connection, including reconnects. */
+  onIncoming (listener: () => void): () => void {
+    this.incomingListeners.add(listener)
+    return () => { this.incomingListeners.delete(listener) }
+  }
+
   private listen (): void {
     if (this.source !== null) return
     const source = new EventSource('/api/events?schema=2')
@@ -413,6 +420,7 @@ class AppState {
         void api.characters().then(list => { this.load(list) }, () => { /* gone again: the next hello retries */ })
         assets.reloadAll()
       }
+      for (const listener of this.incomingListeners) listener()
     })
     source.addEventListener('job', (e) => { this.updateJob(data<Job>(e)) })
     source.addEventListener('character', (e) => {
@@ -422,6 +430,7 @@ class AppState {
     })
     source.addEventListener('journal', () => { this.journalBeat++ })
     source.addEventListener('game', () => { this.gameBeat++ })
+    source.addEventListener('incoming', () => { for (const listener of this.incomingListeners) listener() })
     source.addEventListener('removed', (e) => { const id = data<string>(e); this.forget(id); assets.forget(id) })
     // (before the character event that names them: the store tells the files a write made first)
     source.addEventListener('files', (e) => { assets.receive(data<FilesChanged>(e)) })

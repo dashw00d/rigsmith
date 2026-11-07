@@ -9,16 +9,14 @@ class Incoming {
   loadedFor = $state<string | null>(null)
   busy = $state<string | null>(null)
   private turn = 0
-  private source: EventSource | null = null
+  private unsubscribe: (() => void) | null = null
 
   start (): () => void {
-    if (this.source !== null) return () => {}
-    const source = new EventSource('/api/events?schema=2')
-    this.source = source
-    source.addEventListener('incoming', () => { void this.refresh() })
-    source.addEventListener('hello', () => { void this.refresh() })
+    if (this.unsubscribe !== null) return () => {}
+    const unsubscribe = app.onIncoming(() => { void this.refresh() })
+    this.unsubscribe = unsubscribe
     void this.refresh()
-    return () => { if (this.source === source) { source.close(); this.source = null; this.turn++ } }
+    return () => { if (this.unsubscribe === unsubscribe) { unsubscribe(); this.unsubscribe = null; this.turn++ } }
   }
   async refresh (): Promise<void> {
     const turn = ++this.turn
