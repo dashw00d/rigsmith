@@ -27,6 +27,7 @@
   import KeysSheet from './KeysSheet.svelte'
   import { runShortcut } from '../ui/shortcuts.ts'
   import LibraryDrawer from './motion/LibraryDrawer.svelte'
+  import IncomingDrawer from './incoming/IncomingDrawer.svelte'
 
   let ready = $state(false)
   let starting = $state(false)
@@ -117,6 +118,7 @@
         {#if ready && wardrobe.crowdOpen && app.step === 'gear' && selected !== null && isFolk(selected)}<CrowdView character={selected} />{/if}
         {#if ready && app.drawer === 'library'}<LibraryDrawer />{/if}
         {#if ready && app.drawer === 'wardrobe'}<WardrobeDrawer />{/if}
+        {#if ready && app.drawer === 'incoming'}<IncomingDrawer />{/if}
       </main>
       <aside id="workspace-inspector" class="right" class:drawer={narrow} aria-label="Inspector" aria-hidden={!rightShown} inert={!rightShown}>
         {#if ready}<Inspector />{/if}
