@@ -116,6 +116,8 @@ export type Command =
    * a skin given without `bare` keeps the bare version it had, and a dynamic character's skin pools follow (gone skins
    * out of them, new ones into the first). */
   | { type: 'look.skins.set', skins: Skin[] }
+  /** Edit a skin and atomically update references when it is renamed. Null clears optional fields. */
+  | { type: 'look.skin.update', name: string, patch: { name?: string, tags?: string[] | null, hair?: string | null } }
   /** The skin Rigsmith shows (null: its own texture). */
   | { type: 'look.skin.show', name: string | null }
   /** The clothes layers replaced whole; the one shown is kept if still there. look.cloth follows by name (a layer kept

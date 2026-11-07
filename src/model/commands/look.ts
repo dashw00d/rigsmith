@@ -49,6 +49,30 @@ export function reduceLook (c: Character, cmd: LookCommand): string[] {
       syncLegacySkins(c)
       return [`skins: ${skins.length}`]
     }
+    case 'look.skin.update': {
+      const k = (look.skins ?? []).find(s => s.name === cmd.name) ?? missing(`No skin ${String(cmd.name)}`)
+      const p = patchOf(cmd.patch, ['name', 'tags', 'hair'])
+      const next = p.name === undefined ? k.name : str(p.name, 'name')
+      if (next !== k.name && (look.skins ?? []).some(s => s.name === next)) conflict(`Skin name ${next} is taken`)
+      const tags = p.tags === undefined ? k.tags : p.tags === null ? undefined : tagsOf(p.tags, 'tags')
+      const hair = p.hair === undefined ? k.hair : p.hair === null ? undefined :
+        typeof p.hair === 'string' && /^#[0-9a-f]{6}$/i.test(p.hair) ? p.hair.toLowerCase() : bad('hair must be #rrggbb')
+      const changed = next !== k.name || JSON.stringify(tags ?? []) !== JSON.stringify(k.tags ?? []) || hair !== k.hair
+      if (!changed) return []
+      const old = k.name
+      k.name = next
+      if (tags === undefined || tags.length === 0) delete k.tags
+      else k.tags = tags
+      if (hair === undefined) delete k.hair
+      else k.hair = hair
+      if (next !== old) {
+        if (look.skin === old) look.skin = next
+        for (const pool of c.folk?.pools ?? []) if (pool.kind === 'skin') {
+          for (const item of pool.items) if (item.ref === old) item.ref = next
+        }
+      }
+      return [`skin ${old}: updated`]
+    }
     case 'look.skin.bare': {
       const k = (look.skins ?? []).find(s => s.name === cmd.name) ?? missing(`No skin ${String(cmd.name)}`)
       const file = cmd.file === null ? undefined : under(cmd.file, '', 'file')
