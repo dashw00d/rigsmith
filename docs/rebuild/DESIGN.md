@@ -641,3 +641,23 @@ PUT/DELETE `/weights` (body and gear) run as `lock: 'files'` jobs (or answer 409
   so parameter properties and enums are not allowed: the automap enums became const objects); `jobs.busy()` names the
   running job before a queued one; Stage uses THREE.Timer and PCFShadowMap (the deprecated Clock and soft shadow map
   are gone).
+- Foundation (docs/dressing-plan.md Phase 0, 2026-11-06): **files by content.** `server/files.ts` indexes the
+  characters' folders and library/{clips,creatures} (path -> size, mtime, inode, 16-hex SHA-1; hashed only when the
+  stat changes; kept in `workspace/.cache/files.json`), watches them recursively and emits SSE `files` `{ character:
+  id | null (the library), changed: { path: hash | null } }`. `GET /api/characters/:id/files`, `GET /api/library/files`
+  and `GET /api/thumbnails` answer manifests; `/files/...?h=<hash>` is served `immutable` only while the file holds
+  that hash (`no-store` otherwise; no `h`: `no-cache` with an etag). `store.onWritten(fn)` is called before every
+  `character` event (a write that isn't a command rescans the folder; wired in server/plugin.ts), `store.adopt(id)`
+  re-reads a character.json changed on disk (its version moved past the last handed out), and `commit` never hands out
+  a version below the last one. Client: `src/state/assets.svelte.ts` `asset(c, path)` replaces `api.fileUrl` (removed:
+  no `revision`, `look.at`, `thumbVersion` or `?v=` tokens in URLs); `src/engine/assetUrls.ts` `versioned(url)` for
+  loaders of plain `/files/` URLs (clip refs stay plain); every client cache is `src/engine/lru.ts` `Lru` (byte budget,
+  disposes three.js objects); `clips.forgetClip`, `RetargetCache.forget` and `animator.forgetClip` are gone; the library
+  page's clips carry `hash`. A change in src/state, src/engine or src/model reloads the page in dev. **Dress state:**
+  `src/state/dressing.ts` (`Dress`, `resolve`, `shows`, `setsOf`/`setsWith`: the one place set membership is read,
+  `defaultCommands`) and `src/state/dress.svelte.ts` (per character, localStorage); browsing a dynamic character never
+  sends commands, "Make default" sends `gear.outfit.show`, `look.skin.show`, `look.clothing.show`, `gear.update
+  {hidden}` as one entry; `gear.shownOnStage(c, g)`. **Perf:** `src/engine/perf.ts` dev marks and long-task logger,
+  `window.__rigsmith` in dev, `npm run perf` (tools/perf.ts, tools/lib/profile.ts, tools/lib/chrome.ts `withChrome`,
+  tests/perf/{scenarios.ts,budget.json}). The unit export writes through `tools/lib/atomic.ts` (temp + rename, skipped
+  when the bytes are the same).
