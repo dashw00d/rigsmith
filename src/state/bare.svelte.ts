@@ -3,6 +3,8 @@ import { app } from './app.svelte.ts'
 import { assets } from './assets.svelte.ts'
 import { viewer } from './viewer.svelte.ts'
 import { timed } from '../engine/perf.ts'
+import type { BufferAttribute } from 'three'
+import type { Command } from '../model/command-types.ts'
 
 class Bare {
   busy = $state(false)
@@ -18,9 +20,11 @@ class Bare {
         const position = mesh.geometry.getAttribute('position'); const uv = mesh.geometry.getAttribute('uv')
         if (position === undefined || uv === undefined || position.itemSize !== 3 || uv.itemSize !== 2 || !(position.array instanceof Float32Array) || !(uv.array instanceof Float32Array)) throw new Error('Body needs float position and UV attributes')
         const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
-        return { positions: position.array, uv: uv.array, index: mesh.geometry.index?.array ?? null, matrix: mesh.bindMatrix.toArray(), material: material.name }
+        const full = mesh.userData.fullIndex as BufferAttribute | null | undefined
+        return { positions: position.array, uv: uv.array, index: (full ?? mesh.geometry.index)?.array ?? null, matrix: mesh.bindMatrix.toArray(), material: material.name }
       }))
       this.busy = true
+      const commands: Command[] = []
       for (let i = 0; i < skins.length; i++) {
         const skin = skins[i]; this.label = skin.name; this.progress = i / skins.length
         const url = assets.asset(c, skin.file)
@@ -39,8 +43,9 @@ class Bare {
         const response = await fetch(`/api/characters/${encodeURIComponent(c.id)}/look/bare/${encodeURIComponent(skin.name)}`, { method: 'PUT', headers: { 'Content-Type': 'image/png', 'x-rigsmith': '1', 'x-rigsmith-schema': '5' }, body: png })
         if (!response.ok) throw new Error(`Could not save bare skin (${response.status}): ${await response.text()}`)
         const result = await response.json() as { path: string }
-        if (await app.do(c.id, { type: 'look.skin.bare', name: skin.name, file: result.path }) === null) throw new Error(`Could not attach bare skin ${skin.name}`)
+        commands.push({ type: 'look.skin.bare', name: skin.name, file: result.path })
       }
+      if (await app.do(c.id, commands, 'look.bare') === null) throw new Error('Could not attach bare skins')
     } catch (error) { app.toast('error', `Make bare: ${(error as Error).message}`) } finally { this.busy = false; this.label = ''; this.progress = 0 }
   }
 }
