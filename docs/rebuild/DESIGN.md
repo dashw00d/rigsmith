@@ -703,3 +703,21 @@ PUT/DELETE `/weights` (body and gear) run as `lock: 'files'` jobs (or answer 409
   folkManifestData: rng, program, regions, bodies, packing, skins, layers, sets, kinds, pools, pieces, stances,
   golden, plus schema 1's outfits/clothes/hair/beard/rules). The store, compat (`x-rigsmith-schema: 5`) and the private
   file list know schema 5 and character.v4.json.
+- Speed (docs/dressing-plan.md Phase 0 §4, 2026-11-06): **derived data.** The fitting is `src/engine/workers/fit.ts`
+  (`skinWeights`, `coverVertices`, `regionHits`, `hiddenAt`, `TriangleGrid` with numeric cell keys, `BodyCore`/`MeshCore`
+  plain arrays, `bodyKey`/`meshesKey` content hashes, `ALGO`), bit for bit the old garments.ts code (fit.reference.ts +
+  fit.test.ts; the real folk body checked too); garments.ts `computeWeights`/`coveredVertices`/`regionsHidden` wrap it
+  (the export keeps computing in Node, the same code). `src/engine/workers/derive.ts` `derive(body, meshes, {policy,
+  cover, store})` answers a skin piece's weights per mesh and its per-region coverage from this page's memory (Lru), else
+  a `DerivedStore`, else the derive worker (`derive.worker.ts`, up to 2; inline where there are no workers), and stores
+  it; file `garments/<gid>/derived/<meshesKey>-<bodyKey>-<policy>-v<ALGO>.bin` (meshesKey hashes the piece's meshes
+  as placed, so file, origin and placement all count; format in derive.ts `encodeDerived`). Server
+  `server/routes/derived.ts`: `GET|PUT /api/characters/:id/garments/:gid/derived/:name` (housekeeping, newest 12 per
+  piece kept), and server/files.ts leaves `garments/*/derived/` out of the index. `WearOptions.derived?: DerivedStore`,
+  `Worn.hidden?: number[]` (regions at its share, from the derived coverage); `hideBodyUnder` uses `hidden` (else tests
+  once, keyed by content) and keeps the last 8 indexes per body mesh by hidden set (`fullIndex` is now the original
+  index attribute, not a copy). `bodySurface().grid` is built on first use; `bodyCore(body, view)`, `meshCore(geometry)`
+  exported. Gear on stage: a piece's key holds its model path, its file hash is compared only once known (a piece worn
+  before the files index came in isn't worn again), its shaders are compiled with `compileAsync` before it is first
+  drawn, and skin/spot pieces get the female morph field (off) as they are worn (`folkview.prepareFemale`,
+  `hasFemaleShape`). `npm run perf -- --cpu=<dir>` saves a CPU profile per run and prints the hottest functions.
