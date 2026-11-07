@@ -43,6 +43,8 @@ async function redo (): Promise<void> {
 }
 
 export function registerAppKeys (): () => void {
+  // (not over the Forge: it is about a set, not the character selected)
+  const editing = (): boolean => app.selected !== null && app.step !== 'motion' && !forge.open
   const when = (): boolean => dressing() !== null
   const run = (fn: (c: Character) => void) => (): void => { const c = dressing(); if (c !== null) fn(c) }
   const list: Shortcut[] = [
@@ -55,9 +57,9 @@ export function registerAppKeys (): () => void {
     { id: 'dress.randomize', keys: 'r', label: 'Randomize: a new unit (locked slots kept)', group: 'Dressing', when: () => when() && !wardrobe.crowdOpen, run: run(c => { wardrobe.randomize(c) }) },
     { id: 'dress.wardrobe', keys: 'w', label: 'Open or close the Wardrobe', group: 'Dressing', when, run: () => { app.toggleDrawer('wardrobe') } },
     { id: 'dress.crowd', keys: 'c', label: 'Crowd: many units side by side', group: 'Dressing', when, run: () => { wardrobe.crowdOpen = !wardrobe.crowdOpen } },
-    { id: 'app.undo', keys: 'ctrl+z', label: 'Undo', group: 'Everywhere', when: () => app.selected !== null && app.step !== 'motion', run: () => { void undo() } },
-    { id: 'app.redo', keys: 'ctrl+shift+z', label: 'Redo', group: 'Everywhere', when: () => app.selected !== null && app.step !== 'motion', run: () => { void redo() } },
-    { id: 'app.redo.y', keys: 'ctrl+y', label: 'Redo', group: 'Everywhere', when: () => app.selected !== null && app.step !== 'motion', run: () => { void redo() } },
+    { id: 'app.undo', keys: 'ctrl+z', label: 'Undo', group: 'Everywhere', when: editing, run: () => { void undo() } },
+    { id: 'app.redo', keys: 'ctrl+shift+z', label: 'Redo', group: 'Everywhere', when: editing, run: () => { void redo() } },
+    { id: 'app.redo.y', keys: 'ctrl+y', label: 'Redo', group: 'Everywhere', when: editing, run: () => { void redo() } },
     { id: 'app.keys', keys: '?', label: 'This list of keys', group: 'Everywhere', run: () => { wardrobe.keysOpen = !wardrobe.keysOpen } },
   ]
   return register(...list)
