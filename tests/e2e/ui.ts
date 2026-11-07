@@ -10,8 +10,14 @@ import type { animator } from '../../src/state/animator.svelte.ts'
 import type { assets } from '../../src/state/assets.svelte.ts'
 import type { ship } from '../../src/state/ship.svelte.ts'
 import type { wardrobe } from '../../src/app/gear/wardrobe.svelte.ts'
+import type * as pick from '../../src/engine/folkpick.ts'
 
-export interface Rigsmith { app: typeof app, gear: typeof gear, dress: typeof dress, viewer: typeof viewer, animator: typeof animator, assets: typeof assets, ship: typeof ship, wardrobe: typeof wardrobe }
+export interface Rigsmith {
+  app: typeof app, gear: typeof gear, dress: typeof dress, viewer: typeof viewer, animator: typeof animator,
+  assets: typeof assets, ship: typeof ship, wardrobe: typeof wardrobe, pick: typeof pick,
+  /** Available when the wave 2 classes state lands. */
+  classes?: { tab: 'characters' | 'classes', openId: string | null, openClass: (characterId: string, kindId: string) => void | Promise<void> }
+}
 export type Selector = { testid: string, id?: string, within?: Selector } | { role: string, name: string, within?: Selector }
 export interface Scenario { name: string, character?: string, step?: string, allowErrors?: boolean, run: (ui: UI) => Promise<void> }
 interface AXNode { backendDOMNodeId?: number, role?: { value?: string }, name?: { value?: string }, ignored?: boolean }
