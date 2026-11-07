@@ -31,6 +31,7 @@ class Ship {
   builds = $state.raw<Record<string, UnitBuildView | null>>({})
   private loadedBeat = -1
   private loading: Promise<void> | null = null
+  private loadTurn = 0
   private buildBeat = new Map<string, number>()
   private writes: Promise<unknown> = Promise.resolve()
 
@@ -40,14 +41,15 @@ class Ship {
     if (beat === this.loadedBeat && untrack(() => this.status) !== null) return
     if (this.loading !== null && beat === this.loadedBeat) return await this.loading
     this.loadedBeat = beat
+    const turn = ++this.loadTurn
     this.loading = (async () => {
       try {
-        this.status = await api.game()
-        this.error = null
+        const status = await api.game()
+        if (turn === this.loadTurn) { this.status = status; this.error = null }
       } catch (error) {
-        this.error = reason(error)
+        if (turn === this.loadTurn) this.error = reason(error)
       } finally {
-        this.loading = null
+        if (turn === this.loadTurn) this.loading = null
       }
     })()
     await this.loading
@@ -106,7 +108,11 @@ class Ship {
 
   private async put (name: string, entry: UnitSpec | null): Promise<boolean> {
     try {
-      this.status = await api.putUnit(name, entry)
+      const status = await api.putUnit(name, entry)
+      this.loadTurn++
+      this.loading = null
+      this.status = status
+      this.error = null
       return true
     } catch (error) {
       app.toast('error', `${name}: ${reason(error)}`)
