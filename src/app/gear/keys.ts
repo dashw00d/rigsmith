@@ -6,6 +6,7 @@
 import { app } from '../../state/app.svelte.ts'
 import { forge } from '../../state/forge.svelte.ts'
 import { timeline } from '../../state/timeline.svelte.ts'
+import { viewer } from '../../state/viewer.svelte.ts'
 import { isFolk } from '../../engine/folk.ts'
 import { register, type Shortcut } from '../../ui/shortcuts.ts'
 import type { Character } from '../../state/api.ts'
@@ -48,6 +49,7 @@ export function registerAppKeys (): () => void {
   const when = (): boolean => dressing() !== null
   const run = (fn: (c: Character) => void) => (): void => { const c = dressing(); if (c !== null) fn(c) }
   const list: Shortcut[] = [
+    { id: 'view.frame', keys: 'f', label: 'Frame the character', group: 'Everywhere', when: () => app.selected !== null && !timeline.hovered, run: () => { viewer.focus() } },
     { id: 'dress.set.prev', keys: '[', label: 'Previous set', group: 'Dressing', when, run: run(c => { wardrobe.step(c, 'outfit', -1) }) },
     { id: 'dress.set.next', keys: ']', label: 'Next set', group: 'Dressing', when, run: run(c => { wardrobe.step(c, 'outfit', 1) }) },
     { id: 'dress.skin.prev', keys: 'shift+[', label: 'Previous skin', group: 'Dressing', when, run: run(c => { wardrobe.step(c, 'skin', -1) }) },

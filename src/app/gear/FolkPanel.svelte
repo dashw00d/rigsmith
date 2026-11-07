@@ -101,7 +101,7 @@
           <IconButton size="sm" label="Previous set" hint="Previous set ([)" onclick={() => { browsing = null; wardrobe.step(character, 'outfit', -1) }}><ChevronLeft size={13} /></IconButton>
           <IconButton size="sm" label="Next set" hint="Next set (])" onclick={() => { browsing = null; wardrobe.step(character, 'outfit', 1) }}><ChevronRight size={13} /></IconButton>
           <span class="grow"></span>
-          <Button size="sm" variant={app.drawer === 'wardrobe' ? 'primary' : 'ghost'} onclick={() => { app.toggleDrawer('wardrobe') }} title="Every set, skin, clothes, hair, beard and piece, with pictures (W)">
+          <Button size="sm" keys="dress.wardrobe" variant={app.drawer === 'wardrobe' ? 'primary' : 'ghost'} onclick={() => { app.toggleDrawer('wardrobe') }} title="Every set, skin, clothes, hair, beard and piece, with pictures (W)">
             <Shirt size={13} /> Wardrobe</Button>
         </div>
       {/if}
@@ -165,7 +165,7 @@
   {/each}
 
   <div class="actions">
-    <Button size="sm" variant="ghost" onclick={() => { wardrobe.randomize(character) }} title="A new unit as the game would dress it (R): the locked slots kept">
+    <Button size="sm" variant="ghost" keys="dress.randomize" onclick={() => { wardrobe.randomize(character) }} title="A new unit as the game would dress it (R): the locked slots kept">
       <Dices size={13} /> Randomize</Button>
     <label class="uid" use:tooltip={unit?.changed === true ? 'Changed by hand since; Enter shows the unit again' : 'Exactly the unit the game dresses with this number'}>
       <span>Unit #</span>

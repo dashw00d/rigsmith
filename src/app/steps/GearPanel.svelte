@@ -4,7 +4,7 @@
   // open: its name, the bone it rides (or another way to wear it), where it sits (gizmo and numbers), where hands hold
   // it, its painted weights, and what each hand does and why. Every change is a command (src/state/gear.svelte.ts).
   import { untrack } from 'svelte'
-  import { Library, LoaderCircle, Sword, Upload } from '@lucide/svelte'
+  import { Library, LoaderCircle, Shirt, Sword, Upload } from '@lucide/svelte'
   import { gearById, phaseOf } from '../../model/select.ts'
   import { gearLeftOut, meshNameOf } from '../../engine/contract.ts'
   import { MODEL_FILE, type Character, type GearKind } from '../../state/api.ts'
@@ -99,6 +99,9 @@
 <Section title="Gear">
   {#snippet action()}
     <div class="adds">
+      {#if isFolk(character)}
+        <Button size="sm" data-testid="wardrobe-button" keys="dress.wardrobe" variant={app.drawer === 'wardrobe' ? 'primary' : 'ghost'} onclick={() => app.toggleDrawer('wardrobe')}><Shirt size={13} /> Wardrobe</Button>
+      {/if}
       <Button size="sm" variant={app.drawer === 'catalog' ? 'primary' : 'ghost'} onclick={() => app.toggleDrawer('catalog')}
         title="Weapons, shields and tools that come with Rigsmith"><Library size={13} /> Catalog</Button>
       <Button size="sm" variant="ghost" loading={uploading} onclick={() => choose('bone')} title="Your own model (FBX, GLB, OBJ, DAE or ZIP), on a bone">

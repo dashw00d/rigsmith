@@ -104,7 +104,7 @@
 
 <div class="crowd" bind:this={box}>
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <canvas bind:this={canvas} {onclick} {onpointermove} onpointerleave={() => { hovered = null }}></canvas>
+  <canvas data-testid="crowd-canvas" bind:this={canvas} {onclick} {onpointermove} onpointerleave={() => { hovered = null }}></canvas>
   <div class="bar">
     <strong>Crowd</strong>
     <div class="sizes" role="radiogroup" aria-label="How many">

@@ -4,16 +4,17 @@
   // whatever overlays the areas registered (viewer.setOverlay): over the stage, or docked under it (the timeline). It
   // knows nothing of the areas themselves.
   import { onMount } from 'svelte'
-  import { Bone, Box, Focus, Grid2x2, Palette, RefreshCw, ScanEye, TriangleAlert } from '@lucide/svelte'
+  import { Bone, Box, Focus, Grid2x2, Palette, RefreshCw, ScanEye, TriangleAlert, Users } from '@lucide/svelte'
   import { heightOf, phaseOf } from '../model/select.ts'
   import type { DisplayMode } from '../engine/CharacterView.ts'
   import { app } from '../state/app.svelte.ts'
   import { viewer } from '../state/viewer.svelte.ts'
   import { gear } from '../state/gear.svelte.ts'
   import { gizmo } from '../state/gizmo.svelte.ts'
-  import { timeline } from '../state/timeline.svelte.ts'
+  import { wardrobe } from './gear/wardrobe.svelte.ts'
+  import { isFolk } from '../engine/folk.ts'
+  import IconButton from '../ui/IconButton.svelte'
   import Segmented from '../ui/Segmented.svelte'
-  import { allowsShortcut } from '../ui/shortcuts.ts'
   import { tooltip } from '../ui/tooltip.ts'
   import { shownFile } from './status.ts'
 
@@ -93,13 +94,7 @@
     return () => { observer.disconnect(); root.style.removeProperty('--playback-dock-height') }
   })
 
-  function onkeydown (e: KeyboardEvent): void {
-    // (over the timeline, F fits the clip instead: src/app/steps/MotionPanel.svelte)
-    if (e.key.toLowerCase() === 'f' && allowsShortcut(e) && app.selected !== null && !timeline.hovered) viewer.focus()
-  }
 </script>
-
-<svelte:window {onkeydown} />
 
 <div class="frame">
   <div class="viewport" class:blocked bind:this={container}>
@@ -111,7 +106,10 @@
         {#if viewer.character?.skeleton}
           <button class="tool" class:on={viewer.skeleton} aria-label="Show bones" aria-pressed={viewer.skeleton} onclick={() => { viewer.setSkeleton(!viewer.skeleton) }} use:tooltip={'Show bones'}><Bone size={14} /></button>
         {/if}
-        <button class="tool" aria-label="Frame the character" onclick={() => { viewer.focus() }} use:tooltip={'Frame the character (F)'}><Focus size={14} /></button>
+        <IconButton variant="secondary" label="Frame the character" keys="view.frame" onclick={() => { viewer.focus() }}><Focus size={14} /></IconButton>
+        {#if app.step === 'gear' && isFolk(c)}
+          <IconButton variant="secondary" label="Crowd" keys="dress.crowd" data-testid="crowd-toggle" active={wardrobe.crowdOpen} onclick={() => { wardrobe.crowdOpen = !wardrobe.crowdOpen }}><Users size={14} /></IconButton>
+        {/if}
       </div>
       <div class="caption">
         <span class="name">{c.name}</span>
