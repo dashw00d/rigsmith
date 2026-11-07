@@ -317,6 +317,26 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/texture\/fill$/, async (req, re
 const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 const PART = /^[A-Za-z0-9_-]{1,64}$/
 
+// Bare files are immutable per generation so undo can restore a prior reference without changing its bytes.
+route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/look\/bare\/([^/]+)$/, async (req, res, [id, encoded]) => {
+  const c = await found(id)
+  let name: string
+  try { name = decodeURIComponent(encoded) } catch { throw new HttpError(400, 'Bad skin name') }
+  if (!(c.look.skins ?? []).some(s => s.name === name)) throw new HttpError(404, 'No such skin')
+  const bytes = await readBody(req, 64 * 1024 * 1024)
+  if (bytes.length < 33 || PNG.some((b, i) => bytes[i] !== b) || bytes.toString('ascii', 12, 16) !== 'IHDR') throw new HttpError(400, 'A bare skin is a PNG image')
+  const safe = name.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 48) || 'skin'
+  const dir = path.join(paths(id).dir, 'skins', 'bare')
+  await mkdir(dir, { recursive: true })
+  const file = `${safe}-${newId()}.png`
+  const tmp = path.join(dir, `.${file}.tmp`)
+  try {
+    await writeFile(tmp, bytes, { flag: 'wx' })
+    await rename(tmp, path.join(dir, file))
+  } finally { await rm(tmp, { force: true }) }
+  send(res, 200, { path: `skins/bare/${file}` })
+})
+
 // A repaint (projection painting's Keep): a decal in an image's layout, a new layer on top; then compose.
 route('POST', /^\/api\/characters\/([a-z0-9-]+)\/look\/layers$/, async (req, res, [id], url) => {
   const c = await found(id)
