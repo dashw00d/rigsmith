@@ -579,9 +579,11 @@ class GearState {
   select (id: string | null): void {
     if (id === this.selected && this.selectionFor === app.selectedId) return
     this.stopPicking()
-    if (this.fitting !== null && this.fitting !== id) { this.fitting = null; this.fitStart = null }
+    const endedFit = this.fitting !== null && this.fitting !== id
+    if (endedFit) { this.fitting = null; this.fitStart = null }
     this.selected = id
     this.selectionFor = app.selectedId
+    if (endedFit) this.syncAll()
   }
 
   /** Show a skin or spot piece unbound to place it (null: bind the edits). */
@@ -618,7 +620,7 @@ class GearState {
   pickAt (event: Pick<PointerEvent, 'clientX' | 'clientY'>): void {
     const stage = viewer.stage
     const rider = this.rider
-    if (app.step !== 'gear' || stage === null || rider === null || rider.id !== app.selectedId || this.picking !== null || paint.active || this.placingOrigin !== null) return
+    if (app.step !== 'gear' || stage === null || rider === null || rider.id !== app.selectedId || this.fitting !== null || this.picking !== null || paint.active || this.placingOrigin !== null) return
     const rect = stage.renderer.domElement.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return
     const ray = new THREE.Raycaster()
