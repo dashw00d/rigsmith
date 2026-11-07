@@ -38,6 +38,7 @@ class Incoming {
       if (action === 'accept') {
         const character = app.selectedId
         if (character === null) throw new Error('Select a dynamic character first')
+        if (this.loadedFor !== character) throw new Error('The Incoming list is still refreshing for this character')
         const job = await api.acceptIncoming({ package: packageId, parts: [part], character })
         const done = await app.jobDone(job.id)
         if (done.status !== 'done') throw new Error(done.error ?? done.message ?? 'Import did not finish')

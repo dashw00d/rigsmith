@@ -7,7 +7,7 @@
   let { part, packageId }: { part: PartView, packageId: string } = $props()
   const preview = $derived(part.preview ? `/files/incoming/${encodeURIComponent(packageId)}/${part.preview.split('/').map(encodeURIComponent).join('/')}` : null)
   const painted = $derived(part.from ? app.selected?.gear.find(g => g.from === part.from)?.painted ?? 0 : 0)
-  const canAccept = $derived(app.selected !== null && isFolk(app.selected) && !part.damaged)
+  const canAccept = $derived(app.selected !== null && incoming.loadedFor === app.selectedId && isFolk(app.selected) && !part.damaged)
 </script>
 <div class="part" data-testid="incoming-part" data-id={part.id}>
   {#if preview}<img src={preview} alt="Preview of {part.name}" />{/if}
