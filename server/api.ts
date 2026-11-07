@@ -5,6 +5,7 @@ import { readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 // (the Forge first: its /files/forge/* is answered before the workspace's /files/*)
 import './routes/forge.ts'
+import './routes/incoming.ts'
 import './routes/characters.ts'
 import './commands.ts'
 import './compat.ts'

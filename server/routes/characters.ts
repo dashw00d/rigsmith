@@ -124,7 +124,7 @@ route('GET', /^\/api\/events$/, async (req, res) => {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
   const write = (event: string, data: unknown): void => { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
   write('hello', listJobs())
-  const listeners: Array<[string, (x: unknown) => void]> = ['job', 'removed', 'journal', 'game', 'files', 'forge', 'gpu'].map(event => [event, x => { write(event, x) }])
+  const listeners: Array<[string, (x: unknown) => void]> = ['job', 'removed', 'journal', 'game', 'files', 'forge', 'gpu', 'incoming'].map(event => [event, x => { write(event, x) }])
   // (modules not yet ported emit the bare document)
   listeners.push(['character', x => { write('character', typeof x === 'object' && x !== null && 'character' in x ? x : { character: x }) }])
   for (const [event, fn] of listeners) events.on(event, fn)
