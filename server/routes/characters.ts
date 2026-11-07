@@ -118,12 +118,13 @@ route('GET', /^\/api\/thumbnails$/, async (req, res) => {
 route('GET', /^\/api\/library\/files$/, async (req, res) => { send(res, 200, await libraryManifest()) })
 
 // What every open page hears: 'hello' (the jobs) on connecting, then 'job', 'character' { character, entry? },
-// 'removed', 'journal', 'game' and 'files' { character, changed } (server/files.ts) as they happen.
+// 'removed', 'journal', 'game', 'files' { character, changed } (server/files.ts), and the Forge's 'forge' and 'gpu'
+// (server/forge, server/jobs.ts gpuTurn) as they happen.
 route('GET', /^\/api\/events$/, async (req, res) => {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
   const write = (event: string, data: unknown): void => { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
   write('hello', listJobs())
-  const listeners: Array<[string, (x: unknown) => void]> = ['job', 'removed', 'journal', 'game', 'files'].map(event => [event, x => { write(event, x) }])
+  const listeners: Array<[string, (x: unknown) => void]> = ['job', 'removed', 'journal', 'game', 'files', 'forge', 'gpu'].map(event => [event, x => { write(event, x) }])
   // (modules not yet ported emit the bare document)
   listeners.push(['character', x => { write('character', typeof x === 'object' && x !== null && 'character' in x ? x : { character: x }) }])
   for (const [event, fn] of listeners) events.on(event, fn)
