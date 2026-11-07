@@ -83,7 +83,9 @@ export class OutfitThumbs {
         if (reusePieces) this.held = { key, view, pieces: worn }
       }
       const meshes = worn.flatMap(w => w.meshes)
-      shapeFemale(view.bodySkinned, meshes, spec.female === true, view.height)
+      // Bone-held pieces and fitting meshes are in their own local frames, not the body's rest space.
+      const shaped = worn.filter(w => w.node === null && spec.pieces.find(p => p.gear.id === w.gear)?.gear.attach.kind !== 'bone').flatMap(w => w.meshes)
+      shapeFemale(view.bodySkinned, shaped, spec.female === true, view.height)
       if (spec.hair !== undefined) {
         const hairy = worn.filter(w => spec.pieces.find(p => p.gear.id === w.gear)?.gear.role !== undefined).flatMap(w => w.meshes)
         // (their materials are copies already: wear copies them)
