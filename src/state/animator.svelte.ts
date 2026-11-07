@@ -17,6 +17,9 @@ import { app, type Step } from './app.svelte.ts'
 import { viewer, type MountView } from './viewer.svelte.ts'
 import { gizmo } from './gizmo.svelte.ts'
 import { stableJson } from '../model/entities.ts'
+import { isFolkCharacter, setsOf } from '../model/folk.ts'
+import { dressedCharacter } from '../model/stances.ts'
+import { dress } from './dress.svelte.ts'
 import { gearKeysFromPaths, gearTracksOf, slotById } from '../model/select.ts'
 import { slotsUnder } from '../model/pieces.ts'
 import type { CharacterView } from '../engine/CharacterView.ts'
@@ -244,7 +247,9 @@ class Animator {
     const slot = now.kind === 'slot' ? slotById(c, now.slotId ?? '') : undefined
     // (what its bake reads of the other slots: the one it paces like, those it plays as pieces, theirs in turn)
     const under = slot === undefined ? [] : slotsUnder(c, slot)
-    return stableJson({ slot, under, gear: c.gear, hands: c.hands, mount: c.mount, shared: app.settings?.handPoses ?? null })
+    const outfit = isFolkCharacter(c) ? dress.worn(c).outfit : undefined
+    const set = outfit == null ? null : setsOf(c).find(s => s.name === outfit)?.id ?? null
+    return stableJson({ slot, under, set, gear: c.gear, hands: c.hands, mount: c.mount, shared: app.settings?.handPoses ?? null })
   }
 
   // ---- what plays --------------------------------------------------------------------------------------------------
@@ -491,6 +496,15 @@ class Animator {
     const ctx = this.bakeContext()
     if (c === null || ctx === null) throw new Error('The character is not on stage')
     const signature = this.inputs(now, c)
+    const outfit = isFolkCharacter(c) ? dress.worn(c).outfit : undefined
+    const sets = setsOf(c)
+    const setId = outfit == null ? null : sets.find(s => s.name === outfit)?.id ?? null
+    const dressed = isFolkCharacter(c) ? dressedCharacter(c, setId) : c
+    // The current shared helper leaves the document's set on for null; None must hide every set piece.
+    if (isFolkCharacter(c) && setId === null) {
+      const assigned = new Set(sets.flatMap(s => s.pieces))
+      for (const g of dressed.gear) if (assigned.has(g.id)) g.hidden = true
+    }
     const ride = this.riding(c)
     let slot: Slot
     let o: { skip?: BakeSkip, autoGround?: boolean } = {}
@@ -511,7 +525,7 @@ class Animator {
     } else {
       return fail('Nothing to bake')
     }
-    const baked = await bakeSlot(c, slot, ctx, { ...o, mirror: this.mirror })
+    const baked = await bakeSlot(dressed, slot, ctx, { ...o, mirror: this.mirror })
     const loop = now.kind === 'slot' ? slot.loop : null
     if (ride === null || c.mount === undefined) return { clip: baked.clip, baked, horse: null, cycles: 1, signature, loop }
     const attack = now.kind === 'slot' && slot.time?.fit?.enabled === true
