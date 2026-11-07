@@ -13,17 +13,17 @@ export default {
       const body = clothBody(r.viewer.character!.bodySkinned)
       const regions = body.list.filter(x => /trouser/i.test(x.material)).map(x => x.id)
       const layer = r.app.selected!.look.cloth!.find(l => l.name === 'long_blue')!
-      const added = { ...layer, id: 'e2e52001', name: 'E2E cut legs', slots: ['bottom'], cut: { below: [{ regions, y: 0.35, feather: 0 }] } }
+      const added = { ...layer, id: 'e2e52001', name: 'E2E cut legs', slots: ['bottom' as const], cut: { below: [{ regions, y: 0.35, feather: 0 }] } }
       if (!await r.app.do(c.id, { type: 'look.cloth.add', layer: added })) throw new Error('Could not create layer')
       const mesh = r.viewer.character!.bodySkinned[0]; const m = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
-      ;(window as unknown as { cutPrevious: unknown }).cutPrevious = (m as { map: unknown }).map
+      ;(window as unknown as { cutPrevious: unknown }).cutPrevious = (m as unknown as { map: unknown }).map
       r.dress.setLayer(r.app.selected!, 'bottom', added.id)
     })
     await ui.waitFor(r => {
       const mesh = r.viewer.character?.bodySkinned[0]
       if (!mesh) return false
       const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
-      return (mat as { map: unknown }).map !== (window as unknown as { cutPrevious: unknown }).cutPrevious
+      return (mat as unknown as { map: unknown }).map !== (window as unknown as { cutPrevious: unknown }).cutPrevious
     }, 60_000)
     const counts = await ui.eval(async r => {
       const c = r.app.selected!; const view = r.viewer.character!
