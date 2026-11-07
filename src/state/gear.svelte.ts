@@ -622,7 +622,7 @@ class GearState {
   pickAt (event: Pick<PointerEvent, 'clientX' | 'clientY'>): void {
     const stage = viewer.stage
     const rider = this.rider
-    if (app.step !== 'gear' || stage === null || rider === null || rider.id !== app.selectedId || this.fitting !== null || this.picking !== null || paint.active || this.placingOrigin !== null) return
+    if (app.step !== 'gear' || stage === null || rider === null || rider.id !== app.selectedId || this.fitting !== null || this.picking !== null || paint.active || this.placingOrigin !== null || hands.editing !== null) return
     const rect = stage.renderer.domElement.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return
     const ray = new THREE.Raycaster()

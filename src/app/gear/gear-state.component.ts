@@ -95,3 +95,16 @@ describe('showing a folk piece', () => {
     expect(gear.shownOnStage(c, c.gear.find(x => x.id === 'plain')!)).toBe(true)
   })
 })
+
+describe('hand pose picking', () => {
+  it('does not select gear from a click while a hand pose is being edited', async () => {
+    const { hands } = await import('../../state/hands.svelte.ts')
+    gear.fit(null)
+    hands.editing = { character: app.selectedId!, pose: 'hand' }
+    gear.pickAt({ clientX: 50, clientY: 50 })
+    expect(gear.selected).toBe('coat')
+    hands.editing = null
+    gear.pickAt({ clientX: 50, clientY: 50 })
+    expect(gear.selected).toBeNull()
+  })
+})
