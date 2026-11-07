@@ -31,6 +31,11 @@ export default {
     await ui.press('ctrl+z')
     await ui.eval(async (r, name) => { for (let i = 0; i < 100; i++) { if (r.app.selected?.look.skins?.[0]?.name === name) return; await new Promise(resolve => setTimeout(resolve, 100)) } throw new Error('Rename undo did not persist') }, first)
     assert.deepEqual(await ui.eval((r, name) => ({ selected: r.app.selected?.look.skin === name, pools: (r.app.selected?.folk?.pools ?? []).filter(p => p.kind === 'skin').flatMap(p => p.items.filter(item => item.ref === name)).length }), first), beforeRefs)
+    const hairBefore = await ui.eval(r => r.app.selected?.look.skins?.[0]?.hair ?? null)
+    await ui.fill({ role: 'textbox', name: `Hair colour for ${first}` }, 'invalid')
+    await ui.key('Enter')
+    await ui.waitFor(r => r.app.toasts.some(t => t.kind === 'error'))
+    assert.equal(await ui.eval(r => r.app.selected?.look.skins?.[0]?.hair ?? null), hairBefore, 'invalid hair is rejected')
     await ui.shot('skins')
   },
 } satisfies Scenario
