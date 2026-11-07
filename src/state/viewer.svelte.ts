@@ -302,6 +302,10 @@ class Viewer {
       return false
     }
     if (this.stale(want) || this.stage !== stage) { view.dispose(); return false }
+    // (its shaders compiled off the frame before it is first drawn: else that first frame stalls on them)
+    view.setMode(this.mode)
+    try { await stage.renderer.compileAsync(view.root, stage.camera, stage.scene) } catch { /* (drawn as it comes) */ }
+    if (this.stale(want) || this.stage !== stage) { view.dispose(); return false }
     this.failedUrl = null
     view.addTo(stage)
     // (the same character's file again (a new rig, a resize) keeps the camera where the user put it)
