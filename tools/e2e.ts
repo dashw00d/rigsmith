@@ -1,6 +1,7 @@
 // Isolated, fresh-page UI scenarios. Run `npm run e2e -- --only=part [--keep]` with RIGSMITH_WORKSPACE set.
 import { readdirSync } from 'node:fs'
-import net from 'node:net'
+import { spawn } from 'node:child_process'
+import { freePort } from './lib/free_port.ts'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { makeWorkspace } from './lib/e2e_workspace.ts'
@@ -11,32 +12,47 @@ const root = path.resolve(import.meta.dirname, '..')
 const args = process.argv.slice(2)
 const only = args.find(a => a.startsWith('--only='))?.slice('--only='.length).toLowerCase()
 const keep = args.includes('--keep')
-const shots = path.join(root, '.work', 'e2e', new Date().toISOString().replace(/[:.]/g, '-') + `-${process.pid}`)
-const prohibited = new Set([5180, 5181, 5190])
-
-async function freePort (): Promise<number> {
-  for (;;) {
-    const port = await new Promise<number>((resolve, reject) => {
-      const server = net.createServer()
-      server.once('error', reject)
-      server.listen(0, '127.0.0.1', () => {
-        const addr = server.address()
-        if (addr === null || typeof addr === 'string') { server.close(); reject(new Error('Cannot obtain free port')); return }
-        server.close(error => { if (error !== undefined) reject(error); else resolve(addr.port) })
-      })
-    })
-    if (!prohibited.has(port)) return port
-  }
-}
-
+const shots = process.env.E2E_SHOTS ?? path.join(root, '.work', 'e2e', new Date().toISOString().replace(/[:.]/g, '-') + `-${process.pid}`)
+const single = args.find(a => a.startsWith('--scenario-file='))?.slice('--scenario-file='.length)
 async function deadline<T> (promise: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => { reject(new Error(`${what} timed out after ${ms / 1000} s`)) }, ms) })]) } finally { clearTimeout(timer) }
 }
 
+async function selectedFiles (): Promise<string[]> {
+  const files = readdirSync(path.join(root, 'tests/e2e')).filter(f => f.endsWith('.scenario.ts')).sort()
+  const selected: string[] = []
+  for (const file of files) {
+    const module = await import(pathToFileURL(path.join(root, 'tests/e2e', file)).href) as { default: Scenario }
+    if (module.default?.name === undefined || typeof module.default.run !== 'function') throw new Error(`Invalid scenario: ${file}`)
+    if (single !== undefined ? file === single : only === undefined || module.default.name.toLowerCase().includes(only) || file.toLowerCase().includes(only)) selected.push(file)
+  }
+  if (selected.length === 0) throw new Error(`No scenarios match ${single ?? only ?? '(all)'}`)
+  return selected
+}
+
 async function main (): Promise<number> {
   const source = process.env.RIGSMITH_WORKSPACE
   if (source === undefined) throw new Error('Set RIGSMITH_WORKSPACE to a workspace copy')
+  const files = await selectedFiles()
+  if (single === undefined) {
+    // The server has in-memory workspace, journal and watcher state. A fresh process per scenario prevents
+    // those singletons, as well as files, leaking across scenarios.
+    let failures = 0
+    for (const file of files) {
+      const child = spawn(process.execPath, [import.meta.filename, `--scenario-file=${file}`, ...(keep ? ['--keep'] : [])], {
+        stdio: 'inherit', env: { ...process.env, E2E_SHOTS: shots },
+      })
+      const code = await new Promise<number>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('exit', (status, signal) => { resolve(status ?? (signal === null ? 1 : 128)) })
+      })
+      if (code !== 0) failures++
+    }
+    console.log(`e2e: ${files.length - failures}/${files.length} scenarios passed; shots ${shots}`)
+    return failures === 0 ? 0 : 1
+  }
+  const scenarios = [(await import(pathToFileURL(path.join(root, 'tests/e2e', files[0])).href) as { default: Scenario }).default]
   const workspace = makeWorkspace(source, process.env.E2E_CHARACTERS)
   const oldWorkspace = process.env.RIGSMITH_WORKSPACE
   process.env.RIGSMITH_WORKSPACE = workspace.dir
@@ -44,14 +60,6 @@ async function main (): Promise<number> {
   let server: Awaited<ReturnType<typeof import('vite')['createServer']>> | undefined
   const started = Date.now()
   try {
-    const files = readdirSync(path.join(root, 'tests/e2e')).filter(f => f.endsWith('.scenario.ts')).sort()
-    const scenarios: Scenario[] = []
-    for (const file of files) {
-      const module = await import(pathToFileURL(path.join(root, 'tests/e2e', file)).href) as { default: Scenario }
-      if (module.default?.name === undefined || typeof module.default.run !== 'function') throw new Error(`Invalid scenario: ${file}`)
-      if (only === undefined || module.default.name.toLowerCase().includes(only) || file.toLowerCase().includes(only)) scenarios.push(module.default)
-    }
-    if (scenarios.length === 0) throw new Error(`No scenarios match ${only ?? '(all)'}`)
     const { createServer } = await import('vite')
     const port = await freePort()
     server = await createServer({ configLoader: 'runner', configFile: path.join(root, 'vite.config.ts'), cacheDir: path.join(root, '.work', 'e2e-vite-cache'), server: { host: '127.0.0.1', port, strictPort: true, open: false }, logLevel: 'warn' })

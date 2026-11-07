@@ -6,6 +6,7 @@
 // The character defaults to the first dynamic one (with outfits), else the first.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { freePort } from './lib/free_port.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const kv = Object.fromEntries(process.argv.slice(2).filter(a => a.startsWith('--')).map(a => { const [k, ...v] = a.slice(2).split('='); return [k, v.join('=') || 'true'] }))
@@ -20,10 +21,11 @@ async function main (): Promise<number> {
   const { scenarios } = await import('../tests/perf/scenarios.ts')
   const budget = JSON.parse(readFileSync(path.join(ROOT, 'tests', 'perf', 'budget.json'), 'utf8')) as { click: number, load: number }
   if (typeof kv.cpu === 'string') mkdirSync(kv.cpu, { recursive: true })
-  const server = await createServer({ configFile: path.join(ROOT, 'vite.config.ts'), server: { port: 5190, strictPort: false, open: false }, logLevel: 'warn' })
+  const port = await freePort()
+  const server = await createServer({ configLoader: 'runner', configFile: path.join(ROOT, 'vite.config.ts'), cacheDir: path.join(ROOT, '.work', 'perf-vite-cache'), server: { host: '127.0.0.1', port, strictPort: true, open: false }, logLevel: 'warn' })
   try {
     await server.listen()
-    const url = (server.resolvedUrls?.local[0] ?? 'http://127.0.0.1:5190/').replace(/\/$/, '')
+    const url = (server.resolvedUrls?.local[0] ?? `http://127.0.0.1:${port}/`).replace(/\/$/, '')
     const only = typeof kv.only === 'string' ? kv.only.toLowerCase() : null
     const chosen = scenarios.filter(s => only === null || s.name.toLowerCase().includes(only))
     console.log(`perf: ${chosen.length} scenario${chosen.length === 1 ? '' : 's'} at ${url}`)
