@@ -105,7 +105,7 @@ async function call<T> (method: string, url: string, body?: unknown): Promise<T>
   try {
     r = await fetch(SERVER + url, {
       method,
-      headers: { 'content-type': 'application/json', 'x-rigsmith': '1', 'x-rigsmith-schema': '4', 'x-rigsmith-by': BY },
+      headers: { 'content-type': 'application/json', 'x-rigsmith': '1', 'x-rigsmith-schema': '5', 'x-rigsmith-by': BY },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch {

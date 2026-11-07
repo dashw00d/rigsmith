@@ -7,29 +7,23 @@
 // replace Gear.outfit, and these two are the one place that changes.
 import type { Command } from '../model/command-types.ts'
 import type { Character, Gear } from '../model/types.ts'
+import { setsOf as modelSetsOf, setsWith as modelSetsWith } from '../model/folk.ts'
 import { clothesFor, coversFace, coversHair, pickFolk, seeded } from '../engine/folk.ts'
 
 /** A set of pieces worn together (today: an outfit). */
 export interface DressSet { name: string, pieces: readonly string[] }
 
-type Gearing = Pick<Character, 'gear'>
+type Gearing = Pick<Character, 'id' | 'gear' | 'look' | 'folk'>
 
-/** The sets a piece is in, by name ([]: none). */
-export function setsWith (_c: Gearing, g: Pick<Gear, 'outfit'>): string[] {
-  return g.outfit === undefined ? [] : [g.outfit]
+/** The sets a piece is in, by name ([]: none): the model's sets (src/model/folk.ts, one source; a schema 4 document's
+ * are derived from Gear.outfit there). */
+export function setsWith (c: Gearing, g: Pick<Gear, 'id'>): string[] {
+  return modelSetsWith(c, g.id).map(s => s.name)
 }
 
-/** The character's sets, by name, each with its pieces (gear ids) in gear order. */
+/** The character's sets, by name, each with its pieces (gear ids) in the set's order. */
 export function setsOf (c: Gearing): DressSet[] {
-  const by = new Map<string, string[]>()
-  for (const g of c.gear) {
-    for (const s of setsWith(c, g)) {
-      const list = by.get(s) ?? []
-      list.push(g.id)
-      by.set(s, list)
-    }
-  }
-  return [...by].sort(([a], [b]) => a.localeCompare(b)).map(([name, pieces]) => ({ name, pieces }))
+  return modelSetsOf(c).map(s => ({ name: s.name, pieces: s.pieces })).sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /** The fields a dress has; each one left out follows the document. */
@@ -54,7 +48,7 @@ export interface Dress {
 export type Dressed = Record<DressField, string | null>
 
 /** The document's own look: the set with a piece shown, its skin and clothes, the hair and beard shown. */
-export function documentDress (c: Pick<Character, 'gear' | 'look'>): Dressed {
+export function documentDress (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>): Dressed {
   const shownSet = c.gear.find(g => g.hidden !== true && setsWith(c, g).length > 0)
   const shownRole = (role: 'hair' | 'beard'): string | null => c.gear.find(g => g.role === role && g.hidden !== true)?.id ?? null
   return {
@@ -67,7 +61,7 @@ export function documentDress (c: Pick<Character, 'gear' | 'look'>): Dressed {
 }
 
 /** What is worn: the dress over the document's own look, a pick that no longer exists falling back to it. */
-export function resolve (c: Pick<Character, 'gear' | 'look'>, d: Dress | undefined): Dressed {
+export function resolve (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined): Dressed {
   const own = documentDress(c)
   if (d === undefined) return own
   const sets = new Set(setsOf(c).map(s => s.name))
@@ -99,7 +93,7 @@ export function shows (c: Gearing, g: Gear, d: Dressed, own?: Dressed): boolean 
 
 /** The dress with an outfit put on, and what it leaves no room for taken off as the game does (hair under headwear,
  * a beard under a great helm, long sleeves under bracers). */
-export function wearOutfit (c: Pick<Character, 'gear' | 'look'>, d: Dress | undefined, outfit: string | null): Dress {
+export function wearOutfit (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined, outfit: string | null): Dress {
   const now = resolve(c, d)
   const next: Dress = { ...d, outfit }
   if (coversHair(c.gear, outfit)) next.hair = null
@@ -111,7 +105,7 @@ export function wearOutfit (c: Pick<Character, 'gear' | 'look'>, d: Dress | unde
 
 /** A skin, hair and beard (and clothes) as the game would pick them for a unit, under the outfit worn, keeping the
  * locked fields; `seed` is the roll. */
-export function randomize (c: Pick<Character, 'gear' | 'look'>, d: Dress | undefined, seed: number): Dress {
+export function randomize (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined, seed: number): Dress {
   const now = resolve(c, d)
   const locks = new Set(d?.locks ?? [])
   const allSkins = c.look.skins ?? []
@@ -132,7 +126,7 @@ export function randomize (c: Pick<Character, 'gear' | 'look'>, d: Dress | undef
 }
 
 /** Whether the dress differs from the document's own look. */
-export function differs (c: Pick<Character, 'gear' | 'look'>, d: Dress | undefined): boolean {
+export function differs (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined): boolean {
   const a = resolve(c, d)
   const b = documentDress(c)
   return DRESS_FIELDS.some(k => a[k] !== b[k])
@@ -140,7 +134,7 @@ export function differs (c: Pick<Character, 'gear' | 'look'>, d: Dress | undefin
 
 /** The commands that make the dress the document's own look ("Make default": the thumbnail and the game's unset
  * look follow it). [] when it is already. */
-export function defaultCommands (c: Pick<Character, 'gear' | 'look'>, d: Dress | undefined): Command[] {
+export function defaultCommands (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined): Command[] {
   const want = resolve(c, d)
   const own = documentDress(c)
   const out: Command[] = []
@@ -163,7 +157,7 @@ export function defaultCommands (c: Pick<Character, 'gear' | 'look'>, d: Dress |
 
 /** The dress after its picks reached the document: the fields it now matches dropped (they follow the document
  * again), the locks and the roll kept. */
-export function settled (c: Pick<Character, 'gear' | 'look'>, d: Dress | undefined): Dress | undefined {
+export function settled (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined): Dress | undefined {
   if (d === undefined) return undefined
   const own = documentDress(c)
   const next: Dress = { ...d }

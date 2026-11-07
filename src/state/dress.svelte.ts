@@ -60,12 +60,12 @@ class DressState {
   }
 
   /** What the character wears on stage. */
-  worn (c: Pick<Character, 'id' | 'gear' | 'look'>): Dressed {
+  worn (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>): Dressed {
     return resolve(c, this.dresses.get(c.id))
   }
 
   /** Whether the stage shows other than the document's own look ("Make default" has something to do). */
-  differs (c: Pick<Character, 'id' | 'gear' | 'look'>): boolean {
+  differs (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>): boolean {
     return differs(c, this.dresses.get(c.id))
   }
 
@@ -79,7 +79,7 @@ class DressState {
   }
 
   /** Whether a piece stays fitted while hidden: its set (or itself) worn lately, or fitted ahead. */
-  kept (c: Pick<Character, 'id' | 'gear'>, g: Gear): boolean {
+  kept (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, g: Gear): boolean {
     const r = this.recent.get(c.id)
     if (r !== undefined && setsWith(c, g).some(s => r.sets.includes(s))) return true
     if (r?.pieces.includes(g.id) === true) return true
@@ -129,7 +129,7 @@ class DressState {
 
   // ---- keeping it ---------------------------------------------------------------------------------------------------
 
-  private put (c: Pick<Character, 'id' | 'gear' | 'look'>, d: Dress | undefined): void {
+  private put (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined): void {
     const was = this.worn(c)
     if (d === undefined) this.dresses.delete(c.id)
     else this.dresses.set(c.id, d)
@@ -152,7 +152,7 @@ class DressState {
 
   /** While idle: the next sets' models fetched, the next set fitted ahead a piece at a time, every skin's and
    * clothes' image fetched (once each). Planned again when the dress changes. */
-  plan (c: Pick<Character, 'id' | 'gear' | 'look'>): void {
+  plan (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>): void {
     const sets = setsOf(c)
     const current = this.worn(c).outfit
     const token = `${current ?? ''}|${Date.now()}`

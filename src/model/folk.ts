@@ -75,14 +75,17 @@ export const isFolkCharacter = (c: Pick<Character, 'gear' | 'folk'>): boolean =>
   (c.folk !== undefined && c.folk.sets.length + c.folk.pools.length > 0) || c.gear.some(g => g.outfit !== undefined || g.role !== undefined)
 
 /** Its dressing: the folk section, or what its old fields say. */
-export function folkOf (c: Character): FolkSection {
+/** What the readers need of a character. */
+export type Folkish = Pick<Character, 'id' | 'gear' | 'look' | 'folk'>
+
+export function folkOf (c: Folkish): FolkSection {
   return c.folk ?? folkFromLegacy(c)?.folk ?? { sets: [], pools: [], kinds: [], stances: [] }
 }
 
-export const setsOf = (c: Character): OutfitSet[] => folkOf(c).sets
-export const poolsOf = (c: Character, kind?: PoolKind): Pool[] => folkOf(c).pools.filter(p => kind === undefined || p.kind === kind)
-export const kindsOf = (c: Character): UnitKind[] => folkOf(c).kinds
-export const setById = (c: Character, id: string): OutfitSet | undefined => setsOf(c).find(s => s.id === id)
+export const setsOf = (c: Folkish): OutfitSet[] => folkOf(c).sets
+export const poolsOf = (c: Folkish, kind?: PoolKind): Pool[] => folkOf(c).pools.filter(p => kind === undefined || p.kind === kind)
+export const kindsOf = (c: Folkish): UnitKind[] => folkOf(c).kinds
+export const setById = (c: Folkish, id: string): OutfitSet | undefined => setsOf(c).find(s => s.id === id)
 
 /** Its cloth layers: look.cloth, or what look.clothes says. */
 export function clothOf (c: Pick<Character, 'id' | 'look'>): ClothLayer[] {
@@ -90,7 +93,7 @@ export function clothOf (c: Pick<Character, 'id' | 'look'>): ClothLayer[] {
 }
 
 /** The sets a piece is in (outfit membership: what replaces Gear.outfit). */
-export const setsWith = (c: Character, gearId: string): OutfitSet[] => setsOf(c).filter(s => s.pieces.includes(gearId))
+export const setsWith = (c: Folkish, gearId: string): OutfitSet[] => setsOf(c).filter(s => s.pieces.includes(gearId))
 
 /** A set's pieces (gear that exists, in the set's order). */
 export function piecesOf (c: Pick<Character, 'gear'>, set: Pick<OutfitSet, 'pieces'>): Gear[] {
