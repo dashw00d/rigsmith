@@ -159,3 +159,23 @@ describe('Wardrobe hover', () => {
     vi.useRealTimers()
   })
 })
+
+it('passes the exact pre-hover snapshot to the clothes lane restore contract when available', async () => {
+  const { dress } = await import('../../state/dress.svelte.ts')
+  const { wardrobe } = await import('./wardrobe.svelte.ts')
+  const c = makeCharacter({ id: 'hover-contract', gear: [makeGear({ id: 'a', outfit: 'one' }), makeGear({ id: 'b', outfit: 'two', hidden: true })] })
+  dress.reset(c); dress.setShown(c, 'a', false)
+  const before = structuredClone(dress.of(c.id))
+  const restore = vi.fn()
+  Object.defineProperty(dress, 'restore', { value: restore, configurable: true })
+  vi.useFakeTimers()
+  try {
+    wardrobe.preview(c, { outfit: 'two' }, 0)
+    vi.advanceTimersByTime(0)
+    wardrobe.unpreview(c)
+    expect(restore).toHaveBeenCalledWith(c, before)
+  } finally {
+    delete (dress as unknown as { restore?: unknown }).restore
+    vi.useRealTimers()
+  }
+})

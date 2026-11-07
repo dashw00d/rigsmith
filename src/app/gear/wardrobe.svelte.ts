@@ -188,8 +188,11 @@ class WardrobeState {
     const b = this.before
     this.before = null
     if (b === null || b.id !== c.id) return
+    // The clothes lane supplies exact snapshot restoration, including its layer and bare state.
+    const restore = (dress as typeof dress & { restore?: (character: Character, snapshot: Dress | undefined) => void }).restore
+    if (restore !== undefined) { restore.call(dress, app(c), b.d); return }
+    // Until that lane is integrated, keep per-piece overrides after restoring the visible slots.
     this.dressUp(app(c), b.worn)
-    // Switching outfits clears per-piece preview overrides. Restore those saved before hovering.
     for (const id of b.d?.off ?? []) dress.setShown(app(c), id, false)
     for (const id of b.d?.on ?? []) dress.setShown(app(c), id, true)
   }
