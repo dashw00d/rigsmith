@@ -478,7 +478,7 @@ route('POST', /^\/api\/characters\/([a-z0-9-]+)\/projections\/([A-Za-z0-9_-]+)\/
   const count = v.views.length
   const job = enqueue('codex', `Qwen painting · ${c.name}`, id, async (job, update, signal) => {
     update({ progress: 0.05, message: 'Qwen is painting' })
-    await runQwenPaint(dir, (progress, message) => { update({ progress, message }) }, { signal })
+    await runQwenPaint(dir, (progress, message) => { update({ progress, message }) }, { signal, job })
     const missing = (await resultsOf(dir, count)).flatMap((r, i) => (r === null || r.at < asked ? [`result-${i + 1}.png`] : []))
     if (missing.length > 0) throw new Error(`Qwen finished without painting ${missing.join(', ')}`)
   }, { lock: 'none' })

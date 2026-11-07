@@ -3,6 +3,8 @@
 import { existsSync } from 'node:fs'
 import { readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
+// (the Forge first: its /files/forge/* is answered before the workspace's /files/*)
+import './routes/forge.ts'
 import './routes/characters.ts'
 import './commands.ts'
 import './compat.ts'
@@ -18,6 +20,7 @@ import './routes/restore.ts'
 import './routes/sounds.ts'
 import { resumeImports } from './inspect.ts'
 import { importGarment } from './routes/gear.ts'
+import { resumeForge } from './routes/forge.ts'
 import { compose, composeStale, sweepFills } from './routes/look.ts'
 import { characterDir, listCharacters, paths, updateCharacter } from './store.ts'
 
@@ -66,4 +69,6 @@ export async function resumeInterrupted (): Promise<void> {
     }
   }
   resumeImports(characters)
+  // (the Forge's queue: jobs a restart cut off set aside, resumable ones carried on)
+  await resumeForge()
 }

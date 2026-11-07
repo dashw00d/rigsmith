@@ -205,6 +205,7 @@ Each area owns the files listed; nobody else edits them except as §1 allows. Ne
 | **motion** | `src/app/steps/MotionPanel.svelte`, `src/app/motion/**` (LibraryDrawer, LibraryCard, Timeline with lanes, SlotList, AdjustmentStack, adjustment editors), `src/state/{animator,slots,library,adjust}.svelte.ts` (adjust replaces tune), `src/engine/{Player,ground}.ts`, `server/library.ts`, `server/routes/library.ts` |
 | **editor** | `src/app/editor/**` (EditPanel), `src/state/clipedit.svelte.ts`, `src/engine/{clipedit,PoseEditor,ik,propfit,clipexport,bodysolve,posespace,limits,bodycollide,handcontacts,surfacecontact}.ts`, `server/clipedits.ts`, `server/routes/edits.ts` (library edits, creature clips, `GET /api/library/usage/:clipId`), `blender/clips/**`, `tools/{posespace,rom}.ts`, `static/templates/rom/**` |
 | **ship** | `src/app/steps/ShipPanel.svelte`, `src/app/ship/**` (UnitCard, MountEditor, ScaleRoom, Checks, BuildRecord), `src/state/{ship,mount,scaleroom}.svelte.ts`, `src/engine/{mount,checks}.ts`, `server/game.ts`, `server/routes/ship.ts` (units, export, game models, `/:id/game`) |
+| **forge** | `server/forge/**` (types, config, store, runner, queue, publish; tests with `fixture.ts`), `server/routes/forge.ts`, the GPU lane in `server/jobs.ts` (`gpuTurn`, `withGpu`, `gpuState`, `reorderGpu`, `freeVram`, `freeComfy`, `comfyUrl`), `src/state/forge.svelte.ts`, `src/app/forge/**`; in the game repo `forge.json` and `tools/forge/**` |
 | **tools** | `tools/rig.ts`, `tools/game_import.py`, `tools/migrate.ts`, `tools/apply.ts`, `server/routes/restore.ts` (`POST /api/characters/:id/restore`), `tools/dev/**` except coat_weights, `tools/library_verify.ts`, `tools/tsconfig.json`, `package.json` scripts, `README.md`, `HANDOFF.md`, `docs/animating.md` |
 
 ---
@@ -586,6 +587,25 @@ PUT/DELETE `/weights` (body and gear) run as `lock: 'files'` jobs (or answer 409
 - The game repo's scripts use the deprecated v1 layer (§4.2); port them to `/commands` when convenient.
 
 ## 11. Change log of the contract
+
+- Forge (docs/dressing-plan.md Phase 4): **one GPU lane** in `server/jobs.ts`: `gpuTurn(job | {label}, need: {vram MiB,
+  family}, signal?, {onWait?}) -> {id, release()}` and `withGpu(...)`: strictly first come first served (`reorderGpu`),
+  ComfyUI told `POST /free {"unload_models":true,"free_memory":true}` before a job of another family when ComfyUI had the
+  GPU last (and once when the VRAM is short and it may hold models from before), the head waits, without a timeout, until
+  nvidia-smi ($NVIDIA_SMI) shows its `vram` free; why it waits goes to its job's message, `onWait` and the `gpu` event
+  (`gpuState()`). skinopt's private queue is gone (its optimize.py takes a turn, 'torch' 3 GB); `runQwenPaint` takes one
+  ('comfy' 10 GB, `o.job`). ComfyUI's address: $COMFY_URL, else `gpuConfig.settingsComfy`, else forge.json's `comfy`.
+  `server/forge/*`: the game's `forge.json` (pipelines of stages: cmd with {work} {out} {spec} {seed} {item} {set}
+  {attempt} {repo} {in.X}, gpu, variants, gate pick/approve/align/mask, inputs {stage}|{file, as}, outputs, code,
+  scratch, mutates, resumable, timeout, generative, cache, env, splits; publish {into, from, stages, roster, character});
+  the store `<store>/<set>/<item>/<stage>/<attempt>/{work,out,manifest.json,job.json,log.txt,spec.json}` +
+  `selected.json`, attempts a001.. never overwritten (`.partial` after a restart), key = hash of version, cmd, params,
+  seed, item spec, input hashes and code hashes, staleness worked out from it; `queue.json` with lanes gpu (one) and cpu
+  (two). Routes: `GET /api/forge`, `GET /api/forge/events` (SSE `forge` {job, progress, eta, logTail} at ~4/s and
+  `gpu`), `POST /api/forge/sets`, `.../sets/:set/items`, `.../sets/:set/run` (a batch), `.../items/:item/run|pick|approve`,
+  `.../sets/:set/publish` (a jobs.ts job 'forge-publish'), `POST /api/forge/queue/reorder`, `.../queue/:id/cancel`;
+  `/files/forge/<set>/<item>/<stage>/<attempt>/(out/…|log.txt|manifest.json|spec.json)` read-only (registered before
+  `/files/*`: server/api.ts imports routes/forge.ts first). `resumeInterrupted` ends with `resumeForge()`.
 
 - Schema 3 (docs/motion-plan.md): slots are source clip + time map + tracks, every time stored against the source
   clip; `blowTiming`, `pace` and `keys` adjustments became `slot.time.fit` (its picked blow the `hit` event),
