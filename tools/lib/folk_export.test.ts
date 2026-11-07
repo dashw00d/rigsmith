@@ -120,4 +120,15 @@ describe('the folk manifest, schema 2', () => {
     c.folk!.stances.push({ id: 'shield', name: 'Shield', clips: { Idle: ['idle-s'] }, overlay: 'idle' })
     expect(manifest(c).stances).toEqual([{ id: 'shield', name: 'Shield', clips: { Idle: ['Idle_shield'] }, overlay: 'Idle' }])
   })
+
+  it('marks only actually baked cuts and retains the exported bare skin path', () => {
+    const c = folk()
+    c.look.cloth = [{ id: 'shorts', name: 'Shorts', file: 'clothes/plain.png', slots: ['bottom'], cut: { drop: [1] } }]
+    const m = folkManifestData(c, {}, {
+      pieceOf, regionMask: () => 0, regions: {}, bodies: [], hairGreyMean: 0.62, femaleShape: 'female',
+      files: { skins: { bran: { file: 'skins/bran.png', bare: 'skins/bran.bare.png' } }, layers: { shorts: { file: 'clothes/Shorts.png', baked: true } }, clothes: {} },
+    })
+    expect((m.layers as Array<Record<string, unknown>>)[0]).toMatchObject({ file: 'clothes/Shorts.png', cut: { drop: [1], baked: true } })
+    expect((m.skins as Array<Record<string, unknown>>)[1]).toMatchObject({ bare: 'skins/bran.bare.png' })
+  })
 })

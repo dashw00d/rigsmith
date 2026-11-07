@@ -82,7 +82,7 @@ export interface ManifestPiece { mesh: string, hides: number[], mask: number, ta
 export interface FolkFiles {
   /** Where each skin's image (and bare image) went, by skin name; each cloth layer's (and trim's), by layer id. */
   skins: Record<string, { file: string, bare?: string }>
-  layers: Record<string, { file: string, trim?: string, mask?: string }>
+  layers: Record<string, { file: string, trim?: string, mask?: string, baked?: boolean }>
   /** Schema 4's clothes (look.clothes) by name. */
   clothes: Record<string, string>
 }
@@ -156,7 +156,7 @@ export function folkManifestData (c: Character, spec: Pick<UnitSpec, 'folk'>, o:
   const layer = (l: ClothLayer, i: number): Record<string, unknown> => ({
     id: l.id, name: l.name, index: i, file: o.files.layers[l.id]?.file ?? l.file, slots: l.slots, tags: l.tags ?? [], shapes: l.shapes ?? [],
     ...(o.files.layers[l.id]?.trim !== undefined ? { trim: o.files.layers[l.id].trim } : {}),
-    ...(l.cut !== undefined ? { cut: { ...l.cut, ...(o.files.layers[l.id]?.mask !== undefined ? { mask: o.files.layers[l.id].mask } : {}) } } : {}),
+    ...(l.cut !== undefined ? { cut: { ...l.cut, ...(o.files.layers[l.id]?.mask !== undefined ? { mask: o.files.layers[l.id].mask } : {}), ...(o.files.layers[l.id]?.baked === true ? { baked: true } : {}) } } : {}),
   })
   return {
     schema: 2,

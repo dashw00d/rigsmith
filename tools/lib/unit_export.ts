@@ -23,7 +23,7 @@
 //                                    installs them into its mix as sounds of their own)
 import { execSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { copyIfChanged, writeIfChanged } from './atomic.ts'
 import path from 'node:path'
 import * as THREE from 'three'
@@ -31,6 +31,8 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { bakeRide, bakeSlot, eventsInClip, gearTracks, type BakeContext, type BakedEvent, type BakedSlot, type GearTrackTarget, type PullPlan } from '../../src/engine/bake.ts'
 import { CharacterView } from '../../src/engine/CharacterView.ts'
+import { clothBody } from '../../src/engine/folkview.ts'
+import { writeClothPng } from './clothbake.ts'
 import { budgetOf, budgetRatio, clipProblem, DEFAULT_LODS, gearLeftOut, HIT_AT, meshNameOf, NO_LOD_BELOW } from '../../src/engine/contract.ts'
 import { bodySurface, hideShareOf, originMatrix, regionsHidden, type GarmentEdit } from '../../src/engine/garments.ts'
 import { regionMask, regionsOf, withoutRegions, type Regions } from '../../src/engine/regions.ts'
@@ -661,7 +663,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   writeIfChanged(path.join(o.modelsDir, `${unit}.events.json`), JSON.stringify(events, null, 1) + '\n')
   if (Object.keys(atlasFiles).length > 0) writeIfChanged(path.join(o.workDir, unit, 'folk_atlas.json'), JSON.stringify(atlasFiles, null, 1) + '\n')
   if (isFolk(c) || (c.look.skins ?? []).length > 0 || (c.look.clothes ?? []).length > 0) {
-    const manifest = folkManifest(unit, c, me.dir, srcDir, body, hidesOf, spec)
+    const manifest = folkManifest(unit, c, me.dir, srcDir, body, hidesOf, spec, me.view)
     writeIfChanged(path.join(o.modelsDir, `${unit}.folk.json`), JSON.stringify(manifest, null, 1) + '\n')
   }
   const record: BuildRecord = {
@@ -1170,10 +1172,10 @@ function regionBorders (geo: THREE.BufferGeometry): Uint8Array | undefined {
  * body regions and bodies, its skins and cloth layers (copied beside the build, with their bare versions, trims and cut
  * masks), the sets, kinds, pools and stances its file carries with the regions each piece hides, the pick program and
  * golden picks, and schema 1's view (outfits, clothes, hair, beard). */
-function folkManifest (unit: string, c: Character, charDir: string, srcDir: string, body: { regions: Regions, classes: string[], geometry: THREE.BufferGeometry }, hidesOf: Map<string, number[]>, spec: UnitSpec): Record<string, unknown> {
+function folkManifest (unit: string, c: Character, charDir: string, srcDir: string, body: { regions: Regions, classes: string[], geometry: THREE.BufferGeometry }, hidesOf: Map<string, number[]>, spec: UnitSpec, view: CharacterView): Record<string, unknown> {
   const copy = (from: string, to: string): string => {
     mkdirSync(path.dirname(path.join(srcDir, to)), { recursive: true })
-    copyFileSync(path.join(charDir, from), path.join(srcDir, to))
+    copyIfChanged(path.join(charDir, from), path.join(srcDir, to))
     return to
   }
   const ext = (f: string): string => path.extname(f)
@@ -1187,8 +1189,20 @@ function folkManifest (unit: string, c: Character, charDir: string, srcDir: stri
   for (const k of c.look.clothes ?? []) files.clothes[k.name] = copy(k.file, `clothes/${safeName(k.name)}${ext(k.file)}`)
   for (const l of clothOf(c)) {
     const base = `clothes/${safeName(l.name)}`
+    let file: string
+    if (l.cut !== undefined) {
+      // A cut is layer-specific: never overwrite the uncut schema-1 clothes or another layer sharing its image.
+      file = `${base}-${safeName(l.id)}.png`
+      mkdirSync(path.dirname(path.join(srcDir, file)), { recursive: true })
+      const source = clothBody(view.bodySkinned)
+      writeClothPng(path.join(charDir, l.file), path.join(srcDir, file), source.geometry, source.regions, view.height, l.cut,
+        l.cut.mask === undefined ? undefined : path.join(charDir, l.cut.mask))
+    } else {
+      file = files.clothes[l.name] !== undefined && (c.look.clothes ?? []).some(k => k.name === l.name && k.file === l.file) ? files.clothes[l.name] : copy(l.file, `${base}${ext(l.file)}`)
+    }
     files.layers[l.id] = {
-      file: files.clothes[l.name] !== undefined && (c.look.clothes ?? []).some(k => k.name === l.name && k.file === l.file) ? files.clothes[l.name] : copy(l.file, `${base}${ext(l.file)}`),
+      file,
+      ...(l.cut !== undefined ? { baked: true } : {}),
       ...(l.trim !== undefined ? { trim: copy(l.trim, `${base}.trim${ext(l.trim)}`) } : {}),
       ...(l.cut?.mask !== undefined ? { mask: copy(l.cut.mask, `${base}.mask${ext(l.cut.mask)}`) } : {}),
     }
