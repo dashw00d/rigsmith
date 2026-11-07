@@ -10,7 +10,13 @@
   import Button from '../ui/Button.svelte'
   import EmptyState from '../ui/EmptyState.svelte'
   import IconButton from '../ui/IconButton.svelte'
-  import TextField from '../ui/TextField.svelte'
+  import SearchBox from '../ui/SearchBox.svelte'
+  import Select from '../ui/Select.svelte'
+  import Tabs from '../ui/Tabs.svelte'
+  import ClassList from './classes/ClassList.svelte'
+  import { classes } from '../state/classes.svelte.ts'
+  import { groupCharacters, searchCharacters, sortCharacters } from './list.ts'
+  import { isFolkCharacter, kindsOf } from '../model/folk.ts'
   import { tooltip } from '../ui/tooltip.ts'
   import { importFiles, removeCharacter, renameCharacter, rigEach } from './characters.ts'
   import { autoRiggable } from './status.ts'
@@ -18,10 +24,8 @@
   let input = $state<HTMLInputElement | null>(null)
   let query = $state('')
 
-  const shown = $derived.by(() => {
-    const q = query.trim().toLowerCase()
-    return q === '' ? app.characters : app.characters.filter(c => c.name.toLowerCase().includes(q) || c.id.includes(q))
-  })
+  const shown = $derived(sortCharacters(searchCharacters(app.characters, query), classes.sort))
+  const groups = $derived(groupCharacters(shown, classes.group))
   const riggable = $derived(app.characters.filter(c => autoRiggable(c, app.jobFor(c.id))))
 
   /** The character being renamed (its name field open in the list). */
@@ -75,9 +79,14 @@
       onchange={() => { if (input !== null) { void importFiles([...input.files ?? []]); input.value = '' } }} />
   </header>
 
+  <Tabs testid="class-tab" label="Character lists" size="sm" value={classes.tab} onchange={(v) => classes.setTab(v)} tabs={[{ id: 'characters', label: 'Characters', count: app.characters.length }, { id: 'classes', label: 'Dynamic classes', count: app.characters.filter(isFolkCharacter).reduce((n, c) => n + kindsOf(c).length, 0) }]} />
   {#if app.characters.length > 0}
-    <div class="search"><TextField testid="chars-search" type="search" size="sm" bind:value={query} placeholder="Find a character" label="Find a character" /></div>
+    <div class="search"><SearchBox testid="chars-search" size="sm" bind:value={query} placeholder="Find a character or class" label="Find a character" /></div>
   {/if}
+  {#if classes.tab === 'classes'}
+    <ClassList {query} />
+  {:else}
+    <div class="sorts"><Select label="Sort characters" size="sm" value={classes.sort} onchange={(v) => classes.setSort(v)} options={[{ value: 'name', label: 'Name' }, { value: 'updated', label: 'Last changed' }]} /><Select label="Group characters" size="sm" value={classes.group} onchange={(v) => classes.setGroup(v)} options={[{ value: 'none', label: 'No groups' }, { value: 'body', label: 'Body' }]} /></div>
 
   {#if app.characters.length === 0}
     <EmptyState icon={UserRound} title="Drop models anywhere" body="FBX, GLB, OBJ, DAE or a Tripo ZIP. Drop several at once: each imports in turn.">
@@ -86,8 +95,7 @@
   {:else if shown.length === 0}
     <p class="none faint">No character's name has “{query.trim()}” in it.</p>
   {:else}
-    <ul>
-      {#each shown as c (c.id)}
+    {#snippet characterRow(c: Character)}
         {@const job = app.jobFor(c.id)}
         {@const s = phaseOf(c, job)}
         <li class:selected={app.selectedId === c.id}>
@@ -115,7 +123,18 @@
             </span>
           {/if}
         </li>
+    {/snippet}
+    <ul>
+      {#each groups as group (group.name)}
+        {#if group.name}<li><details open><summary>{group.name}</summary><ul>
+          {#each group.characters as c (c.id)}
+            {@render characterRow(c)}
+          {/each}
+        </ul></details></li>{:else}
+          {#each group.characters as c (c.id)}{@render characterRow(c)}{/each}
+        {/if}
       {/each}
+
     </ul>
   {/if}
 
@@ -126,6 +145,7 @@
       <Button variant="primary" block onclick={rigAll}><Sparkles size={14} /> Auto-rig all {riggable.length}</Button>
     </footer>
   {/if}
+  {/if}
 </div>
 
 <style>
@@ -133,6 +153,8 @@
   header { display: flex; align-items: center; justify-content: space-between; padding: 12px 10px 6px 16px; }
   h2 { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
   .count { font-size: 11px; color: var(--text-3); background: var(--bg-3); border-radius: 8px; padding: 1px 7px; }
+  .sorts { display: flex; gap: 4px; padding: 0 12px 8px; }
+  summary { font-size: 11px; color: var(--text-3); padding: 6px; cursor: pointer; }
   .search { padding: 2px 12px 8px; }
   .none { margin: 8px 16px; font-size: 12px; }
   ul { list-style: none; margin: 0; padding: 0 8px 8px; overflow: auto; flex: 1; }
