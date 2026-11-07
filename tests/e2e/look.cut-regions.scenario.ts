@@ -39,9 +39,9 @@ export default {
       const pixels = (image: CanvasImageSource) => { ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(image, 0, 0, canvas.width, canvas.height); return ctx.getImageData(0, 0, canvas.width, canvas.height).data }
       const a = pixels(bare); const b = pixels(cloth)
       const mesh = view.bodySkinned[0]; const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
-      const actual = pixels((material as { map: { image: CanvasImageSource } }).map.image)
+      const actual = pixels((material as unknown as { map: { image: CanvasImageSource } }).map.image)
       const field = bodyField(body.geometry, body.regions, view.height, { width: canvas.width, height: canvas.height })
-      const sides = new Map(body.list.filter(x => /trouser/i.test(x.material)).map(x => [x.id, x.x < 0 ? 'left' : 'right']))
+      const sides = new Map(body.list.filter(x => /trouser/i.test(x.material)).map(x => [x.id, x.x < 0 ? 'left' as const : 'right' as const]))
       const out = { left: { low: 0, lowBad: 0, high: 0, highBad: 0 }, right: { low: 0, lowBad: 0, high: 0, highBad: 0 } }
       for (let p = 0; p < field.region.length; p++) {
         const side = sides.get(field.region[p]); if (!side || b[p * 4 + 3] !== 255) continue

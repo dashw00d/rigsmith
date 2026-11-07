@@ -14,7 +14,7 @@ export default {
       const body = clothBody(r.viewer.character!.bodySkinned)
       const legs = body.list.filter(x => /trouser/i.test(x.material)).map(x => x.id)
       const source = live.look.cloth!.find(l => /long_blue/.test(l.name))!
-      const layer = { ...source, id: 'e2e50001', name: 'E2E Shorts', slots: ['bottom'], cut: { below: [{ regions: legs, y: 0.35, feather: 0 }] } }
+      const layer = { ...source, id: 'e2e50001', name: 'E2E Shorts', slots: ['bottom' as const], cut: { below: [{ regions: legs, y: 0.35, feather: 0 }] } }
       const entry = await r.app.do(live.id, { type: 'look.cloth.add', layer })
       if (!entry) throw new Error('Could not add shorts')
       const mesh = r.viewer.character!.bodySkinned[0]
@@ -42,7 +42,7 @@ export default {
       const read = (pic: CanvasImageSource) => { ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(pic, 0, 0, canvas.width, canvas.height); return ctx.getImageData(0, 0, canvas.width, canvas.height).data }
       const barePixels = read(bare); const clothPixels = read(cloth)
       const mesh = r.viewer.character!.bodySkinned[0]; const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
-      const actual = read((material as { map: { image: CanvasImageSource } }).map.image)
+      const actual = read((material as unknown as { map: { image: CanvasImageSource } }).map.image)
       const geom = body.geometry; const legIds = new Set(body.list.filter(x => /trouser/i.test(x.material)).map(x => x.id))
       let sole = Infinity
       for (let i = 1; i < geom.positions.length; i += 3) sole = Math.min(sole, geom.positions[i])
