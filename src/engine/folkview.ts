@@ -109,7 +109,28 @@ export function clothBody (body: readonly THREE.SkinnedMesh[]): ClothBody {
     minY = Math.min(minY, positions[i * 3 + 1]); maxY = Math.max(maxY, positions[i * 3 + 1])
   }
   const sideMargin = Math.max(0, maxY - minY) * 0.01
-  const list = Array.from({ length: regions.count }, (_, id) => ({ id, material: names[id], x: sizes[id] === 0 ? 0 : sums[id] / sizes[id], minX: minX[id], maxX: maxX[id], sideMargin }))
+  const list: RegionInfo[] = Array.from({ length: regions.count }, (_, id) => ({ id, material: names[id], x: sizes[id] === 0 ? 0 : sums[id] / sizes[id], minX: minX[id], maxX: maxX[id], sideMargin }))
+  // UV seams split neighbouring body surfaces into different regions (and often different materials).
+  // Match their rest-space boundary vertices: a Skin forearm or ankle touching a garment belongs to that
+  // garment's zone. Restrict it to lateral islands so the neck/face adjoining a shirt remains untouched.
+  const points = new Map<string, Set<number>>()
+  for (let i = 0; i < count; i++) {
+    const id = regions.of[i]
+    if (id < 0) continue
+    const key = [0, 1, 2].map(k => Math.round(positions[i * 3 + k] * 100000)).join(',')
+    const ids = points.get(key) ?? new Set<number>(); ids.add(id); points.set(key, ids)
+  }
+  const neighbours = new Map<number, Set<'top' | 'bottom'>>()
+  for (const ids of points.values()) for (const id of ids) {
+    const r = list[id]
+    if (!/skin/i.test(r.material) || !(minX[id] > sideMargin || maxX[id] < -sideMargin)) continue
+    for (const other of ids) {
+      const material = names[other].toLowerCase()
+      const zone = /shirt|sleeve|top/.test(material) ? 'top' : /trouser|pants|bottom|leg/.test(material) ? 'bottom' : null
+      if (zone !== null) { const found = neighbours.get(id) ?? new Set<'top' | 'bottom'>(); found.add(zone); neighbours.set(id, found) }
+    }
+  }
+  for (const [id, zones] of neighbours) if (zones.size === 1) list[id].zone = [...zones][0]
   const result = { geometry: { positions, uv, index }, regions: regions.of, list }
   bodies.set(first, result)
   return result

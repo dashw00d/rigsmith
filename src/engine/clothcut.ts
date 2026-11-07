@@ -7,7 +7,7 @@ export interface BodyGeometry {
   index: ArrayLike<number> // triangle indices
 }
 export interface BodyField { region: Int16Array, y: Float32Array, width: number, height: number }
-export interface RegionInfo { id: number, material: string, x: number, minX?: number, maxX?: number, sideMargin?: number }
+export interface RegionInfo { id: number, material: string, x: number, minX?: number, maxX?: number, sideMargin?: number, zone?: 'top' | 'bottom' }
 export interface Pixels { rgba: Uint8ClampedArray, width: number, height: number }
 export interface ClothPixels extends Pixels { id: string, slots: readonly ClothSlot[] }
 
@@ -99,7 +99,8 @@ export function composeSlots ({ base, bare, field, regions, layers }: {
   const zones = new Map<number, 'top' | 'bottom'>()
   for (const r of regions) {
     const material = r.material.toLowerCase()
-    if (/trouser|pants|bottom|leg/.test(material)) zones.set(r.id, 'bottom')
+    if (r.zone !== undefined) zones.set(r.id, r.zone)
+    else if (/trouser|pants|bottom|leg/.test(material)) zones.set(r.id, 'bottom')
     else if (/shirt|sleeve|top/.test(material)) zones.set(r.id, 'top')
   }
   // Give islands a two-pixel gutter for bilinear sampling. Never replace another mapped body region.
@@ -149,7 +150,7 @@ export function limbGroups (list: readonly RegionInfo[]): Array<{ name: string, 
   const groups = new Map<string, number[]>()
   for (const r of list) {
     const material = r.material.toLowerCase()
-    const part = /trouser|pants|bottom|leg/.test(material) ? 'leg' : /shirt|sleeve|top/.test(material) ? 'sleeve' : null
+    const part = r.zone === 'bottom' || /trouser|pants|bottom|leg/.test(material) ? 'leg' : r.zone === 'top' || /shirt|sleeve|top/.test(material) ? 'sleeve' : null
     if (part === null) continue
     // glTF's character faces +Z: +X is the character's left. A region touching the midline is torso/hip,
     // even when its centroid is off-centre. Older callers without bounds retain centroid-based grouping.
