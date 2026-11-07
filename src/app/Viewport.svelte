@@ -9,6 +9,8 @@
   import type { DisplayMode } from '../engine/CharacterView.ts'
   import { app } from '../state/app.svelte.ts'
   import { viewer } from '../state/viewer.svelte.ts'
+  import { gear } from '../state/gear.svelte.ts'
+  import { gizmo } from '../state/gizmo.svelte.ts'
   import { timeline } from '../state/timeline.svelte.ts'
   import Segmented from '../ui/Segmented.svelte'
   import { allowsShortcut } from '../ui/shortcuts.ts'
@@ -18,7 +20,42 @@
   let container = $state<HTMLDivElement | null>(null)
   let dock = $state<HTMLDivElement | null>(null)
 
-  onMount(() => (container === null ? undefined : viewer.attach(container)))
+  onMount(() => {
+    if (container === null) return
+    const detach = viewer.attach(container)
+    const canvas = viewer.stage?.renderer.domElement
+    if (canvas === undefined) return detach
+    canvas.dataset.testid = 'viewport-canvas'
+    let down: { id: number, x: number, y: number, moved: boolean, gizmo: boolean } | null = null
+    const start = (e: PointerEvent): void => {
+      if (e.button !== 0 || !e.isPrimary) return
+      const gesture = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false, gizmo: false }
+      down = gesture
+      // TransformControls gets the same pointerdown after this listener.
+      queueMicrotask(() => { if (gizmo.dragging) gesture.gizmo = true })
+    }
+    const move = (e: PointerEvent): void => {
+      if (down?.id === e.pointerId && Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 4) down.moved = true
+    }
+    const end = (e: PointerEvent): void => {
+      const gesture = down
+      down = null
+      if (gesture === null || gesture.id !== e.pointerId || gesture.moved || gesture.gizmo || gizmo.dragging) return
+      gear.pickAt(e)
+    }
+    const cancel = (): void => { down = null }
+    canvas.addEventListener('pointerdown', start)
+    canvas.addEventListener('pointermove', move)
+    canvas.addEventListener('pointerup', end)
+    canvas.addEventListener('pointercancel', cancel)
+    return () => {
+      canvas.removeEventListener('pointerdown', start)
+      canvas.removeEventListener('pointermove', move)
+      canvas.removeEventListener('pointerup', end)
+      canvas.removeEventListener('pointercancel', cancel)
+      detach()
+    }
+  })
 
   const modes: Array<{ value: DisplayMode, label: string, icon: typeof Box }> = [
     { value: 'shaded', label: 'Shaded', icon: Palette },

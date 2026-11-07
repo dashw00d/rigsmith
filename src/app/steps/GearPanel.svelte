@@ -41,6 +41,12 @@
   const leftOut = $derived(piece === undefined ? null : gearLeftOut(piece))
   const sets = $derived(swapSets(character.gear))
 
+  function cancelFitOnEscape (event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || event.defaultPrevented || !fitting) return
+    event.preventDefault()
+    void gearState.cancelFit()
+  }
+
   // ---- adding ----
   let input = $state<HTMLInputElement>()
   let kind = $state<GearKind>('bone')
@@ -87,6 +93,8 @@
     ...(pose === 'other' ? [{ value: 'other', label: animator.playing?.label ?? 'Playing', group: 'Playing' }] : []),
   ])
 </script>
+
+<svelte:window onkeydown={cancelFitOnEscape} />
 
 <Section title="Gear">
   {#snippet action()}
@@ -162,7 +170,10 @@
           <PlacementFields {character} gear={piece} />
           <OriginFields {character} gear={piece} />
           <p class="note">Shown unbound while you place it.</p>
-          <Button variant="primary" block onclick={() => gearState.fit(null)}>Bind to {character.name}</Button>
+          <div class="fit-actions">
+            <Button variant="primary" data-testid="fit-bind" disabled={gearState.cancellingFit} onclick={() => gearState.fit(null)}>Bind to {character.name}</Button>
+            <Button data-testid="fit-cancel" disabled={gearState.cancellingFit} onclick={() => { void gearState.cancelFit() }}>Cancel</Button>
+          </div>
         {:else}
           <Button size="sm" onclick={() => gearState.fit(piece.id)}>Place it</Button>
         {/if}
@@ -199,6 +210,7 @@
   .more summary { cursor: pointer; font-size: 12px; color: var(--text-3); }
   .more summary:hover { color: var(--text-1); }
   .more-body { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .fit-actions { display: flex; gap: 6px; }
   .place { display: flex; flex-direction: column; gap: 8px; }
   .set { width: 150px; height: 28px; border-radius: var(--r-1); border: 1px solid var(--line-strong); background: var(--bg-2); padding: 0 8px; color: inherit; font: inherit; font-size: 12.5px; }
   .set:focus { outline: none; border-color: var(--accent); }
