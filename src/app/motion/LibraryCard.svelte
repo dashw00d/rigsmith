@@ -14,7 +14,7 @@
   import { cardAction, usesOf } from './rules.ts'
   import { playLibraryPreview } from './libraryPreview.ts'
 
-  let { clip, character, resolve }: { clip: LibraryIndexRow, character: Character | null, resolve: (clip: LibraryIndexRow) => Promise<LibraryClip> } = $props()
+  let { clip, character, resolve }: { clip: LibraryIndexRow & Pick<LibraryClip, 'variant' | 'candidates'>, character: Character | null, resolve: (clip: LibraryIndexRow) => Promise<LibraryClip> } = $props()
   const compatible = $derived(character !== null && (character.skeleton.template ?? 'human') === clip.rig)
   let sheet = $state<string | null>(null)
   let failed = $state(false)
@@ -48,10 +48,10 @@
   const uncertain = $derived(clip.nameSource === 'motion-candidate')
   // (Mixamo's description, when it says more than the name: "Walking" -> "Walking With A Briefcase")
   const description = $derived(clip.description !== undefined && clip.description.toLowerCase() !== clip.name.toLowerCase() ? clip.description : '')
-  const detail = $derived([description, undefined].filter(Boolean).join(' · '))
+  const detail = $derived([description, clip.variant].filter(Boolean).join(' · '))
   const hint = $derived.by(() => {
     if (detail === '' && !uncertain) return null
-    const alternatives = ([] as string[]).filter(n => n !== clip.name)
+    const alternatives = (clip.candidates ?? []).map(c => c.name).filter(n => n !== clip.name)
     const unsure = uncertain ? ` · Uncertain name${alternatives.length > 0 ? `; could also be ${[...new Set(alternatives)].join(', ')}` : ''}` : ''
     return `${clip.name}${detail === '' ? '' : ` — ${detail}`}${unsure}`
   })
