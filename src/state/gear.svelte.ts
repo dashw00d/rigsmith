@@ -628,7 +628,7 @@ class GearState {
     const ray = new THREE.Raycaster()
     ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, 1 - (event.clientY - rect.top) / rect.height * 2), stage.camera)
     const pieces = [...rider.pieces].flatMap(([id, p]) => p.worn === null ? [] : [{ id, shown: p.shown, meshes: p.worn.meshes }])
-    this.select(pickGear(ray, pieces))
+    this.select(pickGear(ray, pieces, rider.view.meshes))
   }
 
   /** A bone the skeleton has to put new gear on: `want` if it has it, else a hand, else its first. */
