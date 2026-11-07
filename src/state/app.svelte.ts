@@ -6,6 +6,7 @@ import { untrack } from 'svelte'
 import { applyCommands } from '../model/commands.ts'
 import { api, MODEL_FILE, type Character, type Command, type Job, type JournalEntry, type Settings } from './api.ts'
 import { assets, type FilesChanged } from './assets.svelte.ts'
+import { mark } from '../engine/perf.ts'
 import { push, receive, settle, shown, type Track } from './pending.ts'
 
 export type Step = 'import' | 'skeleton' | 'skin' | 'gear' | 'look' | 'motion' | 'ship'
@@ -230,6 +231,11 @@ class AppState {
   }
 
   private put (id: string, t: Track<Character, Command>): void {
+    const done = mark('app.put', id)
+    try { this.putNow(id, t) } finally { done() }
+  }
+
+  private putNow (id: string, t: Track<Character, Command>): void {
     this.tracks.set(id, t)
     const shows = shown(t, (c, commands) => applyCommands($state.snapshot(c) as Character, commands).character)
     const list = untrack(() => this.characters_)

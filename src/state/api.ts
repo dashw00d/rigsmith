@@ -225,10 +225,4 @@ export const api = {
   characterGame: async (id: string) => await call<CharacterGame | null>('GET', `${of(id)}/game`),
 }
 
-/** A character file's URL, with a cache-bust token that changes when its bytes do: textures by the look's composite,
- * the thumbnail by its own counter, model files by the revision. `version` overrides it (a file with its own). */
-export function fileUrl (character: Character, file: string | undefined, version?: number | string): string | null {
-  if (file === undefined) return null
-  const token = version ?? (file.startsWith('textures/') ? character.look.at : file.startsWith('thumbnail') ? character.thumbVersion : character.revision)
-  return `/files/characters/${encodeURIComponent(character.id)}/${file.split('/').map(encodeURIComponent).join('/')}?v=${token ?? 0}`
-}
+// (a character's file's URL is assets.svelte.ts asset(): by its content hash, not a document counter)

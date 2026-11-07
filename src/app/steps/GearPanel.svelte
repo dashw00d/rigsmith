@@ -180,9 +180,9 @@
   {/if}
 
   {#if paintable !== null && piece.status === 'ready'}
-    {#if piece.hidden === true || fitting}
+    {#if !gearState.shownOnStage(character, piece) || fitting}
       <Section title="Weights">
-        <p class="note">{piece.hidden === true ? 'Show it to paint its weights.' : 'Bind it (finish placing) to paint its weights.'}</p>
+        <p class="note">{!gearState.shownOnStage(character, piece) ? 'Show it to paint its weights.' : 'Bind it (finish placing) to paint its weights.'}</p>
       </Section>
     {:else}
       <WeightPaintPanel {character} gear={piece} />

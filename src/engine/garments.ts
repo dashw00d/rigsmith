@@ -23,6 +23,7 @@ import { HIDE_SHARE, hiddenRegions, regionsOf, type Regions } from './regions.ts
 import { applyGeometryMatrix } from './geometry-transform.ts'
 import { cloneMorphGeometry, restoreMorphState } from './morph-state.ts'
 import { disposeObject, Lru, MB, objectBytes } from './lru.ts'
+import { timed } from './perf.ts'
 import { garmentMatrix, placementMatrix } from './placement.ts'
 import { clearPulls, defaultPullWeights, PROP_ROOT, pullBoneName, pullWeightKeys, pullWeightName, registerPulls, splitStrand } from './pulls.ts'
 
@@ -672,7 +673,7 @@ export async function wear (view: WearView, g: Gear, o: WearOptions): Promise<Wo
   const boneNames = skeleton.bones.map(b => b.name)
   const shown: THREE.SkinnedMesh[] = []
   for (const [i, m] of meshes.entries()) {
-    const { indices, weights } = a.kind === 'skin' ? computeWeights(body, m.geometry, a.policy, view) : partWeights(m.geometry.attributes.position.count, spot!)
+    const { indices, weights } = a.kind === 'skin' ? timed('computeWeights', () => computeWeights(body, m.geometry, a.policy, view), g.name) : partWeights(m.geometry.attributes.position.count, spot!)
     if (edits.length > 0) applyEdits(indices, weights, edits, i, boneNames)
     m.geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(indices, 4))
     m.geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights, 4))

@@ -1,7 +1,10 @@
 // Gear on stage and the Gear step's actions. The character's gear is worn on its view as soon as it loads (viewer
 // onLoad, before the animator's bakes: a clip's gear tracks need the place nodes), and on its horse when it rides
 // (wearing the horse's mount.gear). Each piece is worn on its own (src/engine/garments.ts wear) and only put on again
-// when what it is made from changes; a placement change just moves its node. Every change is a command (app.do);
+// when what it is made from changes; a placement change just moves its node. A dynamic character's outfit, hair and
+// beard show as its dress says (dress.svelte.ts, view state): a piece hidden by browsing stays fitted while its set
+// was worn lately or is fitted ahead (just not drawn), so flipping back and forth is instant. Every change is a
+// command (app.do);
 // placing goes through the shared gizmo (gizmo.svelte.ts). Catalog gear still kept in the old props' grip frame
 // (attach.legacyFrame, from the migration) is converted to rest space the first time its rig loads.
 import * as THREE from 'three'
@@ -22,8 +25,12 @@ import { counterpart, mirroredPlacement, nearerMirror, placementFromMatrix, plac
 import { catalogItem, catalogPlacement, catalogUrl, defaultPlacement, defaultScale, gripPoint, gripToRest } from '../engine/props.ts'
 import { findHolds as holdsOf, strandMiddle, strandSegment, tickPulls } from '../engine/pulls.ts'
 import { animator } from './animator.svelte.ts'
-import { api, fileUrl, type GearKind } from './api.ts'
+import { api, type GearKind } from './api.ts'
 import { app } from './app.svelte.ts'
+import { asset, assets } from './assets.svelte.ts'
+import { dress as dressing } from './dress.svelte.ts'
+import { documentDress, resolve, shows, type Dressed } from './dressing.ts'
+import { mark } from '../engine/perf.ts'
 import { gizmo } from './gizmo.svelte.ts'
 import { hands } from './hands.svelte.ts'
 import { paint } from './paint.svelte.ts'
@@ -35,8 +42,9 @@ export type WearKind = GearAttach['kind']
 /** Picking on the viewport: a spot piece's spot on the body, or a pull's point on its piece. */
 export type Picking = { kind: 'spot', gear: string } | { kind: 'pull', gear: string, handle: string }
 
-/** A piece as worn: what it was made from (`key`), its frame (bone gear, made at once) and what wear() put on. */
-interface Piece { key: string, gear: Gear, frame: ReturnType<typeof boneFrame>, worn: Worn | null, placed: string }
+/** A piece as worn: what it was made from (`key`), its frame (bone gear, made at once), what wear() put on, and
+ * whether it is shown (a piece kept fitted while hidden isn't drawn). */
+interface Piece { key: string, gear: Gear, frame: ReturnType<typeof boneFrame>, worn: Worn | null, placed: string, shown: boolean }
 
 /** A character wearing gear on stage: the one selected, or the horse it rides. */
 interface Wearer { view: CharacterView, id: string, rider: boolean, pieces: Map<string, Piece> }
@@ -70,6 +78,8 @@ class GearState {
 
   private rider: Wearer | null = null
   private horse: Wearer | null = null
+  /** The ids on stage (what the sync effect follows: only these characters' changes wear anything). */
+  private onStage = $state<{ rider: string | null, horse: string | null }>({ rider: null, horse: null })
   private converted = new Set<string>()
   /** The character last loaded (a reload of the same one keeps the piece open). */
   private lastId: string | null = null
@@ -86,16 +96,23 @@ class GearState {
   private modeBefore: typeof gizmo.mode | null = null
 
   /** Start following the viewer (called once, below). */
-  start (): void {
-    viewer.onLoad((view, c) => this.load(view, c), 10)
-    viewer.onSync(() => { this.syncAll() })
-    viewer.onMountLoad(() => { this.loadHorse() })
-    viewer.onMountUnload(() => { this.unloadHorse() })
-    $effect.root(() => {
-      // (every copy of the character and of its horse, the optimistic ones too: what is worn follows at once)
+  start (): () => void {
+    const offs = [
+      viewer.onLoad((view, c) => this.load(view, c), 10),
+      viewer.onMountLoad(() => { this.loadHorse() }),
+      viewer.onMountUnload(() => { this.unloadHorse() }),
+    ]
+    const stopEffects = $effect.root(() => {
+      // (every copy of the character on stage and of its horse, the optimistic ones too: what is worn follows at once;
+      // another character's change wears nothing, its copy being the same object)
+      const rider = $derived(this.onStage.rider === null ? null : app.byId(this.onStage.rider))
+      const horse = $derived(this.onStage.horse === null ? null : app.byId(this.onStage.horse))
       $effect(() => {
-        void app.characters
+        void rider; void horse
         void paint.active
+        // (the dress on stage, and the files the pieces are made from: a piece written again on disk is worn again)
+        if (rider !== null) { void dressing.worn(rider); void dressing.keeping(rider.id); void assets.manifestOf(rider.id) }
+        if (horse !== null) void assets.manifestOf(horse.id)
         untrack(() => { this.syncAll() })
       })
       $effect(() => {
@@ -116,6 +133,7 @@ class GearState {
         if (playing === null || playing.slotId !== null) untrack(() => { this.restShown = null })
       })
     })
+    return () => { for (const off of offs) off(); stopEffects() }
   }
 
   /** The character on stage, as the app has it now. */
@@ -127,13 +145,28 @@ class GearState {
   /** The selected piece's worn node, if it has one to place (the gizmo's target). */
   nodeOf (id: string): THREE.Object3D | null {
     void this.worn
-    return this.rider?.pieces.get(id)?.worn?.node ?? null
+    const p = this.rider?.pieces.get(id)
+    return p?.shown === true ? p.worn?.node ?? null : null
   }
 
-  /** Whether `id` is worn and loaded on stage. */
+  /** Whether `id` is worn, loaded and shown on stage. */
   isWorn (id: string): boolean {
     void this.worn
-    return this.rider?.pieces.get(id)?.worn != null
+    const p = this.rider?.pieces.get(id)
+    return p?.shown === true && p.worn != null
+  }
+
+  /** Whether a piece of the character shows on stage: as its dress says for a dynamic character's outfits, hair and
+   * beards (browsing: dress.svelte.ts), else as the document has it (reactive). */
+  shownOnStage (c: Character, g: Gear): boolean {
+    if (this.fitting === g.id) return true
+    return shows(g, dressing.worn(c), documentDress(c))
+  }
+
+  /** A shown piece on stage (a piece kept fitted while hidden is not there for the panels). */
+  private shownPiece (id: string): Piece | undefined {
+    const p = this.rider?.pieces.get(id)
+    return p?.shown === true ? p : undefined
   }
 
   // ---- on stage ------------------------------------------------------------------------------------------------
@@ -144,8 +177,10 @@ class GearState {
     this.stopPicking()
     const rider: Wearer = { view, id: c.id, rider: true, pieces: new Map() }
     this.rider = rider
+    this.onStage.rider = c.id
     if (view.rest !== null) this.convertLegacy(view, c)
     this.sync(rider, c.gear, c)
+    dressing.plan(c)
     const off = viewer.stage?.onFrame(dt => {
       tickMechanisms(dt)
       // (nothing playing: every pull at rest; while a slot plays the animator ticks them)
@@ -159,7 +194,7 @@ class GearState {
       for (const p of rider.pieces.values()) gizmo.detach(p.frame?.place ?? p.worn?.node)
       takeOffAll(view)
       rider.pieces.clear()
-      if (this.rider === rider) this.rider = null
+      if (this.rider === rider) { this.rider = null; this.onStage.rider = null }
       this.worn++
     }
   }
@@ -169,6 +204,7 @@ class GearState {
     const m = viewer.mount
     if (m === null) return
     this.horse = { view: m.view, id: m.character.id, rider: false, pieces: new Map() }
+    this.onStage.horse = m.character.id
     this.syncHorse()
   }
 
@@ -178,12 +214,15 @@ class GearState {
     takeOffAll(h.view)
     h.pieces.clear()
     this.horse = null
+    this.onStage.horse = null
   }
 
   private syncAll (): void {
+    const done = mark('gear.sync')
     const c = this.character
     if (this.rider !== null && c !== null) this.sync(this.rider, c.gear, c)
     this.syncHorse()
+    done()
   }
 
   /** The horse wears its gear as the rider's mount says: the pieces it names, else its own shown ones. */
@@ -197,11 +236,19 @@ class GearState {
     this.sync(h, on, horse)
   }
 
-  /** What a piece is worn from: null when it isn't shown. A bone piece's placement isn't in it (its node just moves). */
+  /** Whether a piece shows: the rider's as its dress says (the gear list's own hidden for the rest), the horse's as
+   * its rider's mount says (syncHorse). A piece being fitted always shows. */
+  private showsOn (g: Gear, w: Wearer, worn: Dressed | null, own: Dressed | null): boolean {
+    if (w.rider && this.fitting === g.id) return true
+    return worn === null || own === null ? g.hidden !== true : shows(g, worn, own)
+  }
+
+  /** What a piece is worn from: null when it can't be worn. Not whether it shows (a piece kept fitted is only hidden),
+   * nor a bone piece's placement (its node just moves). */
   private keyOf (g: Gear, c: Character, w: Wearer): string | null {
     const url = this.urlOf(c, g)
     const fitting = w.rider && this.fitting === g.id
-    if (g.status !== 'ready' || url === null || (g.hidden === true && !fitting)) return null
+    if (g.status !== 'ready' || url === null) return null
     const a = g.attach
     // (the painted count while painting it: the painter has its weights on the meshes already)
     const painted = paint.active ? null : g.painted ?? 0
@@ -215,7 +262,7 @@ class GearState {
   /** Where its model loads from (catalog gear: the bundled file). */
   urlOf (c: Character, g: Gear): string | null {
     if (g.catalog !== undefined) return catalogUrl(g.catalog)
-    return fileUrl(c, g.model)
+    return asset(c, g.model)
   }
 
   /** Its placement in rest space (catalog gear in the old grip frame converted). */
@@ -227,10 +274,15 @@ class GearState {
 
   private sync (w: Wearer, list: Gear[], c: Character): void {
     if (w.view.rest === null) return
-    const wanted = new Map<string, { g: Gear, key: string }>()
+    // (the rider's dress; the horse wears what its rider's mount says, as the list has it)
+    const worn = w.rider ? dressing.worn(c) : null
+    const own = w.rider ? documentDress(c) : null
+    const wanted = new Map<string, { g: Gear, key: string, shown: boolean }>()
     for (const g of list) {
+      const shown = this.showsOn(g, w, worn, own)
+      if (!shown && !(w.rider && dressing.kept(c.id, g))) continue
       const key = this.keyOf(g, c, w)
-      if (key !== null) wanted.set(g.id, { g, key })
+      if (key !== null) wanted.set(g.id, { g, key, shown })
     }
     let changed = false
     for (const [id, p] of w.pieces) {
@@ -239,19 +291,31 @@ class GearState {
       w.pieces.delete(id)
       changed = true
     }
-    for (const [id, { g, key }] of wanted) {
+    for (const [id, { g, key, shown }] of wanted) {
       const p = w.pieces.get(id)
-      if (p === undefined) { this.on(w, c, g, key); changed = true } else this.move(w, p, g)
+      if (p === undefined) { this.on(w, c, g, key, shown); changed = true; continue }
+      this.move(w, p, g)
+      if (p.shown !== shown) { this.show(w, p, shown); changed = true }
     }
     if (changed) { this.worn++; this.refreshAnimator() }
-    this.dress(w, c)
+    this.dress(w, c, worn)
   }
 
-  /** A dynamic character's look (engine/folk.ts): its skin shown on the body, its hair and beard tinted to it. */
-  private dress (w: Wearer, c: Character): void {
-    const skin = (c.look.skins ?? []).find(s => s.name === c.look.skin)
-    const clothes = (c.look.clothes ?? []).find(s => s.name === c.look.clothing)
-    void showSkin(w.view.bodySkinned, skin === undefined ? null : fileUrl(c, skin.file, 0), clothes === undefined ? null : fileUrl(c, clothes.file, 0), longSleeves(clothes)).catch((error: unknown) => {
+  /** A worn piece shown or hidden (kept fitted): its nodes drawn or not, the body under it hidden again. */
+  private show (w: Wearer, p: Piece, shown: boolean): void {
+    p.shown = shown
+    if (!shown && w.rider) gizmo.detach(p.worn?.node ?? p.frame?.place)
+    for (const o of p.worn?.objects ?? (p.frame !== null ? [p.frame.group] : [])) o.visible = shown
+    if (p.gear.attach.kind === 'skin') this.hideLater(w)
+  }
+
+  /** A dynamic character's look (engine/folk.ts): its skin shown on the body (the rider's dress picks it), its hair
+   * and beard tinted to it. */
+  private dress (w: Wearer, c: Character, worn: Dressed | null = w.rider ? dressing.worn(c) : null): void {
+    const look = worn ?? resolve(c, undefined)
+    const skin = (c.look.skins ?? []).find(s => s.name === look.skin)
+    const clothes = (c.look.clothes ?? []).find(s => s.name === look.clothing)
+    void showSkin(w.view.bodySkinned, skin === undefined ? null : asset(c, skin.file), clothes === undefined ? null : asset(c, clothes.file), longSleeves(clothes)).catch((error: unknown) => {
       app.toast('error', `The skin ${skin?.name ?? ''} didn't load: ${message(error)}`)
     })
     for (const p of w.pieces.values()) {
@@ -263,28 +327,33 @@ class GearState {
     shapeFemale(w.view.bodySkinned, gear, (skin?.tags ?? []).includes('female'), w.view.height)
   }
 
-  private on (w: Wearer, c: Character, g: Gear, key: string): void {
+  private on (w: Wearer, c: Character, g: Gear, key: string, shown: boolean): void {
     const view = w.view
     const place = this.placeOf(g, view)
     const frame = g.attach.kind === 'bone' ? boneFrame(view, g, g.attach.bone, place) : null
-    const piece: Piece = { key, gear: g, frame, worn: null, placed: JSON.stringify(place) }
+    if (frame !== null) frame.group.visible = shown
+    const piece: Piece = { key, gear: g, frame, worn: null, placed: JSON.stringify(place), shown }
     w.pieces.set(g.id, piece)
     const fitting = w.rider && this.fitting === g.id
-    // (skinning to the body is the slow part: say so)
-    const heavy = g.attach.kind !== 'bone' && !fitting
+    // (skinning to the body is the slow part: say so, unless it is fitted ahead, hidden)
+    const heavy = g.attach.kind !== 'bone' && !fitting && shown
     if (heavy) this.busy(1)
     const url = this.urlOf(c, g)!
-    const weights = fileUrl(c, `garments/${g.id}/weights.json`, g.painted ?? 0)
+    const weights = (g.painted ?? 0) > 0 ? asset(c, `garments/${g.id}/weights.json`) : null
     const edits = async (): Promise<GarmentEdit[]> => {
       if (weights === null) return []
       const res = await fetch(weights)
       return res.ok ? await res.json() as GarmentEdit[] : []
     }
+    const done = mark('gear.wear', g.name)
     wear(view, g, { url, place, fitting, edits, frame: frame ?? undefined })
       .then(worn => {
+        done()
         if (w.pieces.get(g.id) !== piece) { if (worn !== null) takeOff(view, worn); return }
         piece.worn = worn
         if (worn === null) frame?.group.removeFromParent()
+        // (shown or not as it is now: it may have been hidden or shown while it loaded)
+        else for (const o of worn.objects) o.visible = piece.shown
         if (g.attach.kind === 'skin') this.hideLater(w)
         if (g.role !== undefined) this.dress(w, c)
         this.worn++
@@ -321,19 +390,26 @@ class GearState {
     this.refreshAnimator()
   }
 
-  /** The body hidden again under what is worn, once per burst of pieces going on and off (a Randomize swaps the
-   * outfit, hair and beard together). */
+  /** The body hidden again under what is shown, once a frame however many pieces went on, off, shown or hidden in it
+   * (a Randomize swaps the outfit, hair and beard together; pieces fitted while loading land one by one). */
   private hideLater (w: Wearer): void {
     if (this.hiding.has(w)) return
     this.hiding.add(w)
-    queueMicrotask(() => {
+    const run = (): void => {
       this.hiding.delete(w)
+      // (gone from the stage meanwhile)
+      if (w !== this.rider && w !== this.horse) return
+      const done = mark('gear.hideBodyUnder')
       hideBodyUnder(w.view, this.wornOf(w))
-    })
+      done()
+    }
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
+    else queueMicrotask(run)
   }
 
+  /** What is worn and shown. */
   private wornOf (w: Wearer): Worn[] {
-    return [...w.pieces.values()].flatMap(p => (p.worn === null ? [] : [p.worn]))
+    return [...w.pieces.values()].flatMap(p => (p.worn === null || !p.shown ? [] : [p.worn]))
   }
 
   private busy (by: number): void {
@@ -372,7 +448,7 @@ class GearState {
 
   private updateGizmo (): void {
     const id = this.selected
-    const node = app.step === 'gear' && this.picking === null && !paint.active && id !== null ? this.rider?.pieces.get(id)?.worn?.node ?? null : null
+    const node = app.step === 'gear' && this.picking === null && !paint.active && id !== null ? this.shownPiece(id)?.worn?.node ?? null : null
     if (this.placingOrigin !== null && this.placingOrigin !== id) this.placeOrigin(null)
     const marker = node !== null && this.placingOrigin === id ? this.ensureMarker() : null
     const target = marker ?? node
@@ -433,7 +509,7 @@ class GearState {
    * gizmo drags it (placing the origin) it stays where it is dragged, unless `snap`. */
   private followMarker (snap = false): void {
     const id = this.selected
-    const node = app.step === 'gear' && id !== null && !paint.active ? this.rider?.pieces.get(id)?.worn?.node ?? null : null
+    const node = app.step === 'gear' && id !== null && !paint.active ? this.shownPiece(id)?.worn?.node ?? null : null
     if (node === null) { if (this.marker !== null) this.marker.visible = false; return }
     const m = this.ensureMarker()
     if (m === null) return
@@ -549,7 +625,7 @@ class GearState {
 
   /** The piece's points as worn, in its own frame (its origin at zero), spread on its surface. Null when it isn't on. */
   private pointsOf (g: Gear): THREE.Vector3[] | null {
-    const worn = this.rider?.pieces.get(g.id)?.worn
+    const worn = this.shownPiece(g.id)?.worn
     if (worn == null || worn.meshes.length === 0) return null
     if (worn.node !== null) {
       // (a bone piece, a mechanism, a piece being fitted: its meshes under its node, whatever pose it is in)
@@ -751,7 +827,7 @@ class GearState {
     const place = this.placeOf(g)
     let next = place
     const at = view?.rest?.bones.get(bone)?.worldPosition
-    const worn = this.rider?.pieces.get(g.id)?.worn
+    const worn = this.shownPiece(g.id)?.worn
     if (at !== undefined && worn != null && counterpart(bone) === a.bone && nearerMirror(place.position, at)) {
       next = mirroredPlacement(place, pointsOf(worn.meshes)) ?? place
     }
@@ -808,7 +884,7 @@ class GearState {
   async addPull (c: Character, g: Gear): Promise<void> {
     const view = this.rider?.view ?? null
     if (g.attach.kind !== 'bone' || view === null) return
-    const worn = this.rider?.pieces.get(g.id)?.worn
+    const worn = this.shownPiece(g.id)?.worn
     const rest = worn == null ? null : strandMiddle(worn.meshes)
     const carried = handSide(g.attach.bone)
     const bone = this.boneFor(c, carried === 'Right' ? 'LeftHand' : 'RightHand')
@@ -859,7 +935,7 @@ class GearState {
   pickPull (c: Character, g: Gear, h: Handle): void {
     if (h.pull === undefined) return
     this.startPicking({ kind: 'pull', gear: g.id, handle: h.id }, (ray) => {
-      const worn = this.rider?.pieces.get(g.id)?.worn
+      const worn = this.shownPiece(g.id)?.worn
       if (worn == null || worn.node === null) return false
       for (const m of worn.meshes) if ((m as THREE.SkinnedMesh).isSkinnedMesh === true) (m as THREE.SkinnedMesh).computeBoundingSphere()
       const hit = ray.intersectObjects(worn.meshes, false)[0]
@@ -937,7 +1013,7 @@ class GearState {
     const h = g?.handles.find(x => x.id === handleId)
     const slot = slotById(c, slotId)
     const view = this.rider?.view
-    const worn = this.rider?.pieces.get(gearId)?.worn
+    const worn = this.shownPiece(gearId)?.worn
     if (g === undefined || h?.pull === undefined || slot === undefined || view === undefined || worn == null || worn.node === null) return []
     const hand = view.bones.get(h.pull.bone)
     const strand = strandSegment(worn.meshes, h.pull.rest)
@@ -982,4 +1058,6 @@ function freeHandleId (g: Gear): string {
 }
 
 export const gear = new GearState()
-gear.start()
+const stopGear = gear.start()
+// (a hot update of this module would otherwise leave the old one's hooks on the viewer: gear worn twice)
+if (import.meta.hot !== undefined) import.meta.hot.dispose(() => { stopGear() })

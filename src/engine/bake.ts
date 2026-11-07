@@ -21,6 +21,7 @@ import type { Rom } from './limits.ts'
 import { applyBoneKeys, applyLift, propTracks } from './keys.ts'
 import { fitRide, freezeClip } from './mount.ts'
 import { garmentMatrix } from './placement.ts'
+import { timedAsync } from './perf.ts'
 import { sourceClip } from './pieces.ts'
 import { pelvisName, restUpOf, type RestSkeleton } from './retarget.ts'
 import { blowCut, paceTo, retime, warpClip } from './timing.ts'
@@ -96,6 +97,11 @@ export type BakeSkip = Array<AdjustmentKind | 'speed' | 'time' | 'fit' | 'pace' 
  * `gearNodes: false`: no gear tracks (the export keys its own gear bones). `via`: the slots whose pieces play this one
  * (src/engine/pieces.ts: one of them again is a slot playing itself, refused). */
 export async function bakeSlot (c: Character, slot: Slot, ctx: BakeContext, o: { mirror?: boolean, skip?: BakeSkip, autoGround?: boolean, gearNodes?: boolean, via?: readonly string[] } = {}): Promise<BakedSlot> {
+  // (its wall time in dev: src/engine/perf.ts)
+  return await timedAsync('bakeSlot', async () => await bakeSlotNow(c, slot, ctx, o), slot.name)
+}
+
+async function bakeSlotNow (c: Character, slot: Slot, ctx: BakeContext, o: { mirror?: boolean, skip?: BakeSkip, autoGround?: boolean, gearNodes?: boolean, via?: readonly string[] }): Promise<BakedSlot> {
   const all = o.skip === 'all'
   const skip = new Set<string>(all ? ['speed', 'time', 'hands', 'keys', 'events'] : o.skip ?? [])
   const report: Record<string, unknown> = {}

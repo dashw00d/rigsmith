@@ -3,6 +3,7 @@
 // file (gear and the rest that areas hang on its bones are theirs to add and take off).
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { mark, timed } from './perf.ts'
 import { captureRest, type RestSkeleton } from './retarget.ts'
 import type { Stage } from './Stage.ts'
 
@@ -44,8 +45,13 @@ export class CharacterView {
   private highlightBone: string | null = null
 
   static async load (url: string): Promise<CharacterView> {
-    const gltf = await loader.loadAsync(url)
-    return new CharacterView(gltf.scene)
+    const done = mark('CharacterView.load', url.split('?')[0])
+    try {
+      const gltf = await loader.loadAsync(url)
+      return timed('CharacterView.build', () => new CharacterView(gltf.scene))
+    } finally {
+      done()
+    }
   }
 
   constructor (root: THREE.Group) {
