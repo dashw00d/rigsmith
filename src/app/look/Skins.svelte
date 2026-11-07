@@ -5,6 +5,8 @@
   import Chips from '../../ui/Chips.svelte'
   import TextField from '../../ui/TextField.svelte'
   import Note from '../../ui/Note.svelte'
+  import Button from '../../ui/Button.svelte'
+  import { bare } from '../../state/bare.svelte.ts'
 
   let { character }: { character: Character } = $props()
   const common = ['female', 'beardless', 'elderly']
@@ -16,6 +18,8 @@
 {#if (character.look.skins ?? []).length === 0}
   <Note>No skins on this character.</Note>
 {:else}
+  <Button size="sm" disabled={bare.busy} onclick={() => { void bare.make(character, character.look.skins ?? []) }}>Make all bare</Button>
+  {#if bare.busy}<p role="status">Making {bare.label} bare: {Math.round(bare.progress * 100)}%</p>{/if}
   <div class="skins">
     {#each character.look.skins ?? [] as skin (skin.file)}
       <div class="skin" data-testid="look-skin-row" data-id={skin.name}>
@@ -27,6 +31,7 @@
           <TextField size="sm" label="Add tag to {skin.name}" placeholder="Add tag" oncommit={(tag) => { const value = tag.trim(); if (value) update(skin, { tags: [...new Set([...(skin.tags ?? []), value])] }) }} />
           <label>Hair colour <input aria-label="Hair colour picker for {skin.name}" type="color" value={skin.hair ?? '#584432'} onchange={(e) => update(skin, { hair: e.currentTarget.value })} /></label>
           <TextField size="sm" label="Hair colour for {skin.name}" value={skin.hair ?? ''} placeholder="#rrggbb" oncommit={(hair) => update(skin, { hair: hair === '' ? null : hair })} />
+          <Button size="sm" disabled={bare.busy} onclick={() => { void bare.make(character, [skin]) }}>Make bare</Button>
           {#if skin.bare}<span data-testid="look-bare-badge">Bare</span>{/if}
         </div>
       </div>
