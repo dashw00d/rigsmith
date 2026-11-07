@@ -6,7 +6,7 @@
 // Set membership is read here only (setsOf, setsWith): the model's sets and pools (src/model/folk.ts on dress/model)
 // replace Gear.outfit, and these two are the one place that changes.
 import type { Command } from '../model/command-types.ts'
-import type { Character, Gear } from '../model/types.ts'
+import type { Character, ClothSlot, Gear } from '../model/types.ts'
 import { BRACERS, COVERS_FACE, COVERS_HAIR, setsOf as modelSetsOf, setsWith as modelSetsWith } from '../model/folk.ts'
 import { longSleeves } from '../engine/folk.ts'
 import { pick, worldOf, type FolkWorld } from '../engine/folkpick.ts'
@@ -42,6 +42,10 @@ export interface Dress {
   hair?: string | null
   /** A beard piece's gear id. */
   beard?: string | null
+  /** Cloth layer ids by occupied slot; null leaves that slot with the skin's paint. */
+  layers?: Partial<Record<ClothSlot, string | null>>
+  /** Preview the selected skin's bare image even when no layer has a cut. */
+  bare?: boolean
   /** Per-piece preview overrides; neither is written by Make default. */
   off?: string[]
   on?: string[]
@@ -50,7 +54,7 @@ export interface Dress {
   seed?: number
 }
 
-export type Dressed = Record<DressField, string | null>
+export type Dressed = Record<DressField, string | null> & Pick<Dress, 'layers' | 'bare'>
 
 /** The document's own look: the set with a piece shown, its skin and clothes, the hair and beard shown. */
 export function documentDress (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>): Dressed {
@@ -77,13 +81,23 @@ export function resolve (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d:
     const v = d[k]
     return v !== undefined && ok(v) ? v : own[k]
   }
-  return {
+  const result: Dressed = {
     outfit: pick('outfit', v => v === null || sets.has(v)),
     skin: pick('skin', v => v === null || skins.has(v)),
     clothing: pick('clothing', v => v === null || clothes.has(v)),
     hair: pick('hair', v => piece('hair', v)),
     beard: pick('beard', v => piece('beard', v)),
   }
+  if (d.layers !== undefined) {
+    const layers: NonNullable<Dress['layers']> = {}
+    for (const slot of ['bottom', 'top', 'over'] as const) {
+      const id = d.layers[slot]
+      if (id === null || (id !== undefined && (c.look.cloth ?? []).some(l => l.id === id && l.slots.includes(slot)))) layers[slot] = id
+    }
+    result.layers = layers
+  }
+  if (d.bare !== undefined) result.bare = d.bare
+  return result
 }
 
 /** Whether a piece of `c` shows under the dress: a set's pieces with their set (the document's own set as the document
@@ -115,7 +129,17 @@ export function wearOutfit (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>,
 /** The game's pick for a unit, with locked slots fixed to the current dress. */
 export function randomize (c: Character, d: Dress | undefined, seed: number, world: FolkWorld = worldOf(c)): Dress {
   const now = resolve(c, d)
-  const unit = dressedFromPick(c, pick(world, seed, { fixed: fixedFor(c, now, d?.locks ?? []) }))
+  const fixed = fixedFor(c, now, d?.locks ?? [])
+  if (d?.locks?.includes('clothing') === true && now.layers !== undefined) {
+    for (const slot of ['bottom', 'top', 'over'] as const) fixed[slot] = now.layers[slot] ?? null
+  }
+  const picked = pick(world, seed, { fixed })
+  const unit = dressedFromPick(c, picked)
+  if (c.look.cloth !== undefined) {
+    const layers: NonNullable<Dress['layers']> = {}
+    for (const id of picked.layers) for (const slot of world.layers.find(l => l.id === id)?.slots ?? []) layers[slot] = id
+    unit.layers = layers
+  }
   const next: Dress = { ...d, ...unit, seed }
   if (unit.outfit !== now.outfit) { delete next.off; delete next.on }
   return next

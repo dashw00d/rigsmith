@@ -7,7 +7,7 @@
 // back to one shows it at once; while the page is idle the next set is fitted ahead a piece at a time, and the next
 // sets' models and every skin's and clothes' image are fetched.
 import { SvelteMap } from 'svelte/reactivity'
-import type { Character, Gear } from '../model/types.ts'
+import type { Character, ClothSlot, Gear } from '../model/types.ts'
 import { preloadModel } from '../engine/garments.ts'
 import type { FolkWorld } from '../engine/folkpick.ts'
 import { newUid } from '../app/gear/wardrobe.ts'
@@ -92,7 +92,23 @@ class DressState {
 
   wearOutfit (c: Character, outfit: string | null): void { this.put(c, wearOutfit(c, this.of(c.id), outfit)) }
   setSkin (c: Character, name: string | null): void { this.put(c, { ...this.of(c.id), skin: name }) }
-  setClothing (c: Character, name: string | null): void { this.put(c, { ...this.of(c.id), clothing: name }) }
+  setClothing (c: Character, name: string | null): void {
+    const next = { ...this.of(c.id), clothing: name }
+    delete next.layers
+    this.put(c, next)
+  }
+  /** Browse layers without changing the document; a layer filling several slots is worn once. */
+  setLayer (c: Character, slot: ClothSlot, id: string | null): void {
+    const layer = id === null ? undefined : c.look.cloth?.find(l => l.id === id && l.slots.includes(slot))
+    if (id !== null && layer === undefined) return
+    const layers = { ...this.of(c.id)?.layers }
+    const displaced = new Set((layer?.slots ?? [slot]).map(s => layers[s]).filter((v): v is string => typeof v === 'string'))
+    for (const s of ['bottom', 'top', 'over'] as const) if (layers[s] !== null && layers[s] !== undefined && displaced.has(layers[s]!)) delete layers[s]
+    if (layer === undefined) layers[slot] = null
+    else for (const s of layer.slots) layers[s] = layer.id
+    this.put(c, { ...this.of(c.id), layers })
+  }
+  setBare (c: Character, on: boolean): void { this.put(c, { ...this.of(c.id), bare: on }) }
   setHair (c: Character, id: string | null): void { this.put(c, { ...this.of(c.id), hair: id }) }
   setBeard (c: Character, id: string | null): void { this.put(c, { ...this.of(c.id), beard: id }) }
 
@@ -128,6 +144,9 @@ class DressState {
     const locks = this.of(c.id)?.locks
     this.put(c, locks === undefined || locks.length === 0 ? undefined : { locks })
   }
+
+  /** Restore an exact preview snapshot after a temporary hover. */
+  restore (c: Character, snapshot: Dress | undefined): void { this.put(c, snapshot) }
 
   /** The dress written into the document as its own look (today's commands: one undoable entry), then followed again.
    * False when the server refused. */

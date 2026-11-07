@@ -7,8 +7,10 @@
   import Note from '../../ui/Note.svelte'
   import Button from '../../ui/Button.svelte'
   import { bare } from '../../state/bare.svelte.ts'
+  import SkinSheet from './SkinSheet.svelte'
 
   let { character }: { character: Character } = $props()
+  let sheet = $state(false)
   const common = ['female', 'beardless', 'elderly']
   function update (skin: Skin, patch: { name?: string, tags?: string[] | null, hair?: string | null }): void {
     void app.do(character.id, { type: 'look.skin.update', name: skin.name, patch })
@@ -18,6 +20,7 @@
 {#if (character.look.skins ?? []).length === 0}
   <Note>No skins on this character.</Note>
 {:else}
+  <Button size="sm" onclick={() => { sheet = true }}>All skins</Button>
   <Button size="sm" disabled={bare.busy} onclick={() => { void bare.make(character, character.look.skins ?? []) }}>Make all bare</Button>
   {#if bare.busy}<p role="status">Making {bare.label} bare: {Math.round(bare.progress * 100)}%</p>{/if}
   <div class="skins">
@@ -47,3 +50,5 @@
   label { font-size: 12px; display: flex; align-items: center; gap: 6px; }
   input[type='color'] { width: 36px; height: 24px; padding: 0; }
 </style>
+
+{#if sheet}<SkinSheet {character} onclose={() => { sheet = false }} />{/if}
