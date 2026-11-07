@@ -2,7 +2,8 @@
 // viewport.
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { light, place, tone, type LightRig } from './lighting.ts'
+import { environment, LIGHTING, light, place, tone, type LightRig } from './lighting.ts'
+import { mark } from './perf.ts'
 
 type FrameCallback = (dt: number) => void
 
@@ -20,10 +21,16 @@ export class Stage {
   private framing: { from: THREE.Vector3, to: THREE.Vector3, targetFrom: THREE.Vector3, targetTo: THREE.Vector3, t: number } | null = null
 
   readonly container: HTMLElement
+  /** The environment and canvas are ready before any character is compiled. */
+  readonly ready: Promise<void>
+  private disposed = false
+  private initialized = false
 
   constructor (container: HTMLElement) {
     this.container = container
+    const rendererDone = mark('stage.renderer')
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    rendererDone()
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     tone(this.renderer)
     this.renderer.shadowMap.enabled = true
@@ -31,7 +38,7 @@ export class Stage {
     container.appendChild(this.renderer.domElement)
     this.renderer.domElement.style.display = 'block'
 
-    this.lights = light(this.scene, this.renderer, { shadows: true })
+    this.lights = light(this.scene, undefined, { shadows: true })
 
     this.ground = this.makeGround()
     this.scene.add(this.ground, this.content)
@@ -56,9 +63,24 @@ export class Stage {
       if (document.activeElement instanceof HTMLElement && document.activeElement !== canvas) document.activeElement.blur()
     })
 
-    this.resizeObserver = new ResizeObserver(() => { this.resize() })
+    this.resizeObserver = new ResizeObserver(() => { if (this.initialized) this.resize() })
     this.resizeObserver.observe(container)
+    this.ready = this.prepare()
+  }
+
+  private async prepare (): Promise<void> {
+    // Renderer creation, environment compilation, and canvas allocation can each occupy a long task.
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    if (this.disposed) return
+    const envDone = mark('stage.env')
+    try {
+      this.scene.environment = environment(this.renderer)
+      this.scene.environmentIntensity = LIGHTING.environment
+    } finally { envDone() }
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+    if (this.disposed) return
     this.resize()
+    this.initialized = true
     this.renderer.setAnimationLoop(() => { this.tick() })
   }
 
@@ -146,7 +168,9 @@ export class Stage {
     const { clientWidth: w, clientHeight: h } = this.container
     if (w === 0 || h === 0) return
     const reshaped = Math.abs(this.camera.aspect - w / h) > 0.01
+    const sizeDone = mark('stage.setSize')
     this.renderer.setSize(w, h, false)
+    sizeDone()
     this.renderer.domElement.style.width = '100%'
     this.renderer.domElement.style.height = '100%'
     this.camera.aspect = w / h
@@ -157,6 +181,8 @@ export class Stage {
   /** Something covers the whole stage (the marker board, the scale room): it neither draws nor runs its frame
    * callbacks, so the page keeps its frame rate (and its pointer events) for what is on top. */
   covered = false
+
+  private firstFrame = true
 
   private tick (): void {
     this.clock.update()
@@ -182,12 +208,14 @@ export class Stage {
         }
       }
     }
+    const firstDone = this.firstFrame ? mark('frame.first') : null
+    this.firstFrame = false
     try {
       this.renderer.render(this.scene, this.camera)
     } catch (error) {
       if (!this.renderFailed) console.error('Render failed', error)
       this.renderFailed = true
-    }
+    } finally { firstDone?.() }
   }
 
   private readonly failed = new WeakSet<FrameCallback>()
@@ -200,6 +228,7 @@ export class Stage {
   }
 
   dispose (): void {
+    this.disposed = true
     this.renderer.setAnimationLoop(null)
     this.resizeObserver.disconnect()
     this.controls.dispose()
