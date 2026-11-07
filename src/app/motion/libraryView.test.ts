@@ -31,3 +31,10 @@ describe('library view', () => {
     expect(performance.now() - start).toBeLessThan(100)
   })
 })
+
+it('finds a clip by its variant or uncertain candidate name', () => {
+  const rows = [clip('walk', { variant: 'long stride', candidates: [{ name: 'march', description: 'military pace' }] })]
+  for (const query of ['stride', 'march', 'military']) {
+    expect(viewOf(rows, {}, { ...defaultView(), query }).flatMap(row => 'clip' in row ? [row.clip.id] : [])).toEqual(['walk'])
+  }
+})

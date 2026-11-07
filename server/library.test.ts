@@ -25,7 +25,7 @@ beforeAll(async () => {
     clip('b', 'Walking', { description: 'Male Standard Walk' }),
     clip('c', 'Belly Dance', { category: 'dance', tags: ['turn-left'] }),
     clip('d', 'Left Turn', { description: 'Standing Left Turn' }),
-    clip('e', 'Laying Shaking Head', { category: 'sit-lie', nameSource: 'motion-candidate', candidates: [{ name: 'Laying Nodding' }] }),
+    clip('e', 'Laying Shaking Head', { category: 'sit-lie', nameSource: 'motion-candidate', variant: 'slow turn', candidates: [{ name: 'Laying Nodding', rmsDeg: 1.2 }] }),
     clip('f', 'Breathing Idle', { category: 'idle', nameSource: 'matched' }),
     clip('h', 'Guitar Playing', { category: 'work', description: 'Playing A Guitar' }),
     clip('g', 'Walking', { description: 'Walking With A Briefcase', duplicateOf: 'a' }),
@@ -96,6 +96,10 @@ describe('counts and categories', () => {
 })
 
 describe('compact index', () => {
+  it('retains variant and uncertain candidate details for library cards', async () => {
+    const clip = (await libraryIndex('human')).find(row => row.id === 'e')
+    expect(clip).toMatchObject({ variant: 'slow turn', candidates: [{ name: 'Laying Nodding', rmsDeg: 1.2 }] })
+  })
   it('contains the clip URL and file mtime and filters by rig', async () => {
     const rows = await libraryIndex('human')
     expect(rows.find(c => c.id === 'a')).toMatchObject({ name: 'Walking', url: '/files/library/clips/a.glb', addedAt: statSync(path.join(dir, 'library', 'clips', 'a.glb')).mtimeMs, rig: 'human' })

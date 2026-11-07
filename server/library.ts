@@ -303,7 +303,7 @@ export async function categoryOf (id: string): Promise<string | null> {
 export interface LibraryIndexRow {
   id: string, name: string, description?: string, category: string, source: string, rig: string,
   duration: number, loop: boolean, inPlace: boolean, tags: string[], url: string, hash?: string,
-  addedAt: number, nameSource?: string, problems?: Clip['problems']
+  addedAt: number, nameSource?: string, problems?: Clip['problems'], variant?: Clip['variant'], candidates?: Clip['candidates']
 }
 let indexCache: { key: string, rows: LibraryIndexRow[] } | null = null
 export async function libraryIndex (rig?: string): Promise<LibraryIndexRow[]> {
@@ -320,7 +320,7 @@ export async function libraryIndex (rig?: string): Promise<LibraryIndexRow[]> {
       const hash = c.href === undefined || c.href.startsWith('/files/library/') ? hashes[c.href?.slice('/files/library/'.length) ?? c.file] : undefined
       return { id: c.id, name: c.name, description: c.description, category: c.category, source: c.source, rig: c.rig ?? 'human',
         duration: c.duration, loop: c.loop, inPlace: c.inPlace, tags: c.tags ?? [], url: c.href ?? `/files/library/${c.file}`,
-        ...(hash === undefined ? {} : { hash }), addedAt: await times.get(file)!, nameSource: c.nameSource, problems: findings[c.id]?.problems }
+        ...(hash === undefined ? {} : { hash }), addedAt: await times.get(file)!, nameSource: c.nameSource, variant: c.variant, candidates: c.candidates, problems: findings[c.id]?.problems }
     }))
     indexCache = { key, rows }
   }

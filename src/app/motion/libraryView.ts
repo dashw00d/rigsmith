@@ -23,7 +23,7 @@ export function viewOf (index: readonly LibraryIndexRow[], uses: Readonly<Record
       (state.source.length && !state.source.includes(c.source)) || (state.loop === 'loop' && !c.loop) || (state.loop === 'oneshot' && c.loop) ||
       (state.inPlace === 'in-place' && !c.inPlace) || (state.inPlace === 'root-motion' && c.inPlace) ||
       (state.used === 'used' && !count) || (state.used === 'unused' && count > 0) || !state.tags.every(t => c.tags.includes(t))) continue
-    const names = `${c.name}\n${c.description ?? ''}\n${c.id}`.toLowerCase()
+    const names = [c.name, c.description, c.id, c.variant, ...(c.candidates ?? []).flatMap(x => [x.name, x.description])].filter(Boolean).join('\n').toLowerCase()
     const all = `${names}\n${c.tags.join('\n')}\n${c.category}\n${c.source}`.toLowerCase()
     if (!terms.every(t => all.includes(t))) continue
     const rank = starts.every(re => re.test(names)) ? 0 : terms.every(t => names.includes(t)) ? 1 : 2
