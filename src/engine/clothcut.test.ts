@@ -34,6 +34,6 @@ describe('cloth image core', () => {
     const base = image([0, 0, 0, 255])
     const result = composeCloth({ base, layers: [{ ...image([255, 0, 0, 128]), id: 'both', slots: ['bottom', 'top'] }] })
     expect([...result.rgba]).toEqual([128, 0, 0, 255])
-    expect(limbGroups([{ id: 3, material: 'Trousers', x: -1 }, { id: 4, material: 'Shirt', x: 1 }])).toEqual([{ name: 'left leg', regions: [3] }, { name: 'right sleeve', regions: [4] }])
+    expect(limbGroups([{ id: 3, material: 'Trousers', x: -1 }, { id: 4, material: 'Shirt', x: 1 }])).toEqual([{ name: 'right leg', regions: [3] }, { name: 'left sleeve', regions: [4] }])
   })
 })

@@ -98,13 +98,18 @@ export function clothBody (body: readonly THREE.SkinnedMesh[]): ClothBody {
   }
   const index = Uint32Array.from(triangles); const regions = regionsOf(index, count)
   const sums = new Float64Array(regions.count); const sizes = new Uint32Array(regions.count)
+  const minX = new Float64Array(regions.count).fill(Infinity); const maxX = new Float64Array(regions.count).fill(-Infinity)
   const names = new Array<string>(regions.count).fill('')
+  let minY = Infinity; let maxY = -Infinity
   for (let i = 0; i < count; i++) {
     const id = regions.of[i]
     if (id < 0) continue
     sums[id] += positions[i * 3]; sizes[id]++; names[id] ||= materials[i]
+    minX[id] = Math.min(minX[id], positions[i * 3]); maxX[id] = Math.max(maxX[id], positions[i * 3])
+    minY = Math.min(minY, positions[i * 3 + 1]); maxY = Math.max(maxY, positions[i * 3 + 1])
   }
-  const list = Array.from({ length: regions.count }, (_, id) => ({ id, material: names[id], x: sizes[id] === 0 ? 0 : sums[id] / sizes[id] }))
+  const sideMargin = Math.max(0, maxY - minY) * 0.01
+  const list = Array.from({ length: regions.count }, (_, id) => ({ id, material: names[id], x: sizes[id] === 0 ? 0 : sums[id] / sizes[id], minX: minX[id], maxX: maxX[id], sideMargin }))
   const result = { geometry: { positions, uv, index }, regions: regions.of, list }
   bodies.set(first, result)
   return result
