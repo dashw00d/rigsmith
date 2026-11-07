@@ -29,4 +29,8 @@ it('hashes unchanged files once and invalidates for mtime or inode changes', asy
   await rename(replacement, file)
   await readPackage(dir)
   expect(streams.count).toBe(3)
+  await writeFile(file, Buffer.concat([bytes, Buffer.from('extra')]))
+  await utimes(file, new Date(1000000000), new Date(1000000000))
+  expect((await readPackage(dir)).errors[0]).toMatch(/SHA256 mismatch/)
+  expect(streams.count).toBe(4)
 })
