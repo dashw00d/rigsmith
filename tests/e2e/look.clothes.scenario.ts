@@ -5,7 +5,7 @@ export default {
   name: 'look.clothes', character: 'folk-v6-0ba482', step: 'look',
   async run (ui) {
     const wait = async (label: string, condition: Parameters<typeof ui.waitFor>[0]): Promise<void> => {
-      try { await ui.waitFor(condition) } catch (error) { throw new Error(`${label}: ${String(error)}`) }
+      try { await ui.waitFor(condition) } catch (error) { throw new Error(`${label}: ${String(error)}`, { cause: error }) }
     }
     const source = await ui.eval(async r => {
       const c = r.app.selected!; const skin = c.look.skins!.find(s => s.name === r.dress.worn(c).skin)!
@@ -28,7 +28,7 @@ export default {
     await ui.clickAt(slider, Math.round(width * 0.8), 8)
     try { await wait('slider commit', r => r.app.selected?.look.cloth?.find(l => l.id === (window as unknown as { clothScenarioId: string }).clothScenarioId)?.cut?.below?.some(b => b.y > 0.38) === true) } catch (error) {
       const details = await ui.eval((r, key) => ({ cut: r.app.selected!.look.cloth!.find(l => l.id === key)!.cut, slider: document.querySelector<HTMLInputElement>('[aria-label="long_blue shorts left leg height"]')?.value }), id)
-      throw new Error(`${String(error)}: ${JSON.stringify(details)}`)
+      throw new Error(`${String(error)}: ${JSON.stringify(details)}`, { cause: error })
     }
     const changed = await ui.eval((r, key) => r.app.selected!.look.cloth!.find(l => l.id === key)!.cut, id)
     assert.ok(changed?.below?.some(b => b.y > 0.38), 'slider release commits the cut')
