@@ -13,7 +13,7 @@ import { dress } from '../../state/dress.svelte.ts'
 import { DRESS_FIELDS, type Dress, type DressField, type Dressed } from '../../state/dressing.ts'
 import { pick, worldOf, type FolkWorld } from '../../engine/folkpick.ts'
 import { mark } from '../../engine/perf.ts'
-import { choicesFor, dressedFromPick, fixedFor, newUid, NO_FILTER, stepChoice, type Filter, type Tab } from './wardrobe.ts'
+import { choicesFor, dressedFromPick, newUid, NO_FILTER, stepChoice, type Filter, type Tab } from './wardrobe.ts'
 
 const KEY = 'rigsmith.wardrobe.'
 
@@ -138,13 +138,9 @@ class WardrobeState {
 
   /** Randomize: a new unit drawn by the pick engine, the locked slots kept. */
   randomize (c: Character): void {
-    const worn = dress.worn(c)
-    const locks = DRESS_FIELDS.filter(f => dress.locked(c.id, f))
     const uid = newUid()
-    const p = pick(worldFor(c), uid, { fixed: fixedFor(c, worn, locks) })
-    const unit = dressedFromPick(c, p)
+    const unit = dress.randomize(c, uid, worldFor(c))
     this.update(c.id, { uid, unit })
-    this.dressUp(c, unit)
   }
 
   /** Exactly unit `uid` as the game would dress it (no lock applies). */

@@ -9,6 +9,8 @@
 import { SvelteMap } from 'svelte/reactivity'
 import type { Character, Gear } from '../model/types.ts'
 import { preloadModel } from '../engine/garments.ts'
+import type { FolkWorld } from '../engine/folkpick.ts'
+import { newUid } from '../app/gear/wardrobe.ts'
 import { app } from './app.svelte.ts'
 import { asset } from './assets.svelte.ts'
 import { defaultCommands, differs, randomize, resolve, settled, setsAfter, setsOf, setsWith, wearOutfit, type Dress, type DressField, type Dressed } from './dressing.ts'
@@ -115,11 +117,10 @@ class DressState {
     this.put(c, { ...d, locks: [...locks] })
   }
 
-  private rolls = 0
-  /** A unit's look as the game would pick one, the locked fields kept. */
-  randomize (c: Character): void {
-    const seed = (Date.now() + ++this.rolls * 7919) >>> 0
-    this.put(c, randomize(c, this.of(c.id), seed))
+  /** One game-engine pick, with the locked fields kept. Returns the unit actually shown. */
+  randomize (c: Character, uid = newUid(), world?: FolkWorld): Dressed {
+    this.put(c, randomize(c, this.of(c.id), uid, world))
+    return this.worn(c)
   }
 
   /** Back to the document's own look (locks kept). */
