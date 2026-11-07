@@ -27,6 +27,8 @@ export default {
     const changed = await ui.eval((r, key) => r.app.selected!.look.cloth!.find(l => l.id === key)!.cut, id)
     assert.ok(changed?.below?.some(b => b.y > 0.38), 'slider release commits the cut')
     await ui.shot('cut-editor')
+    // A focused range input consumes Ctrl+Z; return focus to the disclosure before undoing a document command.
+    await ui.click({ testid: 'look-cloth-edit', within: row })
     await ui.press('ctrl+z')
     await ui.waitFor(r => r.app.selected?.look.cloth?.find(l => l.id === (window as unknown as { clothScenarioId: string }).clothScenarioId)?.cut?.below?.every(b => Math.abs(b.y - 0.35) < 0.001) === true)
     await ui.press('ctrl+z')
