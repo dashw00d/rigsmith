@@ -107,6 +107,13 @@ export function unitChecks (i: UnitCheckInput): Check[] {
     add('blow', 'warn', `Attack has no blow timing: the game lands each hit at ${Math.round(HIT_AT * 100)} % of the clip`)
   }
 
+  // A cut needs the corresponding bare image for every skin the unit can wear.
+  for (const layer of c.look.cloth ?? []) if (layer.cut !== undefined) {
+    for (const skin of c.look.skins ?? []) if (skin.bare === undefined) {
+      add('cut-bare', 'warn', `${layer.name} has a cut but skin ${skin.name} has no bare version`)
+    }
+  }
+
   // gear: what goes in, under the names the game knows
   const inGear = c.gear.filter(g => leftOut(g) === null)
   for (const g of c.gear) {
