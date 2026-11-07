@@ -23,12 +23,13 @@
 
   const world = $derived(worldFor(character))
   const worn = $derived(dress.worn(character))
+  const context = $derived(wardrobe.ctx(character))
   const choices = $derived({
-    outfit: choicesFor(character, world, worn, 'outfit'),
-    skin: choicesFor(character, world, worn, 'skin'),
-    clothing: choicesFor(character, world, worn, 'clothing'),
-    hair: choicesFor(character, world, worn, 'hair'),
-    beard: choicesFor(character, world, worn, 'beard'),
+    outfit: choicesFor(character, world, worn, 'outfit', context),
+    skin: choicesFor(character, world, worn, 'skin', context),
+    clothing: choicesFor(character, world, worn, 'clothing', context),
+    hair: choicesFor(character, world, worn, 'hair', context),
+    beard: choicesFor(character, world, worn, 'beard', context),
   })
   const setCategory = $derived(new Map(setsOf(character).map(s => [s.name, categoryOf(s)])))
   const categories = $derived([...new Set(setCategory.values())].sort())

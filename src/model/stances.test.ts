@@ -21,3 +21,15 @@ it('previews no set without hiding gear outside sets', () => {
   expect(guard.gear.map(g => g.hidden ?? false)).toEqual([false, true, false])
   expect(c.gear.every(g => !g.hidden)).toBe(true)
 })
+
+it('uses stage visibility for the document set, preview overrides, and roles', () => {
+  const c = makeCharacter({ gear: [
+    makeGear({ id: 'vest' }), makeGear({ id: 'shield', hidden: true }),
+    makeGear({ id: 'hair-old', role: 'hair' }), makeGear({ id: 'hair-new', role: 'hair', hidden: true }),
+    makeGear({ id: 'other' }),
+  ], folk: { sets: [{ id: 'guard', name: 'Guard', pieces: ['vest', 'shield'], tags: [], grants: [] }], pools: [], kinds: [], stances: [] } })
+  const hidden = (preview?: Parameters<typeof dressedCharacter>[2]): boolean[] =>
+    dressedCharacter(c, 'guard', preview).gear.map(g => g.hidden === true)
+  expect(hidden()).toEqual([false, true, false, true, false])
+  expect(hidden({ off: ['vest'], on: ['shield'], hair: 'hair-new' })).toEqual([true, false, true, false, false])
+})

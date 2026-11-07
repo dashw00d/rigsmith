@@ -14,16 +14,36 @@
   let settingsOpen = $state(false)
   let nav = $state<HTMLElement | null>(null)
 
+  const offsets = new Map<HTMLElement, { left: number, width: number }>()
+  let navWidth = 0
+  let overflows = false
+  let scrollPosition = 0
   function revealStep (): void {
+    if (!overflows) return
     const button = nav?.querySelector<HTMLElement>('[aria-current="step"]')
-    if (nav !== null && button) nav.scrollLeft = button.offsetLeft - (nav.clientWidth - button.offsetWidth) / 2
+    const position = button === undefined || button === null ? undefined : offsets.get(button)
+    if (nav !== null && position !== undefined && (position.left < scrollPosition || position.left + position.width > scrollPosition + navWidth)) nav.scrollLeft = position.left - (navWidth - position.width) / 2
   }
-
+  function measureSteps (): void {
+    if (nav === null) return
+    navWidth = nav.clientWidth
+    scrollPosition = nav.scrollLeft
+    overflows = nav.scrollWidth > navWidth
+    for (const button of nav.querySelectorAll<HTMLElement>('[data-testid^="bar-step-"]')) {
+      offsets.set(button, { left: button.offsetLeft, width: button.offsetWidth })
+    }
+    revealStep()
+  }
+  function recordScroll (): void { if (nav !== null) scrollPosition = nav.scrollLeft }
   $effect(() => { void app.step; void tick().then(revealStep) })
   onMount(() => {
-    const observer = new ResizeObserver(revealStep)
-    if (nav !== null) observer.observe(nav)
-    return () => { observer.disconnect() }
+    const observer = new ResizeObserver(measureSteps)
+    if (nav !== null) {
+      observer.observe(nav)
+      nav.addEventListener('scroll', recordScroll, { passive: true })
+      for (const child of nav.children) observer.observe(child)
+    }
+    return () => { observer.disconnect(); nav?.removeEventListener('scroll', recordScroll); offsets.clear() }
   })
   onMount(() => incoming.start())
   $effect(() => { void app.selectedId; void incoming.refresh() })

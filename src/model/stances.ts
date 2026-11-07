@@ -1,6 +1,7 @@
 import { folkOf, kindSets, setById } from './folk.ts'
 import type { Character, Slot } from './types.ts'
 import { variantsOf } from './variants.ts'
+import { documentDress, resolve, shows, type Dress } from '../state/dressing.ts'
 
 /** A set's explicit stance, otherwise the first kind that includes it. */
 export function stanceOf (c: Character, setId: string): string | null {
@@ -19,12 +20,18 @@ export function clipSlots (c: Character, stanceId: string | null, clip: string):
   return base === undefined ? [] : [base, ...variantsOf(c, clip, [clip])]
 }
 
-/** Show the set's pieces and hide pieces of other sets, leaving unrelated gear alone. */
-export function dressedCharacter (c: Character, setId: string | null): Character {
+/** The same piece visibility the stage uses, copied for animation baking. */
+export function dressedCharacter (c: Character, setId: string | null, preview?: Dress): Character {
   const copy = structuredClone(c)
-  const sets = folkOf(c).sets; const set = sets.find(s => s.id === setId)
+  const set = folkOf(c).sets.find(s => s.id === setId)
   if (setId !== null && set === undefined) return copy
-  const assigned = new Set(sets.flatMap(s => s.pieces)); const shown = new Set(set?.pieces ?? [])
-  for (const g of copy.gear) if (assigned.has(g.id)) g.hidden = !shown.has(g.id)
+  const own = documentDress(c)
+  const chosen: Dress = { ...preview, outfit: set?.name ?? null, outfitId: set?.id ?? null }
+  const worn = resolve(c, chosen)
+  const assigned = new Set(folkOf(c).sets.flatMap(s => s.pieces))
+  for (let i = 0; i < c.gear.length; i++) {
+    const gear = c.gear[i]
+    if (assigned.has(gear.id) || gear.role !== undefined) copy.gear[i].hidden = !shows(c, gear, worn, own, chosen)
+  }
   return copy
 }

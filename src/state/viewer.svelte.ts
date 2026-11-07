@@ -10,6 +10,7 @@ import * as THREE from 'three'
 import { CharacterView, type DisplayMode } from '../engine/CharacterView.ts'
 import { riderScale, seatMatrix } from '../engine/mount.ts'
 import { Stage } from '../engine/Stage.ts'
+import { mark } from '../engine/perf.ts'
 import { shownFile } from '../app/status.ts'
 import type { Character } from './api.ts'
 import { app, type Step } from './app.svelte.ts'
@@ -99,6 +100,7 @@ class Viewer {
   attach (container: HTMLElement): () => void {
     const stage = new Stage(container)
     this.stage = stage
+    this.loading = true
     stage.covered = untrack(() => this.overlays).some(([, o]) => o.covers === true)
     this.stopEffects = $effect.root(() => {
       $effect(() => {
@@ -251,6 +253,8 @@ class Viewer {
   private async sync (want: Want): Promise<void> {
     const stage = this.stage
     if (stage === null) return
+    await stage.ready
+    if (this.stale(want) || this.stage !== stage) return
     const c = want.c
     // (its files' hashes first, so the model loads once, by what it holds)
     if (c !== null && !assets.ready(c.id)) {
@@ -272,7 +276,7 @@ class Viewer {
       if (!await this.load(stage, c, url, want)) return
     }
     const now = this.loaded
-    if (now === null || c === null) return
+    if (now === null || c === null) { this.loading = false; return }
     now.c = c
     await this.syncMount(stage, now, want)
     if (this.stale(want) || this.loaded !== now) return
@@ -304,7 +308,8 @@ class Viewer {
     if (this.stale(want) || this.stage !== stage) { view.dispose(); return false }
     // (its shaders compiled off the frame before it is first drawn: else that first frame stalls on them)
     view.setMode(this.mode)
-    try { await stage.renderer.compileAsync(view.root, stage.camera, stage.scene) } catch { /* (drawn as it comes) */ }
+    const compileDone = mark('view.compile')
+    try { await stage.renderer.compileAsync(view.root, stage.camera, stage.scene) } catch { /* (drawn as it comes) */ } finally { compileDone() }
     if (this.stale(want) || this.stage !== stage) { view.dispose(); return false }
     this.failedUrl = null
     view.addTo(stage)
