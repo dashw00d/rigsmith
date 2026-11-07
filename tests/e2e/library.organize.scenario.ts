@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict'
-import type { Scenario } from './ui.ts'
+import type { Scenario, UI } from './ui.ts'
+
+export async function openLibraryAfterReload (ui: UI): Promise<void> {
+  await ui.waitFor(r => r.app.step === 'motion', 60_000)
+  await ui.waitFor({ role: 'button', name: 'Library' }, 60_000)
+  await ui.click({ role: 'button', name: 'Library' })
+}
 
 export default {
   name: 'library.organize', step: 'motion',
@@ -36,8 +42,7 @@ export default {
     const saved = await ui.eval(() => JSON.parse(localStorage.getItem('rigsmith.library.view') ?? '{}') as { view: string, sort: string, group: string })
     assert.deepEqual(saved, { view: 'list', sort: 'length', direction: 'asc', group: 'category' })
     await ui.press('ctrl+r')
-    await ui.waitFor(r => r.app.step === 'motion', 60_000)
-    await ui.click({ role: 'button', name: 'Library' })
+    await openLibraryAfterReload(ui)
     await ui.waitFor({ testid: 'lib-drawer' })
     assert.equal(await ui.eval(() => (document.querySelector('[aria-label="Sort clips"]') as HTMLSelectElement).value), 'length')
     assert.equal(await ui.eval(() => (document.querySelector('[aria-label="Group clips"]') as HTMLSelectElement).value), 'category')
