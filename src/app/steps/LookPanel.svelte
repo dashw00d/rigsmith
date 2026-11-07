@@ -10,6 +10,7 @@
   import Button from '../../ui/Button.svelte'
   import Section from '../../ui/Section.svelte'
   import Layers from '../look/Layers.svelte'
+  import Skins from '../look/Skins.svelte'
   import Painting from '../look/Painting.svelte'
   import { ago, scanLines } from '../look/text.ts'
 
@@ -36,6 +37,10 @@
   })
   onDestroy(() => { painter.stop() })
 </script>
+
+<Section title="Skins">
+  <Skins {character} />
+</Section>
 
 <Section title="Layers">
   <Layers {character} />
