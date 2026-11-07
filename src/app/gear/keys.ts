@@ -1,10 +1,9 @@
 // The dressing keys and the app's undo keys (src/ui/shortcuts.ts registry; App.svelte registers them once and runs
-// the registry from its window listener). Dressing keys work in the Gear step on a dynamic character, never over the
-// Forge; `, .` only while no clip plays (the timeline steps frames with them then). Ctrl+Z / Ctrl+Shift+Z everywhere
+// the registry from its window listener). Dressing keys work in the Gear step on a dynamic character; `, .` only
+// while no clip plays (the timeline steps frames with them then). Ctrl+Z / Ctrl+Shift+Z everywhere
 // but Motion (its own keys undo there, through the same journal: timeline.undo / redo); an undo toasts what it took
 // back, with Redo.
 import { app } from '../../state/app.svelte.ts'
-import { forge } from '../../state/forge.svelte.ts'
 import { timeline } from '../../state/timeline.svelte.ts'
 import { isFolk } from '../../engine/folk.ts'
 import { register, type Shortcut } from '../../ui/shortcuts.ts'
@@ -13,7 +12,7 @@ import { wardrobe } from './wardrobe.svelte.ts'
 
 const dressing = (): Character | null => {
   const c = app.selected
-  return c !== null && app.step === 'gear' && !forge.open && isFolk(c) ? c : null
+  return c !== null && app.step === 'gear' && isFolk(c) ? c : null
 }
 
 // (what Redo can put back: an undo's seq, while nothing was edited since; Motion keeps its own, timeline.svelte.ts)
@@ -43,8 +42,7 @@ async function redo (): Promise<void> {
 }
 
 export function registerAppKeys (): () => void {
-  // (not over the Forge: it is about a set, not the character selected)
-  const editing = (): boolean => app.selected !== null && app.step !== 'motion' && !forge.open
+  const editing = (): boolean => app.selected !== null && app.step !== 'motion'
   const when = (): boolean => dressing() !== null
   const run = (fn: (c: Character) => void) => (): void => { const c = dressing(); if (c !== null) fn(c) }
   const list: Shortcut[] = [

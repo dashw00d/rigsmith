@@ -1,11 +1,10 @@
 <script lang="ts">
   // The top bar: the seven steps (each with a tick: done, or needs something, from src/app/status.ts; Ship's from the
-  // game units in src/state/ship.svelte.ts), the Forge's button (its board over the workspace), the activity
+  // game units in src/state/ship.svelte.ts), the activity
   // button (jobs running, the server connection; opens the activity drawer) and the settings.
   import { onMount, tick } from 'svelte'
-  import { Activity, Anvil, Check, LoaderCircle, Settings2 } from '@lucide/svelte'
+  import { Activity, Check, LoaderCircle, Settings2 } from '@lucide/svelte'
   import { app, STEPS, type Step } from '../state/app.svelte.ts'
-  import { forge } from '../state/forge.svelte.ts'
   import { ship } from '../state/ship.svelte.ts'
   import { tooltip } from '../ui/tooltip.ts'
   import SettingsPopover from './SettingsPopover.svelte'
@@ -84,11 +83,6 @@
   </nav>
 
   <div class="tools">
-    <button class="chip" class:open={forge.open} aria-pressed={forge.open} onclick={() => { forge.toggle() }}
-      use:tooltip={forge.open ? 'Back to the character' : 'The Forge: sets of gear made stage by stage'}>
-      <Anvil size={14} />
-      <span>Forge</span>
-    </button>
     <button class="chip" class:busy={running > 0} class:open={app.drawer === 'activity'} aria-pressed={app.drawer === 'activity'}
       aria-label="Activity: {running > 0 ? `${running} running` : app.connected ? 'connected' : 'offline'}"
       onclick={() => { app.toggleDrawer('activity') }}
