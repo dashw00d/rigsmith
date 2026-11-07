@@ -74,7 +74,7 @@ export default {
           const a = full?.getX(i) ?? i; const b = full?.getX(i + 1) ?? i + 1; const d = full?.getX(i + 2) ?? i + 2
           if (visible.has(key(a, b, d))) continue
           const x = Math.floor((uv.getX(a) + uv.getX(b) + uv.getX(d)) / 3 * canvas.width)
-          const y = Math.floor((1 - (uv.getY(a) + uv.getY(b) + uv.getY(d)) / 3) * canvas.height)
+          const y = Math.floor(((uv.getY(a) + uv.getY(b) + uv.getY(d)) / 3) * canvas.height)
           if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) continue
           const region = bodyData.regions[offset + a]
           const samples = hiddenGroups.get(region) ?? []; samples.push((y * canvas.width + x) * 4); hiddenGroups.set(region, samples)
@@ -91,7 +91,7 @@ export default {
           for (let i = 0; i + 2 < n; i += 3) {
             const a = index?.getX(i) ?? i; const b = index?.getX(i + 1) ?? i + 1; const d = index?.getX(i + 2) ?? i + 2
             const x = Math.floor((uv.getX(a) + uv.getX(b) + uv.getX(d)) / 3 * canvas.width)
-            const y = Math.floor((1 - (uv.getY(a) + uv.getY(b) + uv.getY(d)) / 3) * canvas.height)
+            const y = Math.floor(((uv.getY(a) + uv.getY(b) + uv.getY(d)) / 3) * canvas.height)
             if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) out.push((y * canvas.width + x) * 4)
           }
         }
@@ -108,7 +108,7 @@ export default {
         const uv = mesh.geometry.getAttribute('uv'); const idx = mesh.geometry.index; const n = idx?.count ?? uv.count
         for (let i = 0; i + 2 < n; i += 3) {
           for (let j = 0; j < 3; j++) {
-            const v = idx?.getX(i + j) ?? i + j; const x = uv.getX(v) * canvas.width; const y = (1 - uv.getY(v)) * canvas.height
+            const v = idx?.getX(i + j) ?? i + j; const x = uv.getX(v) * canvas.width; const y = uv.getY(v) * canvas.height
             if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
           }
           ctx.closePath()

@@ -51,10 +51,30 @@ export default {
         const bad = [0, 1, 2].some(i => Math.abs(actual[p * 4 + i] - target[p * 4 + i]) > 3)
         if (low) { o.low++; if (bad) o.lowBad++ } else { o.high++; if (bad) o.highBad++ }
       }
-      return out
+      // Independently sample glTF triangle centroids in the source image's top-left UV convention.
+      const physical = { left: { low: 0, lowBad: 0, high: 0, highBad: 0 }, right: { low: 0, lowBad: 0, high: 0, highBad: 0 } }
+      const g = body.geometry
+      let sole = Infinity
+      for (let i = 1; i < g.positions.length; i += 3) sole = Math.min(sole, g.positions[i])
+      for (let i = 0; i + 2 < g.index.length; i += 3) {
+        const x = g.index[i]; const y = g.index[i + 1]; const z = g.index[i + 2]
+        const side = sides.get(body.regions[x]); if (!side) continue
+        const height = ((g.positions[x * 3 + 1] + g.positions[y * 3 + 1] + g.positions[z * 3 + 1]) / 3 - sole) / view.height
+        const px = Math.floor((g.uv[x * 2] + g.uv[y * 2] + g.uv[z * 2]) / 3 * canvas.width)
+        const py = Math.floor((g.uv[x * 2 + 1] + g.uv[y * 2 + 1] + g.uv[z * 2 + 1]) / 3 * canvas.height)
+        if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) continue
+        const p = (py * canvas.width + px) * 4
+        if (b[p + 3] !== 255) continue
+        const low = height < 0.30; const high = height > 0.40
+        if (!low && !high) continue
+        const target = low ? a : b; const o = physical[side]
+        const bad = [0, 1, 2].some(channel => Math.abs(actual[p + channel] - target[p + channel]) > 3)
+        if (low) { o.low++; if (bad) o.lowBad++ } else { o.high++; if (bad) o.highBad++ }
+      }
+      return { field: out, physical }
     })
     for (const side of ['left', 'right'] as const) {
-      const c = counts[side]
+      const c = counts.physical[side]
       assert.ok(c.low > 20 && c.high > 20, `${side} needs samples on each side of the hem: ${JSON.stringify(c)}`)
       assert.ok(c.lowBad / c.low < 0.01 && c.highBad / c.high < 0.01, `${side} cut pixels differ: ${JSON.stringify(c)}`)
     }

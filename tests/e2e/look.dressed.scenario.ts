@@ -52,7 +52,7 @@ export default {
         if (!legIds.has(body.regions[a])) continue
         const y = ((geom.positions[a * 3 + 1] + geom.positions[b * 3 + 1] + geom.positions[d * 3 + 1]) / 3 - sole) / r.viewer.character!.height
         const x = Math.floor((geom.uv[a * 2] + geom.uv[b * 2] + geom.uv[d * 2]) / 3 * canvas.width)
-        const v = Math.floor((1 - (geom.uv[a * 2 + 1] + geom.uv[b * 2 + 1] + geom.uv[d * 2 + 1]) / 3) * canvas.height)
+        const v = Math.floor(((geom.uv[a * 2 + 1] + geom.uv[b * 2 + 1] + geom.uv[d * 2 + 1]) / 3) * canvas.height)
         if (x < 0 || v < 0 || x >= canvas.width || v >= canvas.height) continue
         const p = (v * canvas.width + x) * 4
         if (clothPixels[p + 3] < 250) continue
