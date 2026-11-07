@@ -26,7 +26,7 @@ export function dressedCharacter (c: Character, setId: string | null, preview?: 
   const set = folkOf(c).sets.find(s => s.id === setId)
   if (setId !== null && set === undefined) return copy
   const own = documentDress(c)
-  const chosen: Dress = { ...preview, outfit: set?.name ?? null }
+  const chosen: Dress = { ...preview, outfit: set?.name ?? null, outfitId: set?.id ?? null }
   const worn = resolve(c, chosen)
   const assigned = new Set(folkOf(c).sets.flatMap(s => s.pieces))
   for (let i = 0; i < c.gear.length; i++) {

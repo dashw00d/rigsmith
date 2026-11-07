@@ -35,6 +35,8 @@ export const DRESS_FIELDS: readonly DressField[] = ['outfit', 'skin', 'clothing'
 /** The dress on stage for one character: what browsing picked (null: none of it; left out: the document's), the fields
  * Randomize keeps, and its last roll. */
 export interface Dress {
+  /** Stable set id for previews of migrated characters; outfit is kept as a legacy name for old storage. */
+  outfitId?: string | null
   outfit?: string | null
   skin?: string | null
   clothing?: string | null
@@ -82,7 +84,7 @@ export function resolve (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d:
     return v !== undefined && ok(v) ? v : own[k]
   }
   const result: Dressed = {
-    outfit: pick('outfit', v => v === null || sets.has(v)),
+    outfit: d.outfitId !== undefined ? (d.outfitId === null ? null : modelSetsOf(c).find(s => s.id === d.outfitId)?.name ?? own.outfit) : pick('outfit', v => v === null || sets.has(v)),
     skin: pick('skin', v => v === null || skins.has(v)),
     clothing: pick('clothing', v => v === null || clothes.has(v)),
     hair: pick('hair', v => piece('hair', v)),
@@ -116,6 +118,12 @@ export function shows (c: Gearing, g: Gear, d: Dressed, own?: Dressed, preview?:
 export function wearOutfit (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined, outfit: string | null): Dress {
   const now = resolve(c, d)
   const next: Dress = { ...d, outfit }
+  if (c.folk !== undefined && outfit === null) next.outfitId = null
+  else {
+    const set = c.folk === undefined ? undefined : modelSetsOf(c).find(s => s.name === outfit)
+    if (set === undefined) delete next.outfitId
+    else next.outfitId = set.id
+  }
   delete next.off
   delete next.on
   const grants = modelSetsOf(c).find(s => s.name === outfit)?.grants ?? []
@@ -124,6 +132,14 @@ export function wearOutfit (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>,
   const allowed = (c.look.clothes ?? []).filter(k => !grants.includes(BRACERS) || !longSleeves(k))
   if (now.clothing !== null && !allowed.some(k => k.name === now.clothing)) next.clothing = allowed[0]?.name ?? null
   return next
+}
+
+/** Upgrade old browser-stored outfit names while the original name still exists. */
+export function anchorOutfit (c: Gearing, d: Dress | undefined): Dress | undefined {
+  if (c.folk === undefined || d === undefined || d.outfitId !== undefined || d.outfit === undefined) return d
+  if (d.outfit === null) return { ...d, outfitId: null }
+  const set = modelSetsOf(c).find(s => s.name === d.outfit)
+  return set === undefined ? d : { ...d, outfitId: set.id }
 }
 
 /** The game's pick for a unit, with locked slots fixed to the current dress. */
@@ -141,6 +157,8 @@ export function randomize (c: Character, d: Dress | undefined, seed: number, wor
     unit.layers = layers
   }
   const next: Dress = { ...d, ...unit, seed }
+  if (c.folk !== undefined) next.outfitId = picked.picks.set ?? null
+  else delete next.outfitId
   if (unit.outfit !== now.outfit) { delete next.off; delete next.on }
   return next
 }
@@ -162,7 +180,17 @@ export function defaultCommands (c: Pick<Character, 'id' | 'gear' | 'look' | 'fo
     const sets = setsWith(c, g)
     return sets.length === 0 || (name !== null && sets.includes(name)) === (g.hidden !== true)
   })
-  if (want.outfit !== own.outfit || !outfitShown(want.outfit)) out.push({ type: 'gear.outfit.show', outfit: want.outfit })
+  if (want.outfit !== own.outfit || !outfitShown(want.outfit)) {
+    if (c.folk === undefined) out.push({ type: 'gear.outfit.show', outfit: want.outfit })
+    else {
+      for (const g of c.gear) {
+        const sets = setsWith(c, g)
+        if (sets.length === 0) continue
+        const hidden = want.outfit === null || !sets.includes(want.outfit)
+        if (hidden !== (g.hidden === true)) out.push({ type: 'gear.update', id: g.id, patch: { hidden } })
+      }
+    }
+  }
   if (want.skin !== own.skin) out.push({ type: 'look.skin.show', name: want.skin })
   if (want.clothing !== own.clothing) out.push({ type: 'look.clothing.show', name: want.clothing })
   for (const role of ['hair', 'beard'] as const) {
@@ -182,6 +210,7 @@ export function settled (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d:
   const own = documentDress(c)
   const next: Dress = { ...d }
   for (const k of DRESS_FIELDS) if (next[k] !== undefined && next[k] === own[k]) delete next[k]
+  if (next.outfitId !== undefined && resolve(c, next).outfit === own.outfit) { delete next.outfitId; delete next.outfit }
   return next
 }
 
