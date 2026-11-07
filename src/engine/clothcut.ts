@@ -87,6 +87,63 @@ export function composeCloth ({ base, layers }: { base: Pixels, layers: readonly
   return { rgba: out, width: base.width, height: base.height }
 }
 
+/** Composite each selected layer only over its garment slots. A cut reveals the bare skin in that layer's zone;
+ * without a bare image it fades back to the painted base. The same two-slot layer is drawn once. */
+export function composeSlots ({ base, bare, field, regions, layers }: {
+  base: Pixels, bare: Pixels | null, field: BodyField, regions: readonly RegionInfo[],
+  layers: readonly (ClothPixels & { cut?: ClothCut, mask?: Uint8ClampedArray })[]
+}): Pixels {
+  const { width, height } = base
+  if (base.rgba.length !== width * height * 4 || field.width !== width || field.height !== height ||
+      (bare !== null && (bare.width !== width || bare.height !== height || bare.rgba.length !== base.rgba.length))) throw new Error('Mismatched composition image dimensions')
+  const zones = new Map<number, 'top' | 'bottom'>()
+  for (const r of regions) {
+    const material = r.material.toLowerCase()
+    if (/trouser|pants|bottom|leg/.test(material)) zones.set(r.id, 'bottom')
+    else if (/shirt|sleeve|top/.test(material)) zones.set(r.id, 'top')
+  }
+  // Give islands a two-pixel gutter for bilinear sampling. Never replace another mapped body region.
+  let region = new Int16Array(field.region); let heights = new Float32Array(field.y)
+  for (let pass = 0; pass < 2; pass++) {
+    const nextRegion = new Int16Array(region); const nextHeights = new Float32Array(heights)
+    for (let p = 0; p < region.length; p++) if (region[p] === -1) {
+      const x = p % width; const y = Math.floor(p / width)
+      search: for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx; const yy = y + dy
+        if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue
+        const q = yy * width + xx
+        if (zones.has(region[q])) { nextRegion[p] = region[q]; nextHeights[p] = heights[q]; break search }
+      }
+    }
+    region = nextRegion; heights = nextHeights
+  }
+  const padded: BodyField = { region, y: heights, width, height }
+  const out = new Uint8ClampedArray(base.rgba); const seen = new Set<string>()
+  for (const slot of ['bottom', 'top', 'over'] as const) for (const layer of layers) {
+    if (!layer.slots.includes(slot) || seen.has(layer.id)) continue
+    if (layer.width !== width || layer.height !== height || layer.rgba.length !== out.length) throw new Error('Mismatched cloth image dimensions')
+    seen.add(layer.id)
+    const white = layer.cut === undefined ? undefined : new Uint8ClampedArray(out.length).fill(255)
+    const alpha = white === undefined ? undefined : cutAlpha(white, width, height, padded, layer.cut!, layer.mask)
+    for (let p = 0; p < padded.region.length; p++) {
+      const zone = zones.get(padded.region[p])
+      if (zone === undefined || (!layer.slots.includes(zone) && !layer.slots.includes('over'))) continue
+      const i = p * 4; const cut = alpha === undefined ? 1 : alpha[i + 3] / 255
+      const a = layer.rgba[i + 3] / 255 * (bare === null ? cut : 1)
+      const b = out[i + 3] / 255; const combined = a + b * (1 - a)
+      if (combined > 0) for (let c = 0; c < 3; c++) out[i + c] = (layer.rgba[i + c] * a + out[i + c] * b * (1 - a)) / combined
+      out[i + 3] = combined * 255
+      if (bare !== null && cut < 1) {
+        const bareAlpha = bare.rgba[i + 3] / 255; const currentAlpha = out[i + 3] / 255
+        const mixedAlpha = currentAlpha * cut + bareAlpha * (1 - cut)
+        if (mixedAlpha > 0) for (let c = 0; c < 3; c++) out[i + c] = (out[i + c] * currentAlpha * cut + bare.rgba[i + c] * bareAlpha * (1 - cut)) / mixedAlpha
+        out[i + 3] = mixedAlpha * 255
+      }
+    }
+  }
+  return { rgba: out, width, height }
+}
+
 /** Group cloth regions for editing by material and side of the body. */
 export function limbGroups (list: readonly RegionInfo[]): Array<{ name: string, regions: number[] }> {
   const groups = new Map<string, number[]>()

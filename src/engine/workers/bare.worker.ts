@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { bodyField, composeCloth, cutAlpha, makeBare, type BodyGeometry } from '../clothcut.ts'
+import { bodyField, composeSlots, makeBare, type BodyGeometry, type RegionInfo } from '../clothcut.ts'
 import { regionsOf } from '../regions.ts'
 import type { ClothCut, ClothSlot } from '../../model/types.ts'
 
@@ -8,9 +8,11 @@ interface Request { url: string, meshes: MeshData[], height: number }
 interface ComposeRequest {
   kind: 'compose'
   base: string | ImageBitmap
+  bare: string | null
   layers: Array<{ id: string, slots: ClothSlot[], url: string, cut?: ClothCut, mask?: string }>
   geometry: BodyGeometry
   regions: Int32Array
+  list: RegionInfo[]
   height: number
 }
 const worker = self as unknown as DedicatedWorkerGlobalScope
@@ -38,15 +40,15 @@ async function compose (request: ComposeRequest): Promise<void> {
     return ctx.getImageData(0, 0, width, height).data
   }
   const base = { rgba: await pixels(baseImage), width, height }
-  const field = request.layers.some(l => l.cut !== undefined)
-    ? bodyField(request.geometry, request.regions, request.height, { width, height }) : null
+  const bare = request.bare === null ? null : { rgba: await pixels(request.bare), width, height }
+  const field = bodyField(request.geometry, request.regions, request.height, { width, height })
   const layers = []
   for (const layer of request.layers) {
     const rgba = await pixels(layer.url)
     const mask = layer.mask === undefined ? undefined : await pixels(layer.mask)
-    layers.push({ id: layer.id, slots: layer.slots, width, height, rgba: layer.cut === undefined || field === null ? rgba : cutAlpha(rgba, width, height, field, layer.cut, mask) })
+    layers.push({ id: layer.id, slots: layer.slots, width, height, rgba, cut: layer.cut, mask })
   }
-  const result = composeCloth({ base, layers })
+  const result = composeSlots({ base, bare, field, regions: request.list, layers })
   const output = ctx.createImageData(width, height)
   output.data.set(result.rgba)
   ctx.putImageData(output, 0, 0)

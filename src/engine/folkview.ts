@@ -113,12 +113,11 @@ export function clothBody (body: readonly THREE.SkinnedMesh[]): ClothBody {
 export interface DressedLayer { id: string, slots: ClothSlot[], url: string, cut?: ClothCut, mask?: string }
 export interface DressedView { skin: string | null, bare: string | null, previewBare: boolean, layers: DressedLayer[], height: number, long?: boolean }
 
-/** Composite selected slots in a worker; a cut uses the bare base where available. */
+/** Composite selected slots in a worker; cuts reveal bare only in the affected slot's zone. */
 export async function showDressed (body: readonly THREE.SkinnedMesh[], view: DressedView): Promise<void> {
   const first = body[0]
   if (first === undefined) return
-  const needBare = view.previewBare || view.layers.some(l => l.cut !== undefined)
-  const baseUrl = needBare && view.bare !== null ? view.bare : view.skin
+  const baseUrl = view.previewBare && view.bare !== null ? view.bare : view.skin
   if (view.layers.length === 0) { await showSkin(body, baseUrl, null, view.long === true); return }
   const turn = (turns.get(first) ?? 0) + 1
   turns.set(first, turn)
@@ -127,7 +126,7 @@ export async function showDressed (body: readonly THREE.SkinnedMesh[], view: Dre
   const ownImage = ownMap?.image as Picture | undefined
   if (baseUrl === null && ownImage === undefined) throw new Error('Body has no base texture')
   const bodyKey = body.map(m => `${m.geometry.uuid}:${m.bindMatrix.toArray().join(',')}`).join('|')
-  const key = JSON.stringify({ base: baseUrl ?? `own:${ownMap!.uuid}`, bodyKey, height: view.height, layers: view.layers })
+  const key = JSON.stringify({ base: baseUrl ?? `own:${ownMap!.uuid}`, bare: view.bare, bodyKey, height: view.height, layers: view.layers })
   const tex = await textures.load(key, async () => {
     const data = clothBody(body)
     const base = baseUrl ?? await createImageBitmap(ownImage!)
@@ -138,7 +137,7 @@ export async function showDressed (body: readonly THREE.SkinnedMesh[], view: Dre
         if (event.data.error !== undefined) { worker.terminate(); reject(new Error(event.data.error)) }
         else if (event.data.bitmap !== undefined) { worker.terminate(); resolve(event.data.bitmap) }
       }
-      try { worker.postMessage({ kind: 'compose', base, layers: view.layers, geometry: data.geometry, regions: data.regions, height: view.height }, typeof base === 'string' ? [] : [base]) }
+      try { worker.postMessage({ kind: 'compose', base, bare: view.bare, layers: view.layers, geometry: data.geometry, regions: data.regions, list: data.list, height: view.height }, typeof base === 'string' ? [] : [base]) }
       catch (error) { worker.terminate(); reject(error) }
     })
     return glTexture(new THREE.Texture(image))
