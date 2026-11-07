@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Character, Pool, PoolItem, UnitKind } from '../../model/types.ts'
-  import { kindsOf, poolsOf } from '../../model/folk.ts'
+  import { clothOf, kindsOf, poolsOf } from '../../model/folk.ts'
   import { app } from '../../state/app.svelte.ts'
   import Button from '../../ui/Button.svelte'
   import Note from '../../ui/Note.svelte'
@@ -20,7 +20,7 @@
   }
   function candidates (pool: Pool): Array<{ ref: string, name: string }> {
     if (pool.kind === 'skin') return (character.look.skins ?? []).map(s => ({ ref: s.name, name: s.name }))
-    if (pool.kind === 'cloth') return (character.look.cloth ?? []).filter(l => !pool.slot || l.slots.includes(pool.slot)).map(l => ({ ref: l.id, name: l.name }))
+    if (pool.kind === 'cloth') return clothOf(character).filter(l => !pool.slot || l.slots.includes(pool.slot)).map(l => ({ ref: l.id, name: l.name }))
     return character.gear.filter(g => pool.kind === 'accessory' ? g.role !== 'hair' && g.role !== 'beard' : g.role === pool.kind).map(g => ({ ref: g.id, name: g.name }))
   }
   function shared (pool: Pool): string[] {
