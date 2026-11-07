@@ -24,8 +24,5 @@
     "src/**/*",
     "server/**/*",
     "vite.config.ts"
-  ],
-  "exclude": [
-    "src/engine/vendor/ViewHelper.ts"
   ]
 }

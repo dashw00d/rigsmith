@@ -2,8 +2,8 @@
 // code must match bit for bit (fit.test.ts): the game export and the viewer's worker run the new one.
 /* eslint-disable */
 import * as THREE from 'three'
-import type { SkinPolicy } from '../../model/types.ts'
-import { regionsOf, type Regions } from '../regions.ts'
+import type { SkinPolicy } from '../../src/model/types.ts'
+import { regionsOf, type Regions } from '../../src/engine/regions.ts'
 
 const ALLOWED: Record<SkinPolicy, RegExp | null> = {
   body: null,

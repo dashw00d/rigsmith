@@ -4,7 +4,7 @@ import type { SkinPolicy } from '../../model/types.ts'
 import { bodyCore, bodySurface, computeWeights, coveredVertices, hideBodyUnder, meshCore, regionsHidden, type BodyView, type Worn } from '../garments.ts'
 import { decodeDerived, derive, derivedName, encodeDerived, type DerivedStore } from './derive.ts'
 import { meshesKey, TriangleGrid } from './fit.ts'
-import { oldBodySurface, oldComputeWeights, oldCoveredVertices } from './fit.reference.ts'
+import { oldBodySurface, oldComputeWeights, oldCoveredVertices } from '../../../tests/support/fit.reference.ts'
 
 const BONES = ['Hips', 'Spine', 'Spine1', 'Neck', 'Head', 'LeftUpLeg', 'RightUpLeg', 'LeftLeg', 'RightLeg', 'LeftArm', 'RightArm']
 const AT: Record<string, [number, number, number]> = {
