@@ -4,7 +4,7 @@ import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { WORKSPACE, readJson } from '../store.ts'
 import type { Character } from '../../src/model/types.ts'
-import { readState } from './state.ts'
+import { readState, statusOf } from './state.ts'
 
 export type PartType = 'piece' | 'hair' | 'beard' | 'clothes' | 'skin'
 export interface IncomingPart {
@@ -85,19 +85,20 @@ export async function readPackage (dir: string, options: { staging?: boolean } =
 }
 export async function listIncoming (character?: Character | null): Promise<{ packages: PackageView[], pending: number }> {
   const root = await incomingDir(); const state = await readState(); const packages: PackageView[] = []
+  const journals = new Map<string, ReturnType<typeof import('../journal.ts').readJournal>>()
   const names = await readdir(root, { withFileTypes: true }).catch(() => [])
   for (const entry of names) {
     if (!entry.isDirectory() || !ID.test(entry.name)) continue
     const dir = path.join(root, entry.name)
     try {
       const { manifest, errors } = await readPackage(dir)
-      const parts = manifest.parts.map((rawPart, i): PartView => {
+      const parts = await Promise.all(manifest.parts.map(async (rawPart, i): Promise<PartView> => {
         const part = rawPart && typeof rawPart === 'object' ? rawPart : { id: `invalid-${i}`, type: 'piece' as const, name: 'Invalid part', file: '', sha256: '' }
         const record = state[`${entry.name}/${part.id}`]
-        const status = record?.sha === part.sha256 ? record.status : 'pending'
+        const status = await statusOf(record, part.sha256, journals)
         const exists = part.from !== undefined && character?.gear.some(g => g.from === part.from)
         return { ...part, status, effect: status === 'accepted' ? 'same' : exists ? 'update' : 'new', ...(errors[i] ? { damaged: errors[i] } : {}) }
-      })
+      }))
       packages.push({ id: entry.name, at: typeof manifest.at === 'string' ? manifest.at : '', tool: typeof manifest.tool === 'string' ? manifest.tool : '', parts })
     } catch { /* no manifest or unreadable package is not published */ }
   }

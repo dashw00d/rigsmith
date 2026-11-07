@@ -42,4 +42,11 @@ it('ignores partial writes and serializes bursts, emitting only changed counts',
   await vi.waitFor(() => expect(mock.active).toBe(0))
   expect(mock.calls).toBe(3)
   expect(messages).toEqual([1, 2])
+  mock.pending = 1
+  events.emit('character', { entry: { what: 'undo' } })
+  await vi.advanceTimersByTimeAsync(150)
+  expect(mock.calls).toBe(4)
+  mock.releases.shift()!()
+  await vi.waitFor(() => expect(mock.active).toBe(0))
+  expect(messages).toEqual([1, 2, 1])
 })

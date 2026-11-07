@@ -4,7 +4,7 @@ import path from 'node:path'
 import { by, CONTENT_TYPES, HttpError, readJsonBody, route, send } from '../http.ts'
 import { getCharacter, events, withFiles } from '../store.ts'
 import { incomingDir, listIncoming, safeFile } from '../incoming/read.ts'
-import { changeState } from '../incoming/state.ts'
+import { changeState, statusOf } from '../incoming/state.ts'
 import { startIncomingWatch } from '../incoming/watch.ts'
 import { enqueue } from '../jobs.ts'
 import { ingest, validateAccept, type AcceptRequest } from '../incoming/ingest.ts'
@@ -33,10 +33,10 @@ for (const action of ['reject', 'restore'] as const) route('POST', new RegExp(`^
   if (!pkg) throw new HttpError(404, 'No such package')
   const parts = body.parts.map(id => pkg.parts.find(p => p.id === id))
   if (parts.some(p => p === undefined)) throw new HttpError(404, 'No such part')
-  await changeState(state => {
+  await changeState(async state => {
     for (const part of parts) if (part) {
       const record = state[`${pkg.id}/${part.id}`]
-      const status = record?.sha === part.sha256 ? record.status : 'pending'
+      const status = await statusOf(record, part.sha256)
       if (status !== (action === 'reject' ? 'pending' : 'rejected')) throw new HttpError(409, `${part.id}: already ${status}`)
     }
     for (const part of parts) if (part) {

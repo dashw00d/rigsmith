@@ -21,13 +21,13 @@ export interface AcceptRequest { package: string, parts: string[], character: st
 export interface IngestSink {
   character: (id: string) => Promise<Character | null>
   upload: (id: string, bytes: Buffer, name: string, from: string | undefined, signal?: AbortSignal) => Promise<Gear>
-  commands: (id: string, make: (c: Character) => Command[], by?: string) => Promise<void>
+  commands: (id: string, make: (c: Character) => Command[], by?: string) => Promise<number | undefined>
   placement: (c: Character) => Promise<Placement>
 }
 const sink: IngestSink = {
   character: getCharacter,
   upload: uploadPiece,
-  commands: async (id, make, by) => { await runCommands(id, make, { by, what: 'incoming.accept' }) },
+  commands: async (id, make, by) => (await runCommands(id, make, { by, what: 'incoming.accept' })).entry?.seq,
   placement: async c => {
     const worn = c.gear.find(g => g.attach.kind === 'skin' && g.from?.startsWith('emberhold:'))
     if (worn?.attach.kind === 'skin') return structuredClone(worn.attach.place)
@@ -157,9 +157,10 @@ export async function ingest (req: AcceptRequest, o: { by?: string, signal?: Abo
     const needsPlace = staged.some(({ part, gear }) => gear && !req.replace?.[part.id] && !(part.from && c.gear.some(g => g.from === part.from)))
     const place = needsPlace ? await impl.placement(c) : null
     o.signal?.throwIfAborted()
-    await impl.commands(c.id, now => commandsFor(now, staged, manifest, req, place), o.by)
+    const seq = await impl.commands(c.id, now => commandsFor(now, staged, manifest, req, place), o.by)
     committed = true
-    await changeState(state => { for (const { part, gear } of staged) state[`${req.package}/${part.id}`] = { status: 'accepted', sha: part.sha256, at: new Date().toISOString(), character: c.id, ...(gear ? { gear: req.replace?.[part.id] ?? c.gear.find(g => part.from && g.from === part.from)?.id ?? gear.id } : {}) } })
+    if (seq === undefined) throw new Error('Incoming acceptance produced no journal entry')
+    await changeState(state => { for (const { part, gear } of staged) state[`${req.package}/${part.id}`] = { status: 'accepted', sha: part.sha256, at: new Date().toISOString(), character: c.id, seq, ...(gear ? { gear: req.replace?.[part.id] ?? c.gear.find(g => part.from && g.from === part.from)?.id ?? gear.id } : {}) } })
     for (const dir of temporary) await rm(dir, { recursive: true, force: true }).catch(() => {})
     events.emit('incoming', { pending: (await listIncoming()).pending })
   } finally {

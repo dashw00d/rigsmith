@@ -42,7 +42,7 @@ function fake (fail = false) {
       await mkdir(dir, { recursive: true }); await writeFile(path.join(dir, 'model.glb'), 'model')
       return makeGear({ id, name: name.replace(/\.glb$/, ''), from, model: `garments/${id}/model.glb`, attach: { kind: 'skin', policy: 'body', place } })
     },
-    commands: async (id: string, make: (c: Character) => Command[]) => { await runCommands(id, c => { const batch = make(c); batches.push(batch); return batch }, { what: 'incoming.accept' }) },
+    commands: async (id: string, make: (c: Character) => Command[]) => { const result = await runCommands(id, c => { const batch = make(c); batches.push(batch); return batch }, { what: 'incoming.accept' }); return result.entry?.seq },
     placement: async () => place,
   }
 }
@@ -57,9 +57,13 @@ it('adds a tagged piece to a set and copies clothes and skin in one undoable ent
   expect((await readFile(path.join(ws, 'characters', c.id, next.look.skins![0].file))).subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
   expect((await readFile(path.join(ws, 'characters', c.id, next.look.clothes![0].file))).subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
   expect((await readJournal(c.id)).filter(e => e.what === 'incoming.accept')).toHaveLength(1)
-  await undo(c.id)
+  expect((await listIncoming()).packages.find(p => p.id === 'add')?.parts.map(p => p.status)).toEqual(['accepted', 'accepted', 'accepted'])
+  const undoneEntry = await undo(c.id)
   const undone = (await getCharacter(c.id))!
   expect(undone.gear).toHaveLength(0); expect(undone.look.skins).toBeUndefined(); expect(undone.look.clothes).toBeUndefined()
+  expect((await listIncoming()).packages.find(p => p.id === 'add')?.parts.map(p => p.status)).toEqual(['pending', 'pending', 'pending'])
+  await undo(c.id, undoneEntry.entry!.seq)
+  expect((await listIncoming()).packages.find(p => p.id === 'add')?.parts.map(p => p.status)).toEqual(['accepted', 'accepted', 'accepted'])
 })
 it('replacement must undo its model change', async () => {
   const old = makeGear({ id: 'old', name: 'old', from: 'emberhold:gear/coat', model: 'garments/old/model.glb', attach: { kind: 'skin', policy: 'lower', place } })
