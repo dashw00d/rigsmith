@@ -3,9 +3,10 @@
   // game units in src/state/ship.svelte.ts), the activity
   // button (jobs running, the server connection; opens the activity drawer) and the settings.
   import { onMount, tick } from 'svelte'
-  import { Activity, Check, LoaderCircle, Settings2 } from '@lucide/svelte'
+  import { Activity, Check, Inbox, LoaderCircle, Settings2 } from '@lucide/svelte'
   import { app, STEPS, type Step } from '../state/app.svelte.ts'
   import { ship } from '../state/ship.svelte.ts'
+  import { incoming } from '../state/incoming.svelte.ts'
   import { tooltip } from '../ui/tooltip.ts'
   import SettingsPopover from './SettingsPopover.svelte'
   import { stepMark, type ShipFacts, type StepMark } from './status.ts'
@@ -24,6 +25,8 @@
     if (nav !== null) observer.observe(nav)
     return () => { observer.disconnect() }
   })
+  onMount(() => incoming.start())
+  $effect(() => { void app.selectedId; void incoming.refresh() })
 
   const job = $derived(app.selected === null ? undefined : app.jobFor(app.selected.id))
 
@@ -83,6 +86,9 @@
   </nav>
 
   <div class="tools">
+    <button data-testid="bar-incoming" class="chip" class:open={app.drawer === 'incoming'} aria-label="Incoming: {incoming.pending} pending" aria-pressed={app.drawer === 'incoming'} onclick={() => { app.toggleDrawer('incoming') }} use:tooltip={'Incoming deliveries (I)'}>
+      <Inbox size={14} /><span>Incoming</span><span class="failed" data-testid="incoming-count">{incoming.pending}</span>
+    </button>
     <button data-testid="bar-activity" class="chip" class:busy={running > 0} class:open={app.drawer === 'activity'} aria-pressed={app.drawer === 'activity'}
       aria-label="Activity: {running > 0 ? `${running} running` : app.connected ? 'connected' : 'offline'}"
       onclick={() => { app.toggleDrawer('activity') }}

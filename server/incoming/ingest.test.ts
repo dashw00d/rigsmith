@@ -58,10 +58,13 @@ it('adds a tagged piece to a set and copies clothes and skin in one undoable ent
   expect((await readFile(path.join(ws, 'characters', c.id, next.look.clothes![0].file))).subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
   expect((await readJournal(c.id)).filter(e => e.what === 'incoming.accept')).toHaveLength(1)
   expect((await listIncoming()).packages.find(p => p.id === 'add')?.parts.map(p => p.status)).toEqual(['accepted', 'accepted', 'accepted'])
+  expect((await listIncoming(next)).packages.find(p => p.id === 'add')?.parts.find(p => p.id === 'coat')?.acceptedGear).toBe('new1')
+  expect((await listIncoming(body('other'))).packages.find(p => p.id === 'add')?.parts.find(p => p.id === 'coat')?.acceptedGear).toBeUndefined()
   const undoneEntry = await undo(c.id)
   const undone = (await getCharacter(c.id))!
   expect(undone.gear).toHaveLength(0); expect(undone.look.skins).toBeUndefined(); expect(undone.look.clothes).toBeUndefined()
   expect((await listIncoming()).packages.find(p => p.id === 'add')?.parts.map(p => p.status)).toEqual(['pending', 'pending', 'pending'])
+  expect((await listIncoming(undone)).packages.find(p => p.id === 'add')?.parts.find(p => p.id === 'coat')?.acceptedGear).toBeUndefined()
   await undo(c.id, undoneEntry.entry!.seq)
   expect((await listIncoming()).packages.find(p => p.id === 'add')?.parts.map(p => p.status)).toEqual(['accepted', 'accepted', 'accepted'])
 })
@@ -78,6 +81,24 @@ it('replacement must undo its model change', async () => {
   expect((await getCharacter(c.id))!.gear[0]).toMatchObject({ model: old.model, attach: old.attach })
   await undo(c.id, undone.entry!.seq)
   expect((await getCharacter(c.id))!.gear[0]).toMatchObject({ model: next.gear[0].model, attach: old.attach })
+})
+it.fails('replacement disables old painted weights and undo restores them with the old model', async () => {
+  const old = makeGear({ id: 'old', name: 'old', painted: 2, from: 'emberhold:gear/painted', model: 'garments/old/model.glb', attach: { kind: 'skin', policy: 'lower', place } })
+  const c = body('test-painted-update', [old]); await putCharacter(c)
+  const dir = path.join(ws, 'characters', c.id, 'garments', old.id)
+  await mkdir(dir, { recursive: true })
+  const weights = '[{"mesh":0,"vertex":1,"weights":[["Hips",1]]}]'
+  await writeFile(path.join(dir, 'weights.json'), weights)
+  await delivery('painted-update', [{ id: 'coat', type: 'piece', from: old.from }])
+  await ingest({ package: 'painted-update', parts: ['coat'], character: c.id }, { sink: fake() })
+  const next = (await getCharacter(c.id))!.gear[0]
+  expect(next.painted ?? 0).toBe(0)
+  expect(next.model).not.toBe(old.model)
+  const undone = await undo(c.id)
+  expect((await getCharacter(c.id))!.gear[0]).toMatchObject({ model: old.model, painted: 2 })
+  expect(await readFile(path.join(dir, 'weights.json'), 'utf8')).toBe(weights)
+  await undo(c.id, undone.entry!.seq)
+  expect((await getCharacter(c.id))!.gear[0].painted ?? 0).toBe(0)
 })
 it('leaves a failed import pending and does not journal it', async () => {
   const c = body('test-fail'); await putCharacter(c); await delivery('fail', [{ id: 'coat', type: 'piece' }])

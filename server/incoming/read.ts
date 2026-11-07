@@ -13,7 +13,7 @@ export interface IncomingPart {
   swapSet?: string, hair?: string, slots?: string[]
 }
 export interface IncomingManifest { schema: number, id: string, at: string, tool: string, space: string, parts: IncomingPart[], sets?: Array<{ id: string, name: string, pieces: string[], tags?: string[] }> }
-export interface PartView extends IncomingPart { status: 'pending' | 'accepted' | 'rejected', effect: 'new' | 'update' | 'same', damaged?: string }
+export interface PartView extends IncomingPart { status: 'pending' | 'accepted' | 'rejected', effect: 'new' | 'update' | 'same', damaged?: string, acceptedGear?: string }
 export interface PackageView { id: string, at: string, tool: string, parts: PartView[] }
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
 const MAX = 200 * 1024 * 1024
@@ -39,7 +39,7 @@ export async function safeFile (root: string, relative: string): Promise<string>
 const hashes = new Map<string, { signature: string, result: Promise<string> }>()
 async function sha (file: string): Promise<string> {
   const info = await lstat(file)
-  const signature = `${info.size}:${info.mtimeMs}:${info.ino}`
+  const signature = `${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.ino}`
   const cached = hashes.get(file)
   if (cached?.signature === signature) return await cached.result
   const result = hashFile(file)
@@ -99,7 +99,8 @@ export async function listIncoming (character?: Character | null): Promise<{ pac
         const exists = (part.from !== undefined && character?.gear.some(g => g.from === part.from)) ||
           (part.type === 'skin' && character?.look.skins?.some(s => s.name === part.name)) ||
           (part.type === 'clothes' && character?.look.clothes?.some(s => s.name === part.name))
-        return { ...part, status, effect: status === 'accepted' ? 'same' : exists ? 'update' : 'new', ...(errors[i] ? { damaged: errors[i] } : {}) }
+        const acceptedGear = status === 'accepted' && record?.character === character?.id && record.gear && character?.gear.some(g => g.id === record.gear) ? record.gear : undefined
+        return { ...part, status, effect: status === 'accepted' ? 'same' : exists ? 'update' : 'new', ...(errors[i] ? { damaged: errors[i] } : {}), acceptedGear }
       }))
       packages.push({ id: entry.name, at: typeof manifest.at === 'string' ? manifest.at : '', tool: typeof manifest.tool === 'string' ? manifest.tool : '', parts })
     } catch { /* no manifest or unreadable package is not published */ }
