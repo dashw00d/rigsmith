@@ -20,7 +20,12 @@ export const scenarios: Scenario[] = [
     times: 2,
   },
   { name: 'skin: the next one', kind: 'click', action: `${skins}; if (skins.length > 0) r.dress.setSkin(c, skins[(at + 1) % skins.length])`, times: 4 },
-  { name: 'Randomize', kind: 'click', action: 'r.wardrobe.randomize(c)', times: 6 },
+  {
+    name: 'Randomize', kind: 'click',
+    // The harness adds wardrobe to the dev hook; before integration, import the already-loaded UI module once.
+    setup: 'r.wardrobe ??= (await import("/app/gear/wardrobe.svelte.ts")).wardrobe',
+    action: 'r.wardrobe.randomize(c)', times: 6,
+  },
   { name: 'step: Motion and back to Gear', kind: 'click', action: "await r.app.go('motion'); await new Promise(res => setTimeout(res, 300)); await r.app.go('gear')", times: 2 },
   {
     name: 'another character and back',
