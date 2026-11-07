@@ -61,6 +61,13 @@ describe('the dress', () => {
     expect(resolve(c, { hair: 'axe' }).hair).toBe('h1')
   })
 
+  it('keeps valid per-slot layer and bare preview state, dropping stale layer ids', () => {
+    const c = folk()
+    c.look.cloth = [{ id: 'shorts', name: 'Shorts', file: 'shorts.png', slots: ['bottom'] }]
+    expect(resolve(c, { layers: { bottom: 'shorts', top: 'removed', over: null }, bare: true })).toMatchObject({ layers: { bottom: 'shorts', over: null }, bare: true })
+    expect(c.look.clothing).toBe('long_blue')
+  })
+
   it('shows a set\'s pieces with their set, the hair and beard picked, the rest as the document has them', () => {
     const c = folk()
     const d = resolve(c, { outfit: 'hat_fur', hair: 'h2' })
@@ -110,6 +117,22 @@ describe('the dress', () => {
 })
 
 describe('randomize', () => {
+  it('retains every layer the folk picker chose in its occupied slots', () => {
+    const c = folk()
+    c.look.cloth = [
+      { id: 'bottom', name: 'Bottom', file: 'bottom.png', slots: ['bottom'] },
+      { id: 'top', name: 'Top', file: 'top.png', slots: ['top', 'over'] },
+    ]
+    c.folk = { sets: [], kinds: [], stances: [], pools: [
+      { id: 'bottoms', name: 'Bottoms', kind: 'cloth', slot: 'bottom', items: [{ ref: 'bottom' }] },
+      { id: 'tops', name: 'Tops', kind: 'cloth', slot: 'top', items: [{ ref: 'top' }] },
+    ] }
+    const world = worldOf(c)
+    const picked = pick(world, 42)
+    const expected = Object.fromEntries(picked.layers.flatMap(id => world.layers.find(l => l.id === id)!.slots.map(slot => [slot, id])))
+    expect(randomize(c, undefined, 42, world).layers).toEqual(expected)
+    expect(picked.layers.length).toBeGreaterThan(0)
+  })
   it('uses the same pick engine and fixed fields as the Wardrobe', () => {
     const c = folk()
     const d = { skin: 'asha', locks: ['skin' as const] }
