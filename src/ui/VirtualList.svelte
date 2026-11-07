@@ -3,7 +3,7 @@
 
   interface Props {
     items: readonly T[]
-    rowHeight: number
+    rowHeight: number | ((width: number, columns: number) => number)
     /** Zero for a single column; otherwise the minimum width of a grid card. */
     minColumnWidth?: number
     headerHeight?: number
@@ -11,12 +11,13 @@
     children: Snippet<[T[], number]>
     testid?: string
   }
-  let { items, rowHeight, minColumnWidth = 0, headerHeight = rowHeight, isHeader = () => false, children, testid }: Props = $props()
+  let { items, rowHeight, minColumnWidth = 0, headerHeight, isHeader = () => false, children, testid }: Props = $props()
   let width = $state(0)
   let height = $state(0)
   let scrollTop = $state(0)
   let container: HTMLDivElement
   const columns = $derived(minColumnWidth > 0 ? Math.max(1, Math.floor(width / minColumnWidth)) : 1)
+  const measuredRowHeight = $derived(typeof rowHeight === 'function' ? rowHeight(width, columns) : rowHeight)
   const rows = $derived.by(() => {
     const result: T[][] = []
     let pending: T[] = []
@@ -35,7 +36,7 @@
   })
   const offsets = $derived.by(() => {
     const out = [0]
-    for (const row of rows) out.push(out[out.length - 1] + (isHeader(row[0]) ? headerHeight : rowHeight))
+    for (const row of rows) out.push(out[out.length - 1] + (isHeader(row[0]) ? headerHeight ?? measuredRowHeight : measuredRowHeight))
     return out
   })
   const total = $derived(offsets[offsets.length - 1])

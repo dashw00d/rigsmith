@@ -34,3 +34,16 @@ it('packs grid cells while keeping headers on their own row', () => {
   expect(target.querySelectorAll('[data-columns]')[2].getAttribute('data-columns')).toBe('3')
   expect((target.querySelector('[data-columns]')?.parentElement as HTMLElement).style.height).toBe('30px')
 })
+
+it('sizes grid rows from measured column width', () => {
+  vi.stubGlobal('ResizeObserver', class { observe () {} disconnect () {} })
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(548)
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(500)
+  const target = document.createElement('div'); document.body.append(target)
+  const snippet = createRawSnippet<[unknown[], number]>(() => ({ render: () => '<span>card</span>' }))
+  instance = mount(VirtualList, { target, props: { items: [1, 2, 3, 4], rowHeight: (width: number, columns: number) => Math.ceil((width - 8 - 4 * (columns - 1)) / columns) + 80, minColumnWidth: 145, children: snippet } })
+  flushSync()
+  const rows = target.querySelectorAll('.row')
+  expect((rows[0] as HTMLElement).style.height).toBe('258px')
+  expect((rows[1] as HTMLElement).style.top).toBe('258px')
+})

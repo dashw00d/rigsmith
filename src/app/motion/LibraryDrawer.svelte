@@ -74,7 +74,7 @@
       {#if slots.armed}<Note tone="info">Filling {slots.armed.name}: press a clip's button.</Note>{/if}
       {#if library.error}<Note tone="error">{library.error}</Note>{/if}
     </div>
-    <VirtualList items={rows} rowHeight={options.view === 'list' ? 30 : 200} headerHeight={30} minColumnWidth={options.view === 'grid' ? 145 : 0} isHeader={header} testid="lib-scroll">
+    <VirtualList items={rows} rowHeight={options.view === 'list' ? 30 : (width, columns) => Math.ceil((width - 8 - 4 * (columns - 1)) / columns) + 80} headerHeight={30} minColumnWidth={options.view === 'grid' ? 145 : 0} isHeader={header} testid="lib-scroll">
       {#snippet children(group, columns)}
         {#if 'group' in group[0]}
           {@const h = group[0]}
