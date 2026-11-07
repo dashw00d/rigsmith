@@ -7,6 +7,7 @@
   import { dress } from '../../state/dress.svelte.ts'
   import { cutGroup, cutLimbGroups, dropRegion, groupRule } from './clothdraft.ts'
   import { previewCut } from './clothpreview.ts'
+  import CutMask from './CutMask.svelte'
 
   let { character, layer, regions }: { character: Character, layer: ClothLayer, regions: RegionInfo[] } = $props()
   const groups = $derived(cutLimbGroups(regions))
@@ -62,6 +63,7 @@
     </details>
   {/if}
   {#if layer.trim}<details><summary>Trim mask</summary><img src={assets.asset(character, layer.trim)} alt="Trim mask for {layer.name}" /></details>{/if}
+  <CutMask {character} {layer} />
 </div>
 
 <style>
