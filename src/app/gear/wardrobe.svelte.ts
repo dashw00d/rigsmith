@@ -5,7 +5,6 @@
 //
 // The dress state has a setter per slot and none for a whole dress: dressUp sets them in turn (the outfit first, as
 // it takes off what it leaves no room for). A hover preview keeps the dress before it and puts it back on leave.
-import { SvelteMap } from 'svelte/reactivity'
 import { untrack } from 'svelte'
 import type { Command } from '../../model/command-types.ts'
 import type { Character } from '../../state/api.ts'
@@ -61,7 +60,10 @@ const setter: Record<Exclude<DressField, 'outfit'>, (c: Character, v: string | n
 }
 
 class WardrobeState {
-  private readonly views = new SvelteMap<string, ViewState>()
+  /** Per character, what is remembered (read from storage the first time it is asked for: a plain map, so reading it
+   * in a template writes no state; `beat` says when any changed). */
+  private readonly views = new Map<string, ViewState>()
+  private beat = $state(0)
   /** The drawer's filter (per page, not remembered: a search is for now). */
   filter = $state<Filter>({ ...NO_FILTER })
   /** The pieces list's selection (gear ids) and its anchor for Shift. */
@@ -73,18 +75,17 @@ class WardrobeState {
   crowdOpen = $state(false)
 
   view (id: string): ViewState {
+    void this.beat
     let v = this.views.get(id)
-    if (v === undefined) {
-      v = read(id)
-      untrack(() => { this.views.set(id, v!) })
-    }
+    if (v === undefined) { v = read(id); this.views.set(id, v) }
     return v
   }
 
   update (id: string, patch: Partial<ViewState>): void {
-    const v = { ...untrack(() => this.view(id)), ...patch }
+    const v = { ...(this.views.get(id) ?? read(id)), ...patch }
     this.views.set(id, v)
     write(id, v)
+    this.beat++
   }
 
   tab (id: string): Tab { return this.view(id).tab ?? 'sets' }
