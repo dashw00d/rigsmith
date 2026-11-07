@@ -1,4 +1,4 @@
-import { setsWith, type Folkish } from '../../model/folk.ts'
+import { setsOf, setsWith, type Folkish } from '../../model/folk.ts'
 import type { Gear } from '../../model/types.ts'
 import type { MenuItem } from '../../ui/contextmenu.ts'
 
@@ -29,4 +29,11 @@ export function buildGearMenu (o: MenuOptions): MenuItem[] {
     { label: 'Tag…', run: o.tag },
     { label: 'Remove', danger: true, run: o.remove },
   ]
+}
+
+/** Add without moving the piece out of other sets. */
+export function addPieceToSet (c: Folkish, setId: string, id: string): { type: 'folk.set.pieces', id: string, pieces: string[] } | null {
+  const set = setsOf(c).find(s => s.id === setId)
+  if (set === undefined || set.pieces.includes(id)) return null
+  return { type: 'folk.set.pieces', id: set.id, pieces: [...set.pieces, id] }
 }

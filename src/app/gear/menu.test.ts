@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { makeCharacter, makeGear } from '../../model/fixtures.ts'
-import { buildGearMenu, gearListMatches } from './menu.ts'
+import { addPieceToSet, buildGearMenu, gearListMatches } from './menu.ts'
 
 describe('gear list tools', () => {
   it('searches piece names, set names and tags without matching other pieces', () => {
@@ -8,6 +8,7 @@ describe('gear list tools', () => {
     expect(gearListMatches(c, c.gear[0], 'norse')).toBe(true)
     expect(gearListMatches(c, c.gear[0], 'HEAVY')).toBe(true)
     expect(gearListMatches(c, c.gear[1], 'norse')).toBe(false)
+    expect(addPieceToSet(c, 'missing', 'g2')).toBeNull()
   })
   it('builds a show action and an add-to-set submenu without duplicating membership', () => {
     const toggle = vi.fn()

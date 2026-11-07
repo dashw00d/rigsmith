@@ -4,8 +4,8 @@
 
   let { items, x, y, close }: { items: MenuItem[], x: number, y: number, close: () => void } = $props()
   let root: HTMLDivElement
-  let left = $state(x)
-  let top = $state(y)
+  let left = $state(0)
+  let top = $state(0)
   let expanded = $state.raw<MenuItem[]>([])
 
   onMount(() => {
@@ -74,7 +74,7 @@
   {/each}
 {/snippet}
 
-<div bind:this={root} class="menu" class:flip={left + 400 > window.innerWidth} role="menu" aria-label="Actions" style:left="{left}px" style:top="{top}px" onkeydown={key}>
+<div bind:this={root} class="menu" class:flip={left + 400 > window.innerWidth} role="menu" tabindex="-1" aria-label="Actions" style:left="{left}px" style:top="{top}px" onkeydown={key}>
   {@render entries(items)}
 </div>
 
