@@ -22,10 +22,9 @@ export function clipSlots (c: Character, stanceId: string | null, clip: string):
 /** Show the set's pieces and hide pieces of other sets, leaving unrelated gear alone. */
 export function dressedCharacter (c: Character, setId: string | null): Character {
   const copy = structuredClone(c)
-  if (setId === null) return copy
   const sets = folkOf(c).sets; const set = sets.find(s => s.id === setId)
-  if (set === undefined) return copy
-  const assigned = new Set(sets.flatMap(s => s.pieces)); const shown = new Set(set.pieces)
+  if (setId !== null && set === undefined) return copy
+  const assigned = new Set(sets.flatMap(s => s.pieces)); const shown = new Set(set?.pieces ?? [])
   for (const g of copy.gear) if (assigned.has(g.id)) g.hidden = !shown.has(g.id)
   return copy
 }

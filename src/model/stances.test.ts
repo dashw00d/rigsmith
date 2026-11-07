@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { makeCharacter, makeSlot } from './fixtures.ts'
-import { clipSlots } from './stances.ts'
+import { makeCharacter, makeGear, makeSlot } from './fixtures.ts'
+import { clipSlots, dressedCharacter } from './stances.ts'
 
 describe('stance clip slots', () => {
   it('uses ordered overrides and falls back to the base and numbered variants', () => {
@@ -10,4 +10,14 @@ describe('stance clip slots', () => {
     expect(clipSlots(c, null, 'Idle').map(x => x.id)).toEqual(['base', 'v2', 'v3'])
     expect(clipSlots(c, 'shield', 'Missing')).toEqual([])
   })
+})
+
+it('previews no set without hiding gear outside sets', () => {
+  const c = makeCharacter({ gear: [makeGear({ id: 'shield' }), makeGear({ id: 'spear' }), makeGear({ id: 'amulet' })] })
+  c.folk = { sets: [{ id: 'guard', name: 'Guard', pieces: ['shield'], tags: [], grants: [] }, { id: 'scout', name: 'Scout', pieces: ['spear'], tags: [], grants: [] }], pools: [], kinds: [], stances: [] }
+  const none = dressedCharacter(c, null)
+  expect(none.gear.map(g => g.hidden ?? false)).toEqual([true, true, false])
+  const guard = dressedCharacter(c, 'guard')
+  expect(guard.gear.map(g => g.hidden ?? false)).toEqual([false, true, false])
+  expect(c.gear.every(g => !g.hidden)).toBe(true)
 })
