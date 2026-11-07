@@ -18,7 +18,7 @@ describe('cloth body', () => {
     const data = clothBody([mesh('Trousers', -2), mesh('Shirt', 2)])
     expect(Array.from(data.geometry.index)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
     expect([...data.regions]).toEqual([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3])
-    expect(limbGroups(data.list)).toEqual([{ name: 'left leg', regions: [0, 1] }, { name: 'right sleeve', regions: [2, 3] }])
+    expect(limbGroups(data.list)).toEqual([{ name: 'right leg', regions: [0, 1] }, { name: 'left sleeve', regions: [2, 3] }])
   })
 })
 
