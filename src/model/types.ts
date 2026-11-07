@@ -582,6 +582,16 @@ export interface Stance {
   overlay?: string
 }
 
+/** Where a cloth layer stops (ClothLayer.cut): per limb below a height, regions dropped whole, a painted mask. */
+export interface ClothCut {
+  /** Below `y` (body heights, soles 0) on these regions, with a feather (body heights) the layer fades over. */
+  below?: Array<{ regions: number[], y: number, feather: number }>
+  /** Regions it leaves bare whole. */
+  drop?: number[]
+  /** A painted mask (relative to the character folder): where it shows. */
+  mask?: string
+}
+
 /** A dynamic character's clothes layer: RGBA on the body's own UVs over the skin (alpha: coverage), filling one or
  * more slots of a unit's clothes. Clothes never hide body regions (only gear does). */
 export interface ClothLayer {
@@ -592,7 +602,7 @@ export interface ClothLayer {
   file: string
   /** Where it stops: per limb, below a height (regions, y in body heights, a feather), regions dropped whole, or a
    * painted mask (relative to the character folder). Shorts: a bottoms layer cut above the knee. */
-  cut?: { below?: Array<{ regions: number[], y: number, feather: number }>, drop?: number[], mask?: string }
+  cut?: ClothCut
   /** Where the clan colour goes (a mask relative to the character folder). */
   trim?: string
   /** Body shapes it needs on ('long_sleeve'). */

@@ -3,7 +3,7 @@
 // of each right after. Undo puts the before values back, unless a later write moved one of them on (a conflict).
 // Job-owned fields (source, files, status, the rig report, look.scan...) are no entities: undo never rolls them back.
 import { fnv1a, hex8 } from './ids.ts'
-import type { Character, Gear, SkinSection, UndoRecord } from './types.ts'
+import type { Character, ClothLayer, FolkSection, Gear, SkinSection, UndoRecord } from './types.ts'
 
 /** JSON with every object's keys sorted (undefined left out, as JSON does), so equal values read the same. */
 export function stableJson (v: unknown): string {
@@ -15,8 +15,23 @@ export function stableJson (v: unknown): string {
 
 export const hashOf = (v: unknown): string => hex8(fnv1a(stableJson(v ?? null)))
 
-const ORDERS = { gearOrder: 'gear', slotOrder: 'clips', layerOrder: 'layers' } as const
-const isOrder = (key: string): key is keyof typeof ORDERS => key in ORDERS
+type Item = { id: string }
+/** Each order entity's list: read, and written back (a folk list makes the section when it is missing). */
+const ORDERS: Record<string, { get: (c: Character) => Item[] | undefined, set: (c: Character, items: Item[]) => void }> = {
+  gearOrder: { get: c => c.gear, set: (c, xs) => { c.gear = xs as Gear[] } },
+  slotOrder: { get: c => c.clips, set: (c, xs) => { c.clips = xs as Character['clips'] } },
+  layerOrder: { get: c => c.look.layers, set: (c, xs) => { c.look.layers = xs as Character['look']['layers'] } },
+  clothOrder: { get: c => c.look.cloth, set: (c, xs) => { c.look.cloth = xs as ClothLayer[] } },
+  setOrder: { get: c => c.folk?.sets, set: (c, xs) => { folkOf(c).sets = xs as FolkSection['sets'] } },
+  poolOrder: { get: c => c.folk?.pools, set: (c, xs) => { folkOf(c).pools = xs as FolkSection['pools'] } },
+  kindOrder: { get: c => c.folk?.kinds, set: (c, xs) => { folkOf(c).kinds = xs as FolkSection['kinds'] } },
+  stanceOrder: { get: c => c.folk?.stances, set: (c, xs) => { folkOf(c).stances = xs as FolkSection['stances'] } },
+}
+const isOrder = (key: string): boolean => Object.hasOwn(ORDERS, key)
+
+/** A dynamic character's folk entities: entity kind -> its list in the section. */
+const FOLK = { set: 'sets', pool: 'pools', kind: 'kinds', stance: 'stances' } as const
+const folkOf = (c: Character): FolkSection => (c.folk ??= { sets: [], pools: [], kinds: [], stances: [] })
 
 /** What the gear's jobs write (an import's status and model, its painted weights): not part of its entity. */
 const GEAR_JOB_FIELDS = ['status', 'error', 'painted', 'model'] as const
@@ -43,6 +58,16 @@ export function entitiesOf (c: Character): Map<string, unknown> {
   for (const l of c.look.layers) m.set(`layer:${l.id}`, l)
   const { skins, skin, clothes, clothing } = c.look
   if (skins !== undefined || skin !== undefined || clothes !== undefined || clothing !== undefined) m.set('skins', { skins, skin, clothes, clothing })
+  if (c.look.cloth !== undefined) {
+    m.set('clothOrder', c.look.cloth.map(l => l.id))
+    for (const l of c.look.cloth) m.set(`cloth:${l.id}`, l)
+  }
+  if (c.folk !== undefined) {
+    for (const [kind, field] of Object.entries(FOLK)) {
+      m.set(`${kind}Order`, c.folk[field].map(x => x.id))
+      for (const x of c.folk[field]) m.set(`${kind}:${x.id}`, x)
+    }
+  }
   return m
 }
 
@@ -74,10 +99,10 @@ export function undoRecord (before: Character, after: Character): UndoRecord {
  * any added since in their current order. A gear piece still there keeps its job-owned fields as they are now. */
 export function restoreEntities (c: Character, undo: UndoRecord): Character {
   const out = structuredClone(c)
-  const orders: Array<{ key: keyof typeof ORDERS, ids: string[] }> = []
+  const orders: Array<{ key: string, ids: string[] }> = []
   for (const { key, before } of undo.entities) {
     const was = structuredClone(before)
-    if (isOrder(key)) { orders.push({ key, ids: was as string[] }); continue }
+    if (isOrder(key)) { orders.push({ key, ids: (was as string[] | null) ?? [] }); continue }
     const colon = key.indexOf(':')
     const kind = colon < 0 ? key : key.slice(0, colon)
     const itemId = key.slice(colon + 1)
@@ -119,20 +144,32 @@ export function restoreEntities (c: Character, undo: UndoRecord): Character {
       }
       case 'slot': out.clips = put(out.clips, itemId, was as Character['clips'][number] | null); break
       case 'layer': out.look.layers = put(out.look.layers, itemId, was as Character['look']['layers'][number] | null); break
+      case 'cloth': {
+        const next = put(out.look.cloth ?? [], itemId, was as ClothLayer | null)
+        if (next.length > 0 || out.look.cloth !== undefined) out.look.cloth = next
+        break
+      }
+      case 'set': case 'pool': case 'kind': case 'stance': {
+        const field = FOLK[kind]
+        const f = folkOf(out)
+        ;(f as unknown as Record<string, Item[]>)[field] = put(f[field] as Item[], itemId, was as Item | null)
+        break
+      }
       default: throw new Error(`Unknown entity ${key}`)
     }
   }
   for (const { key, ids } of orders) {
-    const field = ORDERS[key]
-    const items: Array<{ id: string }> = field === 'layers' ? out.look.layers : out[field]
+    const items = ORDERS[key].get(out) ?? []
     const byId = new Map(items.map(x => [x.id, x]))
     const old = ids.filter(i => byId.has(i))
     const kept = new Set(old)
     const merged = [...old.map(i => byId.get(i)!), ...items.filter(x => !kept.has(x.id))]
-    if (field === 'layers') out.look.layers = merged as Character['look']['layers']
-    else if (field === 'gear') out.gear = merged as Gear[]
-    else out.clips = merged as Character['clips']
+    if (ORDERS[key].get(out) !== undefined || merged.length > 0) ORDERS[key].set(out, merged)
   }
+  // (a folk section or cloth list left empty is none: what it was before the first was added)
+  const f = out.folk
+  if (f !== undefined && f.sets.length + f.pools.length + f.kinds.length + f.stances.length === 0) delete out.folk
+  if (out.look.cloth?.length === 0) delete out.look.cloth
   return out
 }
 

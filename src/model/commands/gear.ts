@@ -10,6 +10,8 @@ import {
   placeText, placement, plural, quat, refText, same, side, str, under, uniqueName, unknown, vec3, vecText,
 } from './common.ts'
 import { mendHolders } from './clips.ts'
+import { pruneGear } from './folk.ts'
+import { syncLegacyPiece } from '../folk.ts'
 import { rebaseGear } from '../origin.ts'
 
 export type GearCommand = Extract<Command, { type: `gear.${string}` }>
@@ -269,12 +271,14 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
         g.name = uniqueName(was, x => taken(c, x))
       }
       c.gear.push(g)
-      return [`gear ${g.name}: added (${attachText(g.attach)}${g.name !== was ? `; ${was} was taken` : ''})`, ...syncCarry(c, g), ...syncOffBone(c, g), ...showOnly(c, g)]
+      return [`gear ${g.name}: added (${attachText(g.attach)}${g.name !== was ? `; ${was} was taken` : ''})`, ...syncCarry(c, g), ...syncOffBone(c, g), ...showOnly(c, g), ...syncLegacyPiece(c, g, null)]
     }
     case 'gear.update': {
       const g = gearById(c, cmd.id) ?? missing(`No gear ${cmd.id}`)
       const p = patchOf(cmd.patch, ['name', 'hidden', 'swapSet', 'model', 'from', 'outfit', 'role', 'tags'])
       const out: string[] = []
+      // (what a dynamic character's sets and pools follow until the UI is ported: src/model/folk.ts syncLegacyPiece)
+      const legacy = { name: g.name, outfit: g.outfit, role: g.role, tags: g.tags === undefined ? undefined : [...g.tags] }
       // (`from` first: a tool may take a piece out of the game's hands and rename it at once)
       if (p.from !== undefined) {
         const from = opt(p.from, x => str(x, 'from'))
@@ -344,6 +348,7 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
         }
         if (!hidden) out.push(...showOnly(c, g))
       }
+      if (!same(legacy, { name: g.name, outfit: g.outfit, role: g.role, tags: g.tags })) out.push(...syncLegacyPiece(c, g, legacy))
       return out
     }
     case 'gear.outfit.show': {
@@ -417,7 +422,7 @@ export function reduceGear (c: Character, cmd: GearCommand): string[] {
           return true
         })
       }
-      return [...out, ...pruneIk(c)]
+      return [...out, ...pruneIk(c), ...pruneGear(c, g)]
     }
     case 'gear.handle.add': {
       const g = gearById(c, cmd.gear) ?? missing(`No gear ${cmd.gear}`)

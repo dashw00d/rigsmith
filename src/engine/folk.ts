@@ -15,7 +15,7 @@
 //     it would poke through; its beard still shows, unless a piece is tagged 'covers-face' (a great helm);
 //   - an outfit with a forearm piece (bracers) takes no long-sleeved clothes: the sleeve's cuff would show through.
 import { BRACERS, COVERS_FACE, COVERS_HAIR, grantsOf } from '../model/folk.ts'
-import type { Gear, Skin } from '../model/types.ts'
+import type { FolkSection, Gear, Skin } from '../model/types.ts'
 
 export const HAIR_SET = 'hair'
 export const BEARD_SET = 'beard'
@@ -33,8 +33,8 @@ export function shownOutfit (gear: readonly Gear[]): string | null {
   return gear.find(g => g.outfit !== undefined && g.hidden !== true)?.outfit ?? null
 }
 
-export const isFolk = (c: { gear: readonly Gear[], look: { skins?: readonly Skin[] } }): boolean =>
-  c.gear.some(g => g.outfit !== undefined || g.role !== undefined)
+export const isFolk = (c: { gear: readonly Gear[], look: { skins?: readonly Skin[] }, folk?: FolkSection }): boolean =>
+  (c.folk !== undefined && c.folk.sets.length + c.folk.pools.length > 0) || c.gear.some(g => g.outfit !== undefined || g.role !== undefined)
 
 /** Whether a hair or beard piece goes on a skin. @deprecated folkpick.candidates (the pool items' requires/excludes) */
 export function fits (piece: Pick<Gear, 'role' | 'tags'>, skin: Pick<Skin, 'tags'> | undefined): boolean {

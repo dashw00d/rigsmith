@@ -72,7 +72,7 @@ export const layerRule = (l: Pick<ClothLayer, 'shapes'>): Pick<PoolItem, 'exclud
 
 /** Whether it is a dynamic character: its folk section, or (not migrated) gear with an outfit or a role. */
 export const isFolkCharacter = (c: Pick<Character, 'gear' | 'folk'>): boolean =>
-  c.folk !== undefined || c.gear.some(g => g.outfit !== undefined || g.role !== undefined)
+  (c.folk !== undefined && c.folk.sets.length + c.folk.pools.length > 0) || c.gear.some(g => g.outfit !== undefined || g.role !== undefined)
 
 /** Its dressing: the folk section, or what its old fields say. */
 export function folkOf (c: Character): FolkSection {

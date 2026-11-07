@@ -8,7 +8,7 @@
 //
 // Long work (import, rig, finger trace, template fit, texture compose, export) runs as server jobs, which write the
 // document through the same journal (server/store.ts updateCharacter) without being commands.
-import type { Adjustment, BlowFit, ClipEvent, ClipKey, ClipRef, Gear, GearAttach, GearTrack, HandPose, HandPoseRef, Handle, Joints, MarkerBoardState, Mount, Piece, Placement, RetimeMarker, Side, Skin, Slot, SlotIk, SlotTime, Vec3 } from './types.ts'
+import type { Adjustment, BlowFit, ClipEvent, ClipKey, ClothCut, ClipRef, ClothLayer, ClothSlot, Gear, GearAttach, GearTrack, HandPose, HandPoseRef, Handle, Joints, MarkerBoardState, Mount, OutfitSet, Piece, Placement, Pool, PoolItem, RetimeMarker, Side, Skin, Slot, SlotIk, SlotTime, Stance, UnitKind, Vec3 } from './types.ts'
 
 export type Command =
   // character
@@ -112,20 +112,70 @@ export type Command =
   | { type: 'look.layer.update', id: string, patch: { enabled?: boolean, note?: string } }
   | { type: 'look.layer.remove', id: string }
   | { type: 'look.layer.reorder', ids: string[] }
-  /** The skins replaced whole (a tool bringing in a dynamic character's faces); the one shown is kept if still there. */
+  /** The skins replaced whole (a tool bringing in a dynamic character's faces); the one shown is kept if still there,
+   * a skin given without `bare` keeps the bare version it had, and a dynamic character's skin pools follow (gone skins
+   * out of them, new ones into the first). */
   | { type: 'look.skins.set', skins: Skin[] }
   /** The skin Rigsmith shows (null: its own texture). */
   | { type: 'look.skin.show', name: string | null }
-  /** The clothes layers replaced whole; the one shown is kept if still there. */
+  /** The clothes layers replaced whole; the one shown is kept if still there. look.cloth follows by name (a layer kept
+   * keeps its cut, trim and the rest) and so do the cloth pools. */
   | { type: 'look.clothes.set', clothes: Skin[] }
   /** The clothes Rigsmith shows over the skin (null: what the skin has painted). */
   | { type: 'look.clothing.show', name: string | null }
+  /** A skin's bare version (Skin.bare: its file; null: none). */
+  | { type: 'look.skin.bare', name: string, file: string | null }
+  /** A cloth layer (look.cloth) added, at `index` (default the end). Its id must be free. */
+  | { type: 'look.cloth.add', layer: ClothLayer, index?: number }
+  /** null unsets an optional field. */
+  | { type: 'look.cloth.update', id: string, patch: ClothPatch }
+  /** Also takes it out of every cloth pool (an undo brings it back). Its files stay. */
+  | { type: 'look.cloth.remove', id: string }
+  | { type: 'look.cloth.reorder', ids: string[] }
+  // folk (a dynamic character's dressing, Character.folk; src/model/commands/folk.ts). Every id is the caller's.
+  /** A set added (its pieces gear of this character), at `index` (default the end); grants unset: from its pieces. */
+  | { type: 'folk.set.add', set: OutfitSet, index?: number }
+  /** null unsets an optional field. */
+  | { type: 'folk.set.update', id: string, patch: SetPatch }
+  /** Its pieces replaced (gear ids, in order); its grants follow them (src/model/folk.ts regrant). */
+  | { type: 'folk.set.pieces', id: string, pieces: string[] }
+  /** A copy of it with id `newId` right after it (named `name`, else '<name> copy'). */
+  | { type: 'folk.set.duplicate', id: string, newId: string, name?: string }
+  /** Also takes it out of every kind's list. */
+  | { type: 'folk.set.remove', id: string }
+  | { type: 'folk.set.reorder', ids: string[] }
+  | { type: 'folk.pool.add', pool: Pool, index?: number }
+  /** null unsets an optional field. */
+  | { type: 'folk.pool.update', id: string, patch: PoolPatch }
+  /** Its items replaced (each a skin, cloth layer or gear of this character by the pool's kind). */
+  | { type: 'folk.pool.items', id: string, items: PoolItem[] }
+  /** Also takes it out of every kind's pools. */
+  | { type: 'folk.pool.remove', id: string }
+  | { type: 'folk.kind.add', kind: UnitKind, index?: number }
+  /** null unsets an optional field. */
+  | { type: 'folk.kind.update', id: string, patch: KindPatch }
+  /** What it wears: listed sets (with weights) or a tag query. */
+  | { type: 'folk.kind.sets', id: string, sets: UnitKind['sets'] }
+  | { type: 'folk.kind.remove', id: string }
+  | { type: 'folk.stance.add', stance: Stance, index?: number }
+  /** null unsets an optional field. */
+  | { type: 'folk.stance.update', id: string, patch: { name?: string, overlay?: string | null } }
+  /** A game clip's slots in it (slot ids; null or none: the clip out of it). */
+  | { type: 'folk.stance.clip', id: string, clip: string, slots: string[] | null }
+  /** Also takes it off every set and kind that plays in it. */
+  | { type: 'folk.stance.remove', id: string }
   // mount (owner: Ship)
   | { type: 'mount.set', mount: Mount | null }
   /** null unsets an optional field (scale, hips, skin, gear). */
   | { type: 'mount.update', patch: MountPatch }
 
 export type CommandType = Command['type']
+
+export type ClothPatch = Partial<Pick<ClothLayer, 'name' | 'slots' | 'file'>> &
+  { cut?: ClothCut | null, trim?: string | null, shapes?: string[] | null, tags?: string[] | null, from?: string | null, coverage?: number[] | null }
+export type SetPatch = Partial<Pick<OutfitSet, 'name' | 'tags' | 'grants'>> & { stance?: string | null, weight?: number | null, note?: string | null }
+export type PoolPatch = Partial<Pick<Pool, 'name'>> & { slot?: ClothSlot | null, chance?: number | null, requires?: string[] | null, excludes?: string[] | null }
+export type KindPatch = Partial<Pick<UnitKind, 'name' | 'tags'>> & { pools?: Record<string, string> | null, stance?: string | null }
 
 export type HandlePatch = Partial<Pick<Handle, 'name' | 'pull'>> &
   { hand?: Side | null, place?: Handle['place'] | null, exact?: boolean | null, pose?: HandPoseRef | null }
