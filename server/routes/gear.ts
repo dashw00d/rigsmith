@@ -21,7 +21,7 @@ import { runCommands } from '../commands.ts'
 import { view } from '../compat.ts'
 import { by, HttpError, readBody, readJsonBody, route, send } from '../http.ts'
 import { enqueue, type Job, runBlender } from '../jobs.ts'
-import { getCharacter, paths, readJson, updateCharacter, withFiles, writeJson } from '../store.ts'
+import { getCharacter, paths, readJson, updateCharacter, withFiles, writeJson, WORKSPACE } from '../store.ts'
 
 /** A painted vertex of a piece: its mesh (the model's mesh order), and its weights by bone name or pull key. */
 interface GearEdit { mesh: number, vertex: number, weights: Array<[string, number]> }
@@ -64,10 +64,11 @@ export function importGarment (id: string, gid: string, name: string, source: st
   }, { lock: 'files' })
 }
 
-/** Create a character subdirectory without following any symlink, including in its ancestors. */
+/** Permit workspace aliases, but not symlinks within the workspace. */
 export async function safeCharacterFolder (id: string, ...parts: string[]): Promise<string> {
   let dir = paths(id).dir
-  if (await realpath(dir) !== path.resolve(dir)) throw new Error('Character path contains a symlink')
+  const workspace = await realpath(WORKSPACE)
+  if (await realpath(dir) !== path.join(workspace, path.relative(WORKSPACE, dir))) throw new Error('Character path contains a symlink')
   for (const part of parts) {
     if (!/^[A-Za-z0-9_-]+$/.test(part)) throw new Error('Invalid character folder')
     dir = path.join(dir, part)
