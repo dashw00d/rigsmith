@@ -46,6 +46,13 @@ const manifest = (c: Character, spec: Parameters<typeof folkManifestData>[1] = {
 })
 
 describe('folkScope', () => {
+  it('exports a kind default stance even when the kind has no set', () => {
+    const c = folk()
+    c.folk!.kinds.push({ id: 'unarmed', name: 'Unarmed', tags: [], sets: [], stance: 'unarmed' })
+    c.folk!.stances.push({ id: 'unarmed', name: 'Unarmed', clips: { Idle: ['idle-s'] } })
+    const plans = stanceExportPlan(c, { folk: { kind: 'unarmed' } }, ['Idle'], ['Idle'])
+    expect(plans).toMatchObject([{ id: 'unarmed', setId: null, clips: { Idle: ['Idle@unarmed'] } }])
+  })
   it('exports a hidden set-held piece so the stance can wear it', () => {
     const c = folk(); const piece = c.gear.find(g => g.id === 'helm')!
     piece.hidden = true; piece.name = 'HeldShield'; piece.from = 'emberhold:gear/HeldShield'

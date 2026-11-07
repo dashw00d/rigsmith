@@ -40,12 +40,17 @@
       kinds = kinds.filter(k => k.id === spec.folk!.kind)
       const ids = new Set(kinds.flatMap(k => kindSets(folk.sets, k).map(x => x.set.id)))
       sets = sets.filter(s => ids.has(s.id))
-    } else if (spec.folk?.outfits !== undefined) sets = sets.filter(s => spec.folk!.outfits!.includes(s.name))
+    } else if (spec.folk?.outfits !== undefined) {
+      sets = sets.filter(s => spec.folk!.outfits!.includes(s.name))
+      const ids = new Set(sets.map(s => s.id))
+      kinds = kinds.filter(k => !Array.isArray(k.sets) || k.sets.some(entry => ids.has(entry.set)))
+    }
     const ids = new Set<string>()
     for (const set of sets) {
       if (set.stance !== undefined) ids.add(set.stance)
       else for (const kind of kinds) if (kind.stance !== undefined && kindSets(sets, kind).some(x => x.set.id === set.id)) ids.add(kind.stance)
     }
+    for (const kind of kinds) if (kind.stance !== undefined && kindSets(sets, kind).length === 0) ids.add(kind.stance)
     return folk.stances.filter(s => ids.has(s.id)).map(s => ({ id: s.id, count: spec.clips.reduce((n, clip) => n + (s.clips[clip]?.length ?? 0), 0) })).filter(s => s.count > 0)
   })
   const lods = $derived(ship.lods(name))

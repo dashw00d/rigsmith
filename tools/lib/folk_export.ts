@@ -62,6 +62,7 @@ export interface StanceExportPlan { id: string, setId: string | null, slots: Slo
 export function stanceExportPlan (c: Character, spec: Pick<UnitSpec, 'folk'>, gameClips: readonly string[], baseNames: readonly string[]): StanceExportPlan[] {
   const folk = folkOf(c); const scope = folkScope(c, spec)
   const setsByStance = new Map<string, OutfitSet[]>()
+  const withoutSet = new Map<string, string>()
   const add = (id: string, set: OutfitSet): void => {
     const sets = setsByStance.get(id) ?? []
     if (!sets.some(s => s.id === set.id)) sets.push(set)
@@ -71,14 +72,19 @@ export function stanceExportPlan (c: Character, spec: Pick<UnitSpec, 'folk'>, ga
     if (set.stance !== undefined) add(set.stance, set)
     else for (const kind of scope.kinds) if (kind.stance !== undefined && kindSets(scope.sets, kind).some(x => x.set.id === set.id)) add(kind.stance, set)
   }
+  for (const kind of scope.kinds) if (kind.stance !== undefined && kindSets(scope.sets, kind).length === 0) {
+    if (!setsByStance.has(kind.stance)) setsByStance.set(kind.stance, [])
+    withoutSet.set(kind.stance, kind.name)
+  }
   const names = new Set(baseNames); const result: StanceExportPlan[] = []
   for (const [id, sets] of setsByStance) {
     const stance = folk.stances.find(s => s.id === id)
-    if (stance === undefined) throw new Error(`stance ${id} referenced by ${sets.map(s => s.name).join(', ')} is missing`)
+    if (stance === undefined) throw new Error(`stance ${id} referenced by ${sets.map(s => s.name).join(', ') || withoutSet.get(id) || 'a kind'} is missing`)
     const held = (set: OutfitSet): string => JSON.stringify(set.pieces.filter(piece => c.gear.some(g => g.id === piece && g.attach.kind === 'bone')).sort())
-    const first = held(sets[0])
+    const first = sets.length === 0 ? '[]' : held(sets[0])
     const conflict = sets.find(s => held(s) !== first)
     if (conflict !== undefined) throw new Error(`stance ${id}: sets ${sets[0].name} and ${conflict.name} hold different bone-attached pieces`)
+    if (withoutSet.has(id) && first !== '[]') throw new Error(`stance ${id}: kind ${withoutSet.get(id)} without a set and set ${sets[0].name} hold different bone-attached pieces`)
     const slots: Slot[] = []; const clips: Record<string, string[]> = {}
     for (const clip of gameClips) {
       const ids = stance.clips[clip]
