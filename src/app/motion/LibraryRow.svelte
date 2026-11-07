@@ -23,7 +23,7 @@
 </script>
 
 <div class="clip" use:contextMenu={() => [{ label: 'Preview', disabled: !compatible, run: () => { void play() } }, { label: action?.kind === 'remove' ? 'Remove trials' : action?.kind === 'fill' ? 'Fill slot' : 'Add as a trial', disabled: !compatible || action === null, run: () => { void press() } }]} data-testid="lib-clip" data-id={clip.id} data-loop={clip.loop} data-uses={uses} data-duration={clip.duration} role="button" tabindex="0" aria-label="Preview {clip.name}"
-  onclick={play} onpointerenter={play} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void play() } }}>
+  onclick={play} onpointerenter={play} onkeydown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); void play() } }}>
   <span class="name">{clip.name}</span><span class="category">{clip.category}</span><span>{clip.duration.toFixed(1)}s</span>
   <span class="loop" aria-label={clip.loop ? 'Loop' : 'One shot'}>{#if clip.loop}<Repeat size={12} />{/if}</span><span>{uses || ''}</span>
   <button class="add" aria-label={action?.kind === 'fill' ? 'Fill slot' : action?.kind === 'remove' ? 'Remove trials' : 'Add as a trial'}
