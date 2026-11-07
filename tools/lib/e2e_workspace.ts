@@ -47,7 +47,7 @@ export function makeWorkspace (source: string, requested?: string | string[]): E
       if (!/^[a-z0-9-]+$/.test(id) || !candidates.includes(id)) throw new Error(`Unknown E2E character: ${id}`)
       copyTree(path.join(charRoot, id), path.join(dir, 'characters', id), false, guard)
     }
-    for (const name of ['settings.json', 'game']) {
+    for (const name of ['settings.json', 'game', 'incoming', 'incoming-state.json']) {
       const file = path.join(root, name)
       if (existsSync(file)) copyTree(file, path.join(dir, name), false, guard)
     }
@@ -61,6 +61,7 @@ export function makeWorkspace (source: string, requested?: string | string[]): E
     const settings = existsSync(settingsFile) ? JSON.parse(readFileSync(settingsFile, 'utf8')) as Record<string, unknown> : {}
     const fakeGame = path.join(dir, 'game-repo')
     settings.gameRepo = fakeGame
+    settings.incomingDir = path.join(dir, 'incoming')
     mkdirSync(path.join(fakeGame, 'tools', 'rigsmith'), { recursive: true })
     const units = path.join(dir, 'game', 'units.json')
     if (existsSync(units)) copyFileSync(units, path.join(fakeGame, 'tools', 'rigsmith', 'units.json'))

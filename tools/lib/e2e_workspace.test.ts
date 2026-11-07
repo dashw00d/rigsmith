@@ -53,3 +53,16 @@ describe('e2e workspace', () => {
     expect(() => makeWorkspace(src, '../folk')).toThrow(/Unknown E2E character/)
   })
 })
+
+it('keeps Incoming data and settings inside each scenario workspace', () => {
+  const src = fixture()
+  mkdirSync(path.join(src, 'incoming', 'delivery'), { recursive: true })
+  writeFileSync(path.join(src, 'incoming', 'delivery', 'manifest.json'), '{}')
+  writeFileSync(path.join(src, 'incoming-state.json'), '{"delivery/part":{"status":"rejected"}}')
+  writeFileSync(path.join(src, 'settings.json'), JSON.stringify({ gameRepo: '/real/game', incomingDir: '/real/incoming' }))
+  const ws = makeWorkspace(src); dirs.push(ws.dir)
+  const settings = JSON.parse(readFileSync(path.join(ws.dir, 'settings.json'), 'utf8'))
+  expect(settings.incomingDir).toBe(path.join(ws.dir, 'incoming'))
+  expect(readFileSync(path.join(ws.dir, 'incoming', 'delivery', 'manifest.json'), 'utf8')).toBe('{}')
+  expect(readFileSync(path.join(ws.dir, 'incoming-state.json'), 'utf8')).toContain('rejected')
+})
