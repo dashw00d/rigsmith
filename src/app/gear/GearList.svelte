@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SearchBox from '../../ui/SearchBox.svelte'
   // The character's gear, grouped by swap set (one piece of a set shows at a time): each piece's name, where it is
   // worn, where it came from, and its import state; show or hide it, remove it (asked first), pick it to open it.
   import { CircleAlert, Eye, EyeOff, LoaderCircle, Trash2 } from '@lucide/svelte'
@@ -89,7 +90,7 @@
 </script>
 
 {#if character.gear.length > 6 || search !== ''}
-  <input class="search" type="search" aria-label="Search gear" data-testid="gear-search" placeholder="Search gear, sets, tags" bind:value={search} />
+  <SearchBox bind:value={search} label="Search gear" placeholder="Search gear, sets, tags" testid="gear-search" />
 {/if}
 {#each groups as group (group.set ?? '')}
   {#if group.set !== null}

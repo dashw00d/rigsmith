@@ -2,7 +2,7 @@
 
 2026-11-06. Rigsmith's scope is assembling characters. Making and fixing parts moves to a separate gear tool
 (/hq/projects/dev/games/GEAR_TOOL_HANDOFF.md). The UI stays as it is and is extended: today's layout is a top bar
-(steps Import, Skeleton, Skin, Gear, Look, Motion, Ship; drawers Library, Catalog, Wardrobe, Activity; a Forge
+(steps Import, Skeleton, Skin, Gear, Look, Motion, Ship; drawers Library, Catalog, Wardrobe, Activity; the Forge
 button), the Characters list on the left, the step's panel on the right with sections. (A full redesign was mocked
 up for later: rigsmith-agents/ui-mockups/.)
 
@@ -77,7 +77,7 @@ Status: **ok** works · **broken** there but doesn't work · **no UI** the data/
 |---|---|---|
 | Incoming finished parts, clothes, hair: accept into a set, see what's new | missing | A new **Incoming** drawer (badge with the count in the top bar) |
 | Replace a piece's model keeping its placement | ok (server) | Incoming → "replace" |
-| Forge board, generation stages | **remove** | Top-bar Forge button goes; the gear tool owns generation (its backend can move there) |
+| Forge board, generation stages | removed (2026-11-06) | The gear tool owns generation; the Forge server (GPU lane, store, queue) stays until it takes it |
 
 ## Jobs, speed, caches, QoL
 
@@ -104,5 +104,5 @@ Status: **ok** works · **broken** there but doesn't work · **no UI** the data/
 5. Clothes section (layers, slots, shorts cut, all-skins preview) + Skins section + bare skins.
 6. Coverage view.
 7. Stances in Motion + "Dressed as".
-8. Incoming drawer; remove the Forge button.
+8. Incoming drawer (the Forge button is gone).
 9. Character-load stalls.

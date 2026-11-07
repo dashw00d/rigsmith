@@ -48,8 +48,7 @@
   const groups: Array<[keyof Omit<Filter, 'search'>, string]> = [['cultures', 'Culture'], ['categories', 'Kind'], ['parts', 'Body part'], ['tags', 'Tag']]
 </script>
 
-<div data-testid="wardrobe-drawer" style="display: contents">
-<Drawer open={app.drawer === 'wardrobe'} onclose={() => app.toggleDrawer('wardrobe')} title="Wardrobe" scrim={false} width="min(560px, 94%)">
+<Drawer testid="wardrobe-drawer" open={app.drawer === 'wardrobe'} onclose={() => app.toggleDrawer('wardrobe')} title="Wardrobe" scrim={false} width="min(560px, 94%)">
   {#if character === null || !folk}
     <EmptyState title="Not a dynamic character" body="The Wardrobe dresses a dynamic character: one body, dressed per unit." compact />
   {:else}
@@ -103,7 +102,6 @@
     {/if}
   {/if}
 </Drawer>
-</div>
 
 <style>
   .top { position: sticky; top: 0; z-index: 3; display: flex; flex-direction: column; gap: 7px; padding: 10px 14px 10px 16px; border-bottom: 1px solid var(--line); background: var(--bg-1); }

@@ -646,6 +646,8 @@ export interface Settings {
   /** The ComfyUI server's address (http://host:port) the GPU lane uses ($COMFY_URL wins; unset: the game's forge.json
    * `comfy`, else 127.0.0.1:8188). */
   comfyUrl?: string
+  /** Where the gear tool delivers finished parts (docs/incoming.md); unset: <workspace>/incoming. */
+  incomingDir?: string
 }
 
 /** A line of a character's journal (characters/<id>/journal.jsonl): a command (or a batch of them), a job's

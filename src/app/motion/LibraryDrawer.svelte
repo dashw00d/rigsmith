@@ -75,7 +75,7 @@
 
 <svelte:window onkeydown={onKey} />
 
-<Drawer {open} onclose={() => { app.drawer = null }} title="Library" scrim={false} width="min(440px, 92%)">
+<Drawer testid="lib-drawer" {open} onclose={() => { app.drawer = null }} title="Library" scrim={false} width="min(440px, 92%)">
   <div class="library">
     <header>
       <span class="count faint">{count}</span>
