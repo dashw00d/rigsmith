@@ -23,9 +23,7 @@
 
   onMount(() => {
     const observer = new IntersectionObserver(entries => {
-      if (!entries.some(e => e.isIntersecting)) return
-      observer.disconnect()
-      visible = true
+      visible = entries.some(e => e.isIntersecting)
     }, { rootMargin: '200px' })
     observer.observe(node)
     return () => { observer.disconnect() }
@@ -35,9 +33,9 @@
   $effect(() => {
     void animator.previewVersion
     if (!visible || !compatible) { sheet = null; failed = false; return }
-    let cancelled = false
-    animator.sprite(clip.url).then(result => { if (!cancelled) { sheet = result; failed = result === null } }, () => { if (!cancelled) failed = true })
-    return () => { cancelled = true }
+    const controller = new AbortController()
+    animator.sprite(clip.url, controller.signal).then(result => { if (!controller.signal.aborted) { sheet = result; failed = result === null } }, () => { if (!controller.signal.aborted) failed = true })
+    return () => { controller.abort() }
   })
 
   const playing = $derived(animator.playing?.kind === 'library' && animator.playing.library?.id === clip.id)

@@ -782,13 +782,13 @@ class Animator {
   }
 
   /** A library clip's sprite sheet on the character (or the mannequin), as an object URL; null when it was dropped. */
-  async sprite (url: string): Promise<string | null> {
+  async sprite (url: string, signal?: AbortSignal): Promise<string | null> {
     if (this.previews === null) {
       this.previews = new PreviewRenderer()
       this.usePreviewSubject()
       if (this.shown === null) await this.loadMannequin()
     }
-    return await this.previews.sheet(url)
+    return await this.previews.sheet(url, signal)
   }
 
   cancelSprites (): void { this.previews?.cancelPending() }

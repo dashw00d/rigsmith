@@ -6,7 +6,7 @@ import { makeCharacter } from '../../model/fixtures.ts'
 import { animator } from '../../state/animator.svelte.ts'
 import LibraryCard from './LibraryCard.svelte'
 
-it.fails('cancels the sprite request when its card leaves view', async () => {
+it('cancels the sprite request when its card leaves view', async () => {
   let notify!: (visible: boolean) => void
   vi.stubGlobal('IntersectionObserver', class {
     constructor (callback: IntersectionObserverCallback) { notify = visible => callback([{ isIntersecting: visible } as IntersectionObserverEntry], this as unknown as IntersectionObserver) }
