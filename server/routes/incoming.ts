@@ -33,11 +33,18 @@ for (const action of ['reject', 'restore'] as const) route('POST', new RegExp(`^
   if (!pkg) throw new HttpError(404, 'No such package')
   const parts = body.parts.map(id => pkg.parts.find(p => p.id === id))
   if (parts.some(p => p === undefined)) throw new HttpError(404, 'No such part')
-  await changeState(state => { for (const part of parts) if (part) {
+  await changeState(state => {
+    for (const part of parts) if (part) {
+      const record = state[`${pkg.id}/${part.id}`]
+      const status = record?.sha === part.sha256 ? record.status : 'pending'
+      if (status !== (action === 'reject' ? 'pending' : 'rejected')) throw new HttpError(409, `${part.id}: already ${status}`)
+    }
+    for (const part of parts) if (part) {
     const key = `${pkg.id}/${part.id}`
     if (action === 'restore') delete state[key]
     else state[key] = { status: 'rejected', sha: part.sha256, at: new Date().toISOString() }
-  } })
+    }
+  })
   const result = await listIncoming(); events.emit('incoming', { pending: result.pending }); send(res, 200, result)
 })
 route('GET', /^\/files\/incoming\/([^/]+)\/(.+)$/, async (_req, res, [encodedPkg, encodedFile]) => {

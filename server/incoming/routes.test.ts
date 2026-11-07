@@ -10,6 +10,7 @@ const { handle } = await import('../http.ts')
 await import('../routes/incoming.ts')
 await import('../routes/characters.ts')
 const { stopIncomingWatch } = await import('./watch.ts')
+const { changeState, readState } = await import('./state.ts')
 let server: Server; let url: string
 beforeAll(async () => {
   await incomingFixture(path.join(workspace, 'incoming'))
@@ -26,6 +27,19 @@ it('lists, rejects, restores and serves delivery files over HTTP', async () => {
   expect((await send('restore')).status).toBe(200); expect((await list()).pending).toBe(1)
   expect((await fetch(`${url}/files/incoming/fixture/parts/piece.glb`)).status).toBe(200)
   expect((await fetch(`${url}/files/incoming/fixture/%2e%2e%2fsettings.json`)).status).toBe(404)
+})
+
+it('refuses to reject or restore an accepted part without losing its record', async () => {
+  const listing = await (await fetch(`${url}/api/incoming`)).json() as { packages: Array<{ id: string, parts: Array<{ sha256: string }> }> }
+  const sha = listing.packages.find(p => p.id === 'fixture')!.parts[0].sha256
+  const accepted = { status: 'accepted' as const, sha, at: 'now', character: 'alice', gear: 'coat' }
+  await changeState(s => { s['fixture/piece'] = accepted })
+  for (const action of ['reject', 'restore']) {
+    const response = await fetch(`${url}/api/incoming/${action}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-rigsmith': '1' }, body: JSON.stringify({ package: 'fixture', parts: ['piece'] }) })
+    expect(response.status).toBe(409)
+    expect((await readState())['fixture/piece']).toEqual(accepted)
+  }
+  await changeState(s => { delete s['fixture/piece'] })
 })
 
 it('forwards incoming watcher notifications on the event stream', async () => {
