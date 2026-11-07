@@ -112,8 +112,10 @@
           <button class="tool" class:on={viewer.skeleton} aria-label="Show bones" aria-pressed={viewer.skeleton} onclick={() => { viewer.setSkeleton(!viewer.skeleton) }} use:tooltip={'Show bones'}><Bone size={14} /></button>
         {/if}
         <IconButton variant="secondary" label="Frame the character" keys="view.frame" onclick={() => { viewer.focus() }}><Focus size={14} /></IconButton>
-        {#if app.step === 'gear' && isFolk(c)}
+        {#if app.step === 'gear' && viewer.character?.skeleton}
           <IconButton variant="secondary" label="Coverage" keys="gear.coverage" data-testid="coverage-toggle" active={coverage.on} onclick={() => { coverage.on = !coverage.on }}><Layers size={14} /></IconButton>
+        {/if}
+        {#if app.step === 'gear' && isFolk(c)}
           <IconButton variant="secondary" label="Crowd" keys="dress.crowd" data-testid="crowd-toggle" active={wardrobe.crowdOpen} onclick={() => { wardrobe.crowdOpen = !wardrobe.crowdOpen }}><Users size={14} /></IconButton>
         {/if}
       </div>

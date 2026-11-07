@@ -57,7 +57,7 @@ export function registerAppKeys (): () => void {
     { id: 'dress.clothes.next', keys: '.', label: 'Next clothes', group: 'Dressing', when: () => when() && timeline.playing === null, run: run(c => { wardrobe.step(c, 'clothing', 1) }) },
     { id: 'dress.randomize', keys: 'r', label: 'Randomize: a new unit (locked slots kept)', group: 'Dressing', when: () => when() && !wardrobe.crowdOpen, run: run(c => { wardrobe.randomize(c) }) },
     { id: 'dress.wardrobe', keys: 'w', label: 'Open or close the Wardrobe', group: 'Dressing', when, run: () => { app.toggleDrawer('wardrobe') } },
-    { id: 'gear.coverage', keys: 'h', label: 'Show body coverage', group: 'Dressing', when, run: () => { coverage.on = !coverage.on } },
+    { id: 'gear.coverage', keys: 'h', label: 'Show body coverage', group: 'Dressing', when: () => app.step === 'gear' && viewer.character?.skeleton != null, run: () => { coverage.on = !coverage.on } },
     { id: 'dress.crowd', keys: 'c', label: 'Crowd: many units side by side', group: 'Dressing', when, run: () => { wardrobe.crowdOpen = !wardrobe.crowdOpen } },
     { id: 'app.undo', keys: 'ctrl+z', label: 'Undo', group: 'Everywhere', when: editing, run: () => { void undo() } },
     { id: 'app.redo', keys: 'ctrl+shift+z', label: 'Redo', group: 'Everywhere', when: editing, run: () => { void redo() } },

@@ -24,7 +24,8 @@
   .regions { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 3px; }
   button { display: flex; align-items: center; gap: 5px; border: 0; border-radius: 4px; padding: 4px; background: var(--bg-2); color: var(--text-2); font-size: 11px; text-align: left; }
   button:hover, button:focus-visible { background: var(--bg-3); color: var(--text-1); }
-  button span:nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  button span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button span:last-child { flex: none; white-space: nowrap; }
   .dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: #35b871; }
   .dot.partial { background: #ecae37; } .dot.hidden { background: #e45252; }
 </style>
