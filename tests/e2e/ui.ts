@@ -75,13 +75,19 @@ export class UI {
     if (nodes.length !== 1) throw new Error(`${selectorDescription(selector)}: expected one match, found ${nodes.length}; ${await this.candidates(selector)}`)
     return nodes[0]
   }
-  async click (selector: Selector): Promise<void> {
+  private async point (selector: Selector, x?: number, y?: number): Promise<{ x: number, y: number }> {
     const id = await this.one(selector)
     await this.send('DOM.scrollIntoViewIfNeeded', { nodeId: id })
-    const rect = await this.call(id, 'function () { const r = this.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, width: r.width, height: r.height } }') as { x: number, y: number, width: number, height: number }
+    const rect = await this.call(id, 'function () { const r = this.getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height } }') as { x: number, y: number, width: number, height: number }
     if (rect.width === 0 || rect.height === 0) throw new Error(`${selectorDescription(selector)} is not visible`)
-    await this.page.click(rect.x, rect.y)
+    const dx = x ?? rect.width / 2; const dy = y ?? rect.height / 2
+    if (dx < 0 || dy < 0 || dx >= rect.width || dy >= rect.height) throw new Error(`Point (${dx}, ${dy}) is outside ${selectorDescription(selector)}`)
+    return { x: rect.x + dx, y: rect.y + dy }
   }
+  async click (selector: Selector): Promise<void> { const p = await this.point(selector); await this.page.click(p.x, p.y) }
+  /** Click coordinates relative to the selected element's top left (CSS pixels). */
+  async clickAt (selector: Selector, x: number, y: number): Promise<void> { const p = await this.point(selector, x, y); await this.page.click(p.x, p.y) }
+  async rightClick (selector: Selector): Promise<void> { const p = await this.point(selector); await this.page.click(p.x, p.y, 'right') }
   async fill (selector: Selector, text: string): Promise<void> { await this.click(selector); await this.press('ctrl+a'); await this.page.type(text) }
   async key (key: string): Promise<void> { await this.page.key(key) }
   async press (combination: string): Promise<void> {

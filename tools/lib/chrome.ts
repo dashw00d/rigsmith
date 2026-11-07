@@ -12,7 +12,7 @@ export interface Page {
   value: (expression: string) => Promise<unknown>
   navigate: (url: string) => Promise<void>
   until: (expression: string, timeout: number, what: string) => Promise<void>
-  click: (x: number, y: number) => Promise<void>
+  click: (x: number, y: number, button?: 'left' | 'right') => Promise<void>
   type: (text: string) => Promise<void>
   key: (key: string, modifiers?: number) => Promise<void>
   screenshot: (file: string) => Promise<void>
@@ -94,10 +94,10 @@ export async function withChrome<T> (fn: (page: Page) => Promise<T>, o: { args?:
         }
         throw new Error(`${what}: not after ${Math.round(timeout / 1000)} s`)
       },
-      click: async (x, y) => {
+      click: async (x, y, button = 'left') => {
         await command('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y })
-        await command('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 })
-        await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 })
+        await command('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: 1 })
+        await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: 1 })
       },
       type: async text => { await command('Input.insertText', { text }) },
       key: async (key, modifiers = 0) => {
