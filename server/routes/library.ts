@@ -1,7 +1,9 @@
 // The clip library's search (server/library.ts): GET /api/library?q=&category=&source=&rig=&page=&size=. Clips only;
 // which of a character's slots play a clip is the character's own business (and the editor's usage route).
 import { route, send } from '../http.ts'
-import { queryLibrary } from '../library.ts'
+import { clipUseCounts } from '../clipedits.ts'
+import { listCharacters } from '../store.ts'
+import { libraryIndex, queryLibrary } from '../library.ts'
 
 route('GET', /^\/api\/library$/, async (req, res, _, url) => {
   const text = (k: string): string | undefined => url.searchParams.get(k) ?? undefined
@@ -17,4 +19,11 @@ route('GET', /^\/api\/library$/, async (req, res, _, url) => {
     page: whole('page', 0),
     pageSize: whole('size', 24),
   }))
+})
+
+route('GET', /^\/api\/library\/index$/, async (_req, res, _params, url) => {
+  send(res, 200, await libraryIndex(url.searchParams.get('rig') ?? undefined))
+})
+route('GET', /^\/api\/library\/uses$/, async (_req, res) => {
+  send(res, 200, clipUseCounts(await listCharacters()))
 })
