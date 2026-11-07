@@ -42,8 +42,26 @@ export default { name: 'look.cut-mask', character: 'folk-v6-0ba482', step: 'look
     const rect = el.getBoundingClientRect(); return { width: rect.width, height: rect.height }
   }, setup)
   await ui.clickAt(canvas, (point.x + 0.5) / point.width * bounds.width, (point.y + 0.5) / point.height * bounds.height)
+  // A real unrelated character edit replaces the layer prop while the brush has unsaved strokes.
+  assert.ok(await ui.eval(async (r, id) => !!await r.app.do(r.app.selected!.id, { type: 'look.cloth.update', id, patch: { name: 'Brush test renamed' } }), setup))
+  await ui.waitFor(r => r.app.selected?.look.cloth?.find(l => l.id === 'e2emask01')?.name === 'Brush test renamed')
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  const pending = await ui.eval((_r, id) => {
+    const root = document.querySelector(`[data-testid="look-cloth-row"][data-id="${id}"]`)!
+    const button = Array.from(root.querySelectorAll('button')).find(b => b.textContent?.includes('Save mask'))
+    return button !== undefined && !button.disabled
+  }, setup)
+  assert.equal(pending, true, 'unrelated character edits must not discard unsaved brush strokes')
+  await ui.click({ testid: 'look-mask-open', within: row })
+  await ui.click({ testid: 'look-mask-open', within: row })
+  await ui.waitFor({ testid: 'look-mask-ready', within: row }, 30_000)
+  assert.equal(await ui.eval((_r, id) => {
+    const root = document.querySelector(`[data-testid="look-cloth-row"][data-id="${id}"]`)!
+    const button = Array.from(root.querySelectorAll('button')).find(b => b.textContent?.includes('Save mask'))
+    return button !== undefined && !button.disabled
+  }, setup), true, 'closing and reopening the editor must retain unsaved strokes')
   await ui.click({ role: 'button', name: 'Save mask', within: row })
-  await ui.waitFor(r => !!r.app.selected?.look.cloth?.find(l => l.id === 'e2emask01')?.cut?.mask, 30_000)
+  try { await ui.waitFor(r => !!r.app.selected?.look.cloth?.find(l => l.id === 'e2emask01')?.cut?.mask, 30_000) } catch { throw new Error(`first mask not saved: ${await ui.eval(() => document.body.innerText.slice(-1200))}`) }
   const first = await ui.eval(r => r.app.selected!.look.cloth!.find(l => l.id === 'e2emask01')!.cut!.mask!)
   await ui.eval((_r, path) => { (window as unknown as { firstMask: string }).firstMask = path }, first)
   assert.match(first, /^cloth\/e2emask01\.mask\.[0-9a-f]{8}\.png$/)
@@ -57,7 +75,7 @@ export default { name: 'look.cut-mask', character: 'folk-v6-0ba482', step: 'look
     if (!skin.bare || !target) return false
     const rgb = ctx.getImageData(target.x, target.y, 1, 1).data
     return target.bare.every((value, i) => Math.abs(value - rgb[i]) <= 3)
-  }, 30_000)
+  }, 30_000).catch(() => { throw new Error('saved mask did not update the stage texel') })
   await ui.shot('painted-mask')
   await ui.click({ role: 'button', name: 'Erase', within: row })
   await ui.clickAt(canvas, (point.x + 0.5) / point.width * bounds.width, (point.y + 0.5) / point.height * bounds.height)
