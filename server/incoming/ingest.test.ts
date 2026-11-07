@@ -85,6 +85,17 @@ it('leaves a failed import pending and does not journal it', async () => {
   expect((await listIncoming()).packages.find(p => p.id === 'fail')?.parts[0].status).toBe('pending')
   expect(await readJournal(c.id)).toHaveLength(0)
 })
+it('replacing a skin drops the old bare texture and retains omitted metadata', async () => {
+  const c = body('test-skin')
+  c.look.skins = [{ name: 'skin', file: 'skins/old.png', bare: 'skins/bare/old.png', hair: '#123456', tags: ['elder'] }]
+  await putCharacter(c); await delivery('skin-update', [{ id: 'skin', type: 'skin' }])
+  expect((await listIncoming(c)).packages.find(p => p.id === 'skin-update')?.parts[0].effect).toBe('update')
+  await ingest({ package: 'skin-update', parts: ['skin'], character: c.id }, { sink: fake() })
+  expect((await getCharacter(c.id))!.look.skins![0]).toMatchObject({ name: 'skin', hair: '#123456', tags: ['elder'] })
+  expect((await getCharacter(c.id))!.look.skins![0].bare).toBeUndefined()
+  await undo(c.id)
+  expect((await getCharacter(c.id))!.look.skins).toEqual(c.look.skins)
+})
 it('honors an explicit replacement even when the source identity is new', async () => {
   const old = makeGear({ id: 'old', name: 'old', model: 'garments/old/model.glb', attach: { kind: 'skin', policy: 'lower', place } })
   const c = body('test-chosen', [old]); await putCharacter(c)

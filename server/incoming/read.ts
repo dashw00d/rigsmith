@@ -96,7 +96,9 @@ export async function listIncoming (character?: Character | null): Promise<{ pac
         const part = rawPart && typeof rawPart === 'object' ? rawPart : { id: `invalid-${i}`, type: 'piece' as const, name: 'Invalid part', file: '', sha256: '' }
         const record = state[`${entry.name}/${part.id}`]
         const status = await statusOf(record, part.sha256, journals)
-        const exists = part.from !== undefined && character?.gear.some(g => g.from === part.from)
+        const exists = (part.from !== undefined && character?.gear.some(g => g.from === part.from)) ||
+          (part.type === 'skin' && character?.look.skins?.some(s => s.name === part.name)) ||
+          (part.type === 'clothes' && character?.look.clothes?.some(s => s.name === part.name))
         return { ...part, status, effect: status === 'accepted' ? 'same' : exists ? 'update' : 'new', ...(errors[i] ? { damaged: errors[i] } : {}) }
       }))
       packages.push({ id: entry.name, at: typeof manifest.at === 'string' ? manifest.at : '', tool: typeof manifest.tool === 'string' ? manifest.tool : '', parts })

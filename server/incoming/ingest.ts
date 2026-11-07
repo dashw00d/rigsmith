@@ -96,7 +96,10 @@ function commandsFor (c: Character, staged: Staged[], manifest: IncomingManifest
     } else if (texture) {
       const type = part.type === 'skin' ? 'look.skins.set' : 'look.clothes.set'
       const old = type === 'look.skins.set' ? work.look.skins ?? [] : work.look.clothes ?? []
-      add(type === 'look.skins.set' ? { type, skins: [...old.filter(x => x.name !== texture.name), texture] } : { type, clothes: [...old.filter(x => x.name !== texture.name), texture] })
+      const existing = old.find(x => x.name === texture.name)
+      const replacement = { ...texture, ...(texture.hair === undefined && existing?.hair !== undefined ? { hair: existing.hair } : {}), ...(texture.tags === undefined && existing?.tags !== undefined ? { tags: existing.tags } : {}) }
+      add(type === 'look.skins.set' ? { type, skins: [...old.filter(x => x.name !== texture.name), replacement] } : { type, clothes: [...old.filter(x => x.name !== texture.name), replacement] })
+      if (type === 'look.skins.set' && existing?.bare !== undefined) add({ type: 'look.skin.bare', name: texture.name, file: null })
       if (type === 'look.clothes.set' && part.slots?.length) {
         const layer = work.look.cloth?.find(x => x.name === texture.name)
         const slots = part.slots.filter((s): s is ClothSlot => ['top', 'bottom', 'over'].includes(s))
