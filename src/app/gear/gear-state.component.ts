@@ -70,3 +70,28 @@ describe('placement Escape', () => {
     target.remove()
   })
 })
+
+describe('showing a folk piece', () => {
+  const folk = () => makeCharacter({ id: 'show-folk', gear: [
+    makeGear({ id: 'a', outfit: 'set-a' }), makeGear({ id: 'b', outfit: 'set-b', hidden: true }),
+    makeGear({ id: 'h1', role: 'hair' }), makeGear({ id: 'h2', role: 'hair', hidden: true }),
+    makeGear({ id: 'd1', role: 'beard' }), makeGear({ id: 'd2', role: 'beard', hidden: true }),
+    makeGear({ id: 'plain' }),
+  ] })
+  it.each(['h2', 'd2', 'b'])('shows the currently unworn %s', async id => {
+    const { dress } = await import('../../state/dress.svelte.ts')
+    const c = folk()
+    dress.reset(c)
+    const g = c.gear.find(x => x.id === id)!
+    expect(gear.shownOnStage(c, g)).toBe(false)
+    await gear.setShown(c, g, true)
+    expect(gear.shownOnStage(c, g)).toBe(true)
+  })
+  it('ignores a stale folk hide after a piece leaves its set', async () => {
+    const { dress } = await import('../../state/dress.svelte.ts')
+    const c = folk()
+    dress.reset(c)
+    dress.setShown(c, 'plain', false)
+    expect(gear.shownOnStage(c, c.gear.find(x => x.id === 'plain')!)).toBe(true)
+  })
+})

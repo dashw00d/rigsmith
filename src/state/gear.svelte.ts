@@ -178,6 +178,7 @@ class GearState {
    * beards (browsing: dress.svelte.ts), else as the document has it (reactive). */
   shownOnStage (c: Character, g: Gear): boolean {
     if (this.fitting === g.id) return true
+    if (setsWith(c, g).length === 0 && g.role === undefined) return g.hidden !== true
     return shows(c, g, dressing.worn(c), documentDress(c), dressing.of(c.id))
   }
 
@@ -258,6 +259,7 @@ class GearState {
    * its rider's mount says (syncHorse). A piece being fitted always shows. */
   private showsOn (c: Character, g: Gear, w: Wearer, worn: Dressed | null, own: Dressed | null): boolean {
     if (w.rider && this.fitting === g.id) return true
+    if (setsWith(c, g).length === 0 && g.role === undefined) return g.hidden !== true
     return worn === null || own === null ? g.hidden !== true : shows(c, g, worn, own, dressing.of(c.id))
   }
 
@@ -868,8 +870,15 @@ class GearState {
   }
 
   async setShown (c: Character, g: Gear, shown: boolean): Promise<void> {
-    if (setsWith(c, g).length > 0 || g.role !== undefined) dressing.setShown(c, g.id, shown)
-    else await app.do(c.id, { type: 'gear.update', id: g.id, patch: { hidden: !shown } })
+    const sets = setsWith(c, g)
+    if (sets.length > 0 || g.role !== undefined) {
+      if (shown) {
+        if (sets.length > 0 && !sets.includes(dressing.worn(c).outfit ?? '')) dressing.wearOutfit(c, sets[0])
+        else if (sets.length === 0 && g.role === 'hair') dressing.setHair(c, g.id)
+        else if (sets.length === 0 && g.role === 'beard') dressing.setBeard(c, g.id)
+      }
+      dressing.setShown(c, g.id, shown)
+    } else await app.do(c.id, { type: 'gear.update', id: g.id, patch: { hidden: !shown } })
   }
 
   toggleShown (c: Character, g: Gear): Promise<void> { return this.setShown(c, g, !this.shownOnStage(c, g)) }
