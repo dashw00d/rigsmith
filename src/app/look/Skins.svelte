@@ -23,7 +23,7 @@
   <div class="skins">
     {#each character.look.skins ?? [] as skin (skin.file)}
       <div class="skin" data-testid="look-skin-row" data-id={skin.name}>
-        <img src={assets.asset(character, skin.file)} alt="" />
+        <img src={assets.asset(character, skin.file)} alt="" loading="lazy" decoding="async" />
         <div class="fields">
           <TextField size="sm" label="Skin name {skin.name}" value={skin.name} oncommit={(name) => update(skin, { name })} />
           <Chips label="Tags for {skin.name}" options={[...new Set([...common, ...(skin.tags ?? [])])].map(value => ({ value, label: value }))}

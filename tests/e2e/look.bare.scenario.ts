@@ -8,8 +8,23 @@ export default {
     const name = await ui.eval(r => r.app.selected?.look.skins?.[0]?.name ?? null)
     assert.ok(name, 'fixture needs a skin')
     const row = { testid: 'look-skin-row', id: name }
+    const invalid = await ui.eval(async (r, skin) => fetch(`/api/characters/${encodeURIComponent(r.app.selected!.id)}/look/bare/${encodeURIComponent(skin)}`, { method: 'PUT', headers: { 'x-rigsmith': '1', 'x-rigsmith-schema': '5' }, body: 'not a png' }).then(x => x.status), name)
+    assert.equal(invalid, 400, 'the bare route rejects non-PNG data')
+    await ui.eval(async () => {
+      await new Promise(resolve => setTimeout(resolve, 4000))
+      const target = window as unknown as { bareTasks: number[], bareObserver: PerformanceObserver }
+      target.bareTasks = []
+      target.bareObserver = new PerformanceObserver(list => { target.bareTasks.push(...list.getEntries().map(e => e.duration)) })
+      target.bareObserver.observe({ type: 'longtask' })
+    })
     await ui.click({ role: 'button', name: 'Make bare', within: row })
     await ui.waitFor({ testid: 'look-bare-badge', within: row }, 60_000)
+    const tasks = await ui.eval(async () => {
+      await new Promise(resolve => setTimeout(resolve, 200))
+      const target = window as unknown as { bareTasks: number[], bareObserver: PerformanceObserver }
+      target.bareObserver.disconnect()
+      return target.bareTasks
+    })
     const result = await ui.eval(async r => {
       const c = r.app.selected!; const skin = c.look.skins![0]
       const original = await createImageBitmap(await (await fetch(r.assets.asset(c, skin.file)!)).blob())
@@ -37,17 +52,43 @@ export default {
         return out
       }
       const face = samples(/face/i); const trousers = samples(/trousers/i)
+      // Independent canvas mask of the face/skin triangles, to compare the filled tone with their median.
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.fillStyle = 'white'
+      ctx.beginPath()
+      for (const mesh of body) {
+        const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
+        if (!/^(face|skin)$/i.test(mat.name)) continue
+        const uv = mesh.geometry.getAttribute('uv'); const idx = mesh.geometry.index; const n = idx?.count ?? uv.count
+        for (let i = 0; i + 2 < n; i += 3) {
+          for (let j = 0; j < 3; j++) {
+            const v = idx?.getX(i + j) ?? i + j; const x = uv.getX(v) * canvas.width; const y = (1 - uv.getY(v)) * canvas.height
+            if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+          }
+          ctx.closePath()
+        }
+      }
+      ctx.fill()
+      const mask = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+      const hist = Array.from({ length: 3 }, () => new Uint32Array(256)); let total = 0
+      for (let p = 0; p < before.length; p += 4) if (mask[p + 3] === 255 && before[p + 3] > 0) {
+        total++; for (let channel = 0; channel < 3; channel++) hist[channel][before[p + channel]]++
+      }
+      const median = hist.map(channel => { let n = 0; for (let i = 0; i < 256; i++) { n += channel[i]; if (n > total / 2) return i } return 0 })
+      const fill = trousers.length ? Array.from(after.slice(trousers[0], trousers[0] + 3)) : []
       const unchanged = face.filter(p => before[p] === after[p] && before[p + 1] === after[p + 1] && before[p + 2] === after[p + 2]).length
       const changed = trousers.filter(p => before[p] !== after[p] || before[p + 1] !== after[p + 1] || before[p + 2] !== after[p + 2]).length
-      return { face: face.length, unchanged, trousers: trousers.length, changed, path: skin.bare }
+      return { face: face.length, unchanged, trousers: trousers.length, changed, path: skin.bare, median, fill, total }
     })
     assert.ok(result.face > 0 && result.unchanged === result.face, 'face texels stay unchanged')
     assert.ok(result.trousers > 0 && result.changed > result.trousers / 2, 'trousers become skin toned')
+    assert.ok(result.total > 0 && result.fill.every((v, i) => Math.abs(v - result.median[i]) <= 8), `trouser tone ${result.fill} differs from skin median ${result.median}`)
     await ui.shot('bare')
     await ui.press('ctrl+z')
     await ui.waitFor(r => r.app.selected?.look.skins?.[0]?.bare === undefined)
     assert.ok(result.path)
     const retained = await ui.eval(async (r, file) => (await fetch(r.assets.asset(r.app.selected!, file)!)).ok, result.path)
     assert.ok(retained, 'undo keeps the file')
+    console.log(`look.bare main-thread tasks over 50 ms: ${tasks.length ? tasks.join(', ') : 'none'}`)
   },
 } satisfies Scenario

@@ -2,6 +2,7 @@ import type { Character, Skin } from '../model/types.ts'
 import { app } from './app.svelte.ts'
 import { assets } from './assets.svelte.ts'
 import { viewer } from './viewer.svelte.ts'
+import { timed } from '../engine/perf.ts'
 
 class Bare {
   busy = $state(false)
@@ -13,12 +14,12 @@ class Bare {
     const view = viewer.shownId === c.id ? viewer.character : null
     if (view === null) { app.toast('error', 'Wait for the body to load before making bare skins'); return }
     try {
-      const meshes = view.bodySkinned.map(mesh => {
+      const meshes = timed('bare.geometry', () => view.bodySkinned.map(mesh => {
         const position = mesh.geometry.getAttribute('position'); const uv = mesh.geometry.getAttribute('uv')
         if (position === undefined || uv === undefined || position.itemSize !== 3 || uv.itemSize !== 2 || !(position.array instanceof Float32Array) || !(uv.array instanceof Float32Array)) throw new Error('Body needs float position and UV attributes')
         const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
         return { positions: position.array, uv: uv.array, index: mesh.geometry.index?.array ?? null, matrix: mesh.bindMatrix.toArray(), material: material.name }
-      })
+      }))
       this.busy = true
       for (let i = 0; i < skins.length; i++) {
         const skin = skins[i]; this.label = skin.name; this.progress = i / skins.length
@@ -32,7 +33,8 @@ class Bare {
             if (e.data.progress !== undefined) this.progress = (i + e.data.progress) / skins.length
             if (e.data.png !== undefined) { worker.terminate(); resolve(e.data.png) }
           }
-          worker.postMessage({ url, meshes, height: view.height })
+          try { timed('bare.postMessage', () => worker.postMessage({ url, meshes, height: view.height })) }
+          catch (error) { worker.terminate(); reject(error) }
         })
         const response = await fetch(`/api/characters/${encodeURIComponent(c.id)}/look/bare/${encodeURIComponent(skin.name)}`, { method: 'PUT', headers: { 'Content-Type': 'image/png', 'x-rigsmith': '1', 'x-rigsmith-schema': '5' }, body: png })
         if (!response.ok) throw new Error(`Could not save bare skin (${response.status}): ${await response.text()}`)

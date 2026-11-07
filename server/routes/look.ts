@@ -6,7 +6,7 @@
 //
 // Projection captures are folders (projections/<id>/) of what each view saw, what to repaint and the prompt; each
 // view's result-N comes back from Codex or from the user.
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
@@ -328,7 +328,7 @@ route('PUT', /^\/api\/characters\/([a-z0-9-]+)\/look\/bare\/([^/]+)$/, async (re
   const safe = name.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 48) || 'skin'
   const dir = path.join(paths(id).dir, 'skins', 'bare')
   await mkdir(dir, { recursive: true })
-  const file = `${safe}-${newId()}.png`
+  const file = `${safe}-${randomUUID()}.png`
   const tmp = path.join(dir, `.${file}.tmp`)
   try {
     await writeFile(tmp, bytes, { flag: 'wx' })
