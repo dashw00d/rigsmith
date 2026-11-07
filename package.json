@@ -26,7 +26,8 @@
     "export:game": "node tools/game_export.ts",
     "verify:units": "node tools/rig.ts check",
     "migrate": "node tools/migrate.ts",
-    "migrate:check": "node tools/migrate.ts --check"
+    "migrate:check": "node tools/migrate.ts --check",
+    "perf": "node tools/perf.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

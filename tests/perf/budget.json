@@ -1,0 +1,5 @@
+{
+  "//": "The longest main-thread task each kind of scenario may cause, in ms (npm run perf: tools/perf.ts, tests/perf/scenarios.ts).",
+  "click": 50,
+  "load": 150
+}
