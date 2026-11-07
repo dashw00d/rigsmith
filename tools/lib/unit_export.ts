@@ -23,7 +23,8 @@
 //                                    installs them into its mix as sounds of their own)
 import { execSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { copyIfChanged, writeIfChanged } from './atomic.ts'
 import path from 'node:path'
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
@@ -277,7 +278,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
           const bytes = index === null ? null : imageBytes(glb, index)
           if (bytes === null) continue
           files[kind] = path.join(out, `${name}_${kind}.png`)
-          writeFileSync(files[kind], bytes)
+          writeIfChanged(files[kind], bytes)
         }
         ;(atlasFiles[cell.group] ??= { grid: cell.grid, pieces: [] }).pieces.push({ mesh: name, cell: [cell.col, cell.row], ...files })
       }
@@ -515,7 +516,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     const img = skin !== undefined
       ? { bytes: readFileSync(path.join(comp.dir, skin.file)), ext: path.extname(skin.file).slice(1).replace('jpeg', 'jpg') }
       : baseImage(readFileSync(comp.file))
-    if (img !== null) writeFileSync(path.join(srcDir, `base_${comp.spec.material}.${img.ext}`), img.bytes)
+    if (img !== null) writeIfChanged(path.join(srcDir, `base_${comp.spec.material}.${img.ext}`), img.bytes)
   }
   const exportSkeleton = new THREE.Skeleton(bones)
   for (const mesh of meshes) mesh.bind(exportSkeleton)
@@ -534,7 +535,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     const grip = knuckle !== null ? hand.clone().lerp(knuckle, 0.75) : hand.clone().addScaledVector(hand.clone().sub(fore).normalize(), 0.08 * spec.height)
     skeletonOut[`grip.${side === 'Left' ? 'L' : 'R'}`] = grip.toArray().map(x => round(x, 5))
   }
-  writeFileSync(path.join(srcDir, 'skeleton.json'), JSON.stringify({ space: 'glTF (Y up, facing +Z), metres', height: spec.height, joints: skeletonOut }, null, 1) + '\n')
+  writeIfChanged(path.join(srcDir, 'skeleton.json'), JSON.stringify({ space: 'glTF (Y up, facing +Z), metres', height: spec.height, joints: skeletonOut }, null, 1) + '\n')
 
   // The clips in game units: scaled and grounded with the body (a rider's hips hung from the seat bone), then the gear
   // bones' tracks: each keyed piece's Prop_ bone from its keys (rest where a clip has none, so a piece keyed in one
@@ -638,11 +639,11 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   exportSkeleton.pose()
   const built = await new GLTFExporter().parseAsync(out, { binary: true, animations: clips, onlyVisible: false }) as ArrayBuffer
   mkdirSync(o.modelsDir, { recursive: true })
-  writeFileSync(path.join(o.modelsDir, `${unit}.glb`), new Uint8Array(built))
+  writeIfChanged(path.join(o.modelsDir, `${unit}.glb`), new Uint8Array(built))
 
   const rigged = readFileSync(me.file)
   const image = baseImage(rigged)
-  if (image !== null) writeFileSync(path.join(srcDir, `base.${image.ext}`), image.bytes)
+  if (image !== null) writeIfChanged(path.join(srcDir, `base.${image.ext}`), image.bytes)
   // (next to the GLB, what the game times its hits, sounds and spawns by)
   const events = eventsFile(unit, slots, clips, baked, {
     walk: ride !== null ? compReport!.walkStride : walkStride === null ? null : round(walkStride, 3),
@@ -655,11 +656,11 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   })
   // (the sound files its events play, beside the build record, for the game's build to install)
   copySounds(events, { unit: me.dir, companion: comp?.dir }, path.join(srcDir, 'sounds'), warn)
-  writeFileSync(path.join(o.modelsDir, `${unit}.events.json`), JSON.stringify(events, null, 1) + '\n')
-  if (Object.keys(atlasFiles).length > 0) writeFileSync(path.join(o.workDir, unit, 'folk_atlas.json'), JSON.stringify(atlasFiles, null, 1) + '\n')
+  writeIfChanged(path.join(o.modelsDir, `${unit}.events.json`), JSON.stringify(events, null, 1) + '\n')
+  if (Object.keys(atlasFiles).length > 0) writeIfChanged(path.join(o.workDir, unit, 'folk_atlas.json'), JSON.stringify(atlasFiles, null, 1) + '\n')
   if (isFolk(c) || (c.look.skins ?? []).length > 0 || (c.look.clothes ?? []).length > 0) {
     const manifest = folkManifest(c, me.dir, srcDir, body, hidesOf, spec)
-    writeFileSync(path.join(o.modelsDir, `${unit}.folk.json`), JSON.stringify(manifest, null, 1) + '\n')
+    writeIfChanged(path.join(o.modelsDir, `${unit}.folk.json`), JSON.stringify(manifest, null, 1) + '\n')
   }
   const record: BuildRecord = {
     schema: 4,
@@ -688,7 +689,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     }])),
     warnings,
   }
-  writeFileSync(path.join(srcDir, 'rigsmith.json'), JSON.stringify(record, null, 1) + '\n')
+  writeIfChanged(path.join(srcDir, 'rigsmith.json'), JSON.stringify(record, null, 1) + '\n')
   return record
 }
 
@@ -874,7 +875,7 @@ export function copySounds (events: UnitEvents, from: { unit: string, companion?
       const name = nameFor(path.resolve(src), prefix + file)
       if (!copied.includes(name)) {
         mkdirSync(to, { recursive: true })
-        copyFileSync(src, path.join(to, name))
+        copyIfChanged(src, path.join(to, name))
         copied.push(name)
       }
       e.sound = `file:sounds/${name}`
