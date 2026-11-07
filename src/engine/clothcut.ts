@@ -29,9 +29,9 @@ export function bodyField (geometry: BodyGeometry, regions: ArrayLike<number>, h
     const a = index[i]; const b = index[i + 1]; const c = index[i + 2]
     const id = regions[a]
     if (id < 0 || id > 32767 || regions[b] !== id || regions[c] !== id) continue
-    const ax = uv[a * 2] * width; const ay = (1 - uv[a * 2 + 1]) * h
-    const bx = uv[b * 2] * width; const by = (1 - uv[b * 2 + 1]) * h
-    const cx = uv[c * 2] * width; const cy = (1 - uv[c * 2 + 1]) * h
+    const ax = uv[a * 2] * width; const ay = uv[a * 2 + 1] * h
+    const bx = uv[b * 2] * width; const by = uv[b * 2 + 1] * h
+    const cx = uv[c * 2] * width; const cy = uv[c * 2 + 1] * h
     const det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
     if (Math.abs(det) < 1e-12) continue
     const x0 = Math.max(0, Math.ceil(Math.min(ax, bx, cx) - 0.5)); const x1 = Math.min(width - 1, Math.floor(Math.max(ax, bx, cx) - 0.5))

@@ -8,12 +8,13 @@ describe('cloth image core', () => {
   }, [0, 0, 0, 1, 1, 1], 1, 8)
   it('rasterises two regions and interpolates body height', () => {
     expect(new Set(field.region)).toEqual(new Set([-1, 0, 1]))
-    expect(field.y[6 * 8]).toBeLessThan(field.y[3 * 8])
+    expect(field.y[6 * 8]).toBeCloseTo(0.8125)
+    expect(field.y[3 * 8]).toBeCloseTo(0.4375)
   })
   it('feathers monotonically, drops regions, and multiplies by the mask', () => {
     const rgba = new Uint8ClampedArray(8 * 8 * 4).fill(255)
     const cut = cutAlpha(rgba, 8, 8, field, { below: [{ regions: [0], y: 0.5, feather: 0.4 }], drop: [1] })
-    expect(cut[(6 * 8) * 4 + 3]).toBeLessThan(cut[(3 * 8) * 4 + 3])
+    expect(cut[(6 * 8) * 4 + 3]).toBeGreaterThan(cut[(3 * 8) * 4 + 3])
     const p = field.region.findIndex(r => r === 1)
     expect(cut[p * 4 + 3]).toBe(0)
     expect(cutAlpha(rgba, 8, 8, field, {}, new Uint8ClampedArray(rgba.length))[3]).toBe(0)
