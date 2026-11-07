@@ -96,4 +96,3 @@ export function stanceExportPlan (c: Character, spec: Pick<UnitSpec, 'folk'>, ga
   }
   return result
 }
-
