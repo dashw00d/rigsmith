@@ -227,18 +227,18 @@ it('removes every slot of a long-sleeve layer when selecting bracers', () => {
   expect(wearOutfit(c, { layers: { top: 'tagged' } }, 'arm_leather').layers).toEqual({ top: 'tagged' })
 })
 
-it.fails('refuses adding a set with another set’s name', () => {
+it('refuses adding a set with another set’s name', () => {
   const c = folk(); c.folk = folkFromLegacy(c)!.folk
   expect(() => applyCommands(c, [{ type: 'folk.set.add', set: { id: 'duplicate', name: 'hat_fur', pieces: [], tags: [], grants: [] } }])).toThrow()
 })
 
-it.fails('refuses renaming a set to another set’s name', () => {
+it('refuses renaming a set to another set’s name', () => {
   const c = folk(); c.folk = folkFromLegacy(c)!.folk
   const set = c.folk.sets.find(s => s.name === 'arm_plate')!
   expect(() => applyCommands(c, [{ type: 'folk.set.update', id: set.id, patch: { name: 'hat_fur' } }])).toThrow()
 })
 
-it.fails('refuses duplicating a set with another set’s explicit name', () => {
+it('refuses duplicating a set with another set’s explicit name', () => {
   const c = folk(); c.folk = folkFromLegacy(c)!.folk
   const set = c.folk.sets.find(s => s.name === 'arm_plate')!
   expect(() => applyCommands(c, [{ type: 'folk.set.duplicate', id: set.id, newId: 'copy1', name: 'hat_fur' }])).toThrow()
