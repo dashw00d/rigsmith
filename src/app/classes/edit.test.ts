@@ -21,5 +21,8 @@ describe('class edits', () => {
     let c = fixture(); c = run(c, copyPoolFor(c, c.folk!.kinds[0], 'hair'))
     expect(c.folk!.kinds[0].pools!.hair).toBe('hair-copy')
     expect(c.folk!.kinds[1].pools!.hair).toBe('hair')
+    const implicit = fixture(); delete implicit.folk!.kinds[0].pools
+    const copied = run(implicit, copyPoolFor(implicit, implicit.folk!.kinds[0], 'hair'))
+    expect(copied.folk!.kinds[0].pools!.hair).toBe('hair-copy')
   })
 })

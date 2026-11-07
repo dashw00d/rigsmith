@@ -31,6 +31,12 @@ export function copyPoolFor (c: Folkish, kind: UnitKind, poolId: string): Comman
   if (pool === undefined) return []
   const id = freeId(`${pool.id}-copy`, poolsOf(c))
   const pools = Object.fromEntries(Object.entries(kind.pools ?? {}).map(([step, value]) => [step, value === poolId ? id : value]))
+  // A class may be using the default pool without naming it. Preserve that association on the copy.
+  for (const step of ['skin', 'bottom', 'top', 'over', 'hair', 'beard', 'accessory']) {
+    const poolKind = ['bottom', 'top', 'over'].includes(step) ? 'cloth' : step
+    const defaultPool = poolsOf(c).find(p => p.kind === poolKind && (p.kind !== 'cloth' || p.slot === undefined || p.slot === step))
+    if (kind.pools?.[step] === undefined && defaultPool?.id === poolId) pools[step] = id
+  }
   return [{ type: 'folk.pool.add', pool: { ...structuredClone(pool), id, name: `${pool.name} copy` } }, { type: 'folk.kind.update', id: kind.id, patch: { pools } }]
 }
 export function tagSetsByCulture (c: Folkish): Command[] {
