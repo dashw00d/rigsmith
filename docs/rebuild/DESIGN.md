@@ -641,3 +641,25 @@ PUT/DELETE `/weights` (body and gear) run as `lock: 'files'` jobs (or answer 409
   so parameter properties and enums are not allowed: the automap enums became const objects); `jobs.busy()` names the
   running job before a queued one; Stage uses THREE.Timer and PCFShadowMap (the deprecated Clock and soft shadow map
   are gone).
+- Schema 5 (docs/dressing-plan.md Phase 1, the model lane): `Character.folk?: FolkSection {sets: OutfitSet[], pools:
+  Pool[], kinds: UnitKind[], stances: Stance[]}`, `look.cloth?: ClothLayer[]` (slots bottom/top/over, cut, trim,
+  shapes, tags, coverage), `Skin.bare?`; `PoolKind`, `ClothSlot`, `CLOTH_SLOTS`, `ClothCut`. v4 files migrate to 5
+  (character.v4.json kept): each Gear.outfit a set (stableId '<id>:set:<outfit>', grants from its pieces), the hair
+  and beard roles pools with the old rules as requires/excludes (fem requires female, masc excludes it; hair excludes
+  covers-hair; beards chance 0.5, exclude beardless and covers-face), the skins the skin pool, each look.clothes a
+  cloth layer (top and bottom; long-sleeves the long_sleeve shape, excluding bracers) in the cloth pool, kinds from the
+  game's units' folk.outfits else one kind 'folk' with `{query: []}`. Gear.outfit/role and look.clothes stay (the UI
+  reads them until ported) and the old commands keep the folk data in step (src/model/folk.ts syncLegacy*). Every
+  reader of outfit membership goes through src/model/folk.ts (`folkOf`, `setsOf`, `setsWith`, `piecesOf`, `poolsOf`,
+  `kindsOf`, `clothOf`, `grantsOf`, `regrant`, `isFolkCharacter`). One pick engine, src/engine/folkpick.ts (`PROGRAM`,
+  `pick`, `candidates`, `tagsAfter`, `worldOf`, `goldens`, `draw`: fmix32(fnv1a32('<uid>|<salt>|<k>')) / 2^32);
+  folk.ts's fits/coversHair/coversFace/hasBracers/clothesFor/pickFolk are deprecated. Commands `folk.set.add/update/
+  pieces/duplicate/remove/reorder`, `folk.pool.add/update/items/remove`, `folk.kind.add/update/sets/remove`,
+  `folk.stance.add/update/clip/remove`, `look.cloth.add/update/remove/reorder`, `look.skin.bare`; entities `set:`,
+  `pool:`, `kind:`, `stance:`, `cloth:` and `setOrder`, `poolOrder`, `kindOrder`, `stanceOrder`, `clothOrder` (an
+  empty folk section or cloth list restores as none); gear.remove takes the piece out of sets and pools, slot.remove
+  and clips.replace take gone slots out of stances; look.skins.set keeps a skin's bare version. `UnitSpec.folk` gains
+  `kind` and `pools` (outfits, hair still read). The folk manifest is schema 2 (tools/lib/folk_export.ts
+  folkManifestData: rng, program, regions, bodies, packing, skins, layers, sets, kinds, pools, pieces, stances,
+  golden, plus schema 1's outfits/clothes/hair/beard/rules). The store, compat (`x-rigsmith-schema: 5`) and the private
+  file list know schema 5 and character.v4.json.
