@@ -133,3 +133,29 @@ describe('cancel placement with IK lead keys', () => {
     leadKeys.mockRestore(); send.mockRestore(); vi.mocked(app.byId).mockRestore()
   })
 })
+
+describe('Wardrobe hover', () => {
+  it('restores per-piece hides and shows after preview', async () => {
+    const { dress } = await import('../../state/dress.svelte.ts')
+    const { wardrobe } = await import('./wardrobe.svelte.ts')
+    const c = makeCharacter({ id: 'hover-folk', gear: [
+      makeGear({ id: 'a', outfit: 'set-a' }), makeGear({ id: 'hidden', outfit: 'set-a', hidden: true }),
+      makeGear({ id: 'b', outfit: 'set-b', hidden: true }),
+    ] })
+    dress.reset(c)
+    dress.setShown(c, 'a', false)
+    dress.setShown(c, 'hidden', true)
+    dress.toggleLock(c, 'hair')
+    const before = structuredClone(dress.of(c.id))
+    vi.useFakeTimers()
+    wardrobe.preview(c, { outfit: 'set-b' }, 0)
+    vi.advanceTimersByTime(0)
+    expect(dress.worn(c).outfit).toBe('set-b')
+    wardrobe.unpreview(c)
+    expect(dress.of(c.id)).toMatchObject(before!)
+    expect(dress.worn(c).outfit).toBe('set-a')
+    expect(gear.shownOnStage(c, c.gear[0])).toBe(false)
+    expect(gear.shownOnStage(c, c.gear[1])).toBe(true)
+    vi.useRealTimers()
+  })
+})

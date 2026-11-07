@@ -189,6 +189,9 @@ class WardrobeState {
     this.before = null
     if (b === null || b.id !== c.id) return
     this.dressUp(app(c), b.worn)
+    // Switching outfits clears per-piece preview overrides. Restore those saved before hovering.
+    for (const id of b.d?.off ?? []) dress.setShown(app(c), id, false)
+    for (const id of b.d?.on ?? []) dress.setShown(app(c), id, true)
   }
 
   /** What the hover shows is kept (a click). */
