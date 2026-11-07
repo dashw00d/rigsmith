@@ -131,6 +131,14 @@ export function wearOutfit (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>,
   if (grants.includes(COVERS_FACE)) next.beard = null
   const allowed = (c.look.clothes ?? []).filter(k => !grants.includes(BRACERS) || !longSleeves(k))
   if (now.clothing !== null && !allowed.some(k => k.name === now.clothing)) next.clothing = allowed[0]?.name ?? null
+  if (grants.includes(BRACERS) && d?.layers !== undefined) {
+    const layers = { ...d.layers }
+    for (const slot of ['bottom', 'top', 'over'] as const) {
+      const layer = c.look.cloth?.find(l => l.id === layers[slot])
+      if (layer?.shapes?.includes('long_sleeve') === true || layer?.tags?.includes('long-sleeves') === true) layers[slot] = null
+    }
+    next.layers = layers
+  }
   return next
 }
 

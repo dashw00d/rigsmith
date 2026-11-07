@@ -10,7 +10,7 @@ import type { Command } from '../../model/command-types.ts'
 import type { Character } from '../../state/api.ts'
 import { app as appState } from '../../state/app.svelte.ts'
 import { dress } from '../../state/dress.svelte.ts'
-import { DRESS_FIELDS, type Dress, type DressField, type Dressed } from '../../state/dressing.ts'
+import { DRESS_FIELDS, wearOutfit, type Dress, type DressField, type Dressed } from '../../state/dressing.ts'
 import { pick, worldOf, type FolkWorld } from '../../engine/folkpick.ts'
 import { mark } from '../../engine/perf.ts'
 import { choicesFor, dressedFromPick, newUid, NO_FILTER, stepChoice, type Filter, type Tab } from './wardrobe.ts'
@@ -122,7 +122,11 @@ class WardrobeState {
   /** The dress on stage set to `d` (each slot left out of it untouched). */
   dressUp (c: Character, d: Partial<Dressed>): void {
     const done = mark('wardrobe.dressUp')
-    if (d.outfit !== undefined && d.outfit !== dress.worn(c).outfit) dress.wearOutfit(c, d.outfit)
+    if (d.outfit !== undefined) {
+      const current = dress.of(c.id)
+      const next = wearOutfit(c, current, d.outfit)
+      if (d.outfit !== dress.worn(c).outfit || JSON.stringify(next.layers) !== JSON.stringify(current?.layers)) dress.wearOutfit(c, d.outfit)
+    }
     for (const f of DRESS_FIELDS) {
       if (f === 'outfit' || d[f] === undefined) continue
       const now = app(c)

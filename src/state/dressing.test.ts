@@ -210,3 +210,19 @@ it('upgrades old stored names to set ids and writes a renamed set as the documen
   expect(defaultCommands(saved, d)).toEqual([])
   expect(settled(saved, d)).toEqual({})
 })
+
+it('removes every slot of a long-sleeve layer when selecting bracers', () => {
+  const c = folk()
+  c.folk = folkFromLegacy(c)!.folk
+  c.folk.sets.find(s => s.name === 'arm_plate')!.grants = ['bracers']
+  c.look.cloth = [
+    { id: 'sleeved', name: 'Sleeved', file: 'sleeved.png', slots: ['top', 'over'], shapes: ['long_sleeve'] },
+    { id: 'trousers', name: 'Trousers', file: 'trousers.png', slots: ['bottom'] },
+    { id: 'tagged', name: 'Tagged', file: 'tagged.png', slots: ['top'], tags: ['long-sleeves'] },
+  ]
+  const first = wearOutfit(c, { layers: { top: 'sleeved', over: 'sleeved', bottom: 'trousers' } }, 'arm_plate')
+  expect(first.layers).toEqual({ top: null, over: null, bottom: 'trousers' })
+  const second = wearOutfit(c, { layers: { top: 'tagged' } }, 'arm_plate')
+  expect(second.layers).toEqual({ top: null })
+  expect(wearOutfit(c, { layers: { top: 'tagged' } }, 'arm_leather').layers).toEqual({ top: 'tagged' })
+})
