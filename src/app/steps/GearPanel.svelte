@@ -8,6 +8,7 @@
   import GearSection from '../gear/GearSection.svelte'
   import FolkPanel from '../gear/FolkPanel.svelte'
   import ClassSection from '../gear/ClassSection.svelte'
+  import SetsPanel from '../gear/SetsPanel.svelte'
   import PoseSection from '../gear/PoseSection.svelte'
   import PieceSection from '../gear/PieceSection.svelte'
   import HandsPanel from '../hands/HandsPanel.svelte'
@@ -29,6 +30,7 @@
 {#if isFolk(character) || (character.look.skins ?? []).length > 0 || (character.look.clothes ?? []).length > 0}
   <Section title="Dynamic character"><FolkPanel {character} /></Section>
 {/if}
+{#if isFolk(character)}<SetsPanel {character} />{/if}
 <ClassSection {character} />
 <PoseSection {character} />
 <PieceSection {character} {highlight} />
