@@ -9,6 +9,7 @@
   import type { Command } from '../../model/command-types.ts'
   import type { Character, Gear } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
+  import { incoming } from '../../state/incoming.svelte.ts'
   import { dress } from '../../state/dress.svelte.ts'
   import { gear as gearState } from '../../state/gear.svelte.ts'
   import { setsOf } from '../../model/folk.ts'
@@ -27,6 +28,7 @@
   const groups = $derived(pieceGroups(character, search))
   const order = $derived(groups.flatMap(g => (wardrobe.isCollapsed(character.id, g.set ?? '') && search === '' ? [] : g.pieces.map(p => p.id))))
   const byId = $derived(new Map(character.gear.map(g => [g.id, g])))
+  const incomingPieces = $derived(incoming.loadedFor !== character.id ? new Set<string>() : new Set(incoming.packages.flatMap(pkg => pkg.parts.flatMap(part => part.status === 'accepted' && part.acceptedGear ? [part.acceptedGear] : []))))
   const picked = $derived(wardrobe.picked.filter(id => byId.has(id)))
   const pickedGear = $derived(picked.map(id => byId.get(id)!))
   const sets = $derived([...setsOf(character)].sort((a, b) => a.name.localeCompare(b.name)))
@@ -207,6 +209,7 @@
                 aria-pressed={picked.includes(g.id)} use:tooltip={fromGame(g) ? `${g.name} (the game's own piece)` : `${g.name}: double-click to rename`}>
                 <span class="name">{g.name}</span>
                 {#if part !== null}<span class="part">{part}</span>{/if}
+                {#if incomingPieces.has(g.id)}<span class="tag small" data-testid="incoming-piece-new">New</span>{/if}
                 {#each g.tags ?? [] as t (t)}<span class="tag small">{t}</span>{/each}
                 {#if g.attach.kind === 'skin' && g.attach.hideBody === true}<span class="hides" use:tooltip={'Hides the body under it'}><EyeOff size={11} /></span>{/if}
                 {#if g.status !== 'ready'}<span class="state">{g.status}</span>{/if}

@@ -6,6 +6,7 @@ class Incoming {
   packages = $state.raw<PackageView[]>([])
   pending = $state(0)
   error = $state<string | null>(null)
+  loadedFor = $state<string | null>(null)
   busy = $state<string | null>(null)
   private turn = 0
   private source: EventSource | null = null
@@ -21,10 +22,11 @@ class Incoming {
   }
   async refresh (): Promise<void> {
     const turn = ++this.turn
+    const character = app.selectedId
     try {
-      const data = await api.incoming(app.selectedId ?? undefined)
-      if (turn !== this.turn) return
-      this.packages = data.packages; this.pending = data.pending; this.error = null
+      const data = await api.incoming(character ?? undefined)
+      if (turn !== this.turn || app.selectedId !== character) return
+      this.packages = data.packages; this.pending = data.pending; this.error = null; this.loadedFor = character
     } catch (error) {
       if (turn === this.turn) this.error = error instanceof Error ? error.message : String(error)
     }

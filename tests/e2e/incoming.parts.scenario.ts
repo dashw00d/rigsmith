@@ -49,4 +49,12 @@ export default { name: 'incoming.parts', character: 'folk-v6-0ba482', async run 
   await ui.waitFor({ role: 'button', name: 'Reject', within: row('new') })
   assert.equal(await ui.text({ testid: 'incoming-count' }), '2')
   await ui.shot('parts')
+  await ui.click({ testid: 'bar-incoming' })
+  await ui.click({ testid: 'wardrobe-button' })
+  await ui.click({ testid: 'wardrobe-tab', id: 'pieces' })
+  await ui.waitFor(() => {
+    const id = (window as unknown as { incomingGearId: string }).incomingGearId
+    return Array.from(document.querySelectorAll<HTMLElement>('[data-testid="wardrobe-piece-row"]')).some(row => row.dataset.id === id && row.querySelector('[data-testid="incoming-piece-new"]') !== null)
+  }, 15_000)
+  await ui.shot('new-piece')
 } } satisfies Scenario
