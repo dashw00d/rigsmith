@@ -17,6 +17,29 @@ export default {
       target.bareObserver = new PerformanceObserver(list => { target.bareTasks.push(...list.getEntries().map(e => e.duration)) })
       target.bareObserver.observe({ type: 'longtask' })
     })
+    // Ensure this scene really has an occluded trouser region even when the currently worn boots do not hide one.
+    await ui.eval(async r => {
+      const body = r.viewer.character!.bodySkinned
+      const { clothBody } = await import('/engine/folkview.ts')
+      const field = clothBody(body)
+      let offset = 0
+      for (const mesh of body) {
+        const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
+        const full = (mesh.userData.fullIndex as typeof mesh.geometry.index | undefined) ?? mesh.geometry.index
+        if (/trouser/i.test(material.name) && full !== null) {
+          const id = field.list.find(region => /trouser/i.test(region.material))?.id
+          if (id === undefined) throw new Error('No trouser region')
+          const kept: number[] = []
+          for (let i = 0; i + 2 < full.count; i += 3) if (field.regions[offset + full.getX(i)] !== id) kept.push(full.getX(i), full.getX(i + 1), full.getX(i + 2))
+          if (kept.length === full.count) throw new Error('Trouser region belongs to another mesh')
+          mesh.userData.fullIndex = full
+          mesh.geometry.setIndex(kept)
+          return
+        }
+        offset += mesh.geometry.getAttribute('position').count
+      }
+      throw new Error('No indexed trousers')
+    })
     await ui.click({ role: 'button', name: 'Make bare', within: row })
     await ui.waitFor({ testid: 'look-bare-badge', within: row }, 60_000)
     const tasks = await ui.eval(async () => {
@@ -35,12 +58,35 @@ export default {
       const ctx = canvas.getContext('2d')!; ctx.drawImage(original, 0, 0); const before = ctx.getImageData(0, 0, canvas.width, canvas.height).data
       ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(made, 0, 0); const after = ctx.getImageData(0, 0, canvas.width, canvas.height).data
       const body = r.viewer.character!.bodySkinned
+      const { clothBody } = await import('/engine/folkview.ts')
+      const bodyData = clothBody(body)
+      const hiddenGroups = new Map<number, number[]>()
+      let offset = 0
+      for (const mesh of body) {
+        const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
+        const uv = mesh.geometry.getAttribute('uv')
+        const full = (mesh.userData.fullIndex as typeof mesh.geometry.index | undefined) ?? mesh.geometry.index
+        const shown = mesh.geometry.index
+        const visible = new Set<string>()
+        const key = (a: number, b: number, c: number) => `${a},${b},${c}`
+        for (let i = 0; i + 2 < (shown?.count ?? uv.count); i += 3) visible.add(key(shown?.getX(i) ?? i, shown?.getX(i + 1) ?? i + 1, shown?.getX(i + 2) ?? i + 2))
+        if (/trouser/i.test(material.name)) for (let i = 0; i + 2 < (full?.count ?? uv.count); i += 3) {
+          const a = full?.getX(i) ?? i; const b = full?.getX(i + 1) ?? i + 1; const d = full?.getX(i + 2) ?? i + 2
+          if (visible.has(key(a, b, d))) continue
+          const x = Math.floor((uv.getX(a) + uv.getX(b) + uv.getX(d)) / 3 * canvas.width)
+          const y = Math.floor((1 - (uv.getY(a) + uv.getY(b) + uv.getY(d)) / 3) * canvas.height)
+          if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) continue
+          const region = bodyData.regions[offset + a]
+          const samples = hiddenGroups.get(region) ?? []; samples.push((y * canvas.width + x) * 4); hiddenGroups.set(region, samples)
+        }
+        offset += uv.count
+      }
       const samples = (material: RegExp): number[] => {
         const out: number[] = []
         for (const mesh of body) {
           const m = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
           if (!material.test(m.name)) continue
-          const uv = mesh.geometry.getAttribute('uv'); const index = mesh.geometry.index
+          const uv = mesh.geometry.getAttribute('uv'); const index = (mesh.userData.fullIndex as typeof mesh.geometry.index | undefined) ?? mesh.geometry.index
           const n = index?.count ?? uv.count
           for (let i = 0; i + 2 < n; i += 3) {
             const a = index?.getX(i) ?? i; const b = index?.getX(i + 1) ?? i + 1; const d = index?.getX(i + 2) ?? i + 2
@@ -78,10 +124,13 @@ export default {
       const fill = trousers.length ? Array.from(after.slice(trousers[0], trousers[0] + 3)) : []
       const unchanged = face.filter(p => before[p] === after[p] && before[p + 1] === after[p + 1] && before[p + 2] === after[p + 2]).length
       const changed = trousers.filter(p => before[p] !== after[p] || before[p + 1] !== after[p + 1] || before[p + 2] !== after[p + 2]).length
-      return { face: face.length, unchanged, trousers: trousers.length, changed, path: skin.bare, median, fill, total }
+      const hidden = [...hiddenGroups].map(([id, pixels]) => ({ id, total: pixels.length, changed: pixels.filter(p => before[p] !== after[p] || before[p + 1] !== after[p + 1] || before[p + 2] !== after[p + 2]).length }))
+      return { face: face.length, unchanged, trousers: trousers.length, changed, hidden, path: skin.bare, median, fill, total }
     })
     assert.ok(result.face > 0 && result.unchanged === result.face, 'face texels stay unchanged')
     assert.ok(result.trousers > 0 && result.changed > result.trousers / 2, 'trousers become skin toned')
+    assert.ok(result.hidden.length > 0, 'fixture must hide some trousers under worn gear')
+    assert.ok(result.hidden.every(region => region.changed > 0), `every hidden trouser region changes: ${JSON.stringify(result.hidden)}`)
     assert.ok(result.total > 0 && result.fill.every((v, i) => Math.abs(v - result.median[i]) <= 8), `trouser tone ${result.fill} differs from skin median ${result.median}`)
     await ui.shot('bare')
     await ui.press('ctrl+z')
