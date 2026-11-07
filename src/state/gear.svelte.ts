@@ -20,6 +20,7 @@ import { boneFrame, GARMENT_FLAG, type GarmentEdit, hideBodyUnder, restFrame, ta
 import type { DerivedStore } from '../engine/workers/derive.ts'
 import { fistAt, fitMatrix, heldAt, inFist, offBox, onShaft, restPoints, shapeOf, surfacePoints, type HandAt, type Shape } from '../engine/gearfit.ts'
 import { leadKeysMoved } from '../engine/geartracks.ts'
+import { pickGear } from '../engine/gearpick.ts'
 import { hasFemaleShape, prepareFemale, shapeFemale, showSkin, tint } from '../engine/folkview.ts'
 import { longSleeves } from '../engine/folk.ts'
 import { counterpart, mirroredPlacement, nearerMirror, placementFromMatrix, placementMatrix, placementOf } from '../engine/placement.ts'
@@ -30,13 +31,14 @@ import { api, type GearKind } from './api.ts'
 import { app } from './app.svelte.ts'
 import { asset, assets } from './assets.svelte.ts'
 import { dress as dressing } from './dress.svelte.ts'
-import { documentDress, resolve, shows, type Dressed } from './dressing.ts'
+import { documentDress, resolve, setsWith, shows, type Dressed } from './dressing.ts'
 import { mark } from '../engine/perf.ts'
 import { gizmo } from './gizmo.svelte.ts'
 import { hands } from './hands.svelte.ts'
 import { paint } from './paint.svelte.ts'
 import { viewer } from './viewer.svelte.ts'
 import { freeHandleName } from '../app/gear/text.ts'
+import { fitRestore, fitSnapshot, type FitStart } from '../app/gear/fit.ts'
 
 export type WearKind = GearAttach['kind']
 
@@ -66,8 +68,12 @@ const sleep = async (ms: number): Promise<void> => { await new Promise(resolve =
 class GearState {
   /** The piece open in the panel. */
   selected = $state<string | null>(null)
+  /** Character whose selection this is, including while its view is still loading. */
+  selectionFor = $state<string | null>(null)
   /** A skin or spot piece shown unbound while it is placed (bound again when done). */
   fitting = $state<string | null>(null)
+  fitStart = $state.raw<FitStart | null>(null)
+  cancellingFit = $state(false)
   picking = $state.raw<Picking | null>(null)
   /** What the rest pose with the hands closed was shown as ("Rest, fists closed"; null: not shown). */
   private restShown = $state<string | null>(null)
@@ -105,6 +111,16 @@ class GearState {
       viewer.onMountUnload(() => { this.unloadHorse() }),
     ]
     const stopEffects = $effect.root(() => {
+      $effect(() => {
+        const id = app.selectedId
+        untrack(() => {
+          if (this.selectionFor === id) return
+          this.selected = null
+          this.fitting = null
+          this.fitStart = null
+          this.selectionFor = id
+        })
+      })
       // (every copy of the character on stage and of its horse, the optimistic ones too: what is worn follows at once;
       // another character's change wears nothing, its copy being the same object)
       const rider = $derived(this.onStage.rider === null ? null : app.byId(this.onStage.rider))
@@ -126,7 +142,7 @@ class GearState {
         if (app.step === 'gear') return
         untrack(() => {
           if (this.picking !== null) this.stopPicking()
-          if (this.fitting !== null) this.fitting = null
+          if (this.fitting !== null) { this.fitting = null; this.fitStart = null }
           if (this.placingOrigin !== null) this.placeOrigin(null)
         })
       })
@@ -162,7 +178,7 @@ class GearState {
    * beards (browsing: dress.svelte.ts), else as the document has it (reactive). */
   shownOnStage (c: Character, g: Gear): boolean {
     if (this.fitting === g.id) return true
-    return shows(c, g, dressing.worn(c), documentDress(c))
+    return shows(c, g, dressing.worn(c), documentDress(c), dressing.of(c.id))
   }
 
   /** A shown piece on stage (a piece kept fitted while hidden is not there for the panels). */
@@ -174,7 +190,7 @@ class GearState {
   // ---- on stage ------------------------------------------------------------------------------------------------
 
   private load (view: CharacterView, c: Character): () => void {
-    if (this.lastId !== c.id) { this.selected = null; this.fitting = null }
+    if (this.lastId !== c.id && this.selectionFor !== c.id) { this.selected = null; this.fitting = null; this.fitStart = null }
     this.lastId = c.id
     this.stopPicking()
     const rider: Wearer = { view, id: c.id, rider: true, pieces: new Map() }
@@ -242,7 +258,7 @@ class GearState {
    * its rider's mount says (syncHorse). A piece being fitted always shows. */
   private showsOn (c: Character, g: Gear, w: Wearer, worn: Dressed | null, own: Dressed | null): boolean {
     if (w.rider && this.fitting === g.id) return true
-    return worn === null || own === null ? g.hidden !== true : shows(c, g, worn, own)
+    return worn === null || own === null ? g.hidden !== true : shows(c, g, worn, own, dressing.of(c.id))
   }
 
   /** What a piece is worn from: null when it can't be worn. Not whether it shows (a piece kept fitted is only hidden),
@@ -561,19 +577,54 @@ class GearState {
   // ---- actions -------------------------------------------------------------------------------------------------
 
   select (id: string | null): void {
-    if (id === this.selected) return
+    if (id === this.selected && this.selectionFor === app.selectedId) return
     this.stopPicking()
-    if (this.fitting !== null && this.fitting !== id) this.fitting = null
+    if (this.fitting !== null && this.fitting !== id) { this.fitting = null; this.fitStart = null }
     this.selected = id
+    this.selectionFor = app.selectedId
   }
 
-  /** Show a skin or spot piece unbound to place it (null: bind it again). */
+  /** Show a skin or spot piece unbound to place it (null: bind the edits). */
   fit (id: string | null): void {
+    if (this.cancellingFit) return
     this.stopPicking()
-    if (id !== null) this.selected = id
-    this.fitting = id
-    // (worn again, unbound or bound: what it is worn from says whether it is being fitted)
+    if (id === null) { this.fitting = null; this.fitStart = null } else {
+      const c = app.selected
+      const g = c?.gear.find(piece => piece.id === id)
+      if (c === null || c === undefined || g === undefined) return
+      this.select(id)
+      this.fitStart = fitSnapshot(c.id, g)
+      this.fitting = id
+    }
     this.syncAll()
+  }
+
+  /** Cancel as one undoable batch; keep the session open if the server refuses it. */
+  async cancelFit (): Promise<void> {
+    const start = this.fitStart
+    if (start === null || this.cancellingFit) return
+    const c = app.byId(start.character)
+    const current = c?.gear.find(g => g.id === start.id)
+    if (current === undefined) { this.fit(null); return }
+    const commands = fitRestore(start, current)
+    this.cancellingFit = true
+    try {
+      if (commands.length > 0 && await app.do(start.character, commands, 'gear.fit.cancel') === null) return
+      if (this.fitStart === start) { this.fitting = null; this.fitStart = null; this.syncAll() }
+    } finally { this.cancellingFit = false }
+  }
+
+  /** Select the visible piece under a click (empty stage clears the selection). */
+  pickAt (event: Pick<PointerEvent, 'clientX' | 'clientY'>): void {
+    const stage = viewer.stage
+    const rider = this.rider
+    if (app.step !== 'gear' || stage === null || rider === null || rider.id !== app.selectedId || this.picking !== null || paint.active || this.placingOrigin !== null) return
+    const rect = stage.renderer.domElement.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return
+    const ray = new THREE.Raycaster()
+    ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, 1 - (event.clientY - rect.top) / rect.height * 2), stage.camera)
+    const pieces = [...rider.pieces].flatMap(([id, p]) => p.worn === null ? [] : [{ id, shown: p.shown, meshes: p.worn.meshes }])
+    this.select(pickGear(ray, pieces))
   }
 
   /** A bone the skeleton has to put new gear on: `want` if it has it, else a hand, else its first. */
@@ -815,8 +866,11 @@ class GearState {
   }
 
   async setShown (c: Character, g: Gear, shown: boolean): Promise<void> {
-    await app.do(c.id, { type: 'gear.update', id: g.id, patch: { hidden: !shown } })
+    if (setsWith(c, g).length > 0 || g.role !== undefined) dressing.setShown(c, g.id, shown)
+    else await app.do(c.id, { type: 'gear.update', id: g.id, patch: { hidden: !shown } })
   }
+
+  toggleShown (c: Character, g: Gear): Promise<void> { return this.setShown(c, g, !this.shownOnStage(c, g)) }
 
   async rename (c: Character, g: Gear, name: string): Promise<void> {
     const next = name.trim()
@@ -861,7 +915,7 @@ class GearState {
     const place = this.placeOf(g)
     const attach: GearAttach = kind === 'bone' ? { kind: 'bone', bone: this.boneFor(c), place }
       : kind === 'skin' ? { kind: 'skin', policy: 'body', place } : { kind: 'spot', place }
-    if (this.fitting === g.id) this.fitting = null
+    if (this.fitting === g.id) { this.fitting = null; this.fitStart = null }
     await app.do(c.id, { type: 'gear.attach', id: g.id, attach })
   }
 

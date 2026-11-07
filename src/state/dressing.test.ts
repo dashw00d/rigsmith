@@ -4,6 +4,9 @@
 import { describe, expect, it } from 'vitest'
 import { applyCommands } from '../model/commands.ts'
 import { makeCharacter, makeGear } from '../model/fixtures.ts'
+import { folkFromLegacy } from '../model/folk.ts'
+import { pick, worldOf } from '../engine/folkpick.ts'
+import { dressedFromPick, fixedFor } from '../app/gear/wardrobe.ts'
 import type { Character, Gear } from '../model/types.ts'
 import { defaultCommands, differs, documentDress, randomize, resolve, settled, setsAfter, setsOf, shows, wearOutfit } from './dressing.ts'
 
@@ -73,6 +76,31 @@ describe('the dress', () => {
     expect(c.gear.filter(g => shows(c, g, own, own)).map(g => g.id)).toEqual(['a1', 'h1', 'axe'])
   })
 
+  it('hides a piece only in the preview, and clears overrides on an outfit change', () => {
+    const c = folk()
+    const d = { off: ['a1'] }
+    expect(shows(c, c.gear[0], resolve(c, d), documentDress(c), d)).toBe(false)
+    expect(c.gear[0].hidden).not.toBe(true)
+    expect(wearOutfit(c, d, 'hat_fur').off).toBeUndefined()
+    expect(defaultCommands(c, d)).toEqual(defaultCommands(c, undefined))
+  })
+
+  it('can show a document-hidden piece for this preview without changing its default', () => {
+    const c = folk()
+    c.gear[1].hidden = true
+    const d = { on: ['a2'] }
+    expect(shows(c, c.gear[1], resolve(c, d), documentDress(c), d)).toBe(true)
+    expect(c.gear[1].hidden).toBe(true)
+    expect(wearOutfit(c, d, 'hat_fur').on).toBeUndefined()
+  })
+
+  it('obeys the saved set grants even when legacy gear tags disagree', () => {
+    const c = folk()
+    c.folk = folkFromLegacy(c)!.folk
+    c.folk.sets.find(s => s.name === 'arm_leather')!.grants = ['covers-hair', 'covers-face']
+    expect(wearOutfit(c, undefined, 'arm_leather')).toMatchObject({ hair: null, beard: null })
+  })
+
   it('takes off what an outfit leaves no room for', () => {
     const c = folk()
     expect(wearOutfit(c, undefined, 'hat_fur')).toEqual({ outfit: 'hat_fur', hair: null })
@@ -82,10 +110,19 @@ describe('the dress', () => {
 })
 
 describe('randomize', () => {
+  it('uses the same pick engine and fixed fields as the Wardrobe', () => {
+    const c = folk()
+    const d = { skin: 'asha', locks: ['skin' as const] }
+    const world = worldOf(c)
+    const expected = dressedFromPick(c, pick(world, 42, { fixed: fixedFor(c, resolve(c, d), d.locks) }))
+    expect(resolve(c, randomize(c, d, 42))).toEqual(expected)
+  })
+
   it('picks as the game would, the same roll the same pick', () => {
     const c = folk()
-    const a = randomize(c, undefined, 42)
-    expect(randomize(c, undefined, 42)).toEqual(a)
+    const locked = { locks: ['outfit' as const] }
+    const a = randomize(c, locked, 42)
+    expect(randomize(c, locked, 42)).toEqual(a)
     expect(a.seed).toBe(42)
     expect(a.outfit).toBe('arm_leather')
   })

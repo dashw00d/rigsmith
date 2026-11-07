@@ -7,8 +7,10 @@
 // replace Gear.outfit, and these two are the one place that changes.
 import type { Command } from '../model/command-types.ts'
 import type { Character, Gear } from '../model/types.ts'
-import { setsOf as modelSetsOf, setsWith as modelSetsWith } from '../model/folk.ts'
-import { clothesFor, coversFace, coversHair, pickFolk, seeded } from '../engine/folk.ts'
+import { BRACERS, COVERS_FACE, COVERS_HAIR, setsOf as modelSetsOf, setsWith as modelSetsWith } from '../model/folk.ts'
+import { longSleeves } from '../engine/folk.ts'
+import { pick, worldOf, type FolkWorld } from '../engine/folkpick.ts'
+import { dressedFromPick, fixedFor } from '../app/gear/wardrobe.ts'
 
 /** A set of pieces worn together (today: an outfit). */
 export interface DressSet { name: string, pieces: readonly string[] }
@@ -40,6 +42,9 @@ export interface Dress {
   hair?: string | null
   /** A beard piece's gear id. */
   beard?: string | null
+  /** Per-piece preview overrides; neither is written by Make default. */
+  off?: string[]
+  on?: string[]
   /** Kept by Randomize. */
   locks?: DressField[]
   seed?: number
@@ -83,9 +88,10 @@ export function resolve (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d:
 
 /** Whether a piece of `c` shows under the dress: a set's pieces with their set (the document's own set as the document
  * shows its pieces, `own`), hair and beard as picked, the rest as the document has them. */
-export function shows (c: Gearing, g: Gear, d: Dressed, own?: Dressed): boolean {
+export function shows (c: Gearing, g: Gear, d: Dressed, own?: Dressed, preview?: Dress): boolean {
+  if (preview?.off?.includes(g.id) === true) return false
   const sets = setsWith(c, g)
-  if (sets.length > 0) return d.outfit !== null && sets.includes(d.outfit) && (own?.outfit !== d.outfit || g.hidden !== true)
+  if (sets.length > 0) return d.outfit !== null && sets.includes(d.outfit) && (preview?.on?.includes(g.id) === true || own?.outfit !== d.outfit || g.hidden !== true)
   if (g.role === 'hair') return g.id === d.hair
   if (g.role === 'beard') return g.id === d.beard
   return g.hidden !== true
@@ -96,33 +102,23 @@ export function shows (c: Gearing, g: Gear, d: Dressed, own?: Dressed): boolean 
 export function wearOutfit (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined, outfit: string | null): Dress {
   const now = resolve(c, d)
   const next: Dress = { ...d, outfit }
-  if (coversHair(c.gear, outfit)) next.hair = null
-  if (coversFace(c.gear, outfit)) next.beard = null
-  const allowed = clothesFor(c.gear, outfit, c.look.clothes ?? [])
+  delete next.off
+  delete next.on
+  const grants = modelSetsOf(c).find(s => s.name === outfit)?.grants ?? []
+  if (grants.includes(COVERS_HAIR)) next.hair = null
+  if (grants.includes(COVERS_FACE)) next.beard = null
+  const allowed = (c.look.clothes ?? []).filter(k => !grants.includes(BRACERS) || !longSleeves(k))
   if (now.clothing !== null && !allowed.some(k => k.name === now.clothing)) next.clothing = allowed[0]?.name ?? null
   return next
 }
 
-/** A skin, hair and beard (and clothes) as the game would pick them for a unit, under the outfit worn, keeping the
- * locked fields; `seed` is the roll. */
-export function randomize (c: Pick<Character, 'id' | 'gear' | 'look' | 'folk'>, d: Dress | undefined, seed: number): Dress {
+/** The game's pick for a unit, with locked slots fixed to the current dress. */
+export function randomize (c: Character, d: Dress | undefined, seed: number, world: FolkWorld = worldOf(c)): Dress {
   const now = resolve(c, d)
-  const locks = new Set(d?.locks ?? [])
-  const allSkins = c.look.skins ?? []
-  const allClothes = c.look.clothes ?? []
-  const skins = locks.has('skin') ? allSkins.filter(s => s.name === now.skin) : allSkins
-  const clothes = locks.has('clothing') ? allClothes.filter(s => s.name === now.clothing) : allClothes
-  const pick = pickFolk(c.gear, skins, now.outfit, seeded(seed), clothes)
-  const keep = (k: DressField, v: string | null): string | null => (locks.has(k) ? now[k] : v)
-  return {
-    ...d,
-    outfit: now.outfit,
-    skin: locks.has('skin') ? now.skin : pick.skin,
-    clothing: locks.has('clothing') ? now.clothing : pick.clothing,
-    hair: keep('hair', pick.hair),
-    beard: keep('beard', pick.beard),
-    seed,
-  }
+  const unit = dressedFromPick(c, pick(world, seed, { fixed: fixedFor(c, now, d?.locks ?? []) }))
+  const next: Dress = { ...d, ...unit, seed }
+  if (unit.outfit !== now.outfit) { delete next.off; delete next.on }
+  return next
 }
 
 /** Whether the dress differs from the document's own look. */

@@ -1,7 +1,7 @@
 // What `npm run perf` (tools/perf.ts) does in the app, each measured for its longest main-thread task against
 // tests/perf/budget.json: the first load of a character, then the clicks a designer makes most while dressing one
 // (outfits, back to one just shown, skins, Randomize, the steps, another character and back). Statements run in the page
-// with `r` (window.__rigsmith: app, gear, animator, viewer, dress, assets, perf) and `c` (the character selected).
+// with `r` (window.__rigsmith: app, gear, animator, viewer, dress, wardrobe, assets, perf) and `c` (the character selected).
 import type { Scenario } from '../../tools/lib/profile.ts'
 
 // (the character's outfits, sorted, and the one after the one on stage)
@@ -20,7 +20,12 @@ export const scenarios: Scenario[] = [
     times: 2,
   },
   { name: 'skin: the next one', kind: 'click', action: `${skins}; if (skins.length > 0) r.dress.setSkin(c, skins[(at + 1) % skins.length])`, times: 4 },
-  { name: 'Randomize', kind: 'click', action: 'r.dress.randomize(c)', times: 6 },
+  {
+    name: 'Randomize', kind: 'click',
+    // The harness adds wardrobe to the dev hook; before integration, import the already-loaded UI module once.
+    setup: 'r.wardrobe ??= (await import("/app/gear/wardrobe.svelte.ts")).wardrobe',
+    action: 'r.wardrobe.randomize(c)', times: 6,
+  },
   { name: 'step: Motion and back to Gear', kind: 'click', action: "await r.app.go('motion'); await new Promise(res => setTimeout(res, 300)); await r.app.go('gear')", times: 2 },
   {
     name: 'another character and back',

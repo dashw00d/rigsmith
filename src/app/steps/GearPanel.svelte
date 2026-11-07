@@ -4,7 +4,7 @@
   // open: its name, the bone it rides (or another way to wear it), where it sits (gizmo and numbers), where hands hold
   // it, its painted weights, and what each hand does and why. Every change is a command (src/state/gear.svelte.ts).
   import { untrack } from 'svelte'
-  import { Library, LoaderCircle, Sword, Upload } from '@lucide/svelte'
+  import { Library, LoaderCircle, Shirt, Sword, Upload } from '@lucide/svelte'
   import { gearById, phaseOf } from '../../model/select.ts'
   import { gearLeftOut, meshNameOf } from '../../engine/contract.ts'
   import { MODEL_FILE, type Character, type GearKind } from '../../state/api.ts'
@@ -40,6 +40,12 @@
   const paintable = $derived(piece === undefined ? null : paintableGear(piece))
   const leftOut = $derived(piece === undefined ? null : gearLeftOut(piece))
   const sets = $derived(swapSets(character.gear))
+
+  function cancelFitOnEscape (event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || event.defaultPrevented || !fitting) return
+    event.preventDefault()
+    void gearState.cancelFit()
+  }
 
   // ---- adding ----
   let input = $state<HTMLInputElement>()
@@ -88,9 +94,14 @@
   ])
 </script>
 
+<svelte:window onkeydown={cancelFitOnEscape} />
+
 <Section title="Gear">
   {#snippet action()}
     <div class="adds">
+      {#if isFolk(character)}
+        <Button size="sm" data-testid="wardrobe-button" keys="dress.wardrobe" variant={app.drawer === 'wardrobe' ? 'primary' : 'ghost'} onclick={() => app.toggleDrawer('wardrobe')}><Shirt size={13} /> Wardrobe</Button>
+      {/if}
       <Button size="sm" variant={app.drawer === 'catalog' ? 'primary' : 'ghost'} onclick={() => app.toggleDrawer('catalog')}
         title="Weapons, shields and tools that come with Rigsmith"><Library size={13} /> Catalog</Button>
       <Button size="sm" variant="ghost" loading={uploading} onclick={() => choose('bone')} title="Your own model (FBX, GLB, OBJ, DAE or ZIP), on a bone">
@@ -145,7 +156,7 @@
       <datalist id="gear-swap-sets">{#each sets as s (s)}<option value={s}></option>{/each}</datalist>
     </Field>
     <Toggle label="Shown" hint={piece.swapSet !== undefined ? `Showing it hides the rest of ${piece.swapSet}` : 'Hidden: kept, but not shown or exported'}
-      checked={piece.hidden !== true} onchange={(on) => gearState.setShown(character, piece, on)} />
+      checked={gearState.shownOnStage(character, piece)} onchange={(on) => gearState.setShown(character, piece, on)} />
     {#if a.kind === 'bone'}
       <Field label="Held by" hint="Moving it to the other hand carries it across, held the same way">
         <Select size="sm" options={boneChoices(character, a.bone).map(b => ({ value: b, label: boneLabel(b) }))} value={a.bone} label="Held by"
@@ -162,7 +173,10 @@
           <PlacementFields {character} gear={piece} />
           <OriginFields {character} gear={piece} />
           <p class="note">Shown unbound while you place it.</p>
-          <Button variant="primary" block onclick={() => gearState.fit(null)}>Bind to {character.name}</Button>
+          <div class="fit-actions">
+            <Button variant="primary" data-testid="fit-bind" disabled={gearState.cancellingFit} onclick={() => gearState.fit(null)}>Bind to {character.name}</Button>
+            <Button data-testid="fit-cancel" disabled={gearState.cancellingFit} onclick={() => { void gearState.cancelFit() }}>Cancel</Button>
+          </div>
         {:else}
           <Button size="sm" onclick={() => gearState.fit(piece.id)}>Place it</Button>
         {/if}
@@ -194,11 +208,13 @@
 
 <style>
   .adds { display: flex; gap: 2px; }
+  .adds :global(button) { padding-inline: 5px; gap: 4px; }
   .note { margin: 0; font-size: 12px; color: var(--text-3); display: flex; align-items: center; gap: 4px; }
   .error { margin: 0; font-size: 12px; color: var(--danger); }
   .more summary { cursor: pointer; font-size: 12px; color: var(--text-3); }
   .more summary:hover { color: var(--text-1); }
   .more-body { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .fit-actions { display: flex; gap: 6px; }
   .place { display: flex; flex-direction: column; gap: 8px; }
   .set { width: 150px; height: 28px; border-radius: var(--r-1); border: 1px solid var(--line-strong); background: var(--bg-2); padding: 0 8px; color: inherit; font: inherit; font-size: 12.5px; }
   .set:focus { outline: none; border-color: var(--accent); }

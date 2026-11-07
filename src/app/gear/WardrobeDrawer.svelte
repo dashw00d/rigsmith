@@ -48,6 +48,7 @@
   const groups: Array<[keyof Omit<Filter, 'search'>, string]> = [['cultures', 'Culture'], ['categories', 'Kind'], ['parts', 'Body part'], ['tags', 'Tag']]
 </script>
 
+<div data-testid="wardrobe-drawer" style="display: contents">
 <Drawer open={app.drawer === 'wardrobe'} onclose={() => app.toggleDrawer('wardrobe')} title="Wardrobe" scrim={false} width="min(560px, 94%)">
   {#if character === null || !folk}
     <EmptyState title="Not a dynamic character" body="The Wardrobe dresses a dynamic character: one body, dressed per unit." compact />
@@ -56,7 +57,7 @@
     <div class="top">
       <div class="tabs" role="tablist" aria-label="What to look at">
         {#each TABS as t (t.id)}
-          <button role="tab" aria-selected={tab === t.id} class:active={tab === t.id} onclick={() => { wardrobe.setTab(c.id, t.id) }}>
+          <button role="tab" data-testid="wardrobe-tab" data-id={t.id} aria-selected={tab === t.id} class:active={tab === t.id} onclick={() => { wardrobe.setTab(c.id, t.id) }}>
             {t.label} <span class="n">{counts[t.id]}</span></button>
         {/each}
       </div>
@@ -102,6 +103,7 @@
     {/if}
   {/if}
 </Drawer>
+</div>
 
 <style>
   .top { position: sticky; top: 0; z-index: 3; display: flex; flex-direction: column; gap: 7px; padding: 10px 14px 10px 16px; border-bottom: 1px solid var(--line); background: var(--bg-1); }

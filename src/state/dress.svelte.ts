@@ -9,6 +9,8 @@
 import { SvelteMap } from 'svelte/reactivity'
 import type { Character, Gear } from '../model/types.ts'
 import { preloadModel } from '../engine/garments.ts'
+import type { FolkWorld } from '../engine/folkpick.ts'
+import { newUid } from '../app/gear/wardrobe.ts'
 import { app } from './app.svelte.ts'
 import { asset } from './assets.svelte.ts'
 import { defaultCommands, differs, randomize, resolve, settled, setsAfter, setsOf, setsWith, wearOutfit, type Dress, type DressField, type Dressed } from './dressing.ts'
@@ -94,6 +96,18 @@ class DressState {
   setHair (c: Character, id: string | null): void { this.put(c, { ...this.of(c.id), hair: id }) }
   setBeard (c: Character, id: string | null): void { this.put(c, { ...this.of(c.id), beard: id }) }
 
+  /** Show or hide one folk piece for this preview, without changing the document. */
+  setShown (c: Character, id: string, on: boolean): void {
+    const d = this.of(c.id) ?? {}
+    const off = new Set(d.off ?? [])
+    const shown = new Set(d.on ?? [])
+    if (on) { off.delete(id); shown.add(id) } else { off.add(id); shown.delete(id) }
+    const next: Dress = { ...d }
+    if (off.size > 0) next.off = [...off]; else delete next.off
+    if (shown.size > 0) next.on = [...shown]; else delete next.on
+    this.put(c, next)
+  }
+
   /** Randomize keeps this field (or stops keeping it). */
   toggleLock (c: Character, field: DressField): void {
     const d = this.of(c.id) ?? {}
@@ -103,11 +117,10 @@ class DressState {
     this.put(c, { ...d, locks: [...locks] })
   }
 
-  private rolls = 0
-  /** A unit's look as the game would pick one, the locked fields kept. */
-  randomize (c: Character): void {
-    const seed = (Date.now() + ++this.rolls * 7919) >>> 0
-    this.put(c, randomize(c, this.of(c.id), seed))
+  /** One game-engine pick, with the locked fields kept. Returns the unit actually shown. */
+  randomize (c: Character, uid = newUid(), world?: FolkWorld): Dressed {
+    this.put(c, randomize(c, this.of(c.id), uid, world))
+    return this.worn(c)
   }
 
   /** Back to the document's own look (locks kept). */
