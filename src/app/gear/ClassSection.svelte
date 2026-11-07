@@ -2,7 +2,7 @@
   import type { Character, UnitKind } from '../../model/types.ts'
   import { folkTags } from '../../model/commands/folk.ts'
   import { kindSetRows } from '../../model/classes.ts'
-  import { kindsOf, poolsOf, setsOf } from '../../model/folk.ts'
+  import { kindsOf, setsOf } from '../../model/folk.ts'
   import { app } from '../../state/app.svelte.ts'
   import { classes } from '../../state/classes.svelte.ts'
   import Button from '../../ui/Button.svelte'
@@ -13,12 +13,12 @@
   import Segmented from '../../ui/Segmented.svelte'
   import Select from '../../ui/Select.svelte'
   import TextField from '../../ui/TextField.svelte'
-  import { listSet, toList, toQuery, unlistSet, usePool, weigh } from '../classes/edit.ts'
+  import { listSet, toList, toQuery, unlistSet, weigh } from '../classes/edit.ts'
+  import ClassPools from './ClassPools.svelte'
   let { character }: { character: Character } = $props()
   const kind = $derived(kindsOf(character).find(k => k.id === classes.openId))
   const rows = $derived(kind === undefined ? [] : kindSetRows(character, kind))
   const all = $derived(setsOf(character))
-  const steps = ['skin', 'bottom', 'top', 'over', 'hair', 'beard', 'accessory']
   const update = (command: Parameters<typeof app.do>[1]): void => { void app.do(character.id, command) }
   function tags (value: string, k: UnitKind, query: boolean): void {
     try {
@@ -45,10 +45,7 @@
       {#each rows as row (row.set.id)}<span class="faint">{row.set.name}</span>{/each}
     {/if}
     <strong>Pools</strong>
-    {#each steps as step (step)}
-      {@const options = poolsOf(character).filter(p => p.kind === (['bottom', 'top', 'over'].includes(step) ? 'cloth' : step) && (p.kind !== 'cloth' || p.slot === undefined || p.slot === step))}
-      <div class="pool"><span>{step}</span><Select label="{step} pool" value={kind.pools?.[step] ?? ''} options={[{ value: '', label: 'Default' }, ...options.map(p => ({ value: p.id, label: `${p.name} (${p.items.length})` }))]} onchange={(v) => update(usePool(kind, step, v || null))} /></div>
-    {/each}
+    <ClassPools {character} {kind} />
     <strong>Stance</strong>
     {#if (character.folk?.stances.length ?? 0) === 0}<Note>No stances yet.</Note>{:else}
       <Select label="Class stance" value={kind.stance ?? ''} options={[{ value: '', label: 'None' }, ...character.folk!.stances.map(s => ({ value: s.id, label: s.name }))]} onchange={(v) => update({ type: 'folk.kind.update', id: kind.id, patch: { stance: v || null } })} />
@@ -56,5 +53,5 @@
   </Section>
 {/if}
 <style>
-  .set, .pool { display: flex; gap: 6px; align-items: center; } .setname { flex: 1; min-width: 0; } .pool span { flex: 1; text-transform: capitalize; } .faint { font-size: 12px; }
+  .set { display: flex; gap: 6px; align-items: center; } .setname { flex: 1; min-width: 0; } .faint { font-size: 12px; }
 </style>
