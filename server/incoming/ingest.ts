@@ -60,8 +60,6 @@ export async function validateAccept (req: AcceptRequest): Promise<void> {
     const resolved = target ?? (part.from ? character.gear.find(g => g.from === part.from)?.id : undefined)
     if (resolved && targets.has(resolved)) throw new HttpError(400, `${id}: more than one part replaces the same gear`)
     if (resolved) targets.add(resolved)
-    // gear.model is currently excluded from the core undo record. Do not expose an unundoable replacement.
-    if (resolved) throw new HttpError(409, 'Replacement is unavailable until model changes can be undone')
   }
 }
 
@@ -112,6 +110,7 @@ function commandsFor (c: Character, staged: Staged[], manifest: IncomingManifest
 
 /** Run inside a character files job. A failed import leaves the delivery pending and makes no journal entry. */
 export async function ingest (req: AcceptRequest, o: { by?: string, signal?: AbortSignal, sink?: IngestSink, progress?: (n: number, text: string) => void } = {}): Promise<void> {
+  await validateAccept(req)
   const impl = o.sink ?? sink
   const root = path.join(await incomingDir(), req.package)
   const { manifest, errors } = await readPackage(root)

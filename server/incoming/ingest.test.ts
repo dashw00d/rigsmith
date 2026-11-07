@@ -61,7 +61,7 @@ it('adds a tagged piece to a set and copies clothes and skin in one undoable ent
   const undone = (await getCharacter(c.id))!
   expect(undone.gear).toHaveLength(0); expect(undone.look.skins).toBeUndefined(); expect(undone.look.clothes).toBeUndefined()
 })
-it.fails('replacement must undo its model change (awaiting core undo support)', async () => {
+it('replacement must undo its model change', async () => {
   const old = makeGear({ id: 'old', name: 'old', from: 'emberhold:gear/coat', model: 'garments/old/model.glb', attach: { kind: 'skin', policy: 'lower', place } })
   const c = body('test-update', [old]); await putCharacter(c); await delivery('update', [{ id: 'coat', type: 'piece', from: old.from }])
   const importer = fake()
@@ -70,8 +70,10 @@ it.fails('replacement must undo its model change (awaiting core undo support)', 
   const next = (await getCharacter(c.id))!
   expect(next.gear).toHaveLength(1); expect(next.gear[0].model).toMatch(/^garments\/old\/incoming-.*\.glb$/); expect(next.gear[0].attach).toEqual(old.attach)
   expect((await readJournal(c.id)).at(-1)?.changes.join(' ')).toContain('new mesh')
-  await undo(c.id)
+  const undone = await undo(c.id)
   expect((await getCharacter(c.id))!.gear[0]).toMatchObject({ model: old.model, attach: old.attach })
+  await undo(c.id, undone.entry!.seq)
+  expect((await getCharacter(c.id))!.gear[0]).toMatchObject({ model: next.gear[0].model, attach: old.attach })
 })
 it('leaves a failed import pending and does not journal it', async () => {
   const c = body('test-fail'); await putCharacter(c); await delivery('fail', [{ id: 'coat', type: 'piece' }])
@@ -83,7 +85,7 @@ it('honors an explicit replacement even when the source identity is new', async 
   const old = makeGear({ id: 'old', name: 'old', model: 'garments/old/model.glb', attach: { kind: 'skin', policy: 'lower', place } })
   const c = body('test-chosen', [old]); await putCharacter(c)
   await delivery('chosen', [{ id: 'coat', type: 'piece', from: 'emberhold:gear/new' }])
-  await expect(validateAccept({ package: 'chosen', parts: ['coat'], character: c.id, replace: { coat: 'old' } })).rejects.toThrow('until model changes can be undone')
+  await expect(validateAccept({ package: 'chosen', parts: ['coat'], character: c.id, replace: { coat: 'old' } })).resolves.toBeUndefined()
   const importer = fake()
   await ingest({ package: 'chosen', parts: ['coat'], character: c.id, replace: { coat: 'old' } }, { sink: importer })
   expect((await getCharacter(c.id))!.gear[0]).toMatchObject({ id: 'old', from: 'emberhold:gear/new', attach: old.attach })

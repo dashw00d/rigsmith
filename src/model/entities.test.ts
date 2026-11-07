@@ -32,7 +32,7 @@ describe('entities', () => {
   it('cuts a character into its entities, leaving out what jobs own', () => {
     const c = base()
     const keys = [...entitiesOf(c).keys()]
-    expect(keys).toEqual(['name', 'skeleton', 'skinLock', 'hands', 'gearOrder', 'gear:axe', 'gear:cap', 'slotOrder', 'slot:walk', 'slot:run', 'layerOrder', 'layer:l1'])
+    expect(keys).toEqual(['name', 'skeleton', 'skinLock', 'hands', 'gearOrder', 'gear:axe', 'gearModel:axe', 'gear:cap', 'gearModel:cap', 'slotOrder', 'slot:walk', 'slot:run', 'layerOrder', 'layer:l1'])
     expect(entitiesOf(c).get('gear:axe')).not.toHaveProperty('model')
     expect(entitiesOf(c).get('gear:axe')).not.toHaveProperty('status')
     expect(entitiesOf(c).get('skinLock')).toEqual({ locked: false })
@@ -78,6 +78,17 @@ describe('undo', () => {
     expect(undoConflicts(after, undo)).toEqual([])
     const back = restoreEntities(after, undo)
     expect(back.gear[0]).toEqual({ ...axe, status: 'error', error: 'the import failed' } satisfies Gear)
+  })
+
+  it('tracks model changes separately and detects a later model replacement', () => {
+    const c = base()
+    const { after, undo } = write(c, { type: 'gear.update', id: 'axe', patch: { model: 'garments/axe/new.glb' } })
+    expect(undo.entities.map(e => e.key)).toEqual(['gearModel:axe'])
+    const job = structuredClone(after)
+    job.gear[0].status = 'error'
+    expect(restoreEntities(job, undo).gear[0]).toMatchObject({ model: c.gear[0].model, status: 'error' })
+    job.gear[0].model = 'garments/axe/later.glb'
+    expect(undoConflicts(job, undo)).toEqual(['gearModel:axe'])
   })
 
   it('merges orders: the old order of what is there, newcomers after', () => {
