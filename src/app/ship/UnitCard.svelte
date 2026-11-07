@@ -160,7 +160,7 @@
       {/if}
     </div>
 
-    {#if stanceSummary.length > 0}<p class="faint small" data-testid="ship-stances">Stances: {stanceSummary.map(s => `${s.id} (${s.count} ${s.count === 1 ? 'clip' : 'clips'})`).join(', ')}</p>{/if}
+    {#if stanceSummary.length > 0}<p class="faint small" data-testid="ship-stances" data-id={name}>Stances: {stanceSummary.map(s => `${s.id} (${s.count} ${s.count === 1 ? 'clip' : 'clips'})`).join(', ')}</p>{/if}
 
     {#if owner !== null && isFolkCharacter(owner)}
       <Field label="Class" hint="The class included in this unit's export">
