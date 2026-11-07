@@ -26,8 +26,9 @@ export type Manifest = Record<string, string>
 const LIBRARY_DIRS = ['clips', 'creatures']
 const INDEX_FILE = path.join(WORKSPACE, '.cache', 'files.json')
 const ID = /^[a-z0-9-]+$/
-/** Files never indexed: appended on every command, or written as temp files then renamed over the real one. */
-const IGNORED = /(^|\/)(journal\.jsonl|[^/]*\.tmp|\.[^/]*)$/
+/** Files never indexed: appended on every command, written as temp files then renamed over the real one, or a piece's
+ * derived data (named by its content's inputs, read by its own route: server/routes/derived.ts). */
+const IGNORED = /(^|\/)(journal\.jsonl|[^/]*\.tmp|\.[^/]*)$|(^|\/)garments\/[^/]+\/derived\//
 /** How long the watcher waits for a burst of writes to end, and at most. */
 const QUIET_MS = 60
 const MAX_WAIT_MS = 400

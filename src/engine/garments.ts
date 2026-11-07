@@ -23,7 +23,9 @@ import { HIDE_SHARE, hiddenRegions, regionsOf, type Regions } from './regions.ts
 import { applyGeometryMatrix } from './geometry-transform.ts'
 import { cloneMorphGeometry, restoreMorphState } from './morph-state.ts'
 import { disposeObject, Lru, MB, objectBytes } from './lru.ts'
-import { timed } from './perf.ts'
+import { mark, timed } from './perf.ts'
+import { bodyKey, coverVertices, hiddenAt, meshesKey, regionHits, skinWeights, TriangleGrid, type BodyCore, type MeshCore } from './workers/fit.ts'
+import { derive, type DeriveBody, type DerivedStore } from './workers/derive.ts'
 import { garmentMatrix, placementMatrix } from './placement.ts'
 import { clearPulls, defaultPullWeights, PROP_ROOT, pullBoneName, pullWeightKeys, pullWeightName, registerPulls, splitStrand } from './pulls.ts'
 
@@ -124,80 +126,9 @@ async function meshesOf (url: string, g: Pick<Gear, 'name' | 'origin'>, placemen
   return out
 }
 
-// ---- closest-point queries on a triangle soup -------------------------------------------------------
+// ---- the body as gear sees it -----------------------------------------------------------------------
 
-class TriangleGrid {
-  private readonly cells = new Map<string, number[]>()
-  private readonly a = new THREE.Vector3()
-  private readonly b = new THREE.Vector3()
-  private readonly c = new THREE.Vector3()
-  private readonly tri = new THREE.Triangle()
-
-  // (plain fields, no parameter properties: node runs this file by stripping its types, for the game export)
-  readonly positions: Float32Array
-  readonly index: ArrayLike<number>
-  readonly cell: number
-
-  constructor (positions: Float32Array, index: ArrayLike<number>, cell: number) {
-    this.positions = positions
-    this.index = index
-    this.cell = cell
-    for (let t = 0; t < index.length / 3; t++) {
-      const lo = [Infinity, Infinity, Infinity]
-      const hi = [-Infinity, -Infinity, -Infinity]
-      for (let k = 0; k < 3; k++) {
-        const v = index[t * 3 + k] * 3
-        for (let d = 0; d < 3; d++) { lo[d] = Math.min(lo[d], positions[v + d]); hi[d] = Math.max(hi[d], positions[v + d]) }
-      }
-      for (let x = Math.floor(lo[0] / cell); x <= Math.floor(hi[0] / cell); x++) {
-        for (let y = Math.floor(lo[1] / cell); y <= Math.floor(hi[1] / cell); y++) {
-          for (let z = Math.floor(lo[2] / cell); z <= Math.floor(hi[2] / cell); z++) {
-            const key = `${x},${y},${z}`
-            let list = this.cells.get(key)
-            if (list === undefined) { list = []; this.cells.set(key, list) }
-            list.push(t)
-          }
-        }
-      }
-    }
-  }
-
-  private vertex (i: number, out: THREE.Vector3): THREE.Vector3 {
-    return out.fromArray(this.positions, i * 3)
-  }
-
-  /** Nearest triangle and point within maxRings cells; null if nothing nearby. */
-  closest (p: THREE.Vector3, maxRings = 6): { triangle: number, point: THREE.Vector3, distance: number } | null {
-    const cx = Math.floor(p.x / this.cell)
-    const cy = Math.floor(p.y / this.cell)
-    const cz = Math.floor(p.z / this.cell)
-    let best = null as { triangle: number, point: THREE.Vector3, distance: number } | null
-    const point = new THREE.Vector3()
-    for (let ring = 0; ring <= maxRings; ring++) {
-      for (let x = cx - ring; x <= cx + ring; x++) {
-        for (let y = cy - ring; y <= cy + ring; y++) {
-          for (let z = cz - ring; z <= cz + ring; z++) {
-            if (Math.max(Math.abs(x - cx), Math.abs(y - cy), Math.abs(z - cz)) !== ring) continue
-            for (const t of this.cells.get(`${x},${y},${z}`) ?? []) {
-              this.tri.set(this.vertex(this.index[t * 3], this.a), this.vertex(this.index[t * 3 + 1], this.b), this.vertex(this.index[t * 3 + 2], this.c))
-              this.tri.closestPointToPoint(p, point)
-              const d = point.distanceTo(p)
-              if (best === null || d < best.distance) best = { triangle: t, point: point.clone(), distance: d }
-            }
-          }
-        }
-      }
-      // Anything in a farther ring is at least `ring * cell` away.
-      if (best !== null && best.distance <= ring * this.cell) break
-    }
-    return best
-  }
-
-  barycentric (t: number, p: THREE.Vector3): THREE.Vector3 {
-    this.tri.set(this.vertex(this.index[t * 3], this.a), this.vertex(this.index[t * 3 + 1], this.b), this.vertex(this.index[t * 3 + 2], this.c))
-    return this.tri.getBarycoord(p, new THREE.Vector3()) ?? new THREE.Vector3(1, 0, 0)
-  }
-}
+export { TriangleGrid }
 
 export interface BodySurface {
   /** The first of the body's meshes: its skeleton and bind matrix are every one's (one rig). */
@@ -206,6 +137,7 @@ export interface BodySurface {
   meshes: THREE.SkinnedMesh[]
   /** Where each mesh's vertices start in `positions` (and the weights, the index, the regions). */
   offsets: number[]
+  /** Its closest-point grid (built the first time it is asked for). */
   grid: TriangleGrid
   positions: Float32Array
   index: ArrayLike<number>
@@ -227,27 +159,37 @@ export function bodySurface (view: BodyView): BodySurface | null {
   const positions = new Float32Array(total * 3)
   const skinIndex = new Float32Array(total * 4)
   const skinWeight = new Float32Array(total * 4)
-  const index: number[] = []
+  const owns = meshes.map(mesh => (mesh.userData.fullIndex as THREE.BufferAttribute | undefined)?.array ?? mesh.geometry.index?.array ?? null)
+  let triangles = 0
+  for (const [k, own] of owns.entries()) triangles += own?.length ?? counts[k]
+  const index = new Uint32Array(triangles)
   const v = new THREE.Vector3()
+  let t = 0
   for (const [k, mesh] of meshes.entries()) {
     const geometry = mesh.geometry
     const o = offsets[k]
+    const position = geometry.attributes.position
+    const si = geometry.attributes.skinIndex as THREE.BufferAttribute | undefined
+    const sw = geometry.attributes.skinWeight as THREE.BufferAttribute | undefined
     for (let i = 0; i < counts[k]; i++) {
-      v.fromBufferAttribute(geometry.attributes.position, i).applyMatrix4(mesh.bindMatrix)
-      positions.set([v.x, v.y, v.z], (o + i) * 3)
+      v.fromBufferAttribute(position, i).applyMatrix4(mesh.bindMatrix)
+      const at = (o + i) * 3
+      positions[at] = v.x; positions[at + 1] = v.y; positions[at + 2] = v.z
       for (let c = 0; c < 4; c++) {
-        skinIndex[(o + i) * 4 + c] = (geometry.attributes.skinIndex as THREE.BufferAttribute | undefined)?.getComponent(i, c) ?? 0
-        skinWeight[(o + i) * 4 + c] = (geometry.attributes.skinWeight as THREE.BufferAttribute | undefined)?.getComponent(i, c) ?? 0
+        skinIndex[(o + i) * 4 + c] = si?.getComponent(i, c) ?? 0
+        skinWeight[(o + i) * 4 + c] = sw?.getComponent(i, c) ?? 0
       }
     }
-    const own = (mesh.userData.fullIndex as THREE.BufferAttribute | undefined)?.array ?? geometry.index?.array ?? Array.from({ length: counts[k] }, (_, i) => i)
-    for (let t = 0; t < own.length; t++) index.push(own[t] + o)
+    const own = owns[k]
+    if (own !== null) for (let j = 0; j < own.length; j++) index[t++] = own[j] + o
+    else for (let j = 0; j < counts[k]; j++) index[t++] = j + o
   }
+  let grid: TriangleGrid | null = null
   return {
     mesh: meshes[0],
     meshes,
     offsets,
-    grid: new TriangleGrid(positions, index, view.height / 40),
+    get grid () { return (grid ??= timed('bodySurface.grid', () => new TriangleGrid(positions, index, view.height / 40))) },
     positions,
     index,
     skinIndex: new THREE.BufferAttribute(skinIndex, 4),
@@ -259,65 +201,83 @@ export function bodySurface (view: BodyView): BodySurface | null {
 // (a view's body surface, measured once: its rest positions and weights don't change while it is on stage)
 const bodies = new WeakMap<object, BodySurface | null>()
 function bodyOf (view: BodyView): BodySurface | null {
-  if (!bodies.has(view)) bodies.set(view, bodySurface(view))
+  if (!bodies.has(view)) bodies.set(view, timed('bodySurface', () => bodySurface(view)))
   return bodies.get(view) ?? null
+}
+
+/** The body as the fitting reads it (workers/fit.ts), for `view` (its rest pose and height), and its identity. Worked
+ * out once per body surface. */
+const cores = new WeakMap<BodySurface, DeriveBody & { rest: BodyView['rest'] }>()
+export function bodyCore (body: BodySurface, view: Pick<BodyView, 'rest' | 'height'>): DeriveBody {
+  const had = cores.get(body)
+  if (had !== undefined && had.core.height === view.height && had.rest === (view.rest ?? null)) return had
+  const done = mark('bodyCore')
+  const total = body.positions.length / 3
+  const normals = new Float64Array(total * 3)
+  const n = new THREE.Vector3()
+  const turn = new THREE.Matrix3()
+  for (const [k, mesh] of body.meshes.entries()) {
+    // Use the model's own normals; compute on a copy only if it has none (never touch its shading).
+    let own = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined
+    if (own === undefined) {
+      const copy = mesh.geometry.clone()
+      copy.computeVertexNormals()
+      own = copy.attributes.normal as THREE.BufferAttribute
+    }
+    turn.getNormalMatrix(mesh.bindMatrix)
+    for (let i = 0; i < own.count; i++) {
+      n.fromBufferAttribute(own, i).applyMatrix3(turn).normalize()
+      const at = (body.offsets[k] + i) * 3
+      normals[at] = n.x; normals[at + 1] = n.y; normals[at + 2] = n.z
+    }
+  }
+  const bones = body.mesh.skeleton.bones
+  const bonePos = new Float64Array(bones.length * 3)
+  const p = new THREE.Vector3()
+  // Rest positions (the character may be mid-animation).
+  for (const [b, bone] of bones.entries()) {
+    const at = view.rest?.bones.get(bone.name)?.worldPosition ?? bone.getWorldPosition(p)
+    bonePos[b * 3] = at.x; bonePos[b * 3 + 1] = at.y; bonePos[b * 3 + 2] = at.z
+  }
+  const core: BodyCore = {
+    positions: body.positions,
+    normals,
+    index: body.index instanceof Uint32Array ? body.index : Uint32Array.from(body.index),
+    skinIndex: body.skinIndex.array as Float32Array,
+    skinWeight: body.skinWeight.array as Float32Array,
+    regionOf: body.regions.of,
+    regionVertices: body.regions.vertices,
+    height: view.height,
+    bones: bones.map(b => b.name),
+    bonePos,
+  }
+  const made = { core, key: bodyKey(core), rest: view.rest ?? null }
+  cores.set(body, made)
+  done()
+  return made
+}
+
+/** One of a piece's geometries as the fitting reads it (its own arrays where they are plain, not copied). */
+export function meshCore (geometry: THREE.BufferGeometry): MeshCore {
+  const a = geometry.attributes.position as THREE.BufferAttribute | THREE.InterleavedBufferAttribute
+  let positions: Float32Array
+  if (!(a as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute && a.array instanceof Float32Array && a.itemSize === 3 && a.array.length === a.count * 3) {
+    positions = a.array
+  } else {
+    positions = new Float32Array(a.count * 3)
+    for (let i = 0; i < a.count; i++) { positions[i * 3] = a.getX(i); positions[i * 3 + 1] = a.getY(i); positions[i * 3 + 2] = a.getZ(i) }
+  }
+  const ix = geometry.index?.array
+  const index = ix === undefined ? null : ix instanceof Uint32Array || ix instanceof Uint16Array ? ix : Uint32Array.from(ix)
+  return { positions, index }
 }
 
 // ---- weights ----------------------------------------------------------------------------------------
 
 /** Skin gear's weights: each vertex (rest space) the weights of the body surface under it, the policy's bones only,
- * smoothed along the piece; the four strongest. */
+ * smoothed along the piece; the four strongest (workers/fit.ts skinWeights, the code the viewer's worker runs). */
 export function computeWeights (body: BodySurface, geometry: THREE.BufferGeometry, policy: SkinPolicy, view: Pick<BodyView, 'rest' | 'height'>): { indices: Uint16Array, weights: Float32Array } {
-  const bones = body.mesh.skeleton.bones
-  const allowedRe = ALLOWED[policy]
-  const allowed = bones.map(b => allowedRe === null || allowedRe.test(b.name))
-  const count = geometry.attributes.position.count
-  const nb = bones.length
-  const w = new Float32Array(count * nb)
-  const p = new THREE.Vector3()
-  // Rest positions (the character may be mid-animation).
-  const bonePos = bones.map(b => view.rest?.bones.get(b.name)?.worldPosition.clone() ?? b.getWorldPosition(new THREE.Vector3()))
-  for (let i = 0; i < count; i++) {
-    p.fromBufferAttribute(geometry.attributes.position, i)
-    const hit = body.grid.closest(p)
-    if (hit !== null) {
-      const bary = body.grid.barycentric(hit.triangle, hit.point)
-      const corners = [body.index[hit.triangle * 3], body.index[hit.triangle * 3 + 1], body.index[hit.triangle * 3 + 2]]
-      const lambdas = [bary.x, bary.y, bary.z]
-      for (let c = 0; c < 3; c++) {
-        for (let k = 0; k < 4; k++) {
-          const bone = body.skinIndex.getComponent(corners[c], k)
-          const weight = body.skinWeight.getComponent(corners[c], k) * lambdas[c]
-          if (weight > 0 && allowed[bone]) w[i * nb + bone] += weight
-        }
-      }
-    }
-    let sum = 0
-    for (let b = 0; b < nb; b++) sum += w[i * nb + b]
-    if (sum < 1e-4) {
-      // Nothing allowed underneath: use the nearest allowed bone.
-      let best = -1
-      let bestD = Infinity
-      for (let b = 0; b < nb; b++) {
-        if (!allowed[b]) continue
-        const d = bonePos[b].distanceToSquared(p)
-        if (d < bestD) { bestD = d; best = b }
-      }
-      if (best >= 0) w[i * nb + best] = 1
-    }
-  }
-  if (policy === 'skirt') skirtBlend(w, geometry, bones, view)
-  smooth(w, geometry, nb, SMOOTHING[policy])
-  // Keep the four strongest influences, normalized.
-  const indices = new Uint16Array(count * 4)
-  const weights = new Float32Array(count * 4)
-  for (let i = 0; i < count; i++) {
-    const order = Array.from({ length: nb }, (_, b) => b).sort((a, b) => w[i * nb + b] - w[i * nb + a]).slice(0, 4)
-    let sum = 0
-    for (const b of order) sum += w[i * nb + b]
-    order.forEach((b, k) => { indices[i * 4 + k] = b; weights[i * 4 + k] = sum > 0 ? w[i * nb + b] / sum : (k === 0 ? 1 : 0) })
-  }
-  return { indices, weights }
+  return skinWeights(bodyCore(body, view).core, body.grid, meshCore(geometry), policy)
 }
 
 /** A spot piece's spot on the body at rest: its anchor, else the skin nearest the middle of its meshes (rest space). */
@@ -369,119 +329,14 @@ export function applyEdits (indices: Uint16Array, weights: Float32Array, edits: 
   return n
 }
 
-/** Skirts: legs pull only at the sides and near the hem; the middle front/back follows the hips. */
-function skirtBlend (w: Float32Array, geometry: THREE.BufferGeometry, bones: THREE.Bone[], view: Pick<BodyView, 'rest' | 'height'>): void {
-  const nb = bones.length
-  const idx = (name: string): number => bones.findIndex(b => b.name === name)
-  const hips = idx('Hips')
-  const left = idx('LeftUpLeg')
-  const right = idx('RightUpLeg')
-  if (hips < 0 || left < 0 || right < 0) return
-  const restOf = (b: THREE.Bone): THREE.Vector3 => view.rest?.bones.get(b.name)?.worldPosition ?? b.getWorldPosition(new THREE.Vector3())
-  const hipY = restOf(bones[hips]).y
-  const legX = Math.abs(restOf(bones[left]).x)
-  const p = new THREE.Vector3()
-  for (let i = 0; i < geometry.attributes.position.count; i++) {
-    p.fromBufferAttribute(geometry.attributes.position, i)
-    const side = THREE.MathUtils.smoothstep(Math.abs(p.x), legX * 0.2, legX * 1.6)
-    const depth = THREE.MathUtils.clamp((hipY - p.y) / (view.height * 0.3), 0, 1)
-    const leg = side * (0.35 + 0.65 * depth) * 0.85
-    for (let b = 0; b < nb; b++) w[i * nb + b] = 0
-    w[i * nb + hips] = 1 - leg
-    w[i * nb + (p.x >= 0 ? left : right)] = leg
-  }
-}
-
-/** Laplacian smoothing of per-vertex weights over the piece's edges (coincident vertices welded). */
-function smooth (w: Float32Array, geometry: THREE.BufferGeometry, nb: number, iterations: number): void {
-  const count = geometry.attributes.position.count
-  const index = geometry.index?.array ?? Array.from({ length: count }, (_, i) => i)
-  // Weld by position so UV seams don't block smoothing.
-  const key = new Map<string, number>()
-  const weld = new Int32Array(count)
-  const p = geometry.attributes.position
-  for (let i = 0; i < count; i++) {
-    const k = `${p.getX(i).toFixed(5)},${p.getY(i).toFixed(5)},${p.getZ(i).toFixed(5)}`
-    weld[i] = key.get(k) ?? i
-    if (!key.has(k)) key.set(k, i)
-  }
-  const neighbors: Array<Set<number>> = Array.from({ length: count }, () => new Set())
-  for (let t = 0; t < index.length; t += 3) {
-    for (let k = 0; k < 3; k++) {
-      const a = weld[index[t + k]]
-      const b = weld[index[t + ((k + 1) % 3)]]
-      if (a !== b) { neighbors[a].add(b); neighbors[b].add(a) }
-    }
-  }
-  const next = new Float32Array(w.length)
-  for (let it = 0; it < iterations; it++) {
-    next.set(w)
-    for (let i = 0; i < count; i++) {
-      if (weld[i] !== i || neighbors[i].size === 0) continue
-      const n = neighbors[i].size
-      for (let b = 0; b < nb; b++) {
-        let s = 0
-        for (const j of neighbors[i]) s += w[j * nb + b]
-        next[i * nb + b] = 0.5 * w[i * nb + b] + 0.5 * s / n
-      }
-    }
-    w.set(next)
-  }
-  for (let i = 0; i < count; i++) {
-    if (weld[i] !== i) for (let b = 0; b < nb; b++) w[i * nb + b] = w[weld[i] * nb + b]
-  }
-}
-
 // ---- hiding covered body ----------------------------------------------------------------------------
 
-/** How far out a piece may lie over the body (a share of its height: the gear is fitted 4 mm off, chunky boots and
- * fur further) and how square over it (the cosine of the cone round the normal: a hat's brim is near the face, but
- * above it). A sole is covered by the boot's sole under it, so boots must reach the floor (gear_finish.py). */
-const COVER_REACH = 0.04
-const COVER_CONE = 0.5
-
 /** Which body vertices (BodySurface order) sit just under one of `pieces` (rest space): the piece lies outside the
- * surface there, along its normal, within reach. */
+ * surface there, along its normal, within reach (workers/fit.ts coverVertices). */
 export function coveredVertices (body: BodySurface, pieces: THREE.BufferGeometry[], height: number): Uint8Array {
-  const covered = new Uint8Array(body.positions.length / 3)
-  if (pieces.length === 0) return covered
-  const positions: number[] = []
-  const index: number[] = []
-  for (const g of pieces) {
-    const offset = positions.length / 3
-    positions.push(...(g.attributes.position.array as Float32Array))
-    const gi = g.index?.array ?? Array.from({ length: g.attributes.position.count }, (_, i) => i)
-    for (let i = 0; i < gi.length; i++) index.push(gi[i] + offset)
-  }
-  const grid = new TriangleGrid(new Float32Array(positions), index, height / 40)
-  // (a piece lies over a vertex when its nearest point is close and out along the normal, within a cone: a hat's brim
-  // is near the face but above it, not over it)
-  const reach = height * COVER_REACH
-
-  const v = new THREE.Vector3()
-  const n = new THREE.Vector3()
-  const turn = new THREE.Matrix3()
-  for (const [k, mesh] of body.meshes.entries()) {
-    // Use the model's own normals; compute on a copy only if it has none (never touch its shading).
-    let normals = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined
-    if (normals === undefined) {
-      const copy = mesh.geometry.clone()
-      copy.computeVertexNormals()
-      normals = copy.attributes.normal as THREE.BufferAttribute
-    }
-    turn.getNormalMatrix(mesh.bindMatrix)
-    for (let i = 0; i < normals.count; i++) {
-      const at = body.offsets[k] + i
-      v.fromArray(body.positions, at * 3)
-      n.fromBufferAttribute(normals, i).applyMatrix3(turn).normalize()
-      const hit = grid.closest(v, 3)
-      if (hit === null || hit.distance > reach) continue
-      // The piece must lie outside the body here, out along its normal (or right on it).
-      const out = hit.point.clone().sub(v)
-      if (hit.distance < height * 0.002 || out.dot(n) >= COVER_CONE * hit.distance) covered[at] = 1
-    }
-  }
-  return covered
+  if (pieces.length === 0) return new Uint8Array(body.positions.length / 3)
+  const core = bodyCore(body, { rest: null, height }).core
+  return coverVertices(core, pieces.map(meshCore))
 }
 
 /** The share of a region a piece must cover to hide it: HIDE_SHARE, or FACE_SHARE for headwear over the face (a great
@@ -494,55 +349,72 @@ export function regionsHidden (body: BodySurface, pieces: THREE.BufferGeometry[]
   return hiddenRegions(body.regions, coveredVertices(body, pieces, height), share)
 }
 
-/** What one worn piece hides, worked out once: its geometry at rest doesn't change while it is worn, and the coverage
- * test is the slow part (a closest-point query per body vertex), so swapping one piece must not test every other. */
-const hiddenByPiece = new WeakMap<THREE.BufferGeometry[], { body: BodySurface, share: number, height: number, regions: number[] }>()
-function hiddenBy (body: BodySurface, hides: THREE.BufferGeometry[], height: number, share: number): number[] {
-  const known = hiddenByPiece.get(hides)
-  if (known !== undefined && known.body === body && known.share === share && known.height === height) return known.regions
-  const regions = regionsHidden(body, hides, height, share)
-  hiddenByPiece.set(hides, { body, share, height, regions })
-  return regions
+/** What a worn piece covers of a body, by content (its meshes as placed, the body): a piece worn again, or on the
+ * body loaded again, isn't tested again. For pieces worn without their regions (Worn.hidden). */
+const coverage = new Lru<Int32Array>({ budget: 16 * MB, max: 4000, size: h => h.byteLength })
+function hiddenBy (body: BodySurface, view: BodyView, hides: THREE.BufferGeometry[], share: number): number[] {
+  const { core, key } = bodyCore(body, view)
+  const meshes = hides.map(meshCore)
+  const name = `${meshesKey(meshes)}-${key}`
+  let hits = coverage.get(name)
+  if (hits === undefined) {
+    hits = timed('coverVertices', () => regionHits(core.regionOf, core.regionVertices.length, coverVertices(core, meshes)))
+    coverage.set(name, hits)
+  }
+  return hiddenAt(hits, core.regionVertices, share)
 }
 
-/** Remove the body regions the pieces cover, whole (prevents poke-through, and the body stops at a seam): each worn
- * piece's at its own share. */
-function hideCovered (body: BodySurface, worn: Array<{ hides: THREE.BufferGeometry[], share: number }>, view: BodyView): number {
-  if (worn.length === 0) return 0
-  const hidden = new Set(worn.flatMap(w => hiddenBy(body, w.hides, view.height, w.share)))
-  if (hidden.size === 0) return 0
-  let removed = 0
-  for (const [k, mesh] of body.meshes.entries()) {
-    const geometry = mesh.geometry
-    if (mesh.userData.fullIndex === undefined) mesh.userData.fullIndex = geometry.index?.clone() ?? null
-    const full = mesh.userData.fullIndex as THREE.BufferAttribute | null
-    if (full === null) continue
-    const o = body.offsets[k]
-    const kept: number[] = []
-    for (let t = 0; t < full.count; t += 3) {
-      if (hidden.has(body.regions.of[full.getX(t) + o])) continue
-      kept.push(full.getX(t), full.getX(t + 1), full.getX(t + 2))
-    }
-    removed += (full.count - kept.length) / 3
-    geometry.setIndex(kept)
+/** The body's own triangles, before any was hidden (set aside the first time it is). */
+function fullIndexOf (mesh: THREE.Mesh): THREE.BufferAttribute | null {
+  if (mesh.userData.fullIndex === undefined) mesh.userData.fullIndex = mesh.geometry.index ?? null
+  return mesh.userData.fullIndex as THREE.BufferAttribute | null
+}
+
+/** Per body mesh, its triangles with some regions hidden, by which (the last few: flipping between outfits sets an
+ * index already on the GPU). */
+const INDEXES = 8
+function indexWithout (mesh: THREE.Mesh, full: THREE.BufferAttribute, offset: number, regions: Regions, hidden: Set<number>, key: string): THREE.BufferAttribute {
+  const kept = (mesh.userData.hiddenIndexes ??= new Map<string, THREE.BufferAttribute>()) as Map<string, THREE.BufferAttribute>
+  const had = kept.get(key)
+  if (had !== undefined) { kept.delete(key); kept.set(key, had); return had }
+  const src = full.array
+  const out = new (src instanceof Uint16Array ? Uint16Array : Uint32Array)(src.length)
+  let n = 0
+  for (let t = 0; t + 2 < src.length; t += 3) {
+    if (hidden.has(regions.of[src[t] + offset])) continue
+    out[n++] = src[t]; out[n++] = src[t + 1]; out[n++] = src[t + 2]
   }
-  return removed
+  const made = new THREE.BufferAttribute(out.slice(0, n), 1)
+  kept.set(key, made)
+  while (kept.size > INDEXES) kept.delete(kept.keys().next().value!)
+  return made
+}
+
+/** The body whole again, then hidden under every worn piece that hides it: each one's regions (Worn.hidden, worked
+ * out when it was worn; else tested once by content), the body's triangles in them taken out, whole regions (prevents
+ * poke-through, and the body stops at a seam). */
+export function hideBodyUnder (view: BodyView, worn: Iterable<Worn>): void {
+  const pieces = [...worn].filter(w => w.hidden !== undefined || (w.hides !== undefined && w.hides.length > 0))
+  const body = pieces.length === 0 ? null : bodyOf(view)
+  const hidden = new Set<number>()
+  if (body !== null) {
+    for (const w of pieces) for (const r of w.hidden ?? hiddenBy(body, view, w.hides!, w.hideShare ?? HIDE_SHARE)) hidden.add(r)
+  }
+  if (hidden.size === 0 || body === null) { restoreBody(view); return }
+  const key = [...hidden].sort((a, b) => a - b).join(',')
+  for (const [k, mesh] of body.meshes.entries()) {
+    const full = fullIndexOf(mesh)
+    if (full === null) continue
+    const next = indexWithout(mesh, full, body.offsets[k], body.regions, hidden, key)
+    if (mesh.geometry.index !== next) mesh.geometry.setIndex(next)
+  }
 }
 
 function restoreBody (view: BodyView): void {
   for (const mesh of view.skinned) {
     const full = mesh.userData.fullIndex as THREE.BufferAttribute | null | undefined
-    if (full !== undefined && full !== null) mesh.geometry.setIndex(full.clone())
+    if (full !== undefined && full !== null && mesh.geometry.index !== full) mesh.geometry.setIndex(full)
   }
-}
-
-/** The body whole again, then hidden under every worn piece that hides it. */
-export function hideBodyUnder (view: BodyView, worn: Iterable<Worn>): void {
-  restoreBody(view)
-  const pieces = [...worn].flatMap(w => (w.hides !== undefined && w.hides.length > 0 ? [{ hides: w.hides, share: w.hideShare ?? HIDE_SHARE }] : []))
-  if (pieces.length === 0) return
-  const body = bodyOf(view)
-  if (body !== null) hideCovered(body, pieces, view)
 }
 
 // ---- wearing ----------------------------------------------------------------------------------------
@@ -567,6 +439,9 @@ export interface Worn {
   hides?: THREE.BufferGeometry[]
   /** The share of a region it must cover to hide it (hideShareOf). */
   hideShare?: number
+  /** The body regions it hides (at its share), worked out when it was worn (derived data): hideBodyUnder takes these
+   * and tests nothing. */
+  hidden?: number[]
 }
 
 /** A bone piece's frame on its bone: bone -> the bone's rest frame undone -> the place node (named geom.gearNode, with
@@ -601,6 +476,9 @@ export interface WearOptions {
   owner?: object
   /** A bone piece's frame made beforehand (boneFrame). */
   frame?: ReturnType<typeof boneFrame>
+  /** Where a skin piece's derived data (weights, what it covers) is kept between pages (workers/derive.ts): read
+   * before working it out, written after. Left out: this page's memory only. */
+  derived?: DerivedStore
 }
 
 /** Put one ready piece on the character on stage. Null when it can't be worn here (no body to skin it to, no bones). */
@@ -666,14 +544,19 @@ export async function wear (view: WearView, g: Gear, o: WearOptions): Promise<Wo
     view.root.add(group)
     return { gear: g.id, node: group, meshes, objects: [group] }
   }
-  // skin: the body's weights under each vertex, then what was painted; spot: every vertex its spot's weights
+  // skin: the body's weights under each vertex (derived off the main thread, or known), then what was painted; spot:
+  // every vertex its spot's weights
   const meshes = await meshesOf(o.url, g, placed)
+  const hides = a.kind === 'skin' && a.hideBody === true && g.role !== 'hair'
+  const [derived, edits] = await Promise.all([
+    a.kind === 'skin' ? derive(bodyCore(body, view), meshes.map(m => meshCore(m.geometry)), { policy: a.policy, cover: hides, store: o.derived, label: g.name }) : null,
+    a.kind === 'skin' && (g.painted ?? 0) > 0 && o.edits !== undefined ? o.edits().catch(() => []) : [],
+  ])
   const spot = a.kind === 'spot' ? spotWeights(body, partSpot(a, meshes)) : null
-  const edits = a.kind === 'skin' && (g.painted ?? 0) > 0 && o.edits !== undefined ? await o.edits().catch(() => []) : []
   const boneNames = skeleton.bones.map(b => b.name)
   const shown: THREE.SkinnedMesh[] = []
   for (const [i, m] of meshes.entries()) {
-    const { indices, weights } = a.kind === 'skin' ? timed('computeWeights', () => computeWeights(body, m.geometry, a.policy, view), g.name) : partWeights(m.geometry.attributes.position.count, spot!)
+    const { indices, weights } = derived !== null ? derived.weights[i] : partWeights(m.geometry.attributes.position.count, spot!)
     if (edits.length > 0) applyEdits(indices, weights, edits, i, boneNames)
     m.geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(indices, 4))
     m.geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights, 4))
@@ -690,9 +573,10 @@ export async function wear (view: WearView, g: Gear, o: WearOptions): Promise<Wo
     view.skinned.push(skinned)
     shown.push(skinned)
   }
+  const share = hideShareOf(g)
   return {
     gear: g.id, node: null, meshes: shown, objects: shown,
-    ...(a.kind === 'skin' && a.hideBody === true && g.role !== 'hair' ? { hides: shown.map(m => m.geometry), hideShare: hideShareOf(g) } : {}),
+    ...(hides ? { hides: shown.map(m => m.geometry), hideShare: share, ...(derived?.hits != null ? { hidden: hiddenAt(derived.hits, body.regions.vertices, share) } : {}) } : {}),
   }
 }
 

@@ -17,6 +17,7 @@ import type { Character, ClipKey, Gear, GearAttach, Handle, Placement, Side, Vec
 import type { CharacterView } from '../engine/CharacterView.ts'
 import { carrierGrip, handGrip } from '../engine/clipedit.ts'
 import { boneFrame, GARMENT_FLAG, type GarmentEdit, hideBodyUnder, restFrame, takeOff, takeOffAll, tickMechanisms, wear, type Worn } from '../engine/garments.ts'
+import type { DerivedStore } from '../engine/workers/derive.ts'
 import { fistAt, fitMatrix, heldAt, inFist, offBox, onShaft, restPoints, shapeOf, surfacePoints, type HandAt, type Shape } from '../engine/gearfit.ts'
 import { leadKeysMoved } from '../engine/geartracks.ts'
 import { shapeFemale, showSkin, tint } from '../engine/folkview.ts'
@@ -42,9 +43,10 @@ export type WearKind = GearAttach['kind']
 /** Picking on the viewport: a spot piece's spot on the body, or a pull's point on its piece. */
 export type Picking = { kind: 'spot', gear: string } | { kind: 'pull', gear: string, handle: string }
 
-/** A piece as worn: what it was made from (`key`), its frame (bone gear, made at once), what wear() put on, and
- * whether it is shown (a piece kept fitted while hidden isn't drawn). */
-interface Piece { key: string, gear: Gear, frame: ReturnType<typeof boneFrame>, worn: Worn | null, placed: string, shown: boolean }
+/** A piece as worn: what it was made from (`key`, and its model file's hash: `hash`, undefined while the character's
+ * files index isn't in), its frame (bone gear, made at once), what wear() put on, and whether it is shown (a piece
+ * kept fitted while hidden isn't drawn). */
+interface Piece { key: string, hash: string | undefined, gear: Gear, frame: ReturnType<typeof boneFrame>, worn: Worn | null, placed: string, shown: boolean }
 
 /** A character wearing gear on stage: the one selected, or the horse it rides. */
 interface Wearer { view: CharacterView, id: string, rider: boolean, pieces: Map<string, Piece> }
@@ -244,11 +246,12 @@ class GearState {
   }
 
   /** What a piece is worn from: null when it can't be worn. Not whether it shows (a piece kept fitted is only hidden),
-   * nor a bone piece's placement (its node just moves). */
+   * nor a bone piece's placement (its node just moves), nor its model file's hash (hashOf: a piece worn before the
+   * files index came in is the same piece once it has). */
   private keyOf (g: Gear, c: Character, w: Wearer): string | null {
-    const url = this.urlOf(c, g)
+    const url = g.catalog !== undefined ? catalogUrl(g.catalog) : g.model ?? null
     const fitting = w.rider && this.fitting === g.id
-    if (g.status !== 'ready' || url === null) return null
+    if (g.status !== 'ready' || url === null || this.urlOf(c, g) === null) return null
     const a = g.attach
     // (the painted count while painting it: the painter has its weights on the meshes already)
     const painted = paint.active ? null : g.painted ?? 0
@@ -272,28 +275,35 @@ class GearState {
     return a.place
   }
 
+  /** The hash of the file a piece's model loads from, when the character's files index has it (catalog gear: none). */
+  private hashOf (c: Character, g: Gear): string | undefined {
+    return g.catalog !== undefined || g.model === undefined ? undefined : assets.manifestOf(c.id)?.[g.model]
+  }
+
   private sync (w: Wearer, list: Gear[], c: Character): void {
     if (w.view.rest === null) return
     // (the rider's dress; the horse wears what its rider's mount says, as the list has it)
     const worn = w.rider ? dressing.worn(c) : null
     const own = w.rider ? documentDress(c) : null
-    const wanted = new Map<string, { g: Gear, key: string, shown: boolean }>()
+    const wanted = new Map<string, { g: Gear, key: string, hash: string | undefined, shown: boolean }>()
     for (const g of list) {
       const shown = this.showsOn(c, g, w, worn, own)
       if (!shown && !(w.rider && dressing.kept(c, g))) continue
       const key = this.keyOf(g, c, w)
-      if (key !== null) wanted.set(g.id, { g, key, shown })
+      if (key !== null) wanted.set(g.id, { g, key, hash: this.hashOf(c, g), shown })
     }
     let changed = false
     for (const [id, p] of w.pieces) {
-      if (wanted.get(id)?.key === p.key) continue
+      const want = wanted.get(id)
+      // (the same piece: its file's hash the same, or only now known)
+      if (want !== undefined && want.key === p.key && (p.hash === undefined || want.hash === undefined || want.hash === p.hash)) { p.hash ??= want.hash; continue }
       this.off(w, p)
       w.pieces.delete(id)
       changed = true
     }
-    for (const [id, { g, key, shown }] of wanted) {
+    for (const [id, { g, key, hash, shown }] of wanted) {
       const p = w.pieces.get(id)
-      if (p === undefined) { this.on(w, c, g, key, shown); changed = true; continue }
+      if (p === undefined) { this.on(w, c, g, key, hash, shown); changed = true; continue }
       this.move(w, p, g)
       if (p.shown !== shown) { this.show(w, p, shown); changed = true }
     }
@@ -306,7 +316,7 @@ class GearState {
     p.shown = shown
     if (!shown && w.rider) gizmo.detach(p.worn?.node ?? p.frame?.place)
     for (const o of p.worn?.objects ?? (p.frame !== null ? [p.frame.group] : [])) o.visible = shown
-    if (p.gear.attach.kind === 'skin') this.hideLater(w)
+    if (hidesBody(p.worn)) this.hideLater(w)
   }
 
   /** A dynamic character's look (engine/folk.ts): its skin shown on the body (the rider's dress picks it), its hair
@@ -327,12 +337,12 @@ class GearState {
     shapeFemale(w.view.bodySkinned, gear, (skin?.tags ?? []).includes('female'), w.view.height)
   }
 
-  private on (w: Wearer, c: Character, g: Gear, key: string, shown: boolean): void {
+  private on (w: Wearer, c: Character, g: Gear, key: string, hash: string | undefined, shown: boolean): void {
     const view = w.view
     const place = this.placeOf(g, view)
     const frame = g.attach.kind === 'bone' ? boneFrame(view, g, g.attach.bone, place) : null
     if (frame !== null) frame.group.visible = shown
-    const piece: Piece = { key, gear: g, frame, worn: null, placed: JSON.stringify(place), shown }
+    const piece: Piece = { key, hash, gear: g, frame, worn: null, placed: JSON.stringify(place), shown }
     w.pieces.set(g.id, piece)
     const fitting = w.rider && this.fitting === g.id
     // (skinning to the body is the slow part: say so, unless it is fitted ahead, hidden)
@@ -346,7 +356,8 @@ class GearState {
       return res.ok ? await res.json() as GarmentEdit[] : []
     }
     const done = mark('gear.wear', g.name)
-    wear(view, g, { url, place, fitting, edits, frame: frame ?? undefined })
+    const derived = g.attach.kind === 'skin' ? derivedStore(c.id, g.id) : undefined
+    wear(view, g, { url, place, fitting, edits, frame: frame ?? undefined, derived })
       .then(worn => {
         done()
         if (w.pieces.get(g.id) !== piece) { if (worn !== null) takeOff(view, worn); return }
@@ -354,7 +365,7 @@ class GearState {
         if (worn === null) frame?.group.removeFromParent()
         // (shown or not as it is now: it may have been hidden or shown while it loaded)
         else for (const o of worn.objects) o.visible = piece.shown
-        if (g.attach.kind === 'skin') this.hideLater(w)
+        if (piece.shown && hidesBody(worn)) this.hideLater(w)
         if (g.role !== undefined) this.dress(w, c)
         this.worn++
         if (worn !== null && w.rider && this.fresh.delete(g.id)) void this.settle(c.id, g.id)
@@ -373,7 +384,7 @@ class GearState {
     if (w.rider && paint.active && p.worn !== null && p.worn.meshes.some(m => (m as THREE.SkinnedMesh).isSkinnedMesh === true)) paint.stop()
     if (p.worn !== null) takeOff(w.view, p.worn)
     else p.frame?.group.removeFromParent()
-    if (p.gear.attach.kind === 'skin') this.hideLater(w)
+    if (p.shown && hidesBody(p.worn)) this.hideLater(w)
   }
 
   /** A bone piece placed elsewhere: its node moves (unless the gizmo is dragging it). */
@@ -1036,6 +1047,24 @@ class GearState {
     } finally {
       this.finding = null
     }
+  }
+}
+
+/** Whether a worn piece hides some of the body under it (what hideBodyUnder must hear about). */
+const hidesBody = (worn: Worn | null): boolean => worn !== null && ((worn.hidden?.length ?? 0) > 0 || (worn.hidden === undefined && (worn.hides?.length ?? 0) > 0))
+
+/** Where a skin piece's derived data (workers/derive.ts) is kept: its folder's derived/ (server/routes/derived.ts). */
+function derivedStore (characterId: string, gearId: string): DerivedStore {
+  const at = (name: string): string => `/api/characters/${encodeURIComponent(characterId)}/garments/${encodeURIComponent(gearId)}/derived/${name}`
+  return {
+    get: async (name) => {
+      const res = await fetch(at(name))
+      return res.ok ? await res.arrayBuffer() : null
+    },
+    put: async (name, data) => {
+      const res = await fetch(at(name), { method: 'PUT', headers: { 'x-rigsmith': '1', 'content-type': 'application/octet-stream' }, body: data })
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+    },
   }
 }
 

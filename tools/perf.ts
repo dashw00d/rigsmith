@@ -1,9 +1,10 @@
 // npm run perf: the app's dev server started on a workspace (RIGSMITH_WORKSPACE, required: the run may write
 // thumbnails into it, so point it at a copy), tests/perf/scenarios.ts run in headless Chrome (tools/lib/profile.ts), and
 // each scenario's longest main-thread task held to tests/perf/budget.json. Exits 1 when one is over.
-//   node tools/perf.ts [--character=<id>] [--only=<name part>] [--out=<report.json>]
+//   node tools/perf.ts [--character=<id>] [--only=<name part>] [--out=<report.json>] [--cpu=<dir>]
+// --cpu: a CPU profile of each run saved in <dir> (open in Chrome's performance panel) and its hottest functions said.
 // The character defaults to the first dynamic one (with outfits), else the first.
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
@@ -18,6 +19,7 @@ async function main (): Promise<number> {
   const { profile, describe } = await import('./lib/profile.ts')
   const { scenarios } = await import('../tests/perf/scenarios.ts')
   const budget = JSON.parse(readFileSync(path.join(ROOT, 'tests', 'perf', 'budget.json'), 'utf8')) as { click: number, load: number }
+  if (typeof kv.cpu === 'string') mkdirSync(kv.cpu, { recursive: true })
   const server = await createServer({ configFile: path.join(ROOT, 'vite.config.ts'), server: { port: 5190, strictPort: false, open: false }, logLevel: 'warn' })
   try {
     await server.listen()
@@ -27,6 +29,7 @@ async function main (): Promise<number> {
     console.log(`perf: ${chosen.length} scenario${chosen.length === 1 ? '' : 's'} at ${url}`)
     const { character, results } = await profile(url, chosen, budget, {
       ...(typeof kv.character === 'string' ? { character: kv.character } : {}), log: line => { console.log(`  ${line}`) },
+      ...(typeof kv.cpu === 'string' ? { cpu: path.resolve(kv.cpu) } : {}),
     })
     for (const line of describe(results)) console.log(line)
     if (typeof kv.out === 'string') writeFileSync(kv.out, JSON.stringify({ at: new Date().toISOString(), character, budget, results }, null, 1))
