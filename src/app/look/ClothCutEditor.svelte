@@ -1,15 +1,15 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
   import type { Character, ClothCut, ClothLayer } from '../../model/types.ts'
-  import { limbGroups, type RegionInfo } from '../../engine/clothcut.ts'
+  import type { RegionInfo } from '../../engine/clothcut.ts'
   import { app } from '../../state/app.svelte.ts'
   import { assets } from '../../state/assets.svelte.ts'
   import { dress } from '../../state/dress.svelte.ts'
-  import { cutGroup, dropRegion, groupRule } from './clothdraft.ts'
+  import { cutGroup, cutLimbGroups, dropRegion, groupRule } from './clothdraft.ts'
   import { previewCut } from './clothpreview.ts'
 
   let { character, layer, regions }: { character: Character, layer: ClothLayer, regions: RegionInfo[] } = $props()
-  const groups = $derived(limbGroups(regions))
+  const groups = $derived(cutLimbGroups(regions))
   let draft = $state<ClothCut | null>(null)
   let timer: ReturnType<typeof setTimeout> | undefined
   const cut = $derived(draft ?? layer.cut ?? {})

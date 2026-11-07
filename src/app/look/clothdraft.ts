@@ -2,6 +2,11 @@ import type { ClothCut, ClothLayer, ClothSlot } from '../../model/types.ts'
 import type { RegionInfo } from '../../engine/clothcut.ts'
 import { limbGroups } from '../../engine/clothcut.ts'
 
+/** Midline shirt and hip islands are not a left or right limb. */
+export function cutLimbGroups (regions: readonly RegionInfo[]): ReturnType<typeof limbGroups> {
+  return limbGroups(regions.filter(region => Math.abs(region.x) > 1e-6))
+}
+
 export function groupRule (cut: ClothCut | undefined, regions: readonly number[]): { y: number, feather: number } {
   return cut?.below?.find(rule => rule.regions.some(id => regions.includes(id))) ?? { y: 0, feather: 0.01 }
 }
@@ -29,14 +34,19 @@ export function dropRegion (cut: ClothCut | undefined, id: number, drop: boolean
 export function duplicateCut (layer: ClothLayer, id: string, kind: 'shorts' | 'sleeves', regions: readonly RegionInfo[]): ClothLayer {
   const part = kind === 'shorts' ? 'leg' : 'sleeve'
   const slot: ClothSlot = kind === 'shorts' ? 'bottom' : 'top'
-  const groups = limbGroups(regions).filter(group => group.name.endsWith(part))
+  const groups = cutLimbGroups(regions).filter(group => group.name.endsWith(part))
   let cut: ClothCut = { ...layer.cut }
-  for (const group of groups) cut = cutGroup(cut, group.regions, kind === 'shorts' ? 0.35 : 0.55, 0.01)
+  for (const group of groups) cut = cutGroup(cut, group.regions, kind === 'shorts' ? 0.35 : 0.70, 0.01)
   const copy: ClothLayer = { ...layer, id, name: `${layer.name} ${kind === 'shorts' ? 'shorts' : 'short sleeves'}`, slots: [slot], cut }
   delete copy.from
+  delete copy.coverage
   if (kind === 'sleeves' && copy.shapes !== undefined) {
     copy.shapes = copy.shapes.filter(shape => shape !== 'long_sleeve')
     if (copy.shapes.length === 0) delete copy.shapes
+  }
+  if (kind === 'sleeves' && copy.tags !== undefined) {
+    copy.tags = copy.tags.filter(tag => tag !== 'long-sleeves')
+    if (copy.tags.length === 0) delete copy.tags
   }
   return copy
 }

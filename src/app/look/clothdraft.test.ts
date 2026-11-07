@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cutGroup, dropRegion, duplicateCut, groupRule } from './clothdraft.ts'
+import { cutGroup, cutLimbGroups, dropRegion, duplicateCut, groupRule } from './clothdraft.ts'
 
 const regions = [{ id: 1, material: 'Trousers', x: -1 }, { id: 2, material: 'Trousers', x: 1 }, { id: 3, material: 'Shirt', x: -1 }]
 describe('cloth cut drafts', () => {
@@ -14,5 +14,14 @@ describe('cloth cut drafts', () => {
     expect(copy.file).toBe('cloth.png')
     expect(copy.slots).toEqual(['bottom'])
     expect(copy.cut?.below).toEqual([{ regions: [1], y: 0.35, feather: 0.01 }, { regions: [2], y: 0.35, feather: 0.01 }])
+  })
+  it('cuts sleeves without cutting the central torso or retaining long-sleeve rules', () => {
+    const arms = [...regions, { id: 4, material: 'Shirt', x: 0 }, { id: 5, material: 'Shirt', x: 1 }]
+    const copy = duplicateCut({ id: 'original', name: 'Shirt', file: 'shirt.png', slots: ['top'], shapes: ['long_sleeve'], tags: ['long-sleeves'], coverage: [0.9] }, 'short', 'sleeves', arms)
+    expect(copy.cut?.below).toEqual([{ regions: [3], y: 0.70, feather: 0.01 }, { regions: [5], y: 0.70, feather: 0.01 }])
+    expect(copy.shapes).toBeUndefined()
+    expect(copy.tags).toBeUndefined()
+    expect(copy.coverage).toBeUndefined()
+    expect(cutLimbGroups(arms).flatMap(group => group.regions)).not.toContain(4)
   })
 })
