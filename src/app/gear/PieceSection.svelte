@@ -15,6 +15,7 @@
   import { typing } from '../../ui/shortcuts.ts'
   import { wardrobe } from './wardrobe.svelte.ts'
   import HandleList from './HandleList.svelte'
+  import BodyCoverage from './BodyCoverage.svelte'
   import OriginFields from './OriginFields.svelte'
   import PlacementFields from './PlacementFields.svelte'
   import WearOptions from './WearOptions.svelte'
@@ -79,6 +80,7 @@
         {/if}
       </div>
     {/if}
+    {#if piece.attach.kind === 'skin'}<BodyCoverage {piece} />{/if}
     {#if leftOut !== null && piece.status === 'ready'}
       <p class="note">The game export leaves it out: {leftOut}.</p>
     {/if}

@@ -27,9 +27,10 @@ export function regionStates (pieces: readonly CoveragePiece[], vertices: ArrayL
 export function regionNames (body: BodySurface, view: CharacterView): string[] {
   const count = body.regions.count
   const sums = Array.from({ length: count }, () => new THREE.Vector3())
+  const point = new THREE.Vector3()
   for (let i = 0; i < body.regions.of.length; i++) {
     const r = body.regions.of[i]
-    if (r >= 0) sums[r].add(new THREE.Vector3().fromArray(body.positions, i * 3))
+    if (r >= 0) sums[r].add(point.fromArray(body.positions, i * 3))
   }
   const bones = body.mesh.skeleton.bones.map(b => ({ name: b.name, position: view.rest?.bones.get(b.name)?.worldPosition ?? b.getWorldPosition(new THREE.Vector3()) }))
   return sums.map((sum, r) => {

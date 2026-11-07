@@ -4,7 +4,7 @@
   // whatever overlays the areas registered (viewer.setOverlay): over the stage, or docked under it (the timeline). It
   // knows nothing of the areas themselves.
   import { onMount } from 'svelte'
-  import { Bone, Box, Focus, Grid2x2, Palette, RefreshCw, ScanEye, TriangleAlert, Users } from '@lucide/svelte'
+  import { Bone, Box, Focus, Grid2x2, Palette, RefreshCw, ScanEye, TriangleAlert, Users, Layers } from '@lucide/svelte'
   import { heightOf, phaseOf } from '../model/select.ts'
   import type { DisplayMode } from '../engine/CharacterView.ts'
   import { app } from '../state/app.svelte.ts'
@@ -13,6 +13,8 @@
   import { gizmo } from '../state/gizmo.svelte.ts'
   import { paint } from '../state/paint.svelte.ts'
   import { wardrobe } from './gear/wardrobe.svelte.ts'
+  import { coverage } from '../state/coverage.svelte.ts'
+  import CoverageOverlay from './gear/CoverageOverlay.svelte'
   import { isFolk } from '../engine/folk.ts'
   import IconButton from '../ui/IconButton.svelte'
   import Segmented from '../ui/Segmented.svelte'
@@ -101,6 +103,7 @@
 <div class="frame">
   <div class="viewport" class:blocked bind:this={container}>
     <div class="vignette" aria-hidden="true"></div>
+    <CoverageOverlay />
 
     {#if c !== null && !nothingToShow && !covered}
       <div class="toolbar">
@@ -110,6 +113,7 @@
         {/if}
         <IconButton variant="secondary" label="Frame the character" keys="view.frame" onclick={() => { viewer.focus() }}><Focus size={14} /></IconButton>
         {#if app.step === 'gear' && isFolk(c)}
+          <IconButton variant="secondary" label="Coverage" keys="gear.coverage" data-testid="coverage-toggle" active={coverage.on} onclick={() => { coverage.on = !coverage.on }}><Layers size={14} /></IconButton>
           <IconButton variant="secondary" label="Crowd" keys="dress.crowd" data-testid="crowd-toggle" active={wardrobe.crowdOpen} onclick={() => { wardrobe.crowdOpen = !wardrobe.crowdOpen }}><Users size={14} /></IconButton>
         {/if}
       </div>

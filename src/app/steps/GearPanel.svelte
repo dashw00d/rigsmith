@@ -9,6 +9,7 @@
   import FolkPanel from '../gear/FolkPanel.svelte'
   import ClassSection from '../gear/ClassSection.svelte'
   import SetsPanel from '../gear/SetsPanel.svelte'
+  import CoveragePanel from '../gear/CoveragePanel.svelte'
   import PoseSection from '../gear/PoseSection.svelte'
   import PieceSection from '../gear/PieceSection.svelte'
   import HandsPanel from '../hands/HandsPanel.svelte'
@@ -34,4 +35,5 @@
 <ClassSection {character} />
 <PoseSection {character} />
 <PieceSection {character} {highlight} />
+<CoveragePanel />
 <HandsPanel {character} />

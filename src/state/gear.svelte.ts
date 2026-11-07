@@ -182,6 +182,14 @@ class GearState {
     return shows(c, g, dressing.worn(c), documentDress(c), dressing.of(c.id))
   }
 
+  /** Coverage data for the current rider, including fitted-but-hidden pieces for the inspector. */
+  coveragePieces (): Array<{ gear: Gear, worn: Worn, shown: boolean }> {
+    void this.worn
+    const rider = this.rider
+    if (rider === null || rider.id !== app.selectedId) return []
+    return [...rider.pieces.values()].flatMap(p => p.worn === null ? [] : [{ gear: p.gear, worn: p.worn, shown: p.shown }])
+  }
+
   /** A shown piece on stage (a piece kept fitted while hidden is not there for the panels). */
   private shownPiece (id: string): Piece | undefined {
     const p = this.rider?.pieces.get(id)
@@ -437,7 +445,9 @@ class GearState {
       // (gone from the stage meanwhile)
       if (w !== this.rider && w !== this.horse) return
       const done = mark('gear.hideBodyUnder')
+      const pendingHits = this.wornOf(w).some(piece => piece.hits === undefined && piece.hides !== undefined)
       hideBodyUnder(w.view, this.wornOf(w))
+      if (pendingHits) this.worn++
       done()
     }
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
