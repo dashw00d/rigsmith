@@ -6,7 +6,7 @@ import { meshNameOf } from '../../src/engine/contract.ts'
 import { makeCharacter, makeGear } from '../../src/model/fixtures.ts'
 import { migrate } from '../../src/model/migrate.ts'
 import type { Character, Gear } from '../../src/model/types.ts'
-import { atlasGroupOf, folkLeftOut, folkManifestData, folkScope, scopedGearLeftOut, stanceExportPlan, type ManifestPiece } from './folk_export.ts'
+import { atlasGroupOf, clothExportBase, folkLeftOut, folkManifestData, folkScope, scopedGearLeftOut, stanceExportPlan, type ManifestPiece } from './folk_export.ts'
 
 const piece = (id: string, name: string, extra: Partial<Gear> = {}): Gear =>
   makeGear({ id, name, from: `emberhold:gear/${name}`, model: `garments/${id}/model.glb`, attach: { kind: 'skin', policy: 'body', place: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 } }, ...extra })
@@ -110,6 +110,13 @@ describe('folkScope', () => {
 })
 
 describe('the folk manifest, schema 2', () => {
+  it('keeps images and masks distinct for layers with duplicate names and similar IDs', () => {
+    const a = clothExportBase({ name: 'same layer', id: 'a-b' })
+    const b = clothExportBase({ name: 'same layer', id: 'a_b' })
+    expect(a).not.toBe(b)
+    expect(a).toMatch(/^clothes\//)
+    expect(`${a}.mask.png`).not.toBe(`${b}.mask.png`)
+  })
   it('carries the program, the world and goldens the engine reproduces from the file alone', () => {
     const m = JSON.parse(JSON.stringify(manifest(folk()))) as Record<string, unknown>
     expect(m.schema).toBe(2)

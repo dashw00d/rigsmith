@@ -38,7 +38,7 @@ import { bodySurface, hideShareOf, originMatrix, regionsHidden, type GarmentEdit
 import { regionMask, regionsOf, withoutRegions, type Regions } from '../../src/engine/regions.ts'
 import { FEMALE, HAIR_GREY_MEAN, LONG_SLEEVE, femaleOffsets, isFolk } from '../../src/engine/folk.ts'
 import { clothOf } from '../../src/model/folk.ts'
-import { atlasGroupOf, folkLeftOut, folkManifestData, folkScope, isSwapped, scopedGearLeftOut, stanceExportPlan, type FolkFiles, type FolkScope, type ManifestPiece } from './folk_export.ts'
+import { atlasGroupOf, clothExportBase, folkLeftOut, folkManifestData, folkScope, isSwapped, scopedGearLeftOut, stanceExportPlan, type FolkFiles, type FolkScope, type ManifestPiece } from './folk_export.ts'
 import { safeName } from '../../src/engine/geom.ts'
 import { applyGeometryMatrix } from '../../src/engine/geometry-transform.ts'
 import { cloneMorphGeometry, mergeMorphState, restoreMorphState } from '../../src/engine/morph-state.ts'
@@ -1222,11 +1222,11 @@ function folkManifest (unit: string, c: Character, charDir: string, srcDir: stri
   }
   for (const k of c.look.clothes ?? []) files.clothes[k.name] = copy(k.file, `clothes/${safeName(k.name)}${ext(k.file)}`)
   for (const l of clothOf(c)) {
-    const base = `clothes/${safeName(l.name)}`
+    const base = clothExportBase(l)
     let file: string
     if (l.cut !== undefined) {
       // A cut is layer-specific: never overwrite the uncut schema-1 clothes or another layer sharing its image.
-      file = `${base}-${safeName(l.id)}.png`
+      file = `${base}.png`
       mkdirSync(path.dirname(path.join(srcDir, file)), { recursive: true })
       const source = clothBody(view.bodySkinned)
       writeClothPng(path.join(charDir, l.file), path.join(srcDir, file), source.geometry, source.regions, view.height, l.cut,

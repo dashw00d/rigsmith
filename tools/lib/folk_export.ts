@@ -8,6 +8,7 @@
 import { candidates, goldens, PROGRAM, RNG, tagsAfter, type FolkWorld } from '../../src/engine/folkpick.ts'
 import { gearLeftOut, meshNameOf } from '../../src/engine/contract.ts'
 import { clothOf, folkOf, kindSets, LONG_SLEEVE_SHAPE } from '../../src/model/folk.ts'
+import { safeName } from '../../src/model/select.ts'
 import type { Character, ClothLayer, Gear, OutfitSet, Pool, Skin, Slot, UnitKind } from '../../src/model/types.ts'
 import type { UnitSpec } from '../../src/model/unit.ts'
 
@@ -142,6 +143,12 @@ export interface FolkFiles {
 }
 
 export interface FolkBody { mesh: string, shapes: string[] }
+
+/** Distinct layer files even when names collide; validated ids retain their hyphens and underscores. */
+export function clothExportBase (layer: Pick<ClothLayer, 'id' | 'name'>): string {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(layer.id)) throw new Error(`Invalid cloth layer id ${layer.id}`)
+  return `clothes/${safeName(layer.name)}-${layer.id}`
+}
 
 /** The world the game runs (folkpick FolkWorld) as this file carries it: gear named by mesh. */
 export function manifestWorld (c: Character, scope: FolkScope, meshOf: (g: Gear) => string = meshNameOf): FolkWorld {
