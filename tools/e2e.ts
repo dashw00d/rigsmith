@@ -70,7 +70,8 @@ async function main (): Promise<number> {
             if (!workspace.characters.includes(character)) throw new Error(`Scenario character ${character} not copied; add it to E2E_CHARACTERS`)
             const step = scenario.step ?? 'gear'
             if (!['import', 'skeleton', 'skin', 'gear', 'look', 'motion', 'ship'].includes(step)) throw new Error(`Unknown scenario step ${step}`)
-            await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.clear(); localStorage.setItem('rigsmith.selected', ${JSON.stringify(character)}); localStorage.setItem('rigsmith.step', ${JSON.stringify(step)});` })
+            // (fresh storage once per scenario: a reload inside it keeps what the page saved, so persistence can be tested)
+            await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `if (sessionStorage.getItem('e2e.fresh') === null) { sessionStorage.setItem('e2e.fresh', '1'); localStorage.clear(); localStorage.setItem('rigsmith.selected', ${JSON.stringify(character)}); localStorage.setItem('rigsmith.step', ${JSON.stringify(step)}); }` })
             await page.navigate(url)
             await page.until(`(() => { const r = window.__rigsmith; return r !== undefined && r.app.selectedId === ${JSON.stringify(character)} && r.app.selected !== null && r.app.step === ${JSON.stringify(step)} && !r.viewer.loading && (r.viewer.shownId === ${JSON.stringify(character)} || (r.app.selected.files.model === undefined && r.app.selected.files.rigged === undefined)) && r.app.busy === null })()`, 75_000, 'selected character loading')
             const ui = new UI(page, shots, scenario.name)

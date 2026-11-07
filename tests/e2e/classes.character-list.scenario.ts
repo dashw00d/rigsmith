@@ -13,11 +13,8 @@ export default { name: 'classes.character-list', step: 'import', async run (ui) 
   assert.equal(await ui.eval(() => localStorage.getItem('rigsmith.classes.sort')), 'updated')
   await ui.eval(() => { localStorage.setItem('e2e.reload-sentinel', '1'); setTimeout(() => location.reload(), 0) })
   await ui.waitFor(r => performance.getEntriesByType('navigation').some(e => (e as PerformanceNavigationTiming).type === 'reload') && r.app.characters.length > 0, 60_000)
-  // The current harness clears storage on every navigation (board ask); keep the reload assertion active once fixed.
-  if (await ui.eval(() => localStorage.getItem('e2e.reload-sentinel')) === null) {
-    await ui.eval(() => { console.warn('classes.character-list: reload assertions skipped; harness cleared localStorage') })
-    return
-  }
+  // (the harness keeps storage across a reload inside a scenario: what the page saved must survive it)
+  assert.equal(await ui.eval(() => localStorage.getItem('e2e.reload-sentinel')), '1')
   assert.deepEqual(await ui.eval(r => ({ stored: localStorage.getItem('rigsmith.classes.sort'), state: (r.classes as unknown as { sort: string }).sort, value: document.querySelector<HTMLSelectElement>('[aria-label="Sort characters"]')?.value })), { stored: 'updated', state: 'updated', value: 'updated' })
   assert.equal(await ui.eval(() => (document.querySelector<HTMLSelectElement>('[aria-label="Sort characters"]'))?.value), 'updated')
   assert.equal(await ui.eval(() => (document.querySelector<HTMLSelectElement>('[aria-label="Group characters"]'))?.value), 'body')
