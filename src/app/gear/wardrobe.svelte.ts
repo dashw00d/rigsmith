@@ -138,7 +138,8 @@ class WardrobeState {
 
   /** Randomize: a new unit drawn by the pick engine, the locked slots kept. */
   randomize (c: Character): void {
-    const uid = newUid()
+    let uid = newUid()
+    if (uid === this.view(c.id).uid) uid = uid === 99999 ? 1 : uid + 1
     const unit = dress.randomize(c, uid, worldFor(c))
     this.update(c.id, { uid, unit })
   }

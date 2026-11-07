@@ -88,7 +88,7 @@
   }
 </script>
 
-{#if listed.length > 6 || search !== ''}
+{#if character.gear.length > 6 || search !== ''}
   <input class="search" type="search" aria-label="Search gear" data-testid="gear-search" placeholder="Search gear, sets, tags" bind:value={search} />
 {/if}
 {#each groups as group (group.set ?? '')}

@@ -11,6 +11,7 @@
   import { viewer } from '../state/viewer.svelte.ts'
   import { gear } from '../state/gear.svelte.ts'
   import { gizmo } from '../state/gizmo.svelte.ts'
+  import { paint } from '../state/paint.svelte.ts'
   import { wardrobe } from './gear/wardrobe.svelte.ts'
   import { isFolk } from '../engine/folk.ts'
   import IconButton from '../ui/IconButton.svelte'
@@ -29,7 +30,7 @@
     canvas.dataset.testid = 'viewport-canvas'
     let down: { id: number, x: number, y: number, moved: boolean, gizmo: boolean } | null = null
     const start = (e: PointerEvent): void => {
-      if (e.button !== 0 || !e.isPrimary) return
+      if (e.button !== 0 || !e.isPrimary || gear.picking !== null || gear.placingOrigin !== null || paint.active) { down = null; return }
       const gesture = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false, gizmo: false }
       down = gesture
       // TransformControls gets the same pointerdown after this listener.
@@ -41,16 +42,17 @@
     const end = (e: PointerEvent): void => {
       const gesture = down
       down = null
-      if (gesture === null || gesture.id !== e.pointerId || gesture.moved || gesture.gizmo || gizmo.dragging) return
+      if (gesture === null || gesture.id !== e.pointerId || gesture.moved || Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) >= 4 || gesture.gizmo || gizmo.dragging) return
       gear.pickAt(e)
     }
     const cancel = (): void => { down = null }
-    canvas.addEventListener('pointerdown', start)
+    // Capture before a spot/pull picker handles and ends its own pointerdown.
+    canvas.addEventListener('pointerdown', start, true)
     canvas.addEventListener('pointermove', move)
     canvas.addEventListener('pointerup', end)
     canvas.addEventListener('pointercancel', cancel)
     return () => {
-      canvas.removeEventListener('pointerdown', start)
+      canvas.removeEventListener('pointerdown', start, true)
       canvas.removeEventListener('pointermove', move)
       canvas.removeEventListener('pointerup', end)
       canvas.removeEventListener('pointercancel', cancel)

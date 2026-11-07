@@ -58,7 +58,7 @@
 </script>
 
 {#snippet entries(list: MenuItem[])}
-  {#each list as item (item.label)}
+  {#each list as item}
     <div class="item">
       <button type="button" role="menuitem" disabled={item.disabled} class:danger={item.danger}
         aria-haspopup={item.children === undefined ? undefined : 'menu'} aria-expanded={item.children === undefined ? undefined : expanded.includes(item)}

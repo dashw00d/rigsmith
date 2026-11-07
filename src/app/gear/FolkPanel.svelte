@@ -59,7 +59,7 @@
 
 {#snippet lock(field: DressField)}
   {@const on = dress.locked(character.id, field)}
-  <IconButton size="sm" active={on} label={on ? 'Kept by Randomize' : 'Randomize picks it'}
+  <IconButton size="sm" data-testid="dress-lock" data-id={field} active={on} label={on ? 'Kept by Randomize' : 'Randomize picks it'}
     onclick={() => { dress.toggleLock(character, field) }}>
     {#if on}<Lock size={12} />{:else}<LockOpen size={12} />{/if}
   </IconButton>

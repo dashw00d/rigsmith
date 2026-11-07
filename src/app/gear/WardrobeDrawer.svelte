@@ -57,7 +57,7 @@
     <div class="top">
       <div class="tabs" role="tablist" aria-label="What to look at">
         {#each TABS as t (t.id)}
-          <button role="tab" aria-selected={tab === t.id} class:active={tab === t.id} onclick={() => { wardrobe.setTab(c.id, t.id) }}>
+          <button role="tab" data-testid="wardrobe-tab" data-id={t.id} aria-selected={tab === t.id} class:active={tab === t.id} onclick={() => { wardrobe.setTab(c.id, t.id) }}>
             {t.label} <span class="n">{counts[t.id]}</span></button>
         {/each}
       </div>
