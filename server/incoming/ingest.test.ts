@@ -58,10 +58,13 @@ it('adds a tagged piece to a set and copies clothes and skin in one undoable ent
   expect((await readFile(path.join(ws, 'characters', c.id, next.look.clothes![0].file))).subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
   expect((await readJournal(c.id)).filter(e => e.what === 'incoming.accept')).toHaveLength(1)
   expect((await listIncoming()).packages.find(p => p.id === 'add')?.parts.map(p => p.status)).toEqual(['accepted', 'accepted', 'accepted'])
+  expect((await listIncoming(next)).packages.find(p => p.id === 'add')?.parts.find(p => p.id === 'coat')?.acceptedGear).toBe('new1')
+  expect((await listIncoming(body('other'))).packages.find(p => p.id === 'add')?.parts.find(p => p.id === 'coat')?.acceptedGear).toBeUndefined()
   const undoneEntry = await undo(c.id)
   const undone = (await getCharacter(c.id))!
   expect(undone.gear).toHaveLength(0); expect(undone.look.skins).toBeUndefined(); expect(undone.look.clothes).toBeUndefined()
   expect((await listIncoming()).packages.find(p => p.id === 'add')?.parts.map(p => p.status)).toEqual(['pending', 'pending', 'pending'])
+  expect((await listIncoming(undone)).packages.find(p => p.id === 'add')?.parts.find(p => p.id === 'coat')?.acceptedGear).toBeUndefined()
   await undo(c.id, undoneEntry.entry!.seq)
   expect((await listIncoming()).packages.find(p => p.id === 'add')?.parts.map(p => p.status)).toEqual(['accepted', 'accepted', 'accepted'])
 })
