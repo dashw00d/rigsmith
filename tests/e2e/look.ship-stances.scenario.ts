@@ -20,5 +20,16 @@ export default { name: 'look.ship-stances', character: 'folk-v6-0ba482', step: '
   await ui.waitFor(first); await ui.waitFor(second)
   assert.match(await ui.text(first), /Stances:.*e2eshield \(1 clip\)/)
   assert.match(await ui.text(second), /Stances:.*e2eshield \(1 clip\)/)
+  // The same stance on two sets with different held pieces cannot be exported; Ship must say so.
+  await ui.eval(async r => {
+    const c = r.app.selected!; const [one, two] = c.folk!.sets
+    const held = one.pieces.find(id => !two.pieces.includes(id))!
+    if (!held) throw new Error('fixture needs distinct set pieces')
+    if (!await r.app.do(c.id, { type: 'gear.attach', id: held, attach: { kind: 'bone', bone: 'LeftHand', place: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 } } })) throw new Error('could not attach held piece')
+    if (!await r.app.do(c.id, { type: 'folk.set.update', id: two.id, patch: { stance: 'e2eshield' } })) throw new Error('second stance assignment failed')
+  })
+  const conflict = { testid: 'ship-stances-error', id: 'scenario_stance' }
+  await ui.waitFor(conflict)
+  assert.match(await ui.text(conflict), /hold different bone-attached pieces/)
   await ui.shot('ship-stances')
 } } satisfies Scenario

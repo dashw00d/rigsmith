@@ -4,7 +4,9 @@
   // companion it leads or rides. Every edit is saved at once, checked by the server and journaled on the characters it
   // names; the game gets it on Export. On a companion's page: the unit it goes with and its own height.
   import { ArrowRight, Gamepad2, Plus, Ruler, Trash2, X } from '@lucide/svelte'
-  import { folkOf, isFolkCharacter, kindSets, kindsOf } from '../../model/folk.ts'
+  import { isFolkCharacter, kindsOf } from '../../model/folk.ts'
+  import { stanceExportPlan } from '../../model/folk-export.ts'
+  import { exportName, withVariants } from '../../model/variants.ts'
   import { classes } from '../../state/classes.svelte.ts'
   import Note from '../../ui/Note.svelte'
   import { companionFor } from '../../engine/mount.ts'
@@ -33,25 +35,13 @@
   const slots = $derived(owner?.clips.map(s => s.name) ?? [])
   const chips = $derived(clipChips(spec.clips, slots))
   const addable = $derived(addableClips(spec.clips, slots))
-  const stanceSummary = $derived.by(() => {
-    if (owner === null || !isFolkCharacter(owner)) return []
-    const folk = folkOf(owner); let sets = folk.sets; let kinds = folk.kinds
-    if (spec.folk?.kind !== undefined) {
-      kinds = kinds.filter(k => k.id === spec.folk!.kind)
-      const ids = new Set(kinds.flatMap(k => kindSets(folk.sets, k).map(x => x.set.id)))
-      sets = sets.filter(s => ids.has(s.id))
-    } else if (spec.folk?.outfits !== undefined) {
-      sets = sets.filter(s => spec.folk!.outfits!.includes(s.name))
-      const ids = new Set(sets.map(s => s.id))
-      kinds = kinds.filter(k => !Array.isArray(k.sets) || k.sets.some(entry => ids.has(entry.set)))
-    }
-    const ids = new Set<string>()
-    for (const set of sets) {
-      if (set.stance !== undefined) ids.add(set.stance)
-      else for (const kind of kinds) if (kind.stance !== undefined && kindSets(sets, kind).some(x => x.set.id === set.id)) ids.add(kind.stance)
-    }
-    for (const kind of kinds) if (kind.stance !== undefined && kindSets(sets, kind).length === 0) ids.add(kind.stance)
-    return folk.stances.filter(s => ids.has(s.id)).map(s => ({ id: s.id, count: spec.clips.reduce((n, clip) => n + (s.clips[clip]?.length ?? 0), 0) })).filter(s => s.count > 0)
+  const stances = $derived.by((): { summary: Array<{ id: string, count: number }>, error: string | null } => {
+    if (owner === null || !isFolkCharacter(owner)) return { summary: [], error: null }
+    try {
+      const baseNames = withVariants(owner, spec.clips).map(s => exportName(s.name, spec.clips))
+      const plans = stanceExportPlan(owner, spec, spec.clips, baseNames)
+      return { summary: plans.map(plan => ({ id: plan.id, count: plan.slots.length })), error: null }
+    } catch (error) { return { summary: [], error: error instanceof Error ? error.message : String(error) } }
   })
   const lods = $derived(ship.lods(name))
   const ownLods = $derived(Array.isArray(spec.lods))
@@ -160,7 +150,8 @@
       {/if}
     </div>
 
-    {#if stanceSummary.length > 0}<p class="faint small" data-testid="ship-stances" data-id={name}>Stances: {stanceSummary.map(s => `${s.id} (${s.count} ${s.count === 1 ? 'clip' : 'clips'})`).join(', ')}</p>{/if}
+    {#if stances.summary.length > 0}<p class="faint small" data-testid="ship-stances" data-id={name}>Stances: {stances.summary.map(s => `${s.id} (${s.count} ${s.count === 1 ? 'clip' : 'clips'})`).join(', ')}</p>{/if}
+    {#if stances.error !== null}<p class="faint small" data-testid="ship-stances-error" data-id={name}>Stance export: {stances.error}</p>{/if}
 
     {#if owner !== null && isFolkCharacter(owner)}
       <Field label="Class" hint="The class included in this unit's export">
