@@ -1,7 +1,8 @@
 // The Forge's queue, kept in <store>/queue.json so it outlives the server. Two lanes: 'gpu' (stages that declare a
 // GPU need, one at a time here and each taking its turn on the shared GPU lane, jobs.ts gpuTurn) and 'cpu' (a few
 // alongside). Order is first come first served, and reorderable. After a restart a job that was running is
-// interrupted: its attempt renamed <attempt>.partial, and run again (in that work) when its stage is resumable.
+// interrupted: its attempt renamed <attempt>.partial, and run again (in that work) when its stage is resumable; one
+// that hadn't made its attempt yet (it was waiting for the GPU) is queued again as it was.
 // A job that finishes picks its attempt when the stage has no pick gate, and with `through` queues the next stage.
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -75,9 +76,10 @@ export class ForgeQueue {
       }
       const set = await this.o.store.getSet(job.set)
       const stage = config === null || set === null ? undefined : findStage(config, set.pipeline, job.stage)
-      if (stage?.resumable === true) {
+      // (one that hadn't made its attempt yet, waiting for the GPU, lost nothing: it goes back in line too)
+      if (stage !== undefined && (stage.resumable === true || job.attempt === undefined)) {
         job.message = `Cut off by a restart; queued again${partial !== undefined ? ` (carrying on in ${partial})` : ''}`
-        this.jobs.push(this.fresh({ ...job, ...(partial !== undefined ? { resume: partial } : {}) }))
+        this.jobs.push(this.fresh({ ...job, ...(partial !== undefined && stage.resumable === true ? { resume: partial } : {}) }))
       }
     }
     await this.save()

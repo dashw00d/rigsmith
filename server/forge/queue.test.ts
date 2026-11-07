@@ -148,13 +148,19 @@ describe('the forge queue', () => {
     await s.writeManifest({ schema: 1, set: 'misc', item: 'x', stage: 'slow', attempt: id, key: 'k', status: 'running', version: '1', cmd: [], params: {}, seed: 0, variant: 0, inputs: {}, spec: '', code: {}, outputs: {}, startedAt: Date.now() })
     const b = await s.newAttempt('misc', 'x', 'never')
     const running = (stage: string, attempt: string): QueueJob => ({ id: `j-${stage}`, set: 'misc', item: 'x', stage, label: stage, lane: 'cpu', params: {}, variant: 0, status: 'running', createdAt: 1, startedAt: 2, progress: 0.3, message: 'Working', attempt })
-    writeFileSync(path.join(fx.store, 'queue.json'), JSON.stringify({ jobs: [running('slow', id), running('never', b.id)] }))
+    const waiting = { ...running('never', ''), id: 'j-waiting' }
+    delete (waiting as Partial<QueueJob>).attempt
+    writeFileSync(path.join(fx.store, 'queue.json'), JSON.stringify({ jobs: [running('slow', id), running('never', b.id), waiting] }))
     const q = make()
     await q.load()
+    // (the one waiting for the GPU had made no attempt: back in line as it was; stopped here, it runs 30 s)
+    const again = q.list().find(j => j.stage === 'never' && j.status !== 'interrupted')!
+    expect(again.resume).toBeUndefined()
+    await q.cancel(again.id)
     await q.idle()
     const jobs = q.list()
-    expect(jobs.map(j => `${j.stage} ${j.status}`)).toEqual(['slow interrupted', 'never interrupted', 'slow done'])
-    expect(jobs[2].resume).toBe('a001.partial')
+    expect(jobs.map(j => `${j.stage} ${j.status}`)).toEqual(['slow interrupted', 'never interrupted', 'never interrupted', 'slow done', 'never cancelled'])
+    expect(jobs[3].resume).toBe('a001.partial')
     expect(await s.attemptIds('misc', 'x', 'slow')).toEqual(['a001.partial', 'a002'])
     expect(await s.attemptIds('misc', 'x', 'never')).toEqual(['a001.partial'])
     expect((await s.manifest('misc', 'x', 'slow', 'a001.partial'))?.status).toBe('interrupted')
