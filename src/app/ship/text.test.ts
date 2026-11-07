@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { makeCharacter } from '../../model/fixtures.ts'
 import type { Check } from '../../engine/checks.ts'
-import { addableClips, ago, auditFlags, checksSummary, clipChips, lodPercents, nextLod, strideEntry, strideValue, took, unitNameOf, unitState } from './text.ts'
+import { addableClips, ago, auditFlags, checksSummary, classChoices, classNote, clipChips, lodPercents, nextLod, strideEntry, strideValue, took, unitNameOf, unitState } from './text.ts'
 
 describe('the Ship words', () => {
   it('names a unit after its character', () => {
@@ -54,5 +55,15 @@ describe('the Ship words', () => {
     expect(ago(now - 30 * 3_600_000, now)).toBe('yesterday')
     expect(took(0, 42_000)).toBe('42 s')
     expect(took(0, 125_000)).toBe('2 min 5 s')
+  })
+})
+
+describe('class choices', () => {
+  it('offers the body classes and retains a missing id', () => {
+    const c = makeCharacter({ folk: { sets: [], pools: [], kinds: [{ id: 'spear', name: 'Spearman', tags: [], sets: { query: [] } }], stances: [] } })
+    const spec = { character: c.id, height: 2, budget: 10, clips: [], folk: { kind: 'gone', pools: ['skin'] } }
+    expect(classChoices(c, spec)).toEqual([{ value: '', label: 'Any' }, { value: 'spear', label: 'Spearman' }, { value: 'gone', label: 'gone (missing)' }])
+    expect(classNote('warrior', 'spear')).toMatch(/differs/)
+    expect(classNote('spear', 'spear')).toBeNull()
   })
 })

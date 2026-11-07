@@ -4,6 +4,9 @@
   // companion it leads or rides. Every edit is saved at once, checked by the server and journaled on the characters it
   // names; the game gets it on Export. On a companion's page: the unit it goes with and its own height.
   import { ArrowRight, Gamepad2, Plus, Ruler, Trash2, X } from '@lucide/svelte'
+  import { isFolkCharacter, kindsOf } from '../../model/folk.ts'
+  import { classes } from '../../state/classes.svelte.ts'
+  import Note from '../../ui/Note.svelte'
   import { companionFor } from '../../engine/mount.ts'
   import type { Character } from '../../state/api.ts'
   import { app } from '../../state/app.svelte.ts'
@@ -18,7 +21,7 @@
   import Select from '../../ui/Select.svelte'
   import Toggle from '../../ui/Toggle.svelte'
   import { tooltip } from '../../ui/tooltip.ts'
-  import { addableClips, clipChips, lodPercents, nextLod, unitState } from './text.ts'
+  import { addableClips, classChoices, classNote, clipChips, lodPercents, nextLod, unitState } from './text.ts'
 
   let { character, row }: { character: Character, row: UnitRow } = $props()
 
@@ -42,12 +45,19 @@
   ])
   const onStage = $derived(viewer.character !== null && viewer.shownId === character.id)
   // (the game's own keys, kept as they are: its texture size, parts, thrown weapons, models_dir...)
-  const KNOWN = new Set(['character', 'height', 'budget', 'clips', 'lods', 'draft', 'companion'])
+  const KNOWN = new Set(['character', 'height', 'budget', 'clips', 'lods', 'draft', 'companion', 'folk'])
   const otherKeys = $derived(Object.keys(spec).filter(k => !KNOWN.has(k) && !k.startsWith('_')))
 
   const patch = (change: Parameters<typeof ship.patch>[1]): void => { void ship.patch(name, change) }
   // (the pickers that act and go back to their placeholder: drawn anew after each pick)
   let picks = $state(0)
+
+  function chooseClass (id: string): void {
+    const folk = { ...spec.folk }
+    if (id === '') delete folk.kind
+    else folk.kind = id
+    patch({ folk: Object.keys(folk).length === 0 ? undefined : folk })
+  }
 
   function room (companion: boolean): void {
     if (!scaleRoom.show(name, companion)) app.toast('error', `${character.name} isn't loaded yet`)
@@ -130,6 +140,18 @@
       {/if}
     </div>
 
+    {#if owner !== null && isFolkCharacter(owner)}
+      <Field label="Class" hint="The class included in this unit's export">
+        <div class="with">
+          <Select testid="ship-class-select" label="Class" value={spec.folk?.kind ?? ''} options={classChoices(owner, spec)} onchange={chooseClass} />
+          {#if spec.folk?.kind && kindsOf(owner).some(k => k.id === spec.folk?.kind)}
+            <Button size="sm" variant="ghost" onclick={() => classes.openClass(owner.id, spec.folk!.kind!)}>Open class</Button>
+          {/if}
+        </div>
+      </Field>
+      {#if spec.folk?.kind && !kindsOf(owner).some(k => k.id === spec.folk?.kind)}<span class="chip missing">Missing class: {spec.folk.kind}</span>{/if}
+      {#if classNote(name, spec.folk?.kind)}<Note tone="warn">{classNote(name, spec.folk?.kind)}</Note>{/if}
+    {/if}
     <Toggle label="Draft" hint="The game's build skips it unless it is named; exporting it ends the draft" checked={spec.draft === true} onchange={(v) => patch({ draft: v ? true : undefined })} />
     {#if otherKeys.length > 0}
       <p class="faint small">Also in its entry, kept as they are: <span class="mono">{otherKeys.join(', ')}</span></p>
