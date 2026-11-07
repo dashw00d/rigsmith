@@ -77,7 +77,7 @@ export const allowedWrite = (req: IncomingMessage): boolean =>
 
 /** What /files may serve, by its path inside the workspace: the characters' files the app loads (not their records,
  * journals or painted-weight records) and the clip library. */
-const PRIVATE = new Set(['journal.jsonl', 'character.json', 'character.v1.json', 'character.v2.json', 'character.v3.json', 'weight_edits.json'])
+const PRIVATE = new Set(['journal.jsonl', 'character.json', 'character.v1.json', 'character.v2.json', 'character.v3.json', 'character.v4.json', 'weight_edits.json'])
 export function servable (relative: string): boolean {
   const parts = relative.split(/[\\/]+/)
   if (parts.some(p => p === '..' || p === '')) return false

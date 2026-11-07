@@ -9,6 +9,7 @@ import { bakeCycle, isWhole, layoutOf, lengthOf, pieceText, piecesProblem, plays
 import { carryHandle, gearById, gearByName, slotById, slotByName } from '../select.ts'
 import { hierarchyOf } from '../skeletons.ts'
 import { playedAs, playsAs } from '../variants.ts'
+import { pruneSlots } from './folk.ts'
 import type {
   Adjustment, AdjustmentKind, BlowFit, Character, ClipEvent, ClipKey, Gear, GearTrack, Handle, HeldBy, Piece, RetimeMarker, Slot, SlotIk, SlotTime, Window,
 } from '../types.ts'
@@ -621,7 +622,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
         if (Object.keys(o.time).length === 0) delete o.time
         out.push(`clip ${o.name}: pace of ${s.name} removed (that clip is gone)`)
       }
-      return out
+      return [...out, ...pruneSlots(c)]
     }
     case 'slot.reorder': {
       const next = reorder(c.clips, cmd.ids, 'clip slot')
@@ -739,7 +740,7 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
       return out
     }
     case 'slot.ik': return ikCommand(c, find(cmd.slot), cmd.patch)
-    case 'clips.replace': return replace(c, cmd)
+    case 'clips.replace': return [...replace(c, cmd), ...pruneSlots(c)]
   }
   return unknown(cmd)
 }

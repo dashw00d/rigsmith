@@ -6,6 +6,7 @@
 import type { Command } from './command-types.ts'
 import { reduceCharacter } from './commands/character.ts'
 import { reduceClips } from './commands/clips.ts'
+import { reduceFolk } from './commands/folk.ts'
 import { bad, isObj } from './commands/common.ts'
 import { reduceGear } from './commands/gear.ts'
 import { reduceHands } from './commands/hands.ts'
@@ -34,6 +35,7 @@ const SECTIONS: Record<string, (c: Character, cmd: never) => string[]> = {
   clips: reduceClips,
   look: reduceLook,
   mount: reduceMount,
+  folk: reduceFolk,
 }
 
 export function applyCommand (c: Character, cmd: Command): Applied {

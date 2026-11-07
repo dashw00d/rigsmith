@@ -19,6 +19,18 @@ Rigsmith shows one of each (`look.skin`, `look.clothing`, the outfit and hair an
 `gear.outfit.show`, `gear.update` (`outfit`, `role`, `tags`), `look.skins.set`, `look.skin.show`,
 `look.clothes.set`, `look.clothing.show`; undo covers them (entity `skins`).
 
+## Schema 5: the dressing as data (src/model/folk.ts, src/engine/folkpick.ts)
+
+`Character.folk` holds **sets** (pieces worn together, with tags such as `culture:norse` and grants such as
+`covers-hair`), **pools** (skins, cloth layers, hair, beards, accessories, each item with a weight and
+requires/excludes), **kinds** (villager, spearman: their sets by list or tag query, their pools) and **stances**;
+`look.cloth` the cloth layers (slots bottom, top, over). One engine picks a unit's look by running a program of steps
+(set -> skin -> bottom -> top -> over -> hair -> beard -> accessory) over that data with the unit's id and the game's
+inputs (`culture:<id>`): each step draws with its own salt, so a villager who becomes a spearman keeps his face. The
+export's manifest (schema 2) carries the program, the data and golden picks the game reproduces. The schema 4 fields
+below (Gear.outfit, Gear.role, look.clothes) are kept, and kept in step, until the UI is ported; the rules below are the
+migrated pools' requires/excludes.
+
 ## The rules of a pick (src/engine/folk.ts, once for Rigsmith, the export and the game)
 
 - hair or beard tagged `fem` only on a skin tagged `female`; tagged `masc` only on one that isn't;

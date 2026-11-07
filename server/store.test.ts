@@ -55,11 +55,11 @@ describe('migration on read', () => {
       'journal.jsonl': JSON.stringify({ at: '2026-10-20T00:00:00.000Z', by: 'app', changes: ['clip Idle: added'] }) + '\n',
     })
     const c = (await store.getCharacter(id))!
-    expect(c.schema).toBe(4)
+    expect(c.schema).toBe(5)
     expect(c.clips.map(s => s.name)).toEqual(['Idle'])
     expect(c.skeleton.detected).toEqual({ Hips: [0, 1, 0], Spine: [0, 1.2, 0] })
-    // (written back as schema 4, the v1 file beside it and no v2 one: it never was)
-    expect(JSON.parse(readFileSync(characterFile(id), 'utf8')).schema).toBe(4)
+    // (written back as schema 5, the v1 file beside it and no v2 one: it never was)
+    expect(JSON.parse(readFileSync(characterFile(id), 'utf8')).schema).toBe(5)
     expect(readFileSync(characterFile(id, 'character.v1.json'), 'utf8')).toBe(original)
     expect(existsSync(characterFile(id, 'character.v2.json'))).toBe(false)
     // (one snapshot layer for the texture, not for its hole mask; copied, the original left where it was)
@@ -93,7 +93,7 @@ describe('migration on read', () => {
 })
 
 describe('migration of a schema 2 file on read', () => {
-  it('moves it to schema 4, keeps its v2 copy, and says when a cut slot couldn\'t be measured', async () => {
+  it('moves it to schema 5, keeps its v2 copy, and says when a cut slot couldn\'t be measured', async () => {
     const id = 'mid-age-bbbbbb'
     // (schema 2 as the v1 one migrates to, with an Attack whose blow timing cut keys and a hold)
     const v2 = { ...(await import('../src/model/migrate.ts')).migrateV1(v1(id, 'Mid Age')).character, clips: [{
@@ -105,7 +105,7 @@ describe('migration of a schema 2 file on read', () => {
     const original = JSON.stringify(v2)
     put(id, { 'character.json': original })
     const c = (await store.getCharacter(id))!
-    expect(c.schema).toBe(4)
+    expect(c.schema).toBe(5)
     expect(c.clips[0]).toMatchObject({ time: { fit: { enabled: true, at: 0.45 } }, bones: { Spine: [{ u: 0.5 }] }, adjustments: [] })
     expect(readFileSync(characterFile(id, 'character.v2.json'), 'utf8')).toBe(original)
     expect(existsSync(characterFile(id, 'character.v1.json'))).toBe(false)
@@ -117,7 +117,7 @@ describe('migration of a schema 2 file on read', () => {
 })
 
 describe('migration of a schema 3 file on read', () => {
-  it('moves it to schema 4 and keeps its v3 copy; holds whose clip can\'t be measured go with a note', async () => {
+  it('moves it to schema 5 and keeps its v3 copy; holds whose clip can\'t be measured go with a note', async () => {
     const id = 'late-age-cccccc'
     const v2 = (await import('../src/model/migrate.ts')).migrateV1(v1(id, 'Late Age')).character
     const v3 = { ...v2, schema: 3, clips: [
@@ -127,13 +127,31 @@ describe('migration of a schema 3 file on read', () => {
     const original = JSON.stringify(v3)
     put(id, { 'character.json': original })
     const c = (await store.getCharacter(id))!
-    expect(c.schema).toBe(4)
+    expect(c.schema).toBe(5)
     expect(c.clips[0]).toEqual(v3.clips[0])
     expect(c.clips[1].time).toBeUndefined()
     expect(readFileSync(characterFile(id, 'character.v3.json'), 'utf8')).toBe(original)
-    expect(JSON.parse(readFileSync(characterFile(id), 'utf8')).schema).toBe(4)
+    expect(JSON.parse(readFileSync(characterFile(id), 'utf8')).schema).toBe(5)
     const said = (await journal.readJournal(id)).flatMap(e => e.changes).join('\n')
     expect(said).toMatch(/hold dropped/)
+  }, 60_000)
+})
+
+describe('migration of a schema 4 file on read', () => {
+  it('moves it to schema 5 and keeps its v4 copy; a dynamic character gets its folk section', async () => {
+    const id = 'folk-four-dddddd'
+    const v2 = (await import('../src/model/migrate.ts')).migrateV1(v1(id, 'Folk Four')).character
+    const v4 = { ...v2, schema: 4, gear: [{ ...gear('g1', 'Outfit_mail_helm'), outfit: 'mail', tags: ['covers-hair'] }] }
+    const original = JSON.stringify(v4)
+    put(id, { 'character.json': original })
+    const c = (await store.getCharacter(id))!
+    expect(c.schema).toBe(5)
+    expect(c.folk?.sets.map(s => [s.name, s.pieces, s.grants])).toEqual([['mail', ['g1'], ['covers-hair']]])
+    expect(readFileSync(characterFile(id, 'character.v4.json'), 'utf8')).toBe(original)
+    expect(existsSync(characterFile(id, 'character.v3.json'))).toBe(false)
+    expect(JSON.parse(readFileSync(characterFile(id), 'utf8')).schema).toBe(5)
+    const said = (await journal.readJournal(id)).flatMap(e => e.changes).join('\n')
+    expect(said).toMatch(/outfit is a set/)
   }, 60_000)
 })
 
@@ -173,9 +191,9 @@ describe('updateCharacter', () => {
     id = (await store.createCharacter('Knight.glb', Buffer.from('knight bytes'))).id
   })
 
-  it('creates a schema 4 character at version 1 with an import entry', async () => {
+  it('creates a schema 5 character at version 1 with an import entry', async () => {
     const c = (await store.getCharacter(id))!
-    expect(c).toMatchObject({ schema: 4, version: 1, name: 'Knight', status: 'importing', gear: [], clips: [] })
+    expect(c).toMatchObject({ schema: 5, version: 1, name: 'Knight', status: 'importing', gear: [], clips: [] })
     expect((await journal.readJournal(id)).map(e => [e.seq, e.what])).toEqual([[1, 'import']])
   })
 

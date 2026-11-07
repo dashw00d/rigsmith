@@ -1,9 +1,11 @@
-// Reads a character.json of any schema as schema 4: v1 -> v2 (docs/rebuild/DESIGN.md §2.3), then v2 -> v3
+// Reads a character.json of any schema as schema 5: v1 -> v2 (docs/rebuild/DESIGN.md §2.3), then v2 -> v3
 // (docs/motion-plan.md §5: a slot's blow timing, pace and keys become its time map and tracks, and every phase it held,
 // a phase of the clip as it played, becomes source time), then v3 -> v4 (§11.5: a slot's holds become hold pieces of
-// its source, every time it stores moved to where it plays in their composite; any other slot as it was). Pure and deterministic: every id it makes is
+// its source, every time it stores moved to where it plays in their composite; any other slot as it was), then v4 -> v5
+// (a dynamic character's outfits, hair and beard roles, skins and clothes become its folk section and cloth layers:
+// src/model/folk.ts folkFromLegacy; the old fields kept while the UI reads them). Pure and deterministic: every id it makes is
 // stableId('<character id>:<what>:<index>'), so every process migrating the same file gets the same document, and a
-// schema 4 document comes back as it is. It never touches files: the copies it needs are returned as fileOps, which the
+// schema 5 document comes back as it is. It never touches files: the copies it needs are returned as fileOps, which the
 // caller (server/store.ts, tools/migrate.ts) runs. GLBs and weight_edits.json are never among them.
 //
 // Moving a slot's phases into source time needs its blow fit's cut: the source's length and, for a blow the fit
@@ -12,6 +14,7 @@
 //
 // The converters (slotsFromV1, slotFromV2, holdsFromV1, gearFromV1, gearFromProp) are also what src/model/legacy.ts
 // uses to turn a v1 PATCH into commands, and server/routes/restore.ts to read an old build.
+import { folkFromLegacy } from './folk.ts'
 import { stableId } from './ids.ts'
 import { DEFAULT_FIST, handSide, safeName } from './select.ts'
 import { fitBlow, fitRange, resolveTime, type TimeMap } from './timemap.ts'
@@ -22,6 +25,7 @@ import type {
 import type { GameSpec } from './unit.ts'
 import type { V2Adjustment, V2Character, V2ClipKey, V2Slot, V2Window } from './v2.ts'
 import type { V3Character, V3Hold, V3Slot } from './v3.ts'
+import type { V4Character } from './v4.ts'
 import type { V1AnimationEntry, V1Character, V1ClipScript, V1Garment, V1GripScript, V1PropAttachment, V1Settings } from './v1.ts'
 
 export interface MigrateContext {
@@ -31,7 +35,8 @@ export interface MigrateContext {
   paintedCount?: number
   /** Rest bone heads of rigged.glb (from its inverse bind matrices): the joints the rig was built on. */
   bindJoints?: Joints
-  /** The game's units (workspace/game/units.json), to check a rider's horse against its unit's companion. */
+  /** The game's units (workspace/game/units.json), to check a rider's horse against its unit's companion, and the kinds
+   * of a dynamic character (its units' folk.outfits). */
   units?: GameSpec
   /** By schema 2 slot id: its source clip's length (seconds, at speed 1) and, where its blow timing measured the blow,
    * the blow (seconds of the clip at the slot's speed, as timing.ts blowTime finds it). What moving a cut slot's
@@ -58,11 +63,11 @@ export interface FileOp { op: 'copy', from: string, to: string }
 
 export interface Migration {
   character: Character
-  /** False: it was schema 4 already (nothing to write). */
+  /** False: it was schema 5 already (nothing to write). */
   migrated: boolean
-  /** The schema it was read at (1 to 4): a 3 is kept as character.v3.json, a 2 as character.v2.json, a 1 as
-   * character.v1.json. */
-  from: 1 | 2 | 3 | 4
+  /** The schema it was read at (1 to 5): a 4 is kept as character.v4.json, a 3 as character.v3.json, a 2 as
+   * character.v2.json, a 1 as character.v1.json. */
+  from: 1 | 2 | 3 | 4 | 5
   /** In plain words, for the journal: what changed meaning, what was dropped. */
   notes: string[]
   fileOps: FileOp[]
@@ -85,18 +90,22 @@ const UNLOCKED = /^(scout|villager)-/
 export function migrate (raw: unknown, ctx: MigrateContext = {}, o: MigrateOptions = {}): Migration {
   if (raw === null || typeof raw !== 'object' || typeof (raw as { id?: unknown }).id !== 'string') throw new Error('Not a character')
   const schema = (raw as { schema?: unknown }).schema
-  if (schema === 4) return { character: raw as Character, migrated: false, from: 4, notes: [], fileOps: [] }
+  if (schema === 5) return { character: raw as Character, migrated: false, from: 5, notes: [], fileOps: [] }
+  if (schema === 4) {
+    const notes: string[] = []
+    return { character: toV5(raw as V4Character, ctx, notes), migrated: true, from: 4, notes, fileOps: [] }
+  }
   if (schema === 3) {
     const notes: string[] = []
-    return { character: toV4(raw as V3Character, ctx, notes, o), migrated: true, from: 3, notes, fileOps: [] }
+    return { character: toV5(toV4(raw as V3Character, ctx, notes, o), ctx, notes), migrated: true, from: 3, notes, fileOps: [] }
   }
   if (schema === 2) {
     const notes: string[] = []
-    return { character: toV4(upgrade(raw as V2Character, ctx, notes, { ...o, from: 2 }), ctx, notes, o), migrated: true, from: 2, notes, fileOps: [] }
+    return { character: toV5(toV4(upgrade(raw as V2Character, ctx, notes, { ...o, from: 2 }), ctx, notes, o), ctx, notes), migrated: true, from: 2, notes, fileOps: [] }
   }
   if (schema !== undefined) throw new Error(`Character schema ${String(schema)} is newer than this Rigsmith`)
   const out = migrateV1(raw, ctx)
-  return { character: toV4(upgrade(out.character, ctx, out.notes, { ...o, from: 1 }), ctx, out.notes, o), migrated: true, from: 1, notes: out.notes, fileOps: out.fileOps }
+  return { character: toV5(toV4(upgrade(out.character, ctx, out.notes, { ...o, from: 1 }), ctx, out.notes, o), ctx, out.notes), migrated: true, from: 1, notes: out.notes, fileOps: out.fileOps }
 }
 
 /** A v1 character as schema 2 (DESIGN.md §2.3), what the schema 3 upgrade reads; also how the clip measure
@@ -179,7 +188,7 @@ function upgrade (c: V2Character, ctx: MigrateContext, notes: string[], o: Migra
 
 /** A schema 3 character as schema 4: each slot with holds through piecesFromHolds (its clip's length from
  * `clipTimes`), every other slot as it is. */
-function toV4 (c: V3Character, ctx: MigrateContext, notes: string[], o: MigrateOptions): Character {
+function toV4 (c: V3Character, ctx: MigrateContext, notes: string[], o: MigrateOptions): V4Character {
   const clips = c.clips.map((s, i): Slot => {
     if (heldOf(s).length === 0) return withoutHolds(s)
     const seconds = ctx.clipTimes?.[s.id]?.seconds
@@ -192,6 +201,26 @@ function toV4 (c: V3Character, ctx: MigrateContext, notes: string[], o: MigrateO
     return piecesFromHolds(s, seconds, `${c.id}:piece:${i}`)
   })
   return { ...c, schema: 4, clips }
+}
+
+// ---- schema 4 -> 5 ----------------------------------------------------------------------------------------------
+
+/** A schema 4 character as schema 5: a dynamic character (gear with an outfit or a role) gets its folk section and cloth
+ * layers from its old fields (src/model/folk.ts folkFromLegacy: each outfit a set, the hair and beard roles pools with
+ * the old rules as requires/excludes, the skins the skin pool, each clothes layer a top-and-bottom cloth layer, the kinds
+ * its game units' folk.outfits name, else one kind 'folk' wearing every set); Gear.outfit, Gear.role and look.clothes stay
+ * as they are, read by the UI until it is ported. Anything else only changes its schema. */
+export function toV5 (c: V4Character, ctx: MigrateContext = {}, notes: string[] = []): Character {
+  const out: Character = { ...c, schema: 5 }
+  const made = folkFromLegacy(c, ctx.units)
+  if (made === null) return out
+  out.folk = made.folk
+  if (made.cloth.length > 0) out.look = { ...c.look, cloth: made.cloth }
+  const f = made.folk
+  const pools = f.pools.map(p => `${p.name.toLowerCase()} (${p.items.length})`)
+  notes.push(`dynamic character: its ${f.sets.length === 1 ? 'outfit is a set' : `${f.sets.length} outfits are sets`}${pools.length > 0 ? `, pools ${pools.join(', ')}` : ''}` +
+    `${made.cloth.length > 0 ? `, its clothes ${made.cloth.length} cloth layers (top and bottom)` : ''}; kinds ${f.kinds.map(k => k.id).join(', ')}`)
+  return out
 }
 
 /** A slot's holds that hold anything, by `u`. */
@@ -285,7 +314,7 @@ export function cutMoves (s: V2Slot, o: { windowsInSource?: boolean } = {}): boo
  * (their clips' lengths), an older one whose phases move into source time. */
 export function needsClipTimes (raw: unknown): boolean {
   const schema = (raw as { schema?: unknown }).schema
-  if (schema === 4) return false
+  if (schema === 4 || schema === 5) return false
   if (schema === 3) return (raw as V3Character).clips.some(s => heldOf(s).length > 0)
   return migrateV1(raw).character.clips.some(s => cutMoves(s, { windowsInSource: schema === undefined }))
 }
@@ -299,7 +328,7 @@ export function needsClipTimes (raw: unknown): boolean {
  * file to try again. Empty: it can be written. */
 export function unmeasured (raw: unknown, clipTimes: Record<string, ClipTimes> | undefined, missing: readonly string[] = []): string[] {
   const schema = (raw as { schema?: unknown }).schema
-  if (schema === 4) return []
+  if (schema === 4 || schema === 5) return []
   if (schema === 3) return (raw as V3Character).clips.filter(s => heldOf(s).length > 0 && !missing.includes(s.id) && clipTimes?.[s.id]?.seconds === undefined).map(s => s.name)
   return migrateV1(raw).character.clips
     .filter(s => cutMoves(s, { windowsInSource: schema === undefined }) && !missing.includes(s.id) && v2TimeMap(s, clipTimes?.[s.id]) === null)
@@ -405,6 +434,8 @@ export function migrateSettings (raw: unknown, fallback: Settings = { gameRepo: 
   return defined({
     gameRepo: typeof v.gameRepo === 'string' && v.gameRepo !== '' ? v.gameRepo : fallback.gameRepo,
     handPoses: v.handPoses ?? fallback.handPoses,
+    comfyUrl: typeof (raw as { comfyUrl?: unknown } | null)?.comfyUrl === 'string' && (raw as { comfyUrl: string }).comfyUrl.trim() !== ''
+      ? (raw as { comfyUrl: string }).comfyUrl.trim() : fallback.comfyUrl,
   })
 }
 

@@ -95,8 +95,10 @@ export function describe (before: Character | null, after: Character): string[] 
     const [kind, id] = key.split(':')
     if (key === 'name') return `name: ${before.name} -> ${after.name}`
     if (id === undefined) return `${kind.replace(/([A-Z])/g, ' $1').toLowerCase()} changed`
-    const list = kind === 'gear' ? 'gear' : kind === 'slot' ? 'clips' : 'look'
-    const of = (c: Character): Array<{ id: string, name?: string }> => list === 'look' ? c.look.layers.map(l => ({ id: l.id, name: l.image })) : c[list]
+    const of = (c: Character): Array<{ id: string, name?: string }> =>
+      kind === 'gear' ? c.gear : kind === 'slot' ? c.clips : kind === 'cloth' ? c.look.cloth ?? []
+        : kind === 'set' ? c.folk?.sets ?? [] : kind === 'pool' ? c.folk?.pools ?? [] : kind === 'kind' ? c.folk?.kinds ?? []
+          : kind === 'stance' ? c.folk?.stances ?? [] : c.look.layers.map(l => ({ id: l.id, name: l.image }))
     const was = named(of(before), id)
     const now = named(of(after), id)
     return `${kind} ${now ?? was ?? id}: ${was === undefined ? 'added' : now === undefined ? 'removed' : 'changed'}`

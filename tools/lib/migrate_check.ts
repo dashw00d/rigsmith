@@ -2,7 +2,8 @@
 // functions of the v1 record and the schema 2 document: the effective skeleton is the old one, the detected joints
 // alone still cover the skeleton, and every slot's hands close on the same fist or pose (or none) as v1 closed them.
 // Also the hash list format --hashes reads and writes, and what it asserts of a schema 2 character moved to schema 3
-// (docs/motion-plan.md §5): every key, window and picked blow it had maps back to the phase it was at.
+// (docs/motion-plan.md §5): every key, window and picked blow it had maps back to the phase it was at; and of a dynamic
+// character moved to schema 5, that the pick engine allows what the schema 4 rules did (folkProblems).
 import path from 'node:path'
 import { handAt, handLayers, type HandLayer } from '../../src/engine/hands.ts'
 import { holdFactor } from '../../src/engine/pulls.ts'
@@ -15,6 +16,10 @@ import type { V3Character } from '../../src/model/v3.ts'
 import { layoutOf } from '../../src/model/pieces.ts'
 import { stableJson } from '../../src/model/entities.ts'
 import { warpAt } from '../../src/model/keyedit.ts'
+import { clothesFor, coversFace, coversHair, fits, isFolk, outfitsOf } from '../../src/engine/folk.ts'
+import { candidates, tagsAfter, worldOf } from '../../src/engine/folkpick.ts'
+import { clothOf } from '../../src/model/folk.ts'
+import type { GameSpec } from '../../src/model/unit.ts'
 
 const SIDES: Side[] = ['Left', 'Right']
 /** The migration keeps a joint as placed by hand when it moved more than this (src/model/migrate.ts). */
@@ -267,4 +272,47 @@ export function parseHashes (text: string, workspace: string): Map<string, strin
 /** The other way round, in path order. */
 export function formatHashes (hashes: Map<string, string>): string {
   return [...hashes].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([file, hash]) => `${hash}  ${file}\n`).join('')
+}
+
+// ---- schema 4 -> 5: the folk pick ------------------------------------------------------------------------------
+
+/** What tools/migrate.ts --check asserts of a dynamic character moved to schema 5 (docs/dressing-plan.md Phase 1):
+ * for every set (and none) and every skin (and none), the pick engine (src/engine/folkpick.ts) allows exactly the hair,
+ * beards and clothes the schema 4 rules (src/engine/folk.ts fits, coversHair, coversFace, clothesFor) allowed of the
+ * outfit, and each kind wears the outfits its unit spec named (all of them without one). In plain words (none: it
+ * passed). */
+export function folkProblems (v4: Pick<Character, 'id' | 'gear' | 'look'>, c: Character, units?: GameSpec): string[] {
+  if (c.folk === undefined) return isFolk(v4) ? ['its outfits, hair and beards were not made a folk section'] : []
+  const problems: string[] = []
+  const w = worldOf(c)
+  const sameList = (a: string[], b: string[]): boolean => stableJson([...a].sort()) === stableJson([...b].sort())
+  const setOf = new Map(c.folk.sets.map(s => [s.id, s.name]))
+  const layerOf = new Map(clothOf(c).map(l => [l.id, l.name]))
+  const ready = v4.gear.filter(g => g.status === 'ready')
+  const skins = v4.look.skins ?? []
+  for (const outfit of [...outfitsOf(v4.gear), null]) {
+    const set = outfit === null ? null : c.folk.sets.find(s => s.name === outfit)
+    if (set === undefined) { problems.push(`outfit ${outfit}: no set of it`); continue }
+    for (const skin of [...skins, undefined]) {
+      const tags = tagsAfter(w, { set: set?.id ?? null, skin: skin?.name ?? null })
+      const allowed = (step: string): string[] => candidates(w, step, tags).filter(x => x.ok).map(x => x.ref)
+      const where = `outfit ${outfit ?? '(none)'}, skin ${skin?.name ?? '(none)'}`
+      const hair = coversHair(v4.gear, outfit) ? [] : ready.filter(g => g.role === 'hair' && fits(g, skin)).map(g => g.id)
+      const beard = coversFace(v4.gear, outfit) ? [] : ready.filter(g => g.role === 'beard' && fits(g, skin)).map(g => g.id)
+      const clothes = clothesFor(v4.gear, outfit, v4.look.clothes ?? []).map(k => k.name)
+      if (!sameList(allowed('hair'), hair)) problems.push(`${where}: hair ${list(allowed('hair'))} allowed, was ${list(hair)}`)
+      if (!sameList(allowed('beard'), beard)) problems.push(`${where}: beards ${list(allowed('beard'))} allowed, was ${list(beard)}`)
+      const cloth = allowed('bottom').map(id => layerOf.get(id) ?? id)
+      if (!sameList(cloth, clothes)) problems.push(`${where}: clothes ${list(cloth)} allowed, was ${list(clothes)}`)
+    }
+  }
+  const specs = Object.entries(units?.units ?? {}).filter(([, u]) => u.character === c.id && u.folk?.outfits !== undefined)
+  const kinds = specs.length > 0 ? specs.map(([unit, u]) => [unit, u.folk!.outfits!.filter(o => outfitsOf(v4.gear).includes(o))] as const)
+    : [['folk', outfitsOf(v4.gear)] as const]
+  for (const [kind, outfits] of kinds) {
+    if (!c.folk.kinds.some(k => k.id === kind)) { problems.push(`kind ${kind}: missing`); continue }
+    const sets = candidates(w, 'set', [], { kind }).filter(x => x.ok).map(x => setOf.get(x.ref) ?? x.ref)
+    if (!sameList(sets, [...outfits])) problems.push(`kind ${kind}: wears ${list(sets)}, was ${list([...outfits])}`)
+  }
+  return problems
 }

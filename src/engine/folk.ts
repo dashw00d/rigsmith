@@ -5,14 +5,17 @@
 //   beards   gear with role 'beard' (swap set 'beard'), one or none per unit, the same tint
 //   clothes  look.clothes: RGBA layers over the skin's shirt and trouser areas (tagged 'long-sleeves': the forearms
 //            too, the body's long_sleeve shape on), one per unit
-// The rules of a unit's pick live here once: Rigsmith's Randomize and the game export's manifest read them, and the
-// game follows the manifest (it never guesses what fits).
+// Schema 5: the rules of a pick are data (src/model/folk.ts) run by one engine (src/engine/folkpick.ts), what the export's
+// manifest and the game read. The pick functions here (fits, coversHair, coversFace, hasBracers, clothesFor, pickFolk)
+// read the old fields (Gear.outfit, role, look.clothes) and are deprecated: they stay until the UI is ported, and
+// tools/migrate.ts --check holds folkpick to what they allowed. These were the rules:
 //   - a piece tagged 'fem' only goes on a skin tagged 'female', one tagged 'masc' only on a skin that isn't;
 //   - a skin tagged 'beardless' takes no beard;
 //   - an outfit with a piece tagged 'covers-hair' (a helmet, a hood, a hat over the crown) takes no hair: hair under
 //     it would poke through; its beard still shows, unless a piece is tagged 'covers-face' (a great helm);
 //   - an outfit with a forearm piece (bracers) takes no long-sleeved clothes: the sleeve's cuff would show through.
-import type { Gear, Skin } from '../model/types.ts'
+import { BRACERS, COVERS_FACE, COVERS_HAIR, grantsOf } from '../model/folk.ts'
+import type { FolkSection, Gear, Skin } from '../model/types.ts'
 
 export const HAIR_SET = 'hair'
 export const BEARD_SET = 'beard'
@@ -30,10 +33,10 @@ export function shownOutfit (gear: readonly Gear[]): string | null {
   return gear.find(g => g.outfit !== undefined && g.hidden !== true)?.outfit ?? null
 }
 
-export const isFolk = (c: { gear: readonly Gear[], look: { skins?: readonly Skin[] } }): boolean =>
-  c.gear.some(g => g.outfit !== undefined || g.role !== undefined)
+export const isFolk = (c: { gear: readonly Gear[], look: { skins?: readonly Skin[] }, folk?: FolkSection }): boolean =>
+  (c.folk !== undefined && c.folk.sets.length + c.folk.pools.length > 0) || c.gear.some(g => g.outfit !== undefined || g.role !== undefined)
 
-/** Whether a hair or beard piece goes on a skin. */
+/** Whether a hair or beard piece goes on a skin. @deprecated folkpick.candidates (the pool items' requires/excludes) */
 export function fits (piece: Pick<Gear, 'role' | 'tags'>, skin: Pick<Skin, 'tags'> | undefined): boolean {
   const skinTags = skin?.tags ?? []
   const tags = piece.tags ?? []
@@ -44,30 +47,34 @@ export function fits (piece: Pick<Gear, 'role' | 'tags'>, skin: Pick<Skin, 'tags
   return true
 }
 
-/** Whether an outfit leaves no room for hair (a piece of it tagged 'covers-hair'). */
+const grantsOfOutfit = (gear: readonly Gear[], outfit: string | null): string[] => outfit === null ? [] : grantsOf(gear.filter(g => g.outfit === outfit))
+
+/** Whether an outfit leaves no room for hair (a piece of it tagged 'covers-hair'). @deprecated a set's grants */
 export function coversHair (gear: readonly Gear[], outfit: string | null): boolean {
-  return outfit !== null && gear.some(g => g.outfit === outfit && (g.tags ?? []).includes('covers-hair'))
+  return grantsOfOutfit(gear, outfit).includes(COVERS_HAIR)
 }
 
 export interface FolkPick { skin: string | null, hair: string | null, beard: string | null, clothing: string | null }
 
-/** Whether an outfit hides the face (no beard under it). */
+/** Whether an outfit hides the face (no beard under it). @deprecated a set's grants */
 export function coversFace (gear: readonly Gear[], outfit: string | null): boolean {
-  return outfit !== null && gear.some(g => g.outfit === outfit && (g.tags ?? []).includes('covers-face'))
+  return grantsOfOutfit(gear, outfit).includes(COVERS_FACE)
 }
 
-/** Whether an outfit has a forearm piece (bracers: no long sleeves under them), by the game's piece names. */
+/** Whether an outfit has a forearm piece (bracers: no long sleeves under them), by the game's piece names (or a piece
+ * tagged 'bracers'). @deprecated a set's grants */
 export function hasBracers (gear: readonly Gear[], outfit: string | null): boolean {
-  return outfit !== null && gear.some(g => g.outfit === outfit && /forearm/i.test(g.name))
+  return grantsOfOutfit(gear, outfit).includes(BRACERS)
 }
 
-/** The clothes an outfit can wear. */
+/** The clothes an outfit can wear. @deprecated folkpick.candidates */
 export function clothesFor (gear: readonly Gear[], outfit: string | null, clothes: readonly Skin[]): Skin[] {
   return hasBracers(gear, outfit) ? clothes.filter(k => !longSleeves(k)) : [...clothes]
 }
 
 /** A unit's look: a skin, then hair and a beard that fit it (gear ids; null: none), under the outfit it wears, and its
- * clothes. A beard is worn about half the time when one fits. `rand` returns [0, 1). */
+ * clothes. A beard is worn about half the time when one fits. `rand` returns [0, 1). @deprecated folkpick.pick (the
+ * game's draws) */
 export function pickFolk (gear: readonly Gear[], skins: readonly Skin[], outfit: string | null, rand: () => number, clothes: readonly Skin[] = []): FolkPick {
   const pickOf = <T>(xs: readonly T[]): T | null => (xs.length === 0 ? null : xs[Math.min(xs.length - 1, Math.floor(rand() * xs.length))])
   const skin = pickOf(skins)

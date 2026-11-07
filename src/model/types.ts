@@ -1,4 +1,4 @@
-// The character document, schema 4: one record per character (workspace/characters/<id>/character.json), split into
+// The character document, schema 5: one record per character (workspace/characters/<id>/character.json), split into
 // sections that each have exactly one owning module. The server, the app and the tools all read and write it through
 // this file's types and src/model/commands.ts. See docs/rebuild/DESIGN.md.
 //
@@ -13,6 +13,8 @@
 //                                                               clip, time map and tracks (docs/motion-plan.md)
 //   look       Look (look routes and compose job)               texture layers (hole fill, repaints)
 //   mount      Ship (src/model/commands/mount.ts)               the horse a rider sits on
+//   folk       Folk (src/model/commands/folk.ts)                a dynamic character's outfit sets, pick pools, unit
+//                                                               kinds and stances (src/engine/folkpick.ts picks)
 //
 // Unit specs (height, budget, LODs, companion) stay in workspace/game/units.json (server/game.ts), the file that is
 // spliced into the game's own units.json; they are owned by Ship too.
@@ -33,10 +35,10 @@ export type Window = [SourceU, SourceU]
 export type Side = 'Left' | 'Right'
 export type FingerLevel = 'none' | 'one' | 'two' | 'three' | 'full'
 
-export const SCHEMA = 4
+export const SCHEMA = 5
 
 export interface Character {
-  schema: 4
+  schema: 5
   id: string
   name: string
   createdAt: number
@@ -61,6 +63,9 @@ export interface Character {
   clips: Slot[]
   look: LookSection
   mount?: Mount
+  /** A dynamic character's dressing (docs/folk.md, docs/dressing-plan.md Phase 1): what a unit of each kind may wear
+   * and how one is picked (src/engine/folkpick.ts). Unset: not a dynamic character. */
+  folk?: FolkSection
 }
 
 // ---- source (Import) --------------------------------------------------------------------------------------------
@@ -448,6 +453,9 @@ export interface LookSection {
   clothes?: Skin[]
   /** The clothes shown in Rigsmith (by name; unset: what the skin has painted). */
   clothing?: string
+  /** A dynamic character's cloth layers (schema 5; `clothes` is what they were before, kept while the UI reads it):
+   * each fills slots (bottom, top, over) of a unit's clothes, picked from cloth pools (Character.folk). */
+  cloth?: ClothLayer[]
 }
 
 export interface Skin {
@@ -458,6 +466,9 @@ export interface Skin {
   hair?: string
   /** What its hair and beard picks match (Gear.tags): 'beardless', 'female', 'elderly'... */
   tags?: string[]
+  /** A dynamic character's skin: the same face and skin with nothing painted over the shirt and trouser areas (relative
+   * to the character folder), what cloth layers that cover less than the old painted clothes (shorts) are laid over. */
+  bare?: string
 }
 
 export interface TextureLayer {
@@ -485,6 +496,122 @@ export interface TextureImage {
   image: string
   /** Fraction of the texture detected as unpainted (magenta). */
   coverage: number
+}
+
+// ---- folk (a dynamic character's dressing) ------------------------------------------------------------------------
+
+/** What a dynamic character's units may wear and how each one's look is picked (src/engine/folkpick.ts: one program of
+ * steps, set -> skin -> bottom -> top -> over -> hair -> beard -> accessory, over these data). */
+export interface FolkSection {
+  sets: OutfitSet[]
+  pools: Pool[]
+  kinds: UnitKind[]
+  stances: Stance[]
+}
+
+/** Pieces worn together (boots, bracers, a helmet, armour): a unit wears one set (schema 4: Gear.outfit). */
+export interface OutfitSet {
+  id: string
+  name: string
+  /** Gear ids, in the order shown. A piece may be in several sets. */
+  pieces: string[]
+  /** What it is: 'culture:norse', 'period:early', 'role:spearman'... A kind's tag query picks sets by them, and a set
+   * that names a culture is only picked for a unit of that culture (the game's input `culture:<id>`). */
+  tags: string[]
+  /** What wearing it means for the rest of the pick (src/model/folk.ts grantsOf derives them from its pieces; editable):
+   * 'covers-hair' (no hair under it), 'covers-face' (no beard), 'bracers' (no long sleeves), 'heavy'. */
+  grants: string[]
+  /** The stance its units play their clips in (Stance id; unset: the kind's). */
+  stance?: string
+  /** How often it is picked against the kind's other sets (default 1). */
+  weight?: number
+  note?: string
+}
+
+export type PoolKind = 'skin' | 'cloth' | 'hair' | 'beard' | 'accessory'
+export type ClothSlot = 'bottom' | 'top' | 'over'
+export const CLOTH_SLOTS: readonly ClothSlot[] = ['bottom', 'top', 'over']
+
+/** What one step of a pick draws from: skins (by name), cloth layers (by id) or gear (hair, beards, accessories: by gear
+ * id). A unit's running tags (its kind's, the game's inputs, every earlier pick's tags and its set's grants) decide what
+ * is allowed: `requires` all present, `excludes` none present (the pool's own for all of its items). */
+export interface Pool {
+  id: string
+  name: string
+  kind: PoolKind
+  /** cloth: the slot whose step draws from it (unset: every cloth step; a layer still only fills its own slots). */
+  slot?: ClothSlot
+  /** The chance a unit draws from it at all (default: the step's, else 1): a beard about half the time. */
+  chance?: number
+  requires?: string[]
+  excludes?: string[]
+  items: PoolItem[]
+}
+
+export interface PoolItem {
+  /** A skin's name, a cloth layer's id or a gear id (by the pool's kind). */
+  ref: string
+  /** Default 1; 0 never picked. */
+  weight?: number
+  requires?: string[]
+  excludes?: string[]
+}
+
+/** A unit kind the game asks for (villager, spearman, archer), dressed on the one body. */
+export interface UnitKind {
+  id: string
+  name: string
+  /** Tags every unit of it starts its pick with ('role:soldier'...). */
+  tags: string[]
+  /** Its sets: listed (with weights), or every set carrying all of the query's tags ([]: every set). */
+  sets: Array<{ set: string, weight?: number }> | { query: string[] }
+  /** The pool a step draws from for it (step id -> pool id; unset: the first pool of the step's kind and slot). */
+  pools?: Record<string, string>
+  /** The stance of its sets that name none. */
+  stance?: string
+}
+
+/** How units wearing a set play the game's clips: each game clip by the slots it plays (variants; baked as
+ * `<Clip>@<stance>`). */
+export interface Stance {
+  id: string
+  name: string
+  /** Game clip name -> slot ids. */
+  clips: Record<string, string[]>
+  /** A slot laid over every clip (the shield arm up). */
+  overlay?: string
+}
+
+/** Where a cloth layer stops (ClothLayer.cut): per limb below a height, regions dropped whole, a painted mask. */
+export interface ClothCut {
+  /** Below `y` (body heights, soles 0) on these regions, with a feather (body heights) the layer fades over. */
+  below?: Array<{ regions: number[], y: number, feather: number }>
+  /** Regions it leaves bare whole. */
+  drop?: number[]
+  /** A painted mask (relative to the character folder): where it shows. */
+  mask?: string
+}
+
+/** A dynamic character's clothes layer: RGBA on the body's own UVs over the skin (alpha: coverage), filling one or
+ * more slots of a unit's clothes. Clothes never hide body regions (only gear does). */
+export interface ClothLayer {
+  id: string
+  name: string
+  slots: ClothSlot[]
+  /** Relative to the character folder. */
+  file: string
+  /** Where it stops: per limb, below a height (regions, y in body heights, a feather), regions dropped whole, or a
+   * painted mask (relative to the character folder). Shorts: a bottoms layer cut above the knee. */
+  cut?: ClothCut
+  /** Where the clan colour goes (a mask relative to the character folder). */
+  trim?: string
+  /** Body shapes it needs on ('long_sleeve'). */
+  shapes?: string[]
+  tags?: string[]
+  /** Brought in by a tool (as Gear.from). */
+  from?: string
+  /** Per body region (by index): the share of it the layer covers. */
+  coverage?: number[]
 }
 
 // ---- mount (Ship) -----------------------------------------------------------------------------------------------
@@ -516,6 +643,9 @@ export interface Settings {
   gameRepo: string
   /** Hand poses shared by every character. */
   handPoses?: HandPose[]
+  /** The ComfyUI server's address (http://host:port) the GPU lane uses ($COMFY_URL wins; unset: the game's forge.json
+   * `comfy`, else 127.0.0.1:8188). */
+  comfyUrl?: string
 }
 
 /** A line of a character's journal (characters/<id>/journal.jsonl): a command (or a batch of them), a job's
@@ -545,7 +675,9 @@ export interface JournalEntry {
 
 /** Entity keys (src/model/entities.ts): 'name', 'skeleton', 'skinLock' ({locked, lockReason}), 'hands', 'mount',
  * 'gear:<id>' (without the job-owned status, error, painted, model), 'slot:<id>', 'layer:<id>' (look layers), 'skins' ({skins, skin, clothes, clothing}: look's skins and clothes and the ones shown),
- * 'gearOrder', 'slotOrder', 'layerOrder'. Job-owned fields (source, files, status, skin report, look.scan/at...) are
+ * 'gearOrder', 'slotOrder', 'layerOrder'; a dynamic character's 'set:<id>', 'pool:<id>', 'kind:<id>', 'stance:<id>'
+ * (Character.folk's), 'cloth:<id>' (look.cloth's), 'setOrder', 'clothOrder' (pools, kinds and stances keep their
+ * order with their entity: 'poolOrder', 'kindOrder', 'stanceOrder'). Job-owned fields (source, files, status, skin report, look.scan/at...) are
  * not entities. `before` null: it did not exist. `after`: a stable hash of the entity right after the write, so a
  * later change to it is seen as a conflict (order entities never conflict: they merge). */
 export interface UndoRecord {
