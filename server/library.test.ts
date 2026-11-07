@@ -1,5 +1,5 @@
 // Library search and ordering against a small fixture manifest (names from the Mixamo names file).
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -7,6 +7,7 @@ import type { Clip } from './library.ts'
 
 const dir = mkdtempSync(path.join(tmpdir(), 'rigsmith-library-'))
 let queryLibrary: typeof import('./library.ts').queryLibrary
+let libraryIndex: typeof import('./library.ts').libraryIndex
 let categorize: typeof import('./library.ts').categorize
 let CATEGORIES: typeof import('./library.ts').CATEGORIES
 
@@ -31,9 +32,11 @@ beforeAll(async () => {
     clip('mixamo-Jab_Cross', 'Jab Cross', { source: 'mixamo-catalog', nameSource: 'catalog', sourceName: 'Jab_Cross', originalName: 'Jab Cross', description: 'Short Jab Cross' }),
     clip('mixamo-Jab_Cross_2', 'Jab Cross 2', { source: 'mixamo-catalog', nameSource: 'catalog', sourceName: 'Jab_Cross_2', originalName: 'Jab Cross', description: 'Boxing Jab Cross Long' }),
   ]
+  mkdirSync(path.join(dir, 'library', 'clips'))
+  writeFileSync(path.join(dir, 'library', 'clips', 'a.glb'), 'fixture')
   writeFileSync(path.join(dir, 'library', 'manifest.json'), JSON.stringify({ version: 1, skeleton: 'mixamo', categories: [], clips }))
   process.env.RIGSMITH_WORKSPACE = dir // read when workspace.ts is first imported
-  ;({ queryLibrary, categorize, CATEGORIES } = await import('./library.ts'))
+  ;({ queryLibrary, libraryIndex, categorize, CATEGORIES } = await import('./library.ts'))
 })
 afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
 
@@ -89,5 +92,14 @@ describe('counts and categories', () => {
     const page = await queryLibrary({ source: 'mixamo-pack', page: 99, pageSize: 0 })
     expect(page.pageSize).toBe(1)
     expect(page.page).toBe(page.pages - 1)
+  })
+})
+
+describe('compact index', () => {
+  it('contains the clip URL and file mtime and filters by rig', async () => {
+    const rows = await libraryIndex('human')
+    expect(rows.find(c => c.id === 'a')).toMatchObject({ name: 'Walking', url: '/files/library/clips/a.glb', addedAt: statSync(path.join(dir, 'library', 'clips', 'a.glb')).mtimeMs, rig: 'human' })
+    expect(rows.some(c => c.id === 'g')).toBe(false)
+    expect((await libraryIndex('not-a-rig'))).toEqual([])
   })
 })

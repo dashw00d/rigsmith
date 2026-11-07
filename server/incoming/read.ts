@@ -45,7 +45,7 @@ async function sha (file: string): Promise<string> {
 export async function readPackage (dir: string): Promise<{ manifest: IncomingManifest, errors: Array<string | undefined> }> {
   const manifestFile = await safeFile(dir, 'manifest.json')
   const raw: unknown = JSON.parse(await readFile(manifestFile, 'utf8'))
-  if (!raw || typeof raw !== 'object' || !Array.isArray((raw as IncomingManifest).parts)) throw new Error('Invalid manifest parts')
+  if (!raw || typeof raw !== 'object' || !Array.isArray((raw as IncomingManifest).parts) || (raw as IncomingManifest).parts.length === 0) throw new Error('Invalid manifest parts')
   const manifest = raw as IncomingManifest
   const packageError = manifest.schema !== 1 ? 'Unknown schema' : !ID.test(manifest.id ?? '') || manifest.id !== path.basename(dir) ? 'Invalid package id' : manifest.space !== 'v6' ? 'Unknown space' : typeof manifest.at !== 'string' || !Number.isFinite(Date.parse(manifest.at)) || typeof manifest.tool !== 'string' ? 'Invalid package metadata' : undefined
   const seen = new Set<string>()
@@ -75,13 +75,14 @@ export async function listIncoming (character?: Character | null): Promise<{ pac
     const dir = path.join(root, entry.name)
     try {
       const { manifest, errors } = await readPackage(dir)
-      const parts = manifest.parts.map((part, i): PartView => {
+      const parts = manifest.parts.map((rawPart, i): PartView => {
+        const part = rawPart && typeof rawPart === 'object' ? rawPart : { id: `invalid-${i}`, type: 'piece' as const, name: 'Invalid part', file: '', sha256: '' }
         const record = state[`${entry.name}/${part.id}`]
         const status = record?.sha === part.sha256 ? record.status : 'pending'
         const exists = part.from !== undefined && character?.gear.some(g => g.from === part.from)
         return { ...part, status, effect: status === 'accepted' ? 'same' : exists ? 'update' : 'new', ...(errors[i] ? { damaged: errors[i] } : {}) }
       })
-      packages.push({ id: entry.name, at: manifest.at, tool: manifest.tool, parts })
+      packages.push({ id: entry.name, at: typeof manifest.at === 'string' ? manifest.at : '', tool: typeof manifest.tool === 'string' ? manifest.tool : '', parts })
     } catch { /* no manifest or unreadable package is not published */ }
   }
   packages.sort((a, b) => b.at.localeCompare(a.at))

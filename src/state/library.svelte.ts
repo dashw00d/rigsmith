@@ -1,5 +1,7 @@
 // Browsing the clip library (server/library.ts): the rig it shows clips for, the filters (category, source, search)
 // and the page. Another rig starts from no filters: a category or a search of one rig's clips means nothing for another.
+import { untrack } from 'svelte'
+import { app } from './app.svelte.ts'
 import { api, call, type LibraryPage } from './api.ts'
 import type { LibraryIndexRow } from '../../server/library.ts'
 import { defaultView, viewOf, type ViewState } from '../app/motion/libraryView.ts'
@@ -28,10 +30,27 @@ class LibraryState {
     try { localStorage.setItem('rigsmith.library.view', JSON.stringify({ view: this.options.view, sort: this.options.sort, direction: this.options.direction, group: this.options.group })) } catch { /* storage unavailable */ }
   }
   async refreshIndex (): Promise<void> {
-    const [index, uses] = await Promise.all([call<LibraryIndexRow[]>('GET', '/api/library/index'), call<Record<string, number>>('GET', '/api/library/uses')])
-    this.index = index; this.uses = uses
+    this.index = await call<LibraryIndexRow[]>('GET', '/api/library/index')
   }
-  async refreshUses (): Promise<void> { this.uses = await call<Record<string, number>>('GET', '/api/library/uses') }
+  private usesToken = 0
+  async refreshUses (): Promise<void> {
+    const token = ++this.usesToken
+    const uses = await call<Record<string, number>>('GET', '/api/library/uses')
+    if (token === this.usesToken) this.uses = uses
+  }
+  constructor () {
+    $effect.root(() => {
+      $effect(() => {
+        if (app.drawer !== 'library') return
+        untrack(() => { void this.refreshIndex().catch(error => { this.error = String(error) }) })
+      })
+      $effect(() => {
+        if (app.drawer !== 'library') return
+        void app.journalBeat
+        untrack(() => { void this.refreshUses().catch(error => { this.error = String(error) }) })
+      })
+    })
+  }
   private token = 0
   private debounce: ReturnType<typeof setTimeout> | undefined
 
