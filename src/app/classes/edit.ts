@@ -4,7 +4,7 @@ import type { Command } from '../../model/command-types.ts'
 import type { UnitKind } from '../../model/types.ts'
 
 export function addClass (c: Folkish, name: string): Command[] {
-  const id = freeId(name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'class', kindsOf(c))
+  const id = freeId(name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'class', kindsOf(c))
   return [{ type: 'folk.kind.add', kind: { id, name: name.trim(), tags: [], sets: { query: [] } } }]
 }
 export function toList (c: Folkish, kind: UnitKind): UnitKind['sets'] {
