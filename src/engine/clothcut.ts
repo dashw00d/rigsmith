@@ -7,7 +7,7 @@ export interface BodyGeometry {
   index: ArrayLike<number> // triangle indices
 }
 export interface BodyField { region: Int16Array, y: Float32Array, width: number, height: number }
-export interface RegionInfo { id: number, material: string, x: number, minX?: number, maxX?: number, sideMargin?: number, zone?: 'top' | 'bottom' }
+export interface RegionInfo { id: number, material: string, x: number, minX?: number, maxX?: number, sideMargin?: number, zone?: 'top' | 'bottom', limbSide?: 'left' | 'right' }
 export interface Pixels { rgba: Uint8ClampedArray, width: number, height: number }
 export interface ClothPixels extends Pixels { id: string, slots: readonly ClothSlot[] }
 
@@ -156,9 +156,9 @@ export function limbGroups (list: readonly RegionInfo[]): Array<{ name: string, 
     // glTF's character faces +Z: +X is the character's left. A region touching the midline is torso/hip,
     // even when its centroid is off-centre. Older callers without bounds retain centroid-based grouping.
     const margin = r.sideMargin ?? 0
-    const side = r.minX !== undefined && r.maxX !== undefined
+    const side = r.limbSide ?? (r.minX !== undefined && r.maxX !== undefined
       ? r.minX > margin ? 'left' : r.maxX < -margin ? 'right' : null
-      : r.x > 0 ? 'left' : r.x < 0 ? 'right' : null
+      : r.x > 0 ? 'left' : r.x < 0 ? 'right' : null)
     if (side === null) continue
     const name = `${side} ${part}`
     const ids = groups.get(name) ?? []; ids.push(r.id); groups.set(name, ids)

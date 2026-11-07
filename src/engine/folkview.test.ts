@@ -63,3 +63,17 @@ it('does not send a bare image to the compositor when no worn layer has a cut', 
     expect(sent[0].bare).toBeNull()
   } finally { vi.unstubAllGlobals() }
 })
+
+it('includes a leg near the midline when its ankle confirms the side', () => {
+  const make = (name: string, positions: number[]): THREE.SkinnedMesh => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1], 2))
+    g.setIndex([0, 1, 2])
+    return new THREE.SkinnedMesh(g, new THREE.MeshBasicMaterial({ name }))
+  }
+  const pants = make('Trousers', [0.06, 0.1, 0, 0.1, 0.1, 0, 0.002, 0.6, 0])
+  const ankle = make('Skin', [0.06, 0.1, 0, 0.1, 0.1, 0, 0.08, 0, 0])
+  const data = clothBody([pants, ankle])
+  expect(limbGroups(data.list).find(g => g.name === 'left leg')?.regions).toContain(data.regions[0])
+})

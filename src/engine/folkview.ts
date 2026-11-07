@@ -127,7 +127,13 @@ export function clothBody (body: readonly THREE.SkinnedMesh[]): ClothBody {
     for (const other of ids) {
       const material = names[other].toLowerCase()
       const zone = /shirt|sleeve|top/.test(material) ? 'top' : /trouser|pants|bottom|leg/.test(material) ? 'bottom' : null
-      if (zone !== null) { const found = neighbours.get(id) ?? new Set<'top' | 'bottom'>(); found.add(zone); neighbours.set(id, found) }
+      if (zone !== null) {
+        const found = neighbours.get(id) ?? new Set<'top' | 'bottom'>(); found.add(zone); neighbours.set(id, found)
+        // A trouser leg can approach the midline inside the margin without crossing it. A seam to a
+        // lateral ankle identifies that side without admitting a central or split torso island.
+        if (zone === 'bottom' && minX[id] > sideMargin && minX[other] > 0) list[other].limbSide = 'left'
+        if (zone === 'bottom' && maxX[id] < -sideMargin && maxX[other] < 0) list[other].limbSide = 'right'
+      }
     }
   }
   for (const [id, zones] of neighbours) if (zones.size === 1) list[id].zone = [...zones][0]
