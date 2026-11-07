@@ -53,7 +53,7 @@
         onchange={(e) => gearState.setSwapSet(character, piece, (e.currentTarget as HTMLInputElement).value)} />
       <datalist id="gear-swap-sets">{#each sets as s (s)}<option value={s}></option>{/each}</datalist>
     </Field>
-    <Toggle label="Shown" hint={piece.swapSet !== undefined ? `Showing it hides the rest of ${piece.swapSet}` : 'Hidden: kept, but not shown or exported'}
+    <Toggle testid="gear-shown" label="Shown" hint={piece.swapSet !== undefined ? `Showing it hides the rest of ${piece.swapSet}` : 'Hidden: kept, but not shown or exported'}
       checked={gearState.shownOnStage(character, piece)} onchange={(on) => gearState.setShown(character, piece, on)} />
     {#if a.kind === 'bone'}
       <Field label="Held by" hint="Moving it to the other hand carries it across, held the same way">
