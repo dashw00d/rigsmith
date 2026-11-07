@@ -21,6 +21,7 @@
   import TextField from '../../ui/TextField.svelte'
   import Toggle from '../../ui/Toggle.svelte'
   import FolkPanel from '../gear/FolkPanel.svelte'
+  import ClassSection from '../gear/ClassSection.svelte'
   import GearList from '../gear/GearList.svelte'
   import { isFolk } from '../../engine/folk.ts'
   import HandleList from '../gear/HandleList.svelte'
@@ -133,6 +134,8 @@
     <FolkPanel {character} />
   </Section>
 {/if}
+
+<ClassSection {character} />
 
 <Section title="Pose">
   <Select size="sm" options={poses} value={pose} label="Pose" onchange={(v) => { if (v !== 'other') void gearState.setPose(character, v) }} />
