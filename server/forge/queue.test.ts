@@ -4,11 +4,14 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeFixture, type Fixture } from './fixture.ts'
 import type { ForgeConfig, ForgeEvent, Manifest, QueueJob } from './types.ts'
 
-process.env.RIGSMITH_WORKSPACE ??= mkdtempSync(path.join(tmpdir(), 'rigsmith-forge-ws-'))
+// (the workspace store.ts reads at import: an empty one of the test's own, gone after it)
+const ws = process.env.RIGSMITH_WORKSPACE === undefined ? mkdtempSync(path.join(tmpdir(), 'rigsmith-forge-ws-')) : null
+if (ws !== null) process.env.RIGSMITH_WORKSPACE = ws
+afterAll(() => { if (ws !== null) rmSync(ws, { recursive: true, force: true }) })
 let config: typeof import('./config.ts')
 let store: typeof import('./store.ts')
 let queue: typeof import('./queue.ts')
