@@ -643,6 +643,9 @@ export interface Settings {
   gameRepo: string
   /** Hand poses shared by every character. */
   handPoses?: HandPose[]
+  /** The ComfyUI server's address (http://host:port) the GPU lane uses ($COMFY_URL wins; unset: the game's forge.json
+   * `comfy`, else 127.0.0.1:8188). */
+  comfyUrl?: string
 }
 
 /** A line of a character's journal (characters/<id>/journal.jsonl): a command (or a batch of them), a job's

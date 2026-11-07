@@ -438,6 +438,8 @@ describe('migrate: look, mount, settings', () => {
     const handPoses = [{ id: 'h', name: 'Fist', side: 'Left' as const, joints: {} }]
     expect(migrateSettings({ exportDir: '/x', exportFormat: 'glb', boneNames: 'mixamo', gameRepo: '/game', handPoses })).toEqual({ gameRepo: '/game', handPoses })
     expect(migrateSettings({}, { gameRepo: '/default' })).toEqual({ gameRepo: '/default' })
+    expect(migrateSettings({ gameRepo: '/g', comfyUrl: ' http://gpu:8188 ' })).toEqual({ gameRepo: '/g', comfyUrl: 'http://gpu:8188' })
+    expect(migrateSettings({ gameRepo: '/g', comfyUrl: '' })).toEqual({ gameRepo: '/g' })
     expect(migrateSettings(migrateSettings({ gameRepo: '/g' }))).toEqual({ gameRepo: '/g' })
   })
 })

@@ -434,12 +434,17 @@ export async function getSettings (): Promise<Settings> {
   return migrateSettings(await readJson<unknown>(SETTINGS, {}), { gameRepo: DEFAULT_GAME_REPO })
 }
 
-/** Only what schema 2 settings have (the game repo, the shared hand poses); anything else is dropped. */
+/** Only what schema 2 settings have (the game repo, the shared hand poses, the ComfyUI address: '' clears it);
+ * anything else is dropped. */
 export async function saveSettings (change: Partial<Settings>): Promise<Settings> {
   return await locked('#settings', async () => {
     const next = await getSettings()
     if (typeof change.gameRepo === 'string' && change.gameRepo.trim() !== '') next.gameRepo = expand(change.gameRepo.trim())
     if (Array.isArray(change.handPoses)) next.handPoses = change.handPoses
+    if (typeof change.comfyUrl === 'string') {
+      if (change.comfyUrl.trim() === '') delete next.comfyUrl
+      else next.comfyUrl = change.comfyUrl.trim()
+    }
     await writeJson(SETTINGS, next)
     return next
   })

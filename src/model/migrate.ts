@@ -434,6 +434,8 @@ export function migrateSettings (raw: unknown, fallback: Settings = { gameRepo: 
   return defined({
     gameRepo: typeof v.gameRepo === 'string' && v.gameRepo !== '' ? v.gameRepo : fallback.gameRepo,
     handPoses: v.handPoses ?? fallback.handPoses,
+    comfyUrl: typeof (raw as { comfyUrl?: unknown } | null)?.comfyUrl === 'string' && (raw as { comfyUrl: string }).comfyUrl.trim() !== ''
+      ? (raw as { comfyUrl: string }).comfyUrl.trim() : fallback.comfyUrl,
   })
 }
 
