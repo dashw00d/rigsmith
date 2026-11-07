@@ -4,7 +4,7 @@
   // companion it leads or rides. Every edit is saved at once, checked by the server and journaled on the characters it
   // names; the game gets it on Export. On a companion's page: the unit it goes with and its own height.
   import { ArrowRight, Gamepad2, Plus, Ruler, Trash2, X } from '@lucide/svelte'
-  import { isFolkCharacter, kindsOf } from '../../model/folk.ts'
+  import { folkOf, isFolkCharacter, kindSets, kindsOf } from '../../model/folk.ts'
   import { classes } from '../../state/classes.svelte.ts'
   import Note from '../../ui/Note.svelte'
   import { companionFor } from '../../engine/mount.ts'
@@ -33,6 +33,21 @@
   const slots = $derived(owner?.clips.map(s => s.name) ?? [])
   const chips = $derived(clipChips(spec.clips, slots))
   const addable = $derived(addableClips(spec.clips, slots))
+  const stanceSummary = $derived.by(() => {
+    if (owner === null || !isFolkCharacter(owner)) return []
+    const folk = folkOf(owner); let sets = folk.sets; let kinds = folk.kinds
+    if (spec.folk?.kind !== undefined) {
+      kinds = kinds.filter(k => k.id === spec.folk!.kind)
+      const ids = new Set(kinds.flatMap(k => kindSets(folk.sets, k).map(x => x.set.id)))
+      sets = sets.filter(s => ids.has(s.id))
+    } else if (spec.folk?.outfits !== undefined) sets = sets.filter(s => spec.folk!.outfits!.includes(s.name))
+    const ids = new Set<string>()
+    for (const set of sets) {
+      if (set.stance !== undefined) ids.add(set.stance)
+      else for (const kind of kinds) if (kind.stance !== undefined && kindSets(sets, kind).some(x => x.set.id === set.id)) ids.add(kind.stance)
+    }
+    return folk.stances.filter(s => ids.has(s.id)).map(s => ({ id: s.id, count: spec.clips.reduce((n, clip) => n + (s.clips[clip]?.length ?? 0), 0) })).filter(s => s.count > 0)
+  })
   const lods = $derived(ship.lods(name))
   const ownLods = $derived(Array.isArray(spec.lods))
   const comp = $derived(spec.companion)
@@ -139,6 +154,8 @@
         <span class="faint small">{owner?.name ?? 'Its character'} has no slots yet (Motion)</span>
       {/if}
     </div>
+
+    {#if stanceSummary.length > 0}<p class="faint small" data-testid="ship-stances">Stances: {stanceSummary.map(s => `${s.id} (${s.count} ${s.count === 1 ? 'clip' : 'clips'})`).join(', ')}</p>{/if}
 
     {#if owner !== null && isFolkCharacter(owner)}
       <Field label="Class" hint="The class included in this unit's export">

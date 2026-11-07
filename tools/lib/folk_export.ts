@@ -6,9 +6,9 @@
 // skins, layers, pieces; gear named by its mesh) and ~32 golden picks the game's interpreter must reproduce, beside the
 // schema 1 view the current game reads (`outfits`, `clothes`, `hair`, `beard`, `rules`).
 import { candidates, goldens, PROGRAM, RNG, tagsAfter, type FolkWorld } from '../../src/engine/folkpick.ts'
-import { meshNameOf } from '../../src/engine/contract.ts'
+import { gearLeftOut, meshNameOf } from '../../src/engine/contract.ts'
 import { clothOf, folkOf, kindSets, LONG_SLEEVE_SHAPE } from '../../src/model/folk.ts'
-import type { Character, ClothLayer, Gear, OutfitSet, Pool, Skin, UnitKind } from '../../src/model/types.ts'
+import type { Character, ClothLayer, Gear, OutfitSet, Pool, Skin, Slot, UnitKind } from '../../src/model/types.ts'
 import type { UnitSpec } from '../../src/model/unit.ts'
 
 /** The sets, kinds, pools and swapped gear a unit's file carries. */
@@ -56,8 +56,56 @@ export function folkScope (c: Character, spec: Pick<UnitSpec, 'folk'>, exportabl
   }
 }
 
+export interface StanceExportPlan { id: string, setId: string | null, slots: Slot[], clips: Record<string, string[]>, overlay?: Slot }
+
+/** Resolve the stances actually reachable by this unit, and refuse a shared stance with different held pieces. */
+export function stanceExportPlan (c: Character, spec: Pick<UnitSpec, 'folk'>, gameClips: readonly string[], baseNames: readonly string[]): StanceExportPlan[] {
+  const folk = folkOf(c); const scope = folkScope(c, spec)
+  const setsByStance = new Map<string, OutfitSet[]>()
+  const add = (id: string, set: OutfitSet): void => {
+    const sets = setsByStance.get(id) ?? []
+    if (!sets.some(s => s.id === set.id)) sets.push(set)
+    setsByStance.set(id, sets)
+  }
+  for (const set of scope.sets) {
+    if (set.stance !== undefined) add(set.stance, set)
+    else for (const kind of scope.kinds) if (kind.stance !== undefined && kindSets(scope.sets, kind).some(x => x.set.id === set.id)) add(kind.stance, set)
+  }
+  const names = new Set(baseNames); const result: StanceExportPlan[] = []
+  for (const [id, sets] of setsByStance) {
+    const stance = folk.stances.find(s => s.id === id)
+    if (stance === undefined) throw new Error(`stance ${id} referenced by ${sets.map(s => s.name).join(', ')} is missing`)
+    const held = (set: OutfitSet): string => JSON.stringify(set.pieces.filter(piece => c.gear.some(g => g.id === piece && g.attach.kind === 'bone')).sort())
+    const first = held(sets[0])
+    const conflict = sets.find(s => held(s) !== first)
+    if (conflict !== undefined) throw new Error(`stance ${id}: sets ${sets[0].name} and ${conflict.name} hold different bone-attached pieces`)
+    const slots: Slot[] = []; const clips: Record<string, string[]> = {}
+    for (const clip of gameClips) {
+      const ids = stance.clips[clip]
+      if (ids === undefined || ids.length === 0) continue
+      clips[clip] = ids.map((slotId, index) => {
+        const original = c.clips.find(s => s.id === slotId)
+        if (original === undefined) throw new Error(`stance ${id}: ${clip} names missing slot ${slotId}`)
+        const name = `${clip}${index === 0 ? '' : `_${index + 1}`}@${id}`
+        if (names.has(name)) throw new Error(`stance ${id}: exported clip name ${name} clashes`)
+        names.add(name); slots.push({ ...original, name })
+        return name
+      })
+    }
+    const overlay = stance.overlay === undefined ? undefined : c.clips.find(s => s.id === stance.overlay)
+    if (stance.overlay !== undefined && overlay === undefined) throw new Error(`stance ${id}: missing overlay slot ${stance.overlay}`)
+    if (slots.length > 0) result.push({ id, setId: sets[0]?.id ?? null, slots, clips, ...(overlay !== undefined ? { overlay } : {}) })
+  }
+  return result
+}
+
 /** Whether a piece is swapped per unit (a set's or a pool's: the game shows it on the units that pick it). */
 export const isSwapped = (scope: FolkScope, g: Gear): boolean => scope.swapped.has(g.id) || g.outfit !== undefined || g.role !== undefined
+
+/** Swapped pieces in the exported scope are worn by picks even if hidden in the character's document. */
+export function scopedGearLeftOut (g: Gear, scope: FolkScope | null): string | null {
+  return gearLeftOut(scope?.carried.has(g.id) === true ? { ...g, hidden: false } : g)
+}
 
 /** Why a swapped piece of this file's scope isn't in it for its kind or pools (null: it is in scope, or it isn't
  * swapped; the contract's own reasons are gearLeftOut's). */

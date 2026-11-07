@@ -6,7 +6,7 @@ import { meshNameOf } from '../../src/engine/contract.ts'
 import { makeCharacter, makeGear } from '../../src/model/fixtures.ts'
 import { migrate } from '../../src/model/migrate.ts'
 import type { Character, Gear } from '../../src/model/types.ts'
-import { atlasGroupOf, folkLeftOut, folkManifestData, folkScope, type ManifestPiece } from './folk_export.ts'
+import { atlasGroupOf, folkLeftOut, folkManifestData, folkScope, scopedGearLeftOut, stanceExportPlan, type ManifestPiece } from './folk_export.ts'
 
 const piece = (id: string, name: string, extra: Partial<Gear> = {}): Gear =>
   makeGear({ id, name, from: `emberhold:gear/${name}`, model: `garments/${id}/model.glb`, attach: { kind: 'skin', policy: 'body', place: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 } }, ...extra })
@@ -46,6 +46,31 @@ const manifest = (c: Character, spec: Parameters<typeof folkManifestData>[1] = {
 })
 
 describe('folkScope', () => {
+  it('exports a hidden set-held piece so the stance can wear it', () => {
+    const c = folk(); const piece = c.gear.find(g => g.id === 'helm')!
+    piece.hidden = true; piece.name = 'HeldShield'; piece.from = 'emberhold:gear/HeldShield'
+    expect(scopedGearLeftOut(piece, folkScope(c, {}))).toBeNull()
+    expect(scopedGearLeftOut(piece, null)).toBe('hidden')
+  })
+  it('plans scoped stance overrides and variants and rejects conflicting held pieces', () => {
+    const c = folk()
+    const shield = piece('shield', 'Shield', { attach: { kind: 'bone', bone: 'LeftHand', place: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 } } })
+    c.gear.push(shield)
+    c.folk!.sets[0].stance = 'shield'; c.folk!.sets[0].pieces.push('shield')
+    c.folk!.stances.push({ id: 'shield', name: 'Shield', clips: { Idle: ['idle-s', 'idle'], Walk: ['idle'] } })
+    const plans = stanceExportPlan(c, {}, ['Idle'], ['Idle'])
+    expect(plans).toHaveLength(1)
+    expect(plans[0].setId).toBe(c.folk!.sets[0].id)
+    expect(plans[0].clips).toEqual({ Idle: ['Idle@shield', 'Idle_2@shield'] })
+    expect(plans[0].slots.map(s => [s.id, s.name])).toEqual([['idle-s', 'Idle@shield'], ['idle', 'Idle_2@shield']])
+    c.folk!.sets[1].stance = 'shield'
+    expect(() => stanceExportPlan(c, {}, ['Idle'], ['Idle'])).toThrow(/shield.*mail.*straw/i)
+    c.folk!.sets[1].pieces.push('shield')
+    expect(stanceExportPlan(c, {}, ['Idle'], ['Idle'])).toHaveLength(1)
+    expect(() => stanceExportPlan(c, {}, ['Idle'], ['Idle', 'Idle@shield'])).toThrow(/Idle@shield/)
+    c.folk!.stances[0].clips.Idle = ['missing']
+    expect(() => stanceExportPlan(c, {}, ['Idle'], ['Idle'])).toThrow(/missing/)
+  })
   it('carries every set and pool by default, a kind\'s sets for spec.folk.kind, schema 4\'s outfits and hair: false', () => {
     const c = folk()
     expect(folkScope(c, {}).sets.map(s => s.name)).toEqual(['mail', 'straw'])

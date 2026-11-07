@@ -38,7 +38,7 @@ import { bodySurface, hideShareOf, originMatrix, regionsHidden, type GarmentEdit
 import { regionMask, regionsOf, withoutRegions, type Regions } from '../../src/engine/regions.ts'
 import { FEMALE, HAIR_GREY_MEAN, LONG_SLEEVE, femaleOffsets, isFolk } from '../../src/engine/folk.ts'
 import { clothOf } from '../../src/model/folk.ts'
-import { atlasGroupOf, folkLeftOut, folkManifestData, folkScope, isSwapped, type FolkFiles, type FolkScope, type ManifestPiece } from './folk_export.ts'
+import { atlasGroupOf, folkLeftOut, folkManifestData, folkScope, isSwapped, scopedGearLeftOut, stanceExportPlan, type FolkFiles, type FolkScope, type ManifestPiece } from './folk_export.ts'
 import { safeName } from '../../src/engine/geom.ts'
 import { applyGeometryMatrix } from '../../src/engine/geometry-transform.ts'
 import { cloneMorphGeometry, mergeMorphState, restoreMorphState } from '../../src/engine/morph-state.ts'
@@ -53,6 +53,7 @@ import { pelvisName } from '../../src/engine/retarget.ts'
 import { retime, sample, stride } from '../../src/engine/timing.ts'
 import { gearEvents, holdTracks, withTracks as withHoldTracks, type HoldTarget } from '../../src/engine/geartracks.ts'
 import { gearById, slotByName } from '../../src/model/select.ts'
+import { dressedCharacter } from '../../src/model/stances.ts'
 import { exportClash, exportName, gameNameOf, variantsField, withVariants } from '../../src/model/variants.ts'
 import type { Character, ClipKey, Gear, HandPose, Mount, Slot } from '../../src/model/types.ts'
 import type { BuildRecord, BuiltClip, BuiltCompanion, BuiltGear, CompanionSpec, UnitEvent, UnitEvents, UnitSpec } from '../../src/model/unit.ts'
@@ -93,11 +94,24 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   const slots = stored.map(s => (s.name === exportName(s.name, spec.clips) ? s : { ...s, name: exportName(s.name, spec.clips) }))
   const clash = exportClash(stored, spec.clips)
   if (clash !== null) throw new Error(`${unit}: ${c.name}'s clips ${clash.join(' and ')} both play as ${exportName(clash[0], spec.clips)} in the game; rename one in Rigsmith`)
-  const gameName = (name: string): string => gameNameOf(name, spec.clips)
+  const gameName = (name: string): string => gameNameOf(name.split('@')[0], spec.clips)
+  const stancePlans = isFolk(c) ? stanceExportPlan(c, spec, spec.clips, slots.map(s => s.name)) : []
 
   // Its clips as the viewer bakes them, on the character in its own units (the export keys its own gear bones, below).
   const baked = new Map<string, BakedSlot>()
   for (const slot of slots) baked.set(slot.name, await bakeSlot(c, slot, me.ctx, { gearNodes: false }))
+  for (const plan of stancePlans) {
+    const dressed = dressedCharacter(c, plan.setId)
+    const overlay = plan.overlay === undefined ? undefined : await bakeSlot(dressed, plan.overlay, me.ctx, { gearNodes: false })
+    const muted = new Set(plan.overlay?.muted ?? [])
+    const keys = muted.has('bones') ? [] : Object.entries(plan.overlay?.bones ?? {}).filter(([bone, entries]) => entries.length > 0 && !muted.has(`bone:${bone}`)).map(([bone]) => bone)
+    for (const slot of plan.slots) {
+      const built = await bakeSlot(dressed, slot, me.ctx, { gearNodes: false })
+      if (overlay !== undefined && keys.length > 0) built.clip = overlayStance(built.clip, overlay.clip, keys)
+      baked.set(slot.name, built)
+      slots.push(slot)
+    }
+  }
   // (as each slot plays alone, before a ride fits it: what the record says of its keys and holds)
   const alone = new Map(baked)
   const audit = readAudit(o.workspace)
@@ -237,7 +251,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     const notMine = folkOut(g)
     if (notMine !== null) { gearReport[name] = { left: notMine, kind: KIND[a.kind], group: g.swapSet }; continue }
     const kind = KIND[a.kind]
-    const left = gearLeftOut(g) ?? (g.model === undefined ? 'no model of its own'
+    const left = scopedGearLeftOut(g, scope) ?? (g.model === undefined ? 'no model of its own'
       : a.kind === 'bone' && a.legacyFrame !== undefined ? 'still placed in the old catalog frame (place it in Gear)' : null)
     if (left !== null) {
       if (left !== 'hidden') warn(`${g.name} left out: ${left}`)
@@ -655,6 +669,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   }, {
     gear: new Map(slots.map(slot => [slot.name, gearEvents(c, baked.get(slot.name)?.gearHolds, id => exportedGear.has(id))])),
     variants: variantsField(c, spec.clips),
+    stances: Object.fromEntries(stancePlans.map(plan => [plan.id, plan.clips])),
     own: ownFits,
     companion: comp === null ? undefined : { prefix: comp.spec.prefix, events: compEvents },
   })
@@ -666,7 +681,7 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     const manifest = folkManifest(unit, c, me.dir, srcDir, body, hidesOf, spec, me.view)
     writeIfChanged(path.join(o.modelsDir, `${unit}.folk.json`), JSON.stringify(manifest, null, 1) + '\n')
   }
-  const record: BuildRecord = {
+  const record: BuildRecord & { stances?: Record<string, { clips: number, bytes: number }> } = {
     schema: 4,
     unit,
     generator: 'rigsmith tools/game_export.ts',
@@ -677,6 +692,11 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
     bones: bones.length,
     triangles: { source: tris0, budget: spec.budget, lods: lodReport, head: headReport.length > 0 ? headReport : undefined, parts: partReport },
     clips: clipReport,
+    ...(stancePlans.length === 0 ? {} : { stances: Object.fromEntries(stancePlans.map(plan => {
+      const names = new Set(plan.slots.map(slot => slot.name))
+      const selected = clips.filter(clip => names.has(clip.name))
+      return [plan.id, { clips: selected.length, bytes: selected.reduce((total, clip) => total + clip.tracks.reduce((n, track) => n + track.times.byteLength + track.values.byteLength, 0), 0) }]
+    })) }),
     gear: gearReport,
     companion: compReport,
     // (a rider's stride is his horse's)
@@ -698,6 +718,19 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
 }
 
 // ---- clips in game units (pure) ---------------------------------------------------------------------------------
+
+/** Replace the keyed bones with the overlay's baked tracks, mapping its duration to the target's phase. */
+export function overlayStance (clip: THREE.AnimationClip, overlay: THREE.AnimationClip, bones: readonly string[]): THREE.AnimationClip {
+  const wanted = new Set(bones)
+  const boneOf = (track: THREE.KeyframeTrack): string => track.name.slice(0, track.name.lastIndexOf('.'))
+  const replacements = overlay.tracks.filter(track => wanted.has(boneOf(track))).map(track => {
+    const copy = track.clone()
+    if (overlay.duration > 0) for (let i = 0; i < copy.times.length; i++) copy.times[i] *= clip.duration / overlay.duration
+    return copy
+  })
+  const replaced = new Set(replacements.map(track => track.name))
+  return new THREE.AnimationClip(clip.name, clip.duration, [...clip.tracks.filter(track => !replaced.has(track.name)), ...replacements])
+}
 
 /** A clip in game units: every move scaled by `s`, the top bone's (the one under the unit's root) lowered by `floor`
  * first, so the soles stand at 0 as the body does. */
@@ -810,9 +843,10 @@ export function fitEvents (events: BakedEvent[], fit: EventFit): BakedEvent[] {
 export function eventsFile (unit: string, slots: Slot[], clips: THREE.AnimationClip[], baked: Map<string, BakedSlot>, strides: { walk: number | null, run: number | null },
   more: {
     gear?: Map<string, Array<{ t: number, name: string, bone?: string }>>, variants?: Record<string, string[]>
+    stances?: Record<string, Record<string, string[]>>
     own?: Map<string, EventFit>, companion?: { prefix: string, events: Map<string, BakedEvent[]> }
-  } = {}): UnitEvents {
-  const out: UnitEvents = { unit, schema: 1, clips: {}, walkStride: strides.walk, runStride: strides.run, ...(more.variants !== undefined ? { variants: more.variants } : {}) }
+  } = {}): UnitEvents & { stances?: Record<string, Record<string, string[]>> } {
+  const out: UnitEvents & { stances?: Record<string, Record<string, string[]>> } = { unit, schema: 1, clips: {}, walkStride: strides.walk, runStride: strides.run, ...(more.variants !== undefined ? { variants: more.variants } : {}), ...(more.stances !== undefined && Object.keys(more.stances).length > 0 ? { stances: more.stances } : {}) }
   slots.forEach((slot, i) => {
     const b = baked.get(slot.name)
     const fit = more.own?.get(slot.name)
