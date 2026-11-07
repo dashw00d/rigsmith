@@ -110,26 +110,40 @@ export function tint (meshes: readonly THREE.Object3D[], hex: string | null): vo
   }
 }
 
+/** Whether the body has the female shape (its own morph). */
+export function hasFemaleShape (body: readonly THREE.Mesh[]): boolean {
+  return body.some(m => m.morphTargetDictionary?.[FEMALE] !== undefined)
+}
+
+/** The female shape's field put on a worn piece's meshes (off), where they lack it: done as it is worn, so a female
+ * skin shown later only turns it on (a shape added then would make every piece's shaders compile again). A piece
+ * with shapes of its own keeps them. */
+export function prepareFemale (gear: readonly THREE.Object3D[], height: number): void {
+  for (const o of gear) {
+    const mesh = o as THREE.Mesh
+    if (mesh.isMesh !== true || mesh.morphTargetDictionary?.[FEMALE] !== undefined) continue
+    const geometry = mesh.geometry
+    if (Object.keys(geometry.morphAttributes).length > 0) continue
+    geometry.morphAttributes.position = [new THREE.Float32BufferAttribute(femaleOffsets(geometry.attributes.position.array, height), 3)]
+    geometry.morphTargetsRelative = true
+    mesh.updateMorphTargets()
+    mesh.morphTargetDictionary = { [FEMALE]: 0 }
+    if (mesh.morphTargetInfluences !== undefined) mesh.morphTargetInfluences[0] = 0
+  }
+}
+
 /** The female shape on (a skin tagged female) or off: the body's own morph, and on each worn piece the same field
- * where it sits (added to its geometry the first time), so the gear follows the body. `height`: the rest space's. */
+ * where it sits (added to its geometry the first time: prepareFemale), so the gear follows the body. `height`: the
+ * rest space's. */
 export function shapeFemale (body: readonly THREE.Mesh[], gear: readonly THREE.Object3D[], on: boolean, height: number): void {
   for (const mesh of body) {
     const k = mesh.morphTargetDictionary?.[FEMALE]
     if (k !== undefined && mesh.morphTargetInfluences !== undefined) mesh.morphTargetInfluences[k] = on ? 1 : 0
   }
+  if (on) prepareFemale(gear, height)
   for (const o of gear) {
     const mesh = o as THREE.Mesh
-    if (mesh.isMesh !== true) continue
-    if (mesh.morphTargetDictionary?.[FEMALE] === undefined) {
-      if (!on) continue
-      const geometry = mesh.geometry
-      if (Object.keys(geometry.morphAttributes).length > 0) continue // (a piece with shapes of its own keeps them)
-      geometry.morphAttributes.position = [new THREE.Float32BufferAttribute(femaleOffsets(geometry.attributes.position.array, height), 3)]
-      geometry.morphTargetsRelative = true
-      mesh.updateMorphTargets()
-      mesh.morphTargetDictionary = { [FEMALE]: 0 }
-    }
-    const k = mesh.morphTargetDictionary![FEMALE]
-    if (mesh.morphTargetInfluences !== undefined) mesh.morphTargetInfluences[k] = on ? 1 : 0
+    const k = mesh.isMesh === true ? mesh.morphTargetDictionary?.[FEMALE] : undefined
+    if (k !== undefined && mesh.morphTargetInfluences !== undefined) mesh.morphTargetInfluences[k] = on ? 1 : 0
   }
 }

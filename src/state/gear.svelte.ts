@@ -20,7 +20,7 @@ import { boneFrame, GARMENT_FLAG, type GarmentEdit, hideBodyUnder, restFrame, ta
 import type { DerivedStore } from '../engine/workers/derive.ts'
 import { fistAt, fitMatrix, heldAt, inFist, offBox, onShaft, restPoints, shapeOf, surfacePoints, type HandAt, type Shape } from '../engine/gearfit.ts'
 import { leadKeysMoved } from '../engine/geartracks.ts'
-import { shapeFemale, showSkin, tint } from '../engine/folkview.ts'
+import { hasFemaleShape, prepareFemale, shapeFemale, showSkin, tint } from '../engine/folkview.ts'
 import { longSleeves } from '../engine/folk.ts'
 import { counterpart, mirroredPlacement, nearerMirror, placementFromMatrix, placementMatrix, placementOf } from '../engine/placement.ts'
 import { catalogItem, catalogPlacement, catalogUrl, defaultPlacement, defaultScale, gripPoint, gripToRest } from '../engine/props.ts'
@@ -358,9 +358,17 @@ class GearState {
     const done = mark('gear.wear', g.name)
     const derived = g.attach.kind === 'skin' ? derivedStore(c.id, g.id) : undefined
     wear(view, g, { url, place, fitting, edits, frame: frame ?? undefined, derived })
-      .then(worn => {
+      .then(async worn => {
         done()
         if (w.pieces.get(g.id) !== piece) { if (worn !== null) takeOff(view, worn); return }
+        // (its shaders compiled off the main thread before it is first drawn: drawing it at once would wait for them)
+        if (worn !== null) {
+          for (const o of worn.objects) o.visible = false
+          // (with the female shape's field already, so a female skin later compiles nothing)
+          if (g.attach.kind !== 'bone' && hasFemaleShape(view.bodySkinned)) prepareFemale(worn.meshes, view.height)
+          await compiled(worn.objects)
+          if (w.pieces.get(g.id) !== piece) { takeOff(view, worn); return }
+        }
         piece.worn = worn
         if (worn === null) frame?.group.removeFromParent()
         // (shown or not as it is now: it may have been hidden or shown while it loaded)
@@ -1047,6 +1055,23 @@ class GearState {
     } finally {
       this.finding = null
     }
+  }
+}
+
+/** How long a piece waits for its shaders before it is drawn anyway. */
+const COMPILE_WAIT_MS = 4000
+
+/** `objects`' shaders compiled for the stage, without blocking (KHR_parallel_shader_compile: three's compileAsync),
+ * so the first frame that draws them doesn't wait for the driver. */
+async function compiled (objects: readonly THREE.Object3D[]): Promise<void> {
+  const stage = viewer.stage
+  if (stage === null || objects.length === 0) return
+  const done = mark('gear.compile')
+  try {
+    const all = Promise.all(objects.map(async o => { await stage.renderer.compileAsync(o, stage.camera, stage.scene) }))
+    await Promise.race([all, sleep(COMPILE_WAIT_MS)])
+  } catch { /* (drawn anyway: it compiles on its first frame) */ } finally {
+    done()
   }
 }
 
