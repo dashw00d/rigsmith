@@ -721,3 +721,36 @@ PUT/DELETE `/weights` (body and gear) run as `lock: 'files'` jobs (or answer 409
   before the files index came in isn't worn again), its shaders are compiled with `compileAsync` before it is first
   drawn, and skin/spot pieces get the female morph field (off) as they are worn (`folkview.prepareFemale`,
   `hasFemaleShape`). `npm run perf -- --cpu=<dir>` saves a CPU profile per run and prints the hottest functions.
+- Extend wave 1 (docs/extend/plan.md): the isolated browser harness is `npm run e2e` (`tools/e2e.ts`,
+  `tests/e2e/*.scenario.ts`); Gear selection, preview visibility and cancellable fitting were repaired. Wardrobe and
+  Crowd have visible entry points. The Forge UI was removed; its server remains. Library and Incoming gained their
+  read-side indexes. Hiding a folk piece is preview state and Make default does not persist that hide.
+- Extend wave 2: the character sidebar has dynamic classes; the Gear Class editor assigns weighted sets and pools and
+  the Ship unit specifies a class. Library has searchable, sortable and filterable virtualized views, and Wardrobe
+  includes the prop catalog. Look edits skins, cloth slots and cuts and can make a CPU-filled bare skin. The class id
+  should equal the game's unit id; Ship warns when it does not. Sets are per character. Culture is a runtime input.
+- Extend wave 3: Sets and Coverage are Gear sections; Coverage reports each region's largest single-piece share.
+  Cloth preview composes slot layers, cuts and a bare skin on the full rest topology; the skin contact sheet uses the
+  same dress. Make all bare skins is one undo. Dressed as selects the set used by Motion. Incoming accepts updates
+  with placement retained; accepted state follows undo/redo. Component tests use the suite's Svelte configuration.
+- Extend wave 4: image-space UV orientation is shared by the bare generator, compositor and export. Empty cloth slots
+  retain the painted skin; only the cut-away part of a worn slot uses bare skin. `cloth/<layer>.mask.<hash8>.png` is
+  immutable and cut masks are journaled by reference. The export writes cut-baked layers, bare-skin paths and scoped
+  stance clips (`<Clip>@<stance>`, `<Clip>_2@<stance>`) with overlays already baked. `pngjs` is a devDependency used
+  by both the Look server routes and export, so running those requires development dependencies. Stage readiness and
+  measured load-time changes do not establish that the absolute performance budgets pass.
+- Extend wave 5a: the e2e runner creates a fresh workspace and server for each scenario; perf uses a free loopback
+  port and a worktree-local Vite cache. The shared cloth body metadata includes adjoining Skin forearms/ankles; export
+  and Stage use the same slot-limited alpha and seam gutter, based on the shipped rig's UVs. Cut-editor drafts survive
+  unrelated edits and reopening in the same page; conflicting saves retain the draft. When no selected layer has a cut,
+  composition skips the bare decode and cut-gutter passes. Unit stances bake with their own held set; the manifest,
+  events, GLB and Ship's shared stance planner name the same clips. Duplicate set names are rejected. Offscreen sprite
+  work is cancellable; Incoming replacement resets old paint and keeps weights per model for undo, and the Incoming
+  badge follows the selected character. Ship ignores stale reloads, reads/writes unit data without truncation races,
+  and warns about cuts without a bare skin. Class/culture context reaches Crowd and Wardrobe; library indexes retain
+  variant and candidate names. Incoming shares the app's event stream.
+- Extend follow-ups: horse coat rename across riders still needs a durable cross-character transaction with one
+  conflict-checked undo/redo; mask files are retained until upload/commit and collection can be coordinated safely.
+  Randomize and first-load performance budgets remain open, and uncut seam appearance and bare-leg appearance need
+  visual acceptance. The game's bare-slot composition, stance consumption and FolkProgram golden need separate game
+  validation; Wave 5b legacy retirement has not been done.
