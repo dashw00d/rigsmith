@@ -178,7 +178,16 @@ class GearState {
    * beards (browsing: dress.svelte.ts), else as the document has it (reactive). */
   shownOnStage (c: Character, g: Gear): boolean {
     if (this.fitting === g.id) return true
+    if (setsWith(c, g).length === 0 && g.role === undefined) return g.hidden !== true
     return shows(c, g, dressing.worn(c), documentDress(c), dressing.of(c.id))
+  }
+
+  /** Coverage data for the current rider, including fitted-but-hidden pieces for the inspector. */
+  coveragePieces (): Array<{ gear: Gear, worn: Worn, shown: boolean }> {
+    void this.worn
+    const rider = this.rider
+    if (rider === null || rider.id !== app.selectedId) return []
+    return [...rider.pieces.values()].flatMap(p => p.worn === null ? [] : [{ gear: p.gear, worn: p.worn, shown: p.shown }])
   }
 
   /** A shown piece on stage (a piece kept fitted while hidden is not there for the panels). */
@@ -258,6 +267,7 @@ class GearState {
    * its rider's mount says (syncHorse). A piece being fitted always shows. */
   private showsOn (c: Character, g: Gear, w: Wearer, worn: Dressed | null, own: Dressed | null): boolean {
     if (w.rider && this.fitting === g.id) return true
+    if (setsWith(c, g).length === 0 && g.role === undefined) return g.hidden !== true
     return worn === null || own === null ? g.hidden !== true : shows(c, g, worn, own, dressing.of(c.id))
   }
 
@@ -435,7 +445,9 @@ class GearState {
       // (gone from the stage meanwhile)
       if (w !== this.rider && w !== this.horse) return
       const done = mark('gear.hideBodyUnder')
+      const pendingHits = this.wornOf(w).some(piece => piece.hits === undefined && piece.hides !== undefined)
       hideBodyUnder(w.view, this.wornOf(w))
+      if (pendingHits) this.worn++
       done()
     }
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
@@ -579,9 +591,11 @@ class GearState {
   select (id: string | null): void {
     if (id === this.selected && this.selectionFor === app.selectedId) return
     this.stopPicking()
-    if (this.fitting !== null && this.fitting !== id) { this.fitting = null; this.fitStart = null }
+    const endedFit = this.fitting !== null && this.fitting !== id
+    if (endedFit) { this.fitting = null; this.fitStart = null }
     this.selected = id
     this.selectionFor = app.selectedId
+    if (endedFit) this.syncAll()
   }
 
   /** Show a skin or spot piece unbound to place it (null: bind the edits). */
@@ -605,10 +619,26 @@ class GearState {
     if (start === null || this.cancellingFit) return
     const c = app.byId(start.character)
     const current = c?.gear.find(g => g.id === start.id)
-    if (current === undefined) { this.fit(null); return }
+    if (c === null || current === undefined) { this.fit(null); return }
     const commands = fitRestore(start, current)
     this.cancellingFit = true
     try {
+      const origin = commands.find((cmd): cmd is Extract<Command, { type: 'gear.origin' }> => cmd.type === 'gear.origin')
+      if (origin !== undefined) {
+        const needed = c.clips.filter(s => s.ik?.lead?.includes(current.id) === true && (s.gear?.[current.id]?.keys?.length ?? 0) > 0)
+        if (needed.length > 0) {
+          const was = originOf(current)
+          const target = start.origin ?? [0, 0, 0]
+          const delta: Vec3 = [target[0] - was[0], target[1] - was[1], target[2] - was[2]]
+          const lead = await this.leadKeys(c, current, delta)
+          if (this.fitStart !== start || app.byId(start.character) !== c) return
+          if (needed.some(s => lead[s.id] === undefined)) {
+            app.toast('error', 'Could not restore the leading gear keys; try Cancel again')
+            return
+          }
+          origin.lead = lead
+        }
+      }
       if (commands.length > 0 && await app.do(start.character, commands, 'gear.fit.cancel') === null) return
       if (this.fitStart === start) { this.fitting = null; this.fitStart = null; this.syncAll() }
     } finally { this.cancellingFit = false }
@@ -618,13 +648,13 @@ class GearState {
   pickAt (event: Pick<PointerEvent, 'clientX' | 'clientY'>): void {
     const stage = viewer.stage
     const rider = this.rider
-    if (app.step !== 'gear' || stage === null || rider === null || rider.id !== app.selectedId || this.picking !== null || paint.active || this.placingOrigin !== null) return
+    if (app.step !== 'gear' || stage === null || rider === null || rider.id !== app.selectedId || this.fitting !== null || this.picking !== null || paint.active || this.placingOrigin !== null || hands.editing !== null) return
     const rect = stage.renderer.domElement.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return
     const ray = new THREE.Raycaster()
     ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, 1 - (event.clientY - rect.top) / rect.height * 2), stage.camera)
     const pieces = [...rider.pieces].flatMap(([id, p]) => p.worn === null ? [] : [{ id, shown: p.shown, meshes: p.worn.meshes }])
-    this.select(pickGear(ray, pieces))
+    this.select(pickGear(ray, pieces, rider.view.meshes))
   }
 
   /** A bone the skeleton has to put new gear on: `want` if it has it, else a hand, else its first. */
@@ -866,8 +896,15 @@ class GearState {
   }
 
   async setShown (c: Character, g: Gear, shown: boolean): Promise<void> {
-    if (setsWith(c, g).length > 0 || g.role !== undefined) dressing.setShown(c, g.id, shown)
-    else await app.do(c.id, { type: 'gear.update', id: g.id, patch: { hidden: !shown } })
+    const sets = setsWith(c, g)
+    if (sets.length > 0 || g.role !== undefined) {
+      if (shown) {
+        if (sets.length > 0 && !sets.includes(dressing.worn(c).outfit ?? '')) dressing.wearOutfit(c, sets[0])
+        else if (sets.length === 0 && g.role === 'hair') dressing.setHair(c, g.id)
+        else if (sets.length === 0 && g.role === 'beard') dressing.setBeard(c, g.id)
+      }
+      dressing.setShown(c, g.id, shown)
+    } else await app.do(c.id, { type: 'gear.update', id: g.id, patch: { hidden: !shown } })
   }
 
   toggleShown (c: Character, g: Gear): Promise<void> { return this.setShown(c, g, !this.shownOnStage(c, g)) }

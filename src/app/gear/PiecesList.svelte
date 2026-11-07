@@ -203,7 +203,7 @@
                 onkeydown={(e) => { if (e.key === 'Enter') void finishRename(g, true); else if (e.key === 'Escape') { e.preventDefault(); void finishRename(g, false) } }}
                 onblur={() => { void finishRename(g, true) }} />
             {:else}
-              <button class="row" data-testid="wardrobe-piece-row" data-id={g.id} use:contextMenu={() => rowMenu(g, group.set)} onclick={(e) => { click(e, g, group.set) }} ondblclick={() => { startRename(g) }}
+              <button draggable="true" ondragstart={(e) => { e.dataTransfer?.setData('application/x-rigsmith-gear', g.id) }} class="row" data-testid="wardrobe-piece-row" data-id={g.id} use:contextMenu={() => rowMenu(g, group.set)} onclick={(e) => { click(e, g, group.set) }} ondblclick={() => { startRename(g) }}
                 aria-pressed={picked.includes(g.id)} use:tooltip={fromGame(g) ? `${g.name} (the game's own piece)` : `${g.name}: double-click to rename`}>
                 <span class="name">{g.name}</span>
                 {#if part !== null}<span class="part">{part}</span>{/if}

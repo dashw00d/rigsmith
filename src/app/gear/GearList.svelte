@@ -106,7 +106,7 @@
             onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void finishEdit(g, true) } else if (e.key === 'Escape') { e.preventDefault(); void finishEdit(g, false) } }}
             onblur={() => { void finishEdit(g, true) }} />
         {:else}
-        <button class="row" use:contextMenu={() => menu(g)} data-testid="gear-row" data-id={g.id} data-hidden={!shown} onclick={() => gearState.select(gearState.selected === g.id ? null : g.id)} aria-pressed={gearState.selected === g.id}>
+        <button draggable="true" ondragstart={(e) => { e.dataTransfer?.setData('application/x-rigsmith-gear', g.id) }} class="row" use:contextMenu={() => menu(g)} data-testid="gear-row" data-id={g.id} data-hidden={!shown} onclick={() => gearState.select(gearState.selected === g.id ? null : g.id)} aria-pressed={gearState.selected === g.id}>
           <span class="name">{g.name}</span>
           <span class="detail" use:tooltip={wearText(g)}>
             {#if g.status === 'importing'}<LoaderCircle size={12} class="spin" /> importing
