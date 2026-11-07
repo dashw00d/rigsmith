@@ -56,3 +56,17 @@ it('stops deferred initialization if the stage is disposed first', async () => {
   expect(calls.size).not.toHaveBeenCalled()
   expect(calls.dispose).toHaveBeenCalledOnce()
 })
+
+it('does not allocate the canvas if disposed after environment preparation', async () => {
+  const { Stage } = await import('./Stage.ts')
+  const container = document.createElement('div')
+  Object.defineProperties(container, { clientWidth: { value: 640 }, clientHeight: { value: 480 } })
+  const stage = new Stage(container)
+  await vi.advanceTimersByTimeAsync(0)
+  expect(calls.env).toHaveBeenCalledOnce()
+  stage.dispose()
+  await vi.runAllTimersAsync(); await stage.ready
+  expect(calls.size).not.toHaveBeenCalled()
+  expect(calls.loop).toHaveBeenCalledOnce()
+  expect(calls.loop).toHaveBeenCalledWith(null)
+})
