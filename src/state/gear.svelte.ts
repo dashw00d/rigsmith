@@ -609,10 +609,26 @@ class GearState {
     if (start === null || this.cancellingFit) return
     const c = app.byId(start.character)
     const current = c?.gear.find(g => g.id === start.id)
-    if (current === undefined) { this.fit(null); return }
+    if (c === null || current === undefined) { this.fit(null); return }
     const commands = fitRestore(start, current)
     this.cancellingFit = true
     try {
+      const origin = commands.find((cmd): cmd is Extract<Command, { type: 'gear.origin' }> => cmd.type === 'gear.origin')
+      if (origin !== undefined) {
+        const needed = c.clips.filter(s => s.ik?.lead?.includes(current.id) === true && (s.gear?.[current.id]?.keys?.length ?? 0) > 0)
+        if (needed.length > 0) {
+          const was = originOf(current)
+          const target = start.origin ?? [0, 0, 0]
+          const delta: Vec3 = [target[0] - was[0], target[1] - was[1], target[2] - was[2]]
+          const lead = await this.leadKeys(c, current, delta)
+          if (this.fitStart !== start || app.byId(start.character) !== c) return
+          if (needed.some(s => lead[s.id] === undefined)) {
+            app.toast('error', 'Could not restore the leading gear keys; try Cancel again')
+            return
+          }
+          origin.lead = lead
+        }
+      }
       if (commands.length > 0 && await app.do(start.character, commands, 'gear.fit.cancel') === null) return
       if (this.fitStart === start) { this.fitting = null; this.fitStart = null; this.syncAll() }
     } finally { this.cancellingFit = false }

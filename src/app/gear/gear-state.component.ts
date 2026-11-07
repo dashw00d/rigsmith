@@ -108,3 +108,28 @@ describe('hand pose picking', () => {
     expect(gear.selected).toBeNull()
   })
 })
+
+describe('cancel placement with IK lead keys', () => {
+  it('rebases the current lead keys back with the origin in the same cancel batch', async () => {
+    const { makeSlot } = await import('../../model/fixtures.ts')
+    const { applyCommands } = await import('../../model/commands.ts')
+    const { fitSnapshot } = await import('./fit.ts')
+    const keys = [{ u: 0.5, q: [0, 0, 0, 1] as [number, number, number, number], p: [0, 0, 0] as [number, number, number] }]
+    const moved = [{ ...keys[0], p: [1, 0, 0] as [number, number, number] }]
+    const initial = makeCharacter({ gear: [piece()], clips: [makeSlot({ id: 'lead', ik: { hands: [], lead: ['coat'] }, gear: { coat: { keys } } })] })
+    const edited = applyCommands(initial, [{ type: 'gear.origin', id: 'coat', origin: [1, 0, 0], lead: { lead: moved } }]).character
+    gear.fitStart = fitSnapshot(initial.id, initial.gear[0])
+    vi.spyOn(app, 'byId').mockReturnValue(edited)
+    const leadKeys = vi.spyOn(gear as unknown as { leadKeys: (...args: unknown[]) => Promise<Record<string, typeof keys>> }, 'leadKeys').mockResolvedValue({ lead: keys })
+    let restored = edited
+    const send = vi.spyOn(app, 'do').mockImplementation(async (_id, commands) => {
+      restored = applyCommands(edited, Array.isArray(commands) ? commands : [commands]).character
+      return { seq: 1 } as never
+    })
+    await gear.cancelFit()
+    expect(leadKeys).toHaveBeenCalledWith(edited, edited.gear[0], [-1, 0, 0])
+    expect(restored.gear[0].origin ?? null).toBeNull()
+    expect(restored.clips[0].gear?.coat.keys).toEqual(keys)
+    leadKeys.mockRestore(); send.mockRestore(); vi.mocked(app.byId).mockRestore()
+  })
+})
