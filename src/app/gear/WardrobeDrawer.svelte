@@ -32,7 +32,7 @@
   // (the dress the tiles are judged under: the one kept, not a hover's)
   const pinned = $derived(character === null ? null : wardrobe.pinned(character))
   const rules = $derived(character === null || field === null || pinned === null ? new Map<string, Choice>()
-    : new Map(choicesFor(character, worldFor(character), pinned, field).map(x => [x.value, x])))
+    : new Map(choicesFor(character, worldFor(character), pinned, field, wardrobe.ctx(character)).map(x => [x.value, x])))
   const counts = $derived(character === null ? {} : Object.fromEntries(TABS.map(t => [t.id, t.id === 'pieces' ? character.gear.filter(g => g.role === undefined).length : t.id === 'props' ? CATALOG.length : tilesOf(character, t.id).length])))
 
   // (a new tab or character: its own chips)

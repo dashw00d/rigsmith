@@ -34,7 +34,7 @@
   })
 
   function lookOf (c: Character, uid: number): UnitLook {
-    const p = pick(worldFor(c), uid)
+    const p = pick(worldFor(c), uid, wardrobe.ctx(c))
     const byId = new Map(c.gear.map(g => [g.id, g]))
     const set = setsOf(c).find(s => s.id === p.picks.set)
     const ids = [...(set?.pieces ?? []), p.picks.hair, p.picks.beard].filter((id): id is string => id !== null && id !== undefined)
