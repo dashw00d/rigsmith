@@ -20,6 +20,7 @@
   import Select from '../../ui/Select.svelte'
   import TextField from '../../ui/TextField.svelte'
   import Toggle from '../../ui/Toggle.svelte'
+  import { typing } from '../../ui/shortcuts.ts'
   import FolkPanel from '../gear/FolkPanel.svelte'
   import ClassSection from '../gear/ClassSection.svelte'
   import { wardrobe } from '../gear/wardrobe.svelte.ts'
@@ -44,7 +45,7 @@
   const sets = $derived(swapSets(character.gear))
 
   function cancelFitOnEscape (event: KeyboardEvent): void {
-    if (event.key !== 'Escape' || event.defaultPrevented || !fitting) return
+    if (event.key !== 'Escape' || event.defaultPrevented || !fitting || gearState.placingOrigin !== null || gearState.picking !== null || typing(event.target) || app.drawer !== null || app.confirming !== null || wardrobe.keysOpen || document.querySelector('[aria-label="Close panel"]') !== null) return
     event.preventDefault()
     void gearState.cancelFit()
   }

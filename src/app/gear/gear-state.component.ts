@@ -39,3 +39,34 @@ describe('fit selection', () => {
     expect(sync).toHaveBeenCalledOnce()
   })
 })
+
+describe('placement Escape', () => {
+  it('lets origin drag, picking, typing, and the open drawer consume Escape before cancelling the placement', async () => {
+    const { mount, unmount, flushSync } = await import('svelte')
+    const { default: GearPanel } = await import('../steps/GearPanel.svelte')
+    const target = document.createElement('div')
+    document.body.append(target)
+    const panel = mount(GearPanel, { target, props: { character: app.selected! } })
+    flushSync()
+    const escape = (target: EventTarget = window): void => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) }
+    gear.placingOrigin = 'coat'
+    escape()
+    expect(gear.fitting).toBe('coat')
+    gear.placingOrigin = null
+    gear.picking = { kind: 'spot', gear: 'coat' }
+    escape()
+    expect(gear.fitting).toBe('coat')
+    gear.picking = null
+    const input = target.querySelector('input[aria-label="Name"]')!
+    escape(input)
+    expect(gear.fitting).toBe('coat')
+    app.drawer = 'wardrobe'
+    escape()
+    expect(gear.fitting).toBe('coat')
+    app.drawer = null
+    escape()
+    expect(gear.fitting).toBeNull()
+    await unmount(panel)
+    target.remove()
+  })
+})
