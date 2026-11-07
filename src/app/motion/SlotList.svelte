@@ -27,7 +27,7 @@
   const stanceId = $derived(stance.current(character.id))
   const activeStance = $derived(folkOf(character).stances.find(s => s.id === stanceId))
   const game = $derived(slots.game)
-  const names = $derived(slots.names)
+  const names = $derived(game === null && activeStance !== undefined ? character.clips.map(s => s.name) : slots.names)
   const trials = $derived(character.clips.filter(s => isTrial(s, names)))
   // (a game clip's variants, "Attack 2": listed under it; the game picks one of them at random)
   const variants = (name: string): Slot[] => character.clips.filter(s => variantOf(s.name, names) === name)
@@ -78,9 +78,9 @@
     onclick={() => slots.arm(target(slot, name))}><Crosshair size={13} /></IconButton>
 {/snippet}
 
-{#if game !== null}
+{#if game !== null || activeStance !== undefined}
   <div class="group">
-    <h4>In the game: {game.unit}{game.role === 'companion' ? ' (its companion)' : ''}</h4>
+    <h4>{game === null ? 'Clip names' : `In the game: ${game.unit}${game.role === 'companion' ? ' (its companion)' : ''}`}</h4>
     <ul class="set">
       {#each names as name (name)}
         {@const s = slotByName(character, name)}
