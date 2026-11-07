@@ -4,22 +4,20 @@
   import { Plus } from '@lucide/svelte'
   import { phaseOf } from '../../model/select.ts'
   import { CATALOG, catalogPreview } from '../../engine/props.ts'
-  import { app } from '../../state/app.svelte.ts'
+  import type { Character } from '../../state/api.ts'
   import { gear } from '../../state/gear.svelte.ts'
-  import Drawer from '../../ui/Drawer.svelte'
-  import EmptyState from '../../ui/EmptyState.svelte'
 
   const categories = [...new Set(CATALOG.map(p => p.category))]
   let category = $state(categories[0])
   const items = $derived(CATALOG.filter(p => p.category === category))
-  const character = $derived(app.selected)
-  const rigged = $derived(character !== null && phaseOf(character).phase === 'rigged')
+  let { character }: { character: Character } = $props()
+  const rigged = $derived(phaseOf(character).phase === 'rigged')
   // (what it has from the catalog already: marked, and can be added again)
-  const has = $derived(new Set(character?.gear.flatMap(g => (g.catalog === undefined ? [] : [g.catalog])) ?? []))
+  const has = $derived(new Set(character.gear.flatMap(g => g.catalog === undefined ? [] : [g.catalog])))
   let adding = $state<string | null>(null)
 
   async function add (file: string): Promise<void> {
-    if (character === null || adding !== null) return
+    if (adding !== null) return
     adding = file
     try {
       await gear.addCatalog(character, file)
@@ -29,10 +27,6 @@
   }
 </script>
 
-<Drawer open={app.drawer === 'catalog'} onclose={() => app.toggleDrawer('catalog')} title="Catalog" scrim={false}>
-  {#if character === null}
-    <EmptyState title="No character" body="Pick a character to give it gear." compact />
-  {:else}
     <div class="chips" role="tablist" aria-label="Category">
       {#each categories as c (c)}
         <button role="tab" aria-selected={category === c} class:active={category === c} onclick={() => { category = c }}>{c}</button>
@@ -44,7 +38,7 @@
       {/if}
       <div class="grid">
         {#each items as item (item.file)}
-          <button class="item" class:on={has.has(item.file)} disabled={adding !== null} onclick={() => add(item.file)}
+          <button data-testid="wardrobe-prop" data-id={item.file} class="item" class:on={has.has(item.file)} disabled={adding !== null} onclick={() => add(item.file)}
             title={has.has(item.file) ? `${item.name}: ${character.name} has one; add another` : `Add ${item.name}`}>
             <span class="thumb"><img src={catalogPreview(item.file)} alt="" loading="lazy" /><span class="plus"><Plus size={14} /></span></span>
             <span class="name">{item.name}</span>
@@ -52,8 +46,7 @@
         {/each}
       </div>
     </div>
-  {/if}
-</Drawer>
+
 
 <style>
   .chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 12px 14px 10px 16px; border-bottom: 1px solid var(--line); }

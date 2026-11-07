@@ -19,7 +19,6 @@
   import Toasts from './Toasts.svelte'
   import TopBar from './TopBar.svelte'
   import Viewport from './Viewport.svelte'
-  import CatalogDrawer from './gear/CatalogDrawer.svelte'
   import WardrobeDrawer from './gear/WardrobeDrawer.svelte'
   import CrowdView from './gear/CrowdView.svelte'
   import { wardrobe } from './gear/wardrobe.svelte.ts'
@@ -117,7 +116,6 @@
         <Viewport />
         {#if ready && wardrobe.crowdOpen && app.step === 'gear' && selected !== null && isFolk(selected)}<CrowdView character={selected} />{/if}
         {#if ready && app.drawer === 'library'}<LibraryDrawer />{/if}
-        {#if ready && app.drawer === 'catalog'}<CatalogDrawer />{/if}
         {#if ready && app.drawer === 'wardrobe'}<WardrobeDrawer />{/if}
       </main>
       <aside id="workspace-inspector" class="right" class:drawer={narrow} aria-label="Inspector" aria-hidden={!rightShown} inert={!rightShown}>
