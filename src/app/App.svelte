@@ -2,8 +2,8 @@
   // The frame (DESIGN.md §5): the top bar; the characters on the left, always (a drawer on a narrow window); the
   // viewport in the middle, with the clip library or the gear catalog sliding over its left edge; the step's inspector
   // on the right; the activity drawer over the right side; the Forge (a set's board, not a character's) over all of it
-  // while it is open. The confirm dialog, the toasts and the drop target are
-  // mounted here once.
+  // while it is open. The confirm dialog, the keys sheet, the toasts and the drop target are mounted here once, and the
+  // registered keys (src/ui/shortcuts.ts) are run from here.
   import { onMount } from 'svelte'
   import { PanelLeft, PanelRight, RefreshCw } from '@lucide/svelte'
   import { phaseOf } from '../model/select.ts'
@@ -21,6 +21,13 @@
   import TopBar from './TopBar.svelte'
   import Viewport from './Viewport.svelte'
   import CatalogDrawer from './gear/CatalogDrawer.svelte'
+  import WardrobeDrawer from './gear/WardrobeDrawer.svelte'
+  import CrowdView from './gear/CrowdView.svelte'
+  import { wardrobe } from './gear/wardrobe.svelte.ts'
+  import { isFolk } from '../engine/folk.ts'
+  import { registerAppKeys } from './gear/keys.ts'
+  import KeysSheet from './KeysSheet.svelte'
+  import { runShortcut } from '../ui/shortcuts.ts'
   import LibraryDrawer from './motion/LibraryDrawer.svelte'
   import ForgeBoard from './forge/ForgeBoard.svelte'
 
@@ -68,9 +75,16 @@
   }
 
   onMount(() => { void start() })
+  // (the keys anyone can see in the sheet, `?`: dressing, undo and redo; src/ui/shortcuts.ts)
+  onMount(registerAppKeys)
+
+  function onkeydown (e: KeyboardEvent): void {
+    if (e.key === 'Escape' && !e.defaultPrevented) { leftDrawer = false; rightDrawer = false; return }
+    if (ready) runShortcut(e)
+  }
 </script>
 
-<svelte:window bind:innerWidth={width} onkeydown={(e) => { if (e.key === 'Escape' && !e.defaultPrevented) { leftDrawer = false; rightDrawer = false } }} />
+<svelte:window bind:innerWidth={width} {onkeydown} />
 
 <div class="app">
   <TopBar />
@@ -103,8 +117,10 @@
       </aside>
       <main class="center">
         <Viewport />
+        {#if ready && wardrobe.crowdOpen && app.step === 'gear' && selected !== null && isFolk(selected)}<CrowdView character={selected} />{/if}
         {#if ready && app.drawer === 'library'}<LibraryDrawer />{/if}
         {#if ready && app.drawer === 'catalog'}<CatalogDrawer />{/if}
+        {#if ready && app.drawer === 'wardrobe'}<WardrobeDrawer />{/if}
       </main>
       <aside id="workspace-inspector" class="right" class:drawer={narrow} aria-label="Inspector" aria-hidden={!rightShown} inert={!rightShown}>
         {#if ready}<Inspector />{/if}
@@ -114,6 +130,7 @@
     </div>
   {/if}
   <ConfirmDialog />
+  <KeysSheet />
   <Toasts />
   <DropOverlay />
 </div>
