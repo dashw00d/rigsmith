@@ -25,8 +25,10 @@ export interface UnitSpec {
   /** A dynamic character's unit (src/engine/folkpick.ts): the unit kind its file carries (Character.folk.kinds' id;
    * unset: every kind and set), and the pools it carries (pool ids or kinds: 'skin', 'cloth', 'hair', 'beard',
    * 'accessory'; unset: all; every unit in the game is a node per part, so a kind's file keeps to its own). Schema 4's
-   * `outfits` (the sets it wears, by name) and `hair: false` (no hair or beard pools) are still read. */
-  folk?: { kind?: string, pools?: string[], outfits?: string[], hair?: boolean }
+   * `outfits` (the sets it wears, by name) and `hair: false` (no hair or beard pools) are still read.
+   * `sharedAtlasGroups`: authored groups whose pieces use identical embedded maps in one shared UV frame; preserve
+   * those UVs instead of shrinking each piece into a cell. Export rejects unlike maps or material factors. */
+  folk?: { kind?: string, pools?: string[], outfits?: string[], hair?: boolean, sharedAtlasGroups?: string[] }
   [k: string]: unknown
 }
 

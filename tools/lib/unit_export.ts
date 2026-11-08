@@ -43,7 +43,7 @@ import { atlasGroupOf, clothExportBase, folkLeftOut, folkManifestData, folkScope
 import { safeName } from '../../src/engine/geom.ts'
 import { applyGeometryMatrix } from '../../src/engine/geometry-transform.ts'
 import { cloneMorphGeometry, mergeMorphState, restoreMorphState } from '../../src/engine/morph-state.ts'
-import { baseColorImage, imageBytes, readGlb, type Glb } from '../../src/engine/glb.ts'
+import { baseColorImage, imageBytes, readGlb } from '../../src/engine/glb.ts'
 import { frameTimes } from '../../src/engine/keys.ts'
 import { compact, ready, simplify, triangles, uvSeamLock } from '../../src/engine/lods.ts'
 import { repeat, seatMatrix } from '../../src/engine/mount.ts'
@@ -59,6 +59,7 @@ import { exportClash, exportName, gameNameOf, variantsField, withVariants } from
 import type { Character, ClipKey, Gear, HandPose, Mount, Slot } from '../../src/model/types.ts'
 import type { BuildRecord, BuiltClip, BuiltCompanion, BuiltGear, CompanionSpec, UnitEvent, UnitEvents, UnitSpec } from '../../src/model/unit.ts'
 import { gearSkin, pullHandles, pullSkin, type PullHandle } from './gearskin.ts'
+import { folkMaterial, sharedMaterialKey } from './folk_material.ts'
 import { character, isBone, load, nodeClipSource, nodeRom, ROOT, settings } from './node3d.ts'
 
 export interface UnitExportOptions {
@@ -245,8 +246,8 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
   const folkOut = (g: Gear): string | null => scope === null ? null : folkLeftOut(scope, g)
   // A dynamic character's swapped pieces draw from one atlas per group (an outfit's pieces; the hair; the beards):
   // each piece's UVs moved into its cell, its own maps written out for the game's map build to lay in (folk.ts)
-  const atlas = folkAtlas(c, scope)
-  const atlasFiles: Record<string, { grid: number, pieces: Array<Record<string, unknown>> }> = {}
+  const atlas = folkAtlas(c, scope, spec.folk?.sharedAtlasGroups ?? [], me.dir)
+  const atlasFiles: Record<string, { grid: number, shared?: boolean, pieces: Array<Record<string, unknown>> }> = {}
   for (const g of c.gear) {
     const a = g.attach
     const name = meshNameOf(g)
@@ -294,13 +295,14 @@ export async function exportUnit (unit: string, spec: UnitSpec, o: UnitExportOpt
         const out = path.join(o.workDir, unit, 'folk_atlas', cell.group)
         mkdirSync(out, { recursive: true })
         const files: Record<string, string> = {}
-        for (const [kind, index] of [['albedo', baseColorImage(glb)], ['normal', normalImage(glb)]] as const) {
+        const surface = folkMaterial(glb)
+        for (const [kind, index] of Object.entries(surface.maps)) {
           const bytes = index === null ? null : imageBytes(glb, index)
           if (bytes === null) continue
           files[kind] = path.join(out, `${name}_${kind}.png`)
           writeIfChanged(files[kind], bytes)
         }
-        ;(atlasFiles[cell.group] ??= { grid: cell.grid, pieces: [] }).pieces.push({ mesh: name, cell: [cell.col, cell.row], ...files })
+        ;(atlasFiles[cell.group] ??= { grid: cell.grid, ...(cell.shared === true ? { shared: true } : {}), pieces: [] }).pieces.push({ mesh: name, cell: [cell.col, cell.row], ...files, factors: surface.factors })
       }
       if (skin.mechanism !== undefined) warn(`${g.name}: its own animation ${skin.mechanism} isn't exported: it rides ${skin.lead} still`)
       parts.push({ geometry: merged(model.geos, unit, g), material: model.mats.length === 1 ? model.mats[0] : model.mats, name })
@@ -1273,11 +1275,11 @@ function folkManifest (unit: string, c: Character, charDir: string, srcDir: stri
   })
 }
 
-interface AtlasCell { group: string, grid: number, col: number, row: number }
+interface AtlasCell { group: string, grid: number, col: number, row: number, shared?: boolean }
 
 /** Each exported swapped piece of a dynamic character, its atlas cell: per group (its outfit; hair; beards) a square
  * grid, the pieces in the character's gear order. */
-function folkAtlas (c: Character, scope: FolkScope | null): Map<string, AtlasCell> {
+function folkAtlas (c: Character, scope: FolkScope | null, sharedGroups: string[], dir: string): Map<string, AtlasCell> {
   const out = new Map<string, AtlasCell>()
   if (scope === null) return out
   const groups = new Map<string, Gear[]>()
@@ -1289,6 +1291,12 @@ function folkAtlas (c: Character, scope: FolkScope | null): Map<string, AtlasCel
     groups.set(group, list)
   }
   for (const [group, list] of groups) {
+    if (sharedGroups.includes(group)) {
+      const keys = list.map(g => sharedMaterialKey(readGlb(readFileSync(path.join(dir, g.model!)))))
+      if (new Set(keys).size !== 1) throw new Error(`Shared atlas ${group}: pieces have different maps or material factors`)
+      list.forEach(g => out.set(g.id, { group, grid: 1, col: 0, row: 0, shared: true }))
+      continue
+    }
     const grid = Math.ceil(Math.sqrt(list.length))
     list.forEach((g, i) => out.set(g.id, { group, grid, col: i % grid, row: Math.floor(i / grid) }))
   }
@@ -1299,7 +1307,7 @@ function folkAtlas (c: Character, scope: FolkScope | null): Map<string, AtlasCel
  * hides and re-skins only the body). */
 function intoCell (geo: THREE.BufferGeometry, cell: AtlasCell): void {
   const uv = geo.attributes.uv
-  if (uv !== undefined) {
+  if (uv !== undefined && cell.shared !== true) {
     const size = 1 / cell.grid
     const pad = size * 0.004
     for (let i = 0; i < uv.count; i++) {
@@ -1309,14 +1317,6 @@ function intoCell (geo: THREE.BufferGeometry, cell: AtlasCell): void {
     uv.needsUpdate = true
   }
   geo.setAttribute('uv1', new THREE.Float32BufferAttribute(new Float32Array(geo.attributes.position.count * 2).fill(-1), 2))
-}
-
-/** The image a model's first normal map shows, or null. */
-function normalImage (glb: Glb): number | null {
-  const { materials, textures, images } = glb.json as { materials?: Array<{ normalTexture?: { index: number } }>, textures?: Array<{ source?: number }>, images?: Array<{ bufferView?: number }> }
-  const t = materials?.find(m => m.normalTexture !== undefined)?.normalTexture?.index
-  const source = t !== undefined ? textures?.[t]?.source : undefined
-  return source !== undefined && images?.[source]?.bufferView !== undefined ? source : null
 }
 
 /** A dynamic character's bodies in the game: none, the female shape, the long sleeves, both (FolkBody_<suffix>; '' is
