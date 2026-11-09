@@ -10,8 +10,9 @@ import { carryHandle, gearById, gearByName, slotById, slotByName } from '../sele
 import { hierarchyOf } from '../skeletons.ts'
 import { playedAs, playsAs } from '../variants.ts'
 import { pruneSlots } from './folk.ts'
+import { BODY_PARTS, POSTURE_PARTS } from '../types.ts'
 import type {
-  Adjustment, AdjustmentKind, BlowFit, Character, ClipEvent, ClipKey, Gear, GearTrack, Handle, HeldBy, Piece, RetimeMarker, Slot, SlotIk, SlotTime, Window,
+  Adjustment, AdjustmentKind, BlowFit, BodyPart, Character, ClipEvent, ClipKey, Gear, GearTrack, Handle, HeldBy, Piece, RetimeMarker, Slot, SlotIk, SlotTime, Window,
 } from '../types.ts'
 import {
   bad, bool, clipKeys, clipRef, conflict, handPoseRef, id, joint, list, missing, name, names, note, num, obj, oneOf, opt, overlaps,
@@ -20,13 +21,18 @@ import {
 
 export type ClipsCommand = Extract<Command, { type: `slot.${string}` | `clips.${string}` }>
 
-const KINDS: AdjustmentKind[] = ['ground', 'handPose', 'handleHold']
+const KINDS: AdjustmentKind[] = ['ground', 'handPose', 'handleHold', 'posture', 'layer']
 /** Schema 2's kinds that are a slot's time and tracks now. */
 const MOVED: Record<string, string> = { blowTiming: 'slot.time (fit)', pace: 'slot.time (pace)', keys: 'slot.keys.set' }
 /** What each kind holds besides id, kind, enabled and note. */
-const FIELDS: Record<AdjustmentKind, string[]> = { ground: ['lift'], handPose: ['hand', 'pose', 'windows', 'gear'], handleHold: ['gear', 'handle', 'windows'] }
+const FIELDS: Record<AdjustmentKind, string[]> = {
+  ground: ['lift', 'weight'], handPose: ['hand', 'pose', 'windows', 'gear'], handleHold: ['gear', 'handle', 'windows'],
+  posture: ['part', 'amount', 'windows', 'fade', 'weight'], layer: ['play', 'mask', 'windows', 'offset', 'fade', 'loop', 'weight'],
+}
+/** The kinds that take a weight (docs/motion-plan.md §12). */
+const WEIGHTED: AdjustmentKind[] = ['ground', 'posture', 'layer']
 const ONE_PER_SLOT: AdjustmentKind[] = ['ground']
-const KIND_TEXT: Record<AdjustmentKind, string> = { ground: 'ground', handPose: 'hand pose', handleHold: 'handle hold' }
+const KIND_TEXT: Record<AdjustmentKind, string> = { ground: 'ground', handPose: 'hand pose', handleHold: 'handle hold', posture: 'posture', layer: 'layer' }
 const WHOLE: Window[] = [[0, 1]]
 /** An event's name: a letter, then letters, digits, '.', '_' or '-'. */
 const EVENT_NAME = /^[A-Za-z][\w.-]{0,31}$/
@@ -42,9 +48,37 @@ function adjustment (v: unknown, what: string): Adjustment {
   if (typeof a.kind === 'string' && MOVED[a.kind] !== undefined) bad(`${f('kind')} ${a.kind} is the slot's ${MOVED[a.kind]} now`)
   const kind = oneOf(a.kind, KINDS, f('kind'))
   const text = note(a.note, f('note'))
-  const base = { id: id(a.id, f('id')), enabled: a.enabled === undefined ? true : bool(a.enabled, f('enabled')), ...(text !== undefined ? { note: text } : {}) }
+  const weight = opt(a.weight, x => num(x, f('weight'), { min: 0, max: 1 }))
+  if (weight !== undefined && !WEIGHTED.includes(kind)) bad(`A ${KIND_TEXT[kind]} adjustment takes no weight`)
+  const base = {
+    id: id(a.id, f('id')), enabled: a.enabled === undefined ? true : bool(a.enabled, f('enabled')), ...(text !== undefined ? { note: text } : {}),
+    ...(weight !== undefined && weight !== 1 ? { weight } : {}),
+  }
+  // (windows given are never empty: leave them out for the whole clip; a fade is source seconds)
+  const spans = (): { windows?: Window[], fade?: number } => {
+    const w = opt(a.windows, x => windows(x, f('windows')))
+    if (w !== undefined && w.length === 0) bad(`${f('windows')} can't be empty (leave them out for the whole clip)`)
+    const fade = opt(a.fade, x => num(x, f('fade'), { min: 0, max: 60 }))
+    return { ...(w !== undefined ? { windows: w } : {}), ...(fade !== undefined && fade > 0 ? { fade } : {}) }
+  }
   switch (kind) {
     case 'ground': return { ...base, kind, lift: num(a.lift, f('lift')) }
+    case 'posture': return { ...base, kind, part: oneOf(a.part, POSTURE_PARTS, f('part')), amount: num(a.amount, f('amount'), { min: -90, max: 90 }), ...spans() }
+    case 'layer': {
+      const p = obj(a.play, f('play'))
+      const play = oneOf(p.kind, ['clip', 'slot'] as const, f('play.kind')) === 'clip'
+        ? { kind: 'clip' as const, clip: clipRef(p.clip, f('play.clip')) }
+        : { kind: 'slot' as const, slot: id(p.slot, f('play.slot')) }
+      const mask = list(a.mask, f('mask'), (x, at) => oneOf(x, BODY_PARTS, at))
+      if (mask.length === 0) bad(`${f('mask')} can't be empty: a layer plays on some of the body`)
+      if (new Set(mask).size !== mask.length) bad(`${f('mask')} names a part twice`)
+      const offset = opt(a.offset, x => num(x, f('offset'), { min: 0, max: 1e6 }))
+      const loop = opt(a.loop, x => bool(x, f('loop')))
+      return {
+        ...base, kind, play, mask: BODY_PARTS.filter(b => mask.includes(b)), ...spans(),
+        ...(offset !== undefined && offset > 0 ? { offset } : {}), ...(loop === true ? { loop } : {}),
+      }
+    }
     case 'handPose': {
       const w = opt(a.windows, x => windows(x, f('windows')))
       if (w !== undefined && w.length === 0) bad(`${f('windows')} can't be empty (leave them out for the whole clip)`)
@@ -308,9 +342,16 @@ function setup (out: Slot, s: Obj, what: string): void {
 
 // ---- the character's rules -------------------------------------------------------------------------------------------
 
-/** An adjustment's references resolve: the gear and handle it names. */
-function refs (c: Character, a: Adjustment): void {
+/** An adjustment's references resolve: the gear and handle it names, the clip a layer plays (another slot of the
+ * character; that it never leads back to the slot is noCycle's, once it is in). */
+function refs (c: Character, a: Adjustment, slot?: Slot): void {
   switch (a.kind) {
+    case 'layer': {
+      if (a.play.kind !== 'slot') return
+      if (slot !== undefined && a.play.slot === slot.id) bad(`clip ${slot.name} can't play itself as a layer`)
+      if (slotById(c, a.play.slot) === undefined) missing(`No clip ${a.play.slot} to play as a layer`)
+      return
+    }
     case 'handPose': {
       if (a.gear === undefined) return
       const g = gearById(c, a.gear) ?? missing(`No gear ${a.gear}`)
@@ -420,13 +461,43 @@ function fits (slot: Slot, a: Adjustment, others: Adjustment[]): void {
 function adjText (c: Character, a: Adjustment): string {
   const gearName = (gid: string): string => gearById(c, gid)?.name ?? gid
   switch (a.kind) {
-    case 'ground': return `ground lift ${r3(a.lift)}`
+    case 'ground': return `ground lift ${r3(a.lift)}${weightText(a)}`
+    case 'posture': return `${postureText(a.part, a.amount)} in ${windowsText(a.windows)}${weightText(a)}`
+    case 'layer': {
+      const what = a.play.kind === 'clip' ? a.play.clip.id : slotById(c, a.play.slot)?.name ?? a.play.slot
+      return `layer ${what} on ${maskText(a.mask)} in ${windowsText(a.windows)}${weightText(a)}`
+    }
     case 'handPose': return `${a.hand} hand ${refText(c, a.pose)} in ${windowsText(a.windows)}${a.gear !== undefined ? ` (letting go of ${gearName(a.gear)})` : ''}`
     case 'handleHold': {
       const g = gearById(c, a.gear)
       return `hold of ${g?.name ?? a.gear} · ${g?.handles.find(h => h.id === a.handle)?.name ?? a.handle} in ${windowsText(a.windows)}`
     }
   }
+}
+
+const weightText = (a: Adjustment): string => (a.weight !== undefined && a.weight !== 1 ? ` at ${pct(a.weight)}` : '')
+
+const POSTURE_WORDS: Record<Extract<Adjustment, { kind: 'posture' }>['part'], [string, string]> = {
+  lean: ['forward', 'back'], side: ['to the right', 'to the left'], twist: ['left', 'right'], nod: ['down', 'up'],
+  turnHead: ['left', 'right'], tiltHead: ['right', 'left'], armsOut: ['out', 'in'], armsForward: ['forward', 'back'], shrug: ['up', 'down'],
+}
+const POSTURE_NAMES: Record<Extract<Adjustment, { kind: 'posture' }>['part'], string> = {
+  lean: 'lean', side: 'side lean', twist: 'twist', nod: 'nod', turnHead: 'head turned', tiltHead: 'head tilted', armsOut: 'arms', armsForward: 'arms', shrug: 'shoulders',
+}
+/** A posture in words: "lean 12° forward". */
+export function postureText (part: Extract<Adjustment, { kind: 'posture' }>['part'], amount: number): string {
+  return `${POSTURE_NAMES[part]} ${r3(Math.abs(amount))}° ${POSTURE_WORDS[part][amount < 0 ? 1 : 0]}`
+}
+
+const MASKS: Array<[string, BodyPart[]]> = [
+  ['the whole body', [...BODY_PARTS]], ['upper body', ['torso', 'head', 'leftArm', 'rightArm']], ['lower body', ['hips', 'leftLeg', 'rightLeg']],
+  ['arms', ['leftArm', 'rightArm']], ['legs', ['leftLeg', 'rightLeg']],
+]
+const PART_TEXT: Record<BodyPart, string> = { hips: 'hips', torso: 'torso', head: 'head', leftArm: 'left arm', rightArm: 'right arm', leftLeg: 'left leg', rightLeg: 'right leg' }
+/** A mask in words: its preset's name, else its parts. */
+export function maskText (mask: readonly BodyPart[]): string {
+  const named = MASKS.find(([, ps]) => ps.length === mask.length && ps.every(p => mask.includes(p)))
+  return named?.[0] ?? names(mask.map(p => PART_TEXT[p]))
 }
 
 const fitText = (f: BlowFit): string => `blow at ${pct(f.at)}${f.window !== undefined ? ` (${r3(f.window)} s round it)` : ''}${f.late === 'hold' ? ', a late one held' : ''}${f.enabled ? '' : ' (off)'}`
@@ -443,7 +514,9 @@ function add (c: Character, slot: Slot, a: Adjustment): string[] {
 /** The slot's adjustments set to these, checked and merged by the rules. */
 function settle (c: Character, slot: Slot, given: Adjustment[]): string[] {
   slot.adjustments = []
-  return given.flatMap(a => { refs(c, a); return add(c, slot, a) })
+  const out = given.flatMap(a => { refs(c, a, slot); return add(c, slot, a) })
+  if (given.some(a => a.kind === 'layer' && a.play.kind === 'slot')) noCycle(c)
+  return out
 }
 
 /** Tracks given laid onto the slot's (bones and gear merged per track; events added under the rules). */
@@ -614,6 +687,8 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
       const s = find(cmd.id)
       const user = c.clips.find(o => o.pieces?.some(p => p.kind === 'slot' && p.slot === s.id))
       if (user !== undefined) conflict(`clip ${user.name} plays ${s.name} as a piece: remove that piece first`)
+      const layered = c.clips.find(o => o.adjustments.some(a => a.kind === 'layer' && a.play.kind === 'slot' && a.play.slot === s.id))
+      if (layered !== undefined) conflict(`clip ${layered.name} plays ${s.name} as a layer: remove that layer first`)
       c.clips = c.clips.filter(x => x !== s)
       const out = [`clip ${s.name}: removed`]
       for (const o of c.clips) {
@@ -633,8 +708,10 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
     case 'slot.adjust.add': {
       const s = find(cmd.slot)
       const a = adjustment(cmd.adjustment, 'adjustment')
-      refs(c, a)
-      return add(c, s, a)
+      refs(c, a, s)
+      const out = add(c, s, a)
+      noCycle(c)
+      return out
     }
     case 'slot.adjust.update': {
       const s = find(cmd.slot)
@@ -651,10 +728,11 @@ export function reduceClips (c: Character, cmd: ClipsCommand): string[] {
         else if (v !== undefined) merged[k] = v
       }
       const a = adjustment(merged, 'adjustment')
-      refs(c, a)
+      refs(c, a, s)
       fits(s, a, s.adjustments)
       if (same(a, was)) return []
       s.adjustments[i] = a
+      noCycle(c)
       const out: string[] = []
       if (a.enabled !== was.enabled) out.push(`clip ${s.name}: ${adjText(c, a)} ${a.enabled ? 'on' : 'off'}`)
       const [before, after] = [adjText(c, was), adjText(c, a)]
@@ -951,6 +1029,10 @@ function replace (c: Character, cmd: Extract<ClipsCommand, { type: 'clips.replac
     }
     const kept: Adjustment[] = []
     for (const a of s.adjustments) {
+      if (a.kind === 'layer' && a.play.kind === 'slot' && (!ids.has(a.play.slot) || a.play.slot === s.id)) {
+        out.push(`clip ${s.name}: a layer of clip ${a.play.slot} dropped (that clip isn't in the set)`)
+        continue
+      }
       if (a.kind === 'handPose' && a.gear !== undefined) {
         const g = gearFor(a.gear)
         const carry = g === undefined ? undefined : carryHandle(g)

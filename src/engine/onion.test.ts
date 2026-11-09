@@ -8,7 +8,7 @@ import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
 import { bakeSlot, boneRest, type BakeContext, type BakedSlot } from './bake.ts'
 import { applyBoneKeys } from './keys.ts'
-import { framePhase, keySampler, onionTimes, OnionSkins, poseAt, restFrames } from './onion.ts'
+import { FAST, framePhase, jointSpeeds, keySampler, onionTimes, OnionSkins, poseAt, restFrames, speedColor } from './onion.ts'
 import type { CharacterView } from './CharacterView.ts'
 import type { Stage } from './Stage.ts'
 import {
@@ -210,11 +210,38 @@ describe.skipIf(!here)('the pose tools on the workspace archer', () => {
     })
     console.log(`onion: ghost joints within ${(far * 1000).toExponential(2)} mm of the posed bones`)
     expect(far).toBeLessThan(1e-5)
+
+    // speed colours: the same places, each joint coloured by its speed a frame on; a walking hand outruns the head
+    onion.show(view, baked.clip, 0.5, { before: 3, after: 3, step: 2, loop: true, color: 'speed' })
+    const colors = dots[3].geometry.attributes.color as THREE.BufferAttribute
+    expect((dots[3].material as THREE.PointsMaterial).vertexColors).toBe(true)
+    const indexOf = (name: string): number => bones.indexOf(view.rest!.bones.get(name)!.node as THREE.Bone)
+    const hue = (i: number): number => new THREE.Color(colors.getX(i), colors.getY(i), colors.getZ(i)).getHSL({ h: 0, s: 0, l: 0 }).h
+    console.log(`onion: speed hues at frame ${(at * 30).toFixed(0)}: head ${hue(indexOf('Head')).toFixed(3)}, right hand ${hue(indexOf('RightHand')).toFixed(3)}`)
+    expect(hue(indexOf('RightHand'))).toBeLessThan(hue(indexOf('Head')))
+    onion.show(view, baked.clip, 0.5, { before: 3, after: 3, step: 2, loop: true })
+    expect((dots[3].material as THREE.PointsMaterial).vertexColors).toBe(false)
     onion.hide()
     expect(group.visible).toBe(false)
     onion.dispose()
     expect(scene.getObjectByName('onion-skins')).toBeUndefined()
   }, 60000)
+})
+
+describe('speed colours', () => {
+  it('runs from blue at rest to red at FAST, red past it', () => {
+    const h = (v: number): number => speedColor(v).getHSL({ h: 0, s: 0, l: 0 }).h
+    expect(h(0)).toBeCloseTo(220 / 360, 3)
+    expect(h(FAST)).toBeCloseTo(0, 3)
+    expect(h(FAST * 3)).toBeCloseTo(0, 3)
+    for (let v = 0; v < FAST; v += 0.25) expect(h(v + 0.25)).toBeLessThan(h(v))
+  })
+
+  it('measures each joint in heights a second', () => {
+    const s = jointSpeeds([0, 0, 0, 1, 1, 1], [0, 0.1, 0, 1, 1, 1], 0.05, 2)
+    expect(s[0]).toBeCloseTo(1, 6)
+    expect(s[1]).toBe(0)
+  })
 })
 
 /** The slot with `bone` turned `degrees` about X at source moment `u` (pinned at the clip's start). */

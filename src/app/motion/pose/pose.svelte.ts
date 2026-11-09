@@ -13,10 +13,12 @@ export interface OnionSettings {
   step: number
   /** Ghosts at the keys round the playhead instead of every `step` frames. */
   atKeys: boolean
+  /** 'time': earlier warm, later cool. 'speed': each joint by how fast it moves (src/engine/onion.ts speedColor). */
+  color: 'time' | 'speed'
 }
 
 const KEY = 'rigsmith.onion'
-const DEFAULT_ONION: OnionSettings = { on: false, before: 2, after: 2, step: 2, atKeys: false }
+const DEFAULT_ONION: OnionSettings = { on: false, before: 2, after: 2, step: 2, atKeys: false, color: 'time' }
 
 function remembered (): OnionSettings {
   try {

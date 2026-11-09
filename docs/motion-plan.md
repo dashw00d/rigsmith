@@ -828,3 +828,115 @@ a v3 record's holds become pieces the same way) follow.
   before pieces, frozen with the timing it called) on its schema 3 record and by `bakeSlot` on it migrated to schema 4:
   the largest difference 0; riders ridden too.
 - The export: the workspace units' GLBs byte for byte as before (run by hand, reported).
+
+---
+
+## 12. Posture, layers, weights, foot match, speed ghosts (2026-11-08)
+
+The designer, 2026-11-08, after ActionForge's Adjust sliders, Strips masks, layer weights, matched feet and its
+speed-coloured onion skins: "1-5 are pretty cool. Im down to add those". Five additions, all inside schema 4: new
+optional fields and adjustment kinds, so every file reads as it did and no migration runs; a slot that uses none of
+them bakes exactly as before (`tests/equivalence` unchanged).
+
+### 12.1 The model
+
+```ts
+interface AdjustmentBase { id: string, enabled: boolean, note?: string,
+  /** How much of it plays, 0..1 (unset 1). Only ground, posture and layer take one. */
+  weight?: number }
+export type Adjustment = AdjustmentBase & (
+  | ... ground, handPose, handleHold as §2.1 ...
+  /** The body turned from how the clip holds it: `amount` degrees of `part` (src/engine/posture.ts), over `windows`
+   * (unset: the whole clip), ramping in and out over `fade` seconds of the source at each window's ends. */
+  | { kind: 'posture', part: PosturePart, amount: number, windows?: Window[], fade?: number }
+  /** Another clip played on some of the body: `play`'s bones of `mask` laid over the source's, over `windows` (unset:
+   * the whole clip), its content `offset` seconds in at each window's start (looping when `loop`, else holding its
+   * last pose), ramping in and out over `fade` source seconds. */
+  | { kind: 'layer', play: LayerSource, mask: BodyPart[], windows?: Window[], offset?: number, fade?: number, loop?: boolean }
+)
+export type PosturePart = 'lean' | 'side' | 'twist' | 'nod' | 'turnHead' | 'tiltHead' | 'armsOut' | 'armsForward' | 'shrug'
+export type LayerSource = { kind: 'clip', clip: ClipRef } | { kind: 'slot', slot: string }
+export type BodyPart = 'hips' | 'torso' | 'head' | 'leftArm' | 'rightArm' | 'leftLeg' | 'rightLeg'
+```
+
+- **The envelope** of a posture or layer at source moment `u`: 1 inside a window, smoothstepped from 0 over `fade`
+  source seconds after its start and before its end (a fade at most half the window), the largest over its windows;
+  unset windows: 1 everywhere. Times a slot stores stay source time (§1), and a fade in source seconds survives piece
+  edits as the content seconds of pieces do.
+- **Posture** (human skeletons; a part whose bones the skeleton lacks does nothing, reported): `amount·weight·e(u)`
+  degrees shared over the part's bones, each turned in its parent's frame (`q' = r · q_clip`, `r` about the axis as
+  the parent holds it at rest), so a lean follows the hips wherever the clip turns them and arms open from the chest.
+  The character's axes come from its rest skeleton: up (`restUpOf`), left (LeftUpLeg minus RightUpLeg, flattened),
+  forward = left × up. Signs: + leans forward, leans right, twists left, nods down, turns the head left, tilts it right,
+  opens the arms, swings them forward, raises the shoulders.
+
+  | part | bones (share) | axis |
+  |---|---|---|
+  | lean | Spine .3, Spine1 .35, Spine2 .35 | left |
+  | side | Spine .3, Spine1 .35, Spine2 .35 | forward |
+  | twist | Spine .3, Spine1 .35, Spine2 .35 | up |
+  | nod | Neck .4, Head .6 | left |
+  | turnHead | Neck .4, Head .6 | up |
+  | tiltHead | Neck .4, Head .6 | forward |
+  | armsOut | LeftArm 1, RightArm 1 (mirrored) | forward |
+  | armsForward | LeftArm 1, RightArm 1 | left (−) |
+  | shrug | LeftShoulder 1, RightShoulder 1 (mirrored) | forward |
+
+- **Layers**: a bone's part is the nearest of these at or above it: Hips (hips), Spine (torso), Neck (head),
+  LeftShoulder / RightShoulder (arms), LeftUpLeg / RightUpLeg (legs). A masked bone's turn is slerped from the
+  source's to the layer's by `weight·e(u)·m`, `m` 1 except along the torso when the hips aren't masked: the torso's
+  chain graded k/n from the Spine up (Spine 1/3, Spine1 2/3, Spine2 1), so an upper-body layer bends in from the waist.
+  With the hips masked, the Hips' turn and height come from the layer too; their travel over the ground never does.
+  The layer's content is read as a piece's is (§11.4): a library clip through the clip source (the slot's in place and
+  mirror), another slot as it plays (its bake, bone tracks only).
+
+### 12.2 The bake
+
+```
+source (pieces composed, then layers laid over)                                     (pieces.ts, layers.ts)
+ -> time -> hands -> posture -> ground -> keys -> gear tracks -> events                    (posture.ts after hands)
+```
+
+Layers are part of the source, so the blow fit, pace and footsteps measure the body with them (an attack laid over a
+run's upper body is the hit the fit finds). Posture comes after the hands and before the ground, so the ground fit and
+the keys are on top of it. A layer playing another slot counts as a slot piece does: `bakeCycle`, `playsItself`,
+`slotsUnder` follow it (`sourceSlots(s)`: piece slots and layer slots), `slot.remove` refuses a slot another plays as
+a layer, `clips.replace` drops a layer whose slot isn't in the set, `freshSet` maps it.
+
+### 12.3 Commands
+
+The `slot.adjust.*` commands take the new kinds. Rules: `weight` in [0, 1] and only on ground, posture and layer;
+posture `amount` within ±90 degrees; `windows` non-empty when given; `fade` and `offset` ≥ 0; a layer's mask non-empty
+without repeats; a layer's clip a clip ref, its slot another slot of the character that doesn't lead back to this one.
+Journal lines say it in words ("clip Walk: lean 12° forward in 20%-45% added", "clip Run: layer Attack on upper body
+at 50%"). Piece edits remap posture and layer windows as hand poses' (§11.3; unset stays unset; a layer's `offset` is
+its content's seconds and stays).
+
+### 12.4 The stack, solo, the pieces, the ghosts
+
+- **The stack** adds Posture (a part, an amount slider, windows) and Layer (what it plays, the mask by presets: upper
+  body, arms, either arm, head, lower body, or parts ticked; the windows, offset, fade, loop). Ground, posture and
+  layer rows have a weight slider.
+- **Solo** (the stack's headphones button, the viewer only): the slot plays with that one adjustment on and every
+  other adjustment off (keys, time and events as they are). Nothing is stored, the export and the journal never see
+  it; soloing another or switching clips ends it.
+- **Match feet** (a moving piece after a moving piece, PieceInspector): the gait phase where the piece before hands
+  over (the foot that last came down in its content before the join, and how far it is to that foot's next fall,
+  `src/app/motion/events/footsteps.ts`) is found in this piece's content nearest its `from`, and `from` (with `to`,
+  keeping the length) moved there: one `slot.pieces.set`, one undo (`src/model/footmatch.ts`). A content whose feet end
+  where they began (`loopsRound`: one stride of a library walk or run, each foot down once) has its falls repeat every
+  its length. Refused with the reason when either content still has no two falls of that foot.
+- **Speed ghosts**: the onion settings take `color: 'time' | 'speed'` (remembered; 'time' as before). In speed each
+  ghost's joints are coloured by how fast they move there (a frame on, per second, over the character's height): slow
+  blue to fast red, a bone's line its child joint's colour; fades as before.
+
+### 12.5 Built (2026-11-08)
+
+As above, in `src/model/envelope.ts`, `src/engine/posture.ts`, `src/engine/layers.ts`, `src/model/footmatch.ts`, the
+stack's `adjust/Posture.svelte` and `adjust/Layer.svelte`, `animator.solo`, `clipPieces.matchFeet` and `onion.ts`'s speed
+colours. Postures and layers also show as bars on the timeline's Hands track (renamed "Hands, posture, layers"), dragged
+as a hand pose's are. Proven: `tests/equivalence` unchanged (every workspace slot bakes as before); on the archer
+(`src/engine/posture.workspace.test.ts`) a 15° lean tips the neck 15.0° forward, its Attack laid on its Walk's upper body
+plays the attack's forearm within 0.02° and the walk's thigh within 0.03°, and its Run matched after its Walk starts in
+the same gait phase. No Python reader here reads adjustments: postures and layers reach the game only through the bake,
+which the export runs.

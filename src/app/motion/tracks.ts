@@ -4,6 +4,7 @@
 import type { Character, Side, Slot, Window } from '../../model/types.ts'
 import { windowsToPlayed, type TimeMap } from '../../model/timemap.ts'
 import { prettyBone } from '../../engine/mixamo.ts'
+import { maskText, postureText } from '../../model/commands/clips.ts'
 
 /** A limb group of the Body track. */
 export interface BodyGroup { id: string, label: string, bones: string[] }
@@ -57,11 +58,13 @@ export interface HandsBar {
   /** Played windows (each stored window's); a bar with no windows covers the whole clip. */
   windows: Window[]
   whole: boolean
-  kind: 'pose' | 'pull' | 'ik'
+  kind: 'pose' | 'pull' | 'ik' | 'body'
 }
 
-/** The Hands track's bars for a slot: its hand poses (and a hand let go of a piece), pulls held and hands on handles. */
-export function handsBars (c: Pick<Character, 'gear' | 'hands'>, slot: Slot, map: TimeMap): HandsBar[] {
+/** The Hands track's bars for a slot: its hand poses (and a hand let go of a piece), pulls held, hands on handles, and its
+ * postures and layers (docs/motion-plan.md §12: 'body' bars, windowed as a hand pose is). */
+export function handsBars (c: Pick<Character, 'gear' | 'hands'> & { clips?: Slot[] }, slot: Slot, map: TimeMap): HandsBar[] {
+  const slots = c.clips ?? []
   const gearName = (id: string): string => c.gear.find(g => g.id === id)?.name ?? 'gear'
   const handleName = (gid: string, hid: string): string => c.gear.find(g => g.id === gid)?.handles.find(h => h.id === hid)?.name ?? 'handle'
   const poseName = (p: unknown): string => {
@@ -76,6 +79,12 @@ export function handsBars (c: Pick<Character, 'gear' | 'hands'>, slot: Slot, map
     if (a.kind === 'handPose') {
       const label = a.gear !== undefined && a.pose === 'clip' ? `${a.hand} hand lets go of ${gearName(a.gear)}` : `${a.hand} hand ${poseName(a.pose)}`
       out.push({ track: `hands:${a.id}`, label, title: label + (a.enabled ? '' : ' (off)'), side: a.hand, windows: windowsToPlayed(map, a.windows ?? []), whole: a.windows === undefined, kind: 'pose' })
+    } else if (a.kind === 'posture' || a.kind === 'layer') {
+      const play = a.kind === 'layer' ? a.play : null
+      const label = a.kind === 'posture'
+        ? postureText(a.part, a.amount)
+        : `${play?.kind === 'slot' ? slots.find(s => s.id === play.slot)?.name ?? 'a clip that is gone' : play?.kind === 'clip' ? play.clip.id.replace(/^(mixamo|custom)-/, '') : ''} on ${maskText(a.mask)}`
+      out.push({ track: `hands:${a.id}`, label, title: label + (a.enabled ? '' : ' (off)'), side: null, windows: windowsToPlayed(map, a.windows ?? []), whole: a.windows === undefined, kind: 'body' })
     } else if (a.kind === 'handleHold') {
       const label = `${gearName(a.gear)} · ${handleName(a.gear, a.handle)} held`
       out.push({ track: `hands:${a.id}`, label, title: label + (a.enabled ? '' : ' (off)'), side: null, windows: windowsToPlayed(map, a.windows), whole: false, kind: 'pull' })

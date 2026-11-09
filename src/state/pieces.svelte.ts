@@ -10,7 +10,11 @@ import {
   contentKey, nowOf, planAppend, planBlend, planEnd, planInsert, planMove, planPatch, planRemove, planStart, planTrim, type Plan, type PiecesNow, type PlanSlot,
 } from '../model/pieceplan.ts'
 import type { Character, Piece, Slot } from '../model/types.ts'
+import type * as THREE from 'three'
 import { app } from './app.svelte.ts'
+import { matchFeet, type Falls } from '../model/footmatch.ts'
+import { heightOf } from '../model/select.ts'
+import { footsteps, loopsRound } from '../app/motion/events/footsteps.ts'
 import { animator } from './animator.svelte.ts'
 import type { Playing } from './timeline.svelte.ts'
 
@@ -106,6 +110,35 @@ class ClipPieces {
   blend = async (p: Playing, id: string, seconds: number): Promise<boolean> => await this.run(p, s => planBlend(s, id, seconds, newId), 'blend')
   move = async (p: Playing, id: string, index: number): Promise<boolean> => await this.run(p, s => planMove(s, id, index, newId), 'reorder')
   remove = async (p: Playing, ids: string[]): Promise<boolean> => await this.run(p, s => planRemove(s, ids, newId), 'remove a piece')
+
+  /** Piece `id` started where its feet carry on the gait of the piece before (src/model/footmatch.ts): its range moved,
+   * its length kept, one undo. Says why when it can't. */
+  async matchFeet (p: Playing, id: string): Promise<boolean> {
+    const pieces = p.slot.pieces ?? []
+    const i = pieces.findIndex(x => x.id === id)
+    const piece = pieces[i]; const before = pieces[i - 1]
+    if (piece === undefined || before === undefined || piece.kind === 'hold' || before.kind === 'hold') return toast('Match feet works on a moving piece after another moving piece')
+    const [mine, theirs] = await Promise.all([animator.contentClip(p.character, p.slot, piece), animator.contentClip(p.character, p.slot, before)])
+    if (mine === null || theirs === null) return toast(`${p.character.name} isn't on stage`)
+    const height = heightOf(p.character)
+    const falls = (clip: THREE.AnimationClip): Falls => {
+      const out: Falls = {}
+      for (const f of footsteps(mine.posable, clip, false, height)) (out[f.name] ??= []).push(f.t * clip.duration)
+      return out
+    }
+    const length = piece.to - piece.from
+    // (the moment this piece starts coming in: the end of the one before, less this one's blend)
+    const at = before.from + (before.to - before.from) - (piece.blend ?? 0)
+    // (a content that loops round, one stride of a walk, has its falls repeat: read across its seam)
+    const period = (clip: THREE.AnimationClip): number | undefined => (loopsRound(mine.posable, clip, height) ? clip.duration : undefined)
+    const m = matchFeet(falls(theirs.clip), at, falls(mine.clip), mine.clip.duration, length, piece.from, { beforePeriod: period(theirs.clip), period: period(mine.clip) })
+    if (typeof m === 'string') return toast(m)
+    if (Math.abs(m.from - piece.from) < 1e-3) { app.toast('info', 'Its feet carry on the gait already'); return true }
+    const foot = m.foot === 'step.L' ? 'left' : m.foot === 'step.R' ? 'right' : m.foot
+    const ok = await this.run(p, s => planPatch(s, id, { from: m.from, to: m.from + length }, newId), 'match feet')
+    if (ok) app.toast('ok', `Starts at ${m.from.toFixed(2)} s: the ${foot} foot ${Math.round(m.phase * 100)}% through its stride, as the clip before hands over`)
+    return ok
+  }
 
   /** The commands that take `ids` out (null: they can't go), for the timeline's Delete. */
   removeCommands (p: Playing, ids: string[]): Command[] | null {

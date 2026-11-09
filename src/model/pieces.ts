@@ -87,8 +87,17 @@ export function piecesProblem (pieces: readonly Piece[]): string | null {
   return null
 }
 
-/** A slot whose bake would read its own again, or null: the bake of a slot reads its source (each slot piece's whole
- * bake) and, with pace, the source of the slot it paces like (that slot timed without its own pace), so a chain of
+/** The other slots a slot's source reads whole (their bakes): its slot pieces and the slots its layers play (enabled or
+ * not: switching one on must not make a cycle). */
+export function sourceSlots (s: Pick<Slot, 'pieces' | 'adjustments'>): string[] {
+  return [
+    ...(s.pieces ?? []).flatMap(p => (p.kind === 'slot' ? [p.slot] : [])),
+    ...s.adjustments.flatMap(a => (a.kind === 'layer' && a.play.kind === 'slot' ? [a.play.slot] : [])),
+  ]
+}
+
+/** A slot whose bake would read its own again, or null: the bake of a slot reads its source (each slot piece's and
+ * layer's whole bake) and, with pace, the source of the slot it paces like (that slot timed without its own pace), so a chain of
  * slot pieces and paces' sources that comes back round never ends (src/engine/bake.ts refuses it too). */
 export function bakeCycle (c: Pick<Character, 'clips'>): Slot | null {
   const byId = new Map(c.clips.map(s => [s.id, s]))
@@ -97,7 +106,7 @@ export function bakeCycle (c: Pick<Character, 'clips'>): Slot | null {
     const s = byId.get(node.slice(2))
     if (s === undefined) return []
     if (node.startsWith('b:')) return [`s:${s.id}`, ...(s.time?.pace !== undefined && s.time.pace.like !== s.id ? [`s:${s.time.pace.like}`] : [])]
-    return (s.pieces ?? []).flatMap(p => (p.kind === 'slot' ? [`b:${p.slot}`] : []))
+    return sourceSlots(s).map(id => `b:${id}`)
   }
   const state = new Map<string, 1 | 2>()
   const visit = (node: string): string | null => {
@@ -128,7 +137,7 @@ export function playsItself (c: Pick<Character, 'clips'>, slotId: string, pieces
 export function slotsUnder (c: Pick<Character, 'clips'>, slot: Slot): Slot[] {
   const out = new Map<string, Slot>()
   const visit = (s: Slot): void => {
-    const next = [...(s.pieces ?? []).flatMap(p => (p.kind === 'slot' ? [p.slot] : [])), ...(s.time?.pace !== undefined ? [s.time.pace.like] : [])]
+    const next = [...sourceSlots(s), ...(s.time?.pace !== undefined ? [s.time.pace.like] : [])]
     for (const id of next) {
       if (id === slot.id || out.has(id)) continue
       const o = c.clips.find(x => x.id === id)
@@ -315,7 +324,7 @@ export function remapSlot (slot: Slot, old: readonly Piece[], next: readonly Pie
     else delete s.events
   }
   s.adjustments = s.adjustments.flatMap((a): Adjustment[] => {
-    if (a.kind === 'ground' || (a.kind === 'handPose' && a.windows === undefined)) return [a]
+    if (a.kind === 'ground' || ((a.kind === 'handPose' || a.kind === 'posture' || a.kind === 'layer') && a.windows === undefined)) return [a]
     const ws = remapWindows(a.windows!, r)
     if (ws.length === 0) { dropped++; return [] }
     return [{ ...a, windows: ws }]

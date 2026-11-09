@@ -2,7 +2,8 @@
 //
 // Ghosts: the skeleton as the clip has it a few frames before and after the playhead (or at the keys round it), drawn
 // as faint bone lines with a dot at each joint over the character, earlier ones warm, later ones cool, fading with
-// distance. They are worked out only when what they show changes (the clip, the moment, the counts), straight from the
+// distance; or, in speed colours, each joint coloured by how fast it moves there (slow blue to fast red: a pop, a
+// jitter or a seam that jumps shows as a hot joint among cool ones). They are worked out only when what they show changes (the clip, the moment, the counts), straight from the
 // clip's tracks and the rest skeleton (no mixer, the character's own bones untouched), so a frame costs nothing and a
 // playhead move a few hundred matrix products.
 import * as THREE from 'three'
@@ -97,6 +98,8 @@ export interface OnionOptions {
   keys?: readonly number[]
   /** Round the loop at the clip's ends (else ghosts past them are left out). */
   loop: boolean
+  /** 'time' (unset): earlier ghosts warm, later cool. 'speed': each joint by how fast it moves there. */
+  color?: 'time' | 'speed'
 }
 
 export interface Ghost { t: number, side: -1 | 1, rank: number }
@@ -134,6 +137,30 @@ export function onionTimes (at: number, duration: number, o: OnionOptions): Ghos
 const BEFORE = new THREE.Color(0xff9466)
 const AFTER = new THREE.Color(0x5cc4ff)
 
+/** How fast counts as fastest in speed colours: character heights a second (a swung fist, a sprinting foot; a 5 cm pop
+ * in one frame is near half of it). */
+export const FAST = 2
+
+/** Speed colours: `speed` (character heights a second) from slow (a calm blue) through green and yellow to fast (red),
+ * as RGB 0..1. Past FAST it stays red. */
+export function speedColor (speed: number, out = new THREE.Color()): THREE.Color {
+  const x = Math.min(1, Math.max(0, speed / FAST))
+  // (hue 220 deg at rest down to 0 deg at FAST; the square root spreads the slow end, where most joints are)
+  return out.setHSL((1 - Math.sqrt(x)) * 220 / 360, 0.85, 0.55 + 0.1 * x)
+}
+
+/** A ghost's joints' speeds (heights a second) from their world places at `t` and a frame on (`later`). */
+export function jointSpeeds (now: ArrayLike<number>, later: ArrayLike<number>, dt: number, height: number): Float32Array {
+  const n = Math.floor(now.length / 3)
+  const out = new Float32Array(n)
+  const per = 1 / Math.max(1e-9, dt * height)
+  for (let i = 0; i < n; i++) {
+    const dx = later[3 * i] - now[3 * i]; const dy = later[3 * i + 1] - now[3 * i + 1]; const dz = later[3 * i + 2] - now[3 * i + 2]
+    out[i] = Math.hypot(dx, dy, dz) * per
+  }
+  return out
+}
+
 interface GhostDraw { lines: THREE.LineSegments, dots: THREE.Points }
 
 /** The onion skins on a stage: `show` draws the ghosts of a clip round a moment on a character, `hide` takes them off.
@@ -153,7 +180,8 @@ export class OnionSkins {
   /** Ghosts of `clip` (as it plays on `view`) round `at` seconds. Worked out again only when something changed. */
   show (view: CharacterView, clip: THREE.AnimationClip, at: number, o: OnionOptions): void {
     const times = onionTimes(at, clip.duration, o)
-    const sig = `${view.root.uuid}|${clip.uuid}|${times.map(g => `${g.t.toFixed(5)}${g.side}${g.rank}`).join(',')}`
+    const speed = o.color === 'speed'
+    const sig = `${view.root.uuid}|${clip.uuid}|${speed ? 's' : 't'}|${times.map(g => `${g.t.toFixed(5)}${g.side}${g.rank}`).join(',')}`
     this.group.visible = times.length > 0
     if (sig === this.shown) return
     this.shown = sig
@@ -166,12 +194,14 @@ export class OnionSkins {
       const ghost = times[i]
       g.lines.visible = g.dots.visible = ghost !== undefined
       if (ghost === undefined) return
-      const color = ghost.side < 0 ? BEFORE : AFTER
       const fade = 0.75 - 0.5 * (ghost.rank - 1) / most
       for (const m of [g.lines.material, g.dots.material] as Array<THREE.LineBasicMaterial | THREE.PointsMaterial>) {
-        m.color.copy(color); m.opacity = fade
+        // (in speed colours the vertices carry the colour; the material's white leaves it as it is)
+        if (speed) m.color.set(0xffffff); else m.color.copy(ghost.side < 0 ? BEFORE : AFTER)
+        if (m.vertexColors !== speed) { m.vertexColors = speed; m.needsUpdate = true }
+        m.opacity = fade
       }
-      this.draw(rig, ghost.t, g)
+      this.draw(rig, ghost.t, g, speed ? Math.max(view.height, 1e-3) : null)
     })
   }
 
@@ -192,32 +222,59 @@ export class OnionSkins {
   private make (rig: Rig): GhostDraw {
     const lines = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, toneMapped: false }))
     lines.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(rig.pairs.length * 6), 3))
+    lines.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(rig.pairs.length * 6), 3))
     const dots = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ size: 4, sizeAttenuation: false, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }))
     dots.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(rig.bones.length * 3), 3))
+    dots.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(rig.bones.length * 3), 3))
     for (const o of [lines, dots]) { o.frustumCulled = false; o.renderOrder = 9; this.group.add(o) }
     return { lines, dots }
   }
 
-  /** The ghost at `t`: each bone's world place from its parent's, the clip's turn and place (or the rest's). */
-  private draw (rig: Rig, t: number, g: GhostDraw): void {
+  /** The ghost at `t`: each bone's world place from its parent's, the clip's turn and place (or the rest's). With
+   * `height` (speed colours) each joint is coloured by its speed there, a line by its child joint's. */
+  private draw (rig: Rig, t: number, g: GhostDraw, height: number | null): void {
+    const now = this.places(rig, t)
+    const dots = g.dots.geometry.attributes.position as THREE.BufferAttribute
+    const lines = g.lines.geometry.attributes.position as THREE.BufferAttribute
+    for (let i = 0; i < rig.bones.length; i++) dots.setXYZ(i, now[3 * i], now[3 * i + 1], now[3 * i + 2])
+    rig.pairs.forEach(([a, b], i) => {
+      lines.setXYZ(2 * i, now[3 * a], now[3 * a + 1], now[3 * a + 2])
+      lines.setXYZ(2 * i + 1, now[3 * b], now[3 * b + 1], now[3 * b + 2])
+    })
+    dots.needsUpdate = true; lines.needsUpdate = true
+    if (height === null) return
+    // (a frame on, or back at the clip's end)
+    const duration = this.sampler!.clip.duration
+    const dt = 1 / KEY_FPS
+    const t2 = t + dt <= duration ? t + dt : t - dt
+    const speeds = jointSpeeds(now, this.places(rig, t2), Math.abs(t2 - t) || dt, height)
+    const dotColors = g.dots.geometry.attributes.color as THREE.BufferAttribute
+    const lineColors = g.lines.geometry.attributes.color as THREE.BufferAttribute
+    const c = new THREE.Color()
+    for (let i = 0; i < speeds.length; i++) { speedColor(speeds[i], c); dotColors.setXYZ(i, c.r, c.g, c.b) }
+    rig.pairs.forEach(([, b], i) => {
+      speedColor(speeds[b], c)
+      lineColors.setXYZ(2 * i, c.r, c.g, c.b); lineColors.setXYZ(2 * i + 1, c.r, c.g, c.b)
+    })
+    dotColors.needsUpdate = true; lineColors.needsUpdate = true
+  }
+
+  /** Every bone's world place at `t` (x, y, z per bone, in the rig's order). */
+  private places (rig: Rig, t: number): Float32Array {
     const s = this.sampler!
     const q = [0, 0, 0, 1]; const p = [0, 0, 0]
     const quat = new THREE.Quaternion(); const pos = new THREE.Vector3(); const local = new THREE.Matrix4()
     const world = rig.world
+    const out = new Float32Array(rig.bones.length * 3)
     rig.bones.forEach((b, i) => {
       b.rest.q.toArray(q); b.rest.p.toArray(p)
       s.read(b.qName, t, q); s.read(b.pName, t, p)
       local.compose(pos.fromArray(p), quat.fromArray(q).normalize(), b.rest.s)
       world[i].multiplyMatrices(b.parent < 0 ? b.node.parent!.matrixWorld : world[b.parent], local)
+      pos.setFromMatrixPosition(world[i])
+      out[3 * i] = pos.x; out[3 * i + 1] = pos.y; out[3 * i + 2] = pos.z
     })
-    const dots = g.dots.geometry.attributes.position as THREE.BufferAttribute
-    const lines = g.lines.geometry.attributes.position as THREE.BufferAttribute
-    rig.bones.forEach((_, i) => { pos.setFromMatrixPosition(world[i]); dots.setXYZ(i, pos.x, pos.y, pos.z) })
-    rig.pairs.forEach(([a, b], i) => {
-      pos.setFromMatrixPosition(world[a]); lines.setXYZ(2 * i, pos.x, pos.y, pos.z)
-      pos.setFromMatrixPosition(world[b]); lines.setXYZ(2 * i + 1, pos.x, pos.y, pos.z)
-    })
-    dots.needsUpdate = true; lines.needsUpdate = true
+    return out
   }
 }
 

@@ -1,7 +1,8 @@
 // Motion's rules as plain functions (no Svelte state, no stage): which of a character's clips are the game's slots and
 // which are trials, what a library card's round button does, frames and phases (one numbering: frames of the clip as
 // it plays, 30 a second), hand pose and hold windows, keys, the ground lift in the units it is shown in, the blow.
-import type { Character, ClipKey, ClipRef, HandPoseRef, Slot, Window } from '../../model/types.ts'
+import type { Adjustment, BodyPart, Character, ClipKey, ClipRef, HandPoseRef, Slot, Window } from '../../model/types.ts'
+import { maskText, postureText } from '../../model/commands/clips.ts'
 import { slotToV2 } from '../../model/migrate.ts'
 import type { V2Adjustment, V2AdjustmentKind } from '../../model/v2.ts'
 import { clipUrl } from '../../engine/clips.ts'
@@ -11,8 +12,8 @@ import { variantOf as variantBase } from '../../model/variants.ts'
 /** A row of the adjustments stack: a setting the slot keeps (ground, a hand pose, a handle hold), or its blow fit, its
  * pace or its keys shown as one (ids FIT, PACE, KEYS), in the shape the stack has always shown (src/model/migrate.ts
  * slotToV2), until the track timeline replaces the stack (docs/motion-plan.md §9 B). Its times are source time. */
-export type Row = V2Adjustment
-export type RowKind = V2AdjustmentKind
+export type Row = (V2Adjustment & { weight?: number }) | Extract<Adjustment, { kind: 'posture' | 'layer' }>
+export type RowKind = V2AdjustmentKind | 'posture' | 'layer'
 export const FIT = 'fit'
 export const PACE = 'pace'
 export const KEYS = 'keys'
@@ -354,11 +355,15 @@ const round4 = (v: number): number => Math.round(v * 1e4) / 1e4
 // ---- the adjustments stack -------------------------------------------------------------------------------------------
 
 /** The kinds in the order the bake applies them (src/engine/bake.ts): the stack lists them so. */
-export const KIND_ORDER: readonly RowKind[] = ['blowTiming', 'pace', 'handPose', 'handleHold', 'ground', 'keys']
+export const KIND_ORDER: readonly RowKind[] = ['layer', 'blowTiming', 'pace', 'handPose', 'handleHold', 'posture', 'ground', 'keys']
 
 export const KIND_LABEL: Record<RowKind, string> = {
   blowTiming: 'Blow timing', pace: 'Pace', handPose: 'Hand pose', handleHold: 'Handle hold', ground: 'Ground', keys: 'Keys',
+  posture: 'Posture', layer: 'Layer',
 }
+
+/** The kinds that take a weight (how much of it plays). */
+export const WEIGHTED: readonly RowKind[] = ['ground', 'posture', 'layer']
 
 export const KIND_HINT: Record<RowKind, string> = {
   blowTiming: 'Cut an attack so its blow lands where the game times hits',
@@ -367,6 +372,36 @@ export const KIND_HINT: Record<RowKind, string> = {
   handleHold: 'Hold a pull handle (a bowstring) in windows of this clip',
   ground: 'Raise or lower the whole body so its feet meet the floor',
   keys: 'Keyed turns on bones, and moves and turns of gear',
+  posture: 'Lean, twist, nod, open the arms: the body turned from how the clip holds it (all of it, or in windows)',
+  layer: 'Another clip on part of the body: an attack on the upper body of a run, a wave on one arm',
+}
+
+/** The posture parts as the stack offers them, with what + means. */
+export const POSTURE_OPTIONS: Array<{ value: Extract<Adjustment, { kind: 'posture' }>['part'], label: string, plus: string, group: string }> = [
+  { value: 'lean', label: 'Lean', plus: 'forward', group: 'Spine' },
+  { value: 'side', label: 'Side lean', plus: 'to its right', group: 'Spine' },
+  { value: 'twist', label: 'Twist', plus: 'to its left', group: 'Spine' },
+  { value: 'nod', label: 'Nod', plus: 'down', group: 'Head' },
+  { value: 'turnHead', label: 'Turn head', plus: 'to its left', group: 'Head' },
+  { value: 'tiltHead', label: 'Tilt head', plus: 'to its right', group: 'Head' },
+  { value: 'armsOut', label: 'Arms out', plus: 'away from the body', group: 'Arms' },
+  { value: 'armsForward', label: 'Arms forward', plus: 'forward', group: 'Arms' },
+  { value: 'shrug', label: 'Shoulders', plus: 'up', group: 'Arms' },
+]
+
+/** The masks a layer offers by name; any other set of parts is ticked by hand. */
+export const MASK_PRESETS: Array<{ value: string, label: string, parts: BodyPart[] }> = [
+  { value: 'upper', label: 'Upper body', parts: ['torso', 'head', 'leftArm', 'rightArm'] },
+  { value: 'arms', label: 'Arms', parts: ['leftArm', 'rightArm'] },
+  { value: 'rightArm', label: 'Right arm', parts: ['rightArm'] },
+  { value: 'leftArm', label: 'Left arm', parts: ['leftArm'] },
+  { value: 'head', label: 'Head', parts: ['head'] },
+  { value: 'lower', label: 'Lower body', parts: ['hips', 'leftLeg', 'rightLeg'] },
+]
+
+/** The preset a mask is, or 'custom'. */
+export function maskPreset (mask: readonly BodyPart[]): string {
+  return MASK_PRESETS.find(m => m.parts.length === mask.length && m.parts.every(p => mask.includes(p)))?.value ?? 'custom'
 }
 
 /** The slot's rows in the bake's order (same kind: as listed). */
@@ -392,8 +427,15 @@ export function addableKinds (slot: Slot, o: { otherSlots: number, pulls: number
 
 /** An adjustment in a few words, for the stack's header line. `frames`: of the clip as it plays (null: not playing). */
 export function adjustmentText (c: Pick<Character, 'clips' | 'gear'>, a: Row, o: { frames: number | null, lift?: (lift: number) => string, pose?: (ref: HandPoseRef) => string }): string {
+  const weight = a.weight !== undefined && a.weight !== 1 ? ` · ${Math.round(a.weight * 100)}%` : ''
   switch (a.kind) {
-    case 'ground': return o.lift?.(a.lift) ?? `lift ${Math.round(a.lift * 1000) / 1000}`
+    case 'ground': return (o.lift?.(a.lift) ?? `lift ${Math.round(a.lift * 1000) / 1000}`) + weight
+    case 'posture': return `${postureText(a.part, a.amount)}, ${windowsText(a.windows, o.frames)}${weight}`
+    case 'layer': {
+      const play = a.play
+      const what = play.kind === 'slot' ? c.clips.find(s => s.id === play.slot)?.name ?? 'a clip that is gone' : clipLabel(play.clip)
+      return `${what} on ${maskText(a.mask)}, ${windowsText(a.windows, o.frames)}${weight}`
+    }
     case 'blowTiming': return `lands at ${Math.round(a.at * 100)}%${a.window !== undefined ? `, ${a.window} s round it` : ''}${a.blowU !== undefined ? ', blow set by hand' : ''}`
     case 'pace': return `like ${c.clips.find(s => s.id === a.like)?.name ?? 'a clip that is gone'}`
     case 'handPose': {

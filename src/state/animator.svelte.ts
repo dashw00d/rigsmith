@@ -11,7 +11,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { untrack } from 'svelte'
-import type { Character, ClipRef, HandPose, LibraryClip, Slot } from './api.ts'
+import type { Character, ClipRef, HandPose, LibraryClip, Piece, Slot } from './api.ts'
 import type { Rom } from '../engine/limits.ts'
 import { app, type Step } from './app.svelte.ts'
 import { viewer, type MountView } from './viewer.svelte.ts'
@@ -114,6 +114,9 @@ class Animator {
   speed = $state(1)
   loop = $state(true)
   mirror = $state(false)
+  /** One adjustment of a slot played alone (docs/motion-plan.md §12.4): the slot plays with every other adjustment off.
+   * The viewer's only: nothing is stored, the export never sees it; playing another slot ends it. */
+  solo = $state.raw<{ slotId: string, id: string } | null>(null)
   previewSubject = $state<'character' | 'mannequin' | 'none'>('none')
   /** Bumped when previews are rendered for another subject; cards ask for their sheet again. */
   previewVersion = $state(0)
@@ -265,7 +268,16 @@ class Animator {
     const set = outfit == null ? null : setsOf(c).find(s => s.name === outfit)?.id ?? null
     const d = folk ? dress.of(c.id) : undefined
     const preview = d === undefined ? null : { off: d.off, on: d.on, hair: d.hair, beard: d.beard }
-    return stableJson({ slot, under, set, preview, gear: c.gear, hands: c.hands, mount: c.mount, shared: app.settings?.handPoses ?? null })
+    const solo = this.solo !== null && this.solo.slotId === slot?.id ? this.solo.id : null
+    return stableJson({ slot, under, set, preview, gear: c.gear, hands: c.hands, mount: c.mount, shared: app.settings?.handPoses ?? null, solo })
+  }
+
+  /** Play adjustment `id` of `slotId` alone (null: all of them again), replaying the slot where it is. */
+  setSolo (slotId: string, id: string | null): void {
+    this.solo = id === null ? null : { slotId, id }
+    const now = untrack(() => this.playing)
+    const c = this.characterId === null ? null : app.byId(this.characterId)
+    if (now !== null && now.kind === 'slot' && now.slotId === slotId && c !== null) void this.run(now, true)
   }
 
   // ---- what plays --------------------------------------------------------------------------------------------------
@@ -277,6 +289,7 @@ class Animator {
     const was = untrack(() => this.playing)
     const again = o.keepTime === true && was?.kind === 'slot' && was.slotId === slotId
     if (!again) { this.resetPreview(slot.loop); this.region = null }
+    if (!again && this.solo !== null && this.solo.slotId !== slotId) this.solo = null
     const now = again ? was : new NowPlaying({ kind: 'slot', characterId: character.id, slotId, label: slot.name })
     if (!again) now.savedLoop = slot.loop
     return await this.run(now, again)
@@ -344,6 +357,16 @@ class Animator {
   async bake (c: Character, slot: Slot, o: { skip?: BakeSkip, autoGround?: boolean } = {}): Promise<BakedSlot | null> {
     const ctx = c.id === this.characterId ? this.bakeContext() : null
     return ctx === null ? null : await bakeSlot(c, slot, ctx, o)
+  }
+
+  /** What a piece plays (a library clip as the slot reads it, another slot as it bakes), with the posable copy it is
+   * measured on; null when the character isn't on stage or it is a held pose. */
+  async contentClip (c: Character, slot: Slot, piece: Piece): Promise<{ clip: THREE.AnimationClip, posable: THREE.Object3D } | null> {
+    const ctx = c.id === this.characterId ? this.bakeContext() : null
+    if (ctx === null || piece.kind === 'hold') return null
+    if (piece.kind === 'clip') return { clip: await ctx.clips.get(piece.clip, { inPlace: slot.inPlace, mirror: this.mirror, fps: FPS }), posable: ctx.posable }
+    const other = slotById(c, piece.slot)
+    return other === undefined ? null : { clip: (await bakeSlot(c, other, ctx, { mirror: this.mirror, gearNodes: false })).clip, posable: ctx.posable }
   }
 
   /** A clip's length (seconds at speed 1, as it plays on the character on stage): what a piece of it can last. */
@@ -531,6 +554,11 @@ class Animator {
     if (now.kind === 'slot') {
       slot = slotById(c, now.slotId ?? '') ?? fail('That clip is gone')
       if (now.label !== slot.name) now.label = slot.name
+      // (soloed: that one adjustment on, every other off)
+      const solo = this.solo
+      if (solo !== null && solo.slotId === slot.id && slot.adjustments.some(a => a.id === solo.id)) {
+        slot = { ...slot, adjustments: slot.adjustments.map(a => ({ ...a, enabled: a.id === solo.id })) }
+      }
     } else if (now.kind === 'library' && now.library !== null && now.ref !== null) {
       // (a library clip plays as a slot just made of it would: its gear paths, stood on the floor by its feet)
       const gear = gearKeysFromPaths(c, now.library.propPaths ?? {})

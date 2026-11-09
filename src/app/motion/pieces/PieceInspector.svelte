@@ -2,7 +2,7 @@
   // A piece of the clip selected on the Clip strip (docs/motion-plan.md §11): what it plays, the part of it (seconds of
   // its content; a held pose: how long it holds), its blend in over the piece before, and Remove (what is keyed on it
   // goes with it; Ctrl+Z brings it back). Each change is one undo.
-  import { Trash2 } from '@lucide/svelte'
+  import { Footprints, Trash2 } from '@lucide/svelte'
   import { clipPieces } from '../../../state/pieces.svelte.ts'
   import type { Playing } from '../../../state/timeline.svelte.ts'
   import NumberField from '../../../ui/NumberField.svelte'
@@ -15,6 +15,9 @@
   const content = $derived(s === null ? undefined : clipPieces.contentOf(p, s.piece))
   const n = $derived(clipPieces.now(p))
   const blend = $derived(s === null || n === null ? 0 : (s.piece.blend ?? 0) / Math.max(1e-9, n.perPlayed))
+  const moving = $derived(s !== null && s.piece.kind !== 'hold')
+  const before = $derived(s === null || s.index === 0 ? undefined : n?.pieces[s.index - 1])
+  let matching = $state(false)
   const what = $derived(s === null ? '' : s.piece.kind === 'hold' ? 'Held pose' : s.piece.kind === 'slot' ? 'Clip, as it plays' : 'Library clip')
 </script>
 
@@ -48,6 +51,11 @@
       <div class="row">
         <span class="small" use:tooltip={'How long it cross-fades in over the end of the piece before (0: a cut)'}>Blend in</span>
         <NumberField size="sm" value={blend} min={0} step={0.05} digits={2} unit="s" onchange={(v) => { void clipPieces.blend(p, id, v) }} />
+        {#if moving && before?.kind !== 'hold'}
+          <Button size="sm" variant="ghost" disabled={matching} onclick={async () => { matching = true; try { await clipPieces.matchFeet(p, id) } finally { matching = false } }}
+            title="Start it where its feet carry on the stride of the piece before (the same foot as far through its step), keeping its length">
+            <Footprints size={13} /> Match feet</Button>
+        {/if}
       </div>
     {/if}
     <p class="faint small">Its keys, events and hand bars stay on it: trimming, moving or blending it never slides them.</p>

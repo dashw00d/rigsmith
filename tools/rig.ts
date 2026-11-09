@@ -45,7 +45,8 @@ import { pct, r3, refText, windowsText } from '../src/model/commands/common.ts'
 import { newId } from '../src/model/ids.ts'
 import { pieceText } from '../src/model/pieces.ts'
 import { gearById, heightOf, phaseOf, slotById } from '../src/model/select.ts'
-import type { Character, Gear, Handle, HandPose, HandPoseRef, Job, JournalEntry, Mount, Side, Slot } from '../src/model/types.ts'
+import type { Adjustment, Character, Gear, Handle, HandPose, HandPoseRef, Job, JournalEntry, Mount, Side, Slot } from '../src/model/types.ts'
+import { maskText, postureText } from '../src/model/commands/clips.ts'
 import type { V2Adjustment } from '../src/model/v2.ts'
 import { slotToV2 } from '../src/model/migrate.ts'
 import type { GameSpec, UnitSpec } from '../src/model/unit.ts'
@@ -163,10 +164,19 @@ function keysText (c: Character, a: Extract<V2Adjustment, { kind: 'keys' }>): st
  * height). */
 function adjustmentText (c: Character, a: V2Adjustment, game: number | null): string {
   const gearName = (id: string): string => gearById(c, id)?.name ?? id
+  // (posture and layers, docs/motion-plan.md §12, come through slotToV2 as the slot has them)
+  const adj = a as unknown as Adjustment
+  const weight = adj.weight !== undefined && adj.weight !== 1 ? ` at ${pct(adj.weight)}` : ''
+  if (adj.kind === 'posture') return `posture: ${postureText(adj.part, adj.amount)} in ${windowsText(adj.windows)}${(adj.fade ?? 0) > 0 ? `, fading ${r3(adj.fade!)} s` : ''}${weight}`
+  if (adj.kind === 'layer') {
+    const play = adj.play
+    const what = play.kind === 'slot' ? slotById(c, play.slot)?.name ?? `(gone: ${play.slot})` : play.clip.id
+    return `layer ${what} on ${maskText(adj.mask)} in ${windowsText(adj.windows)}${(adj.offset ?? 0) > 0 ? `, from ${r3(adj.offset!)} s of it` : ''}${adj.loop === true ? ', looped' : ''}${weight}`
+  }
   switch (a.kind) {
     case 'ground': {
       const own = heightOf(c)
-      return `ground ${game !== null ? `${+(a.lift * game / own * 100).toFixed(1)} cm` : `${+(a.lift / own * 100).toFixed(1)} %`}`
+      return `ground ${game !== null ? `${+(a.lift * game / own * 100).toFixed(1)} cm` : `${+(a.lift / own * 100).toFixed(1)} %`}${weight}`
     }
     case 'blowTiming':
       return `blow timing: the hit at ${pct(a.at)}${a.blowU !== undefined ? `, the blow at ${pct(a.blowU)} of the clip` : ' (the blow found)'}` +

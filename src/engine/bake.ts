@@ -1,7 +1,8 @@
 // The one bake: a slot's clip as the game plays it, the same in the viewer, the timeline and the unit export
 // (tools/lib/unit_export.ts), so what plays here is what the game gets (docs/motion-plan.md §3). In a fixed order:
-//   source (its clip, or its pieces composed: src/engine/pieces.ts) -> time (markers, speed, blow fit, pace) -> hands (src/engine/hands.ts) -> ground -> keys on
-//   bones -> gear tracks -> events
+//   source (its clip, or its pieces composed: src/engine/pieces.ts; its layers laid over: src/engine/layers.ts) -> time
+//   (markers, speed, blow fit, pace) -> hands (src/engine/hands.ts) -> posture (src/engine/posture.ts) -> ground -> keys
+//   on bones -> gear tracks -> events
 // A slot stores every time against its source clip; once its time map is resolved (src/model/timemap.ts: the blow
 // measured, the pace found), everything it stores is mapped to phases of the clip as it finally plays, and the stages
 // after the timing run on those, as they always did: their windows, a pull's and the gear keys' are played phases.
@@ -17,6 +18,8 @@ import { firstSkinned, gearNode } from './geom.ts'
 import { groundFit } from './ground.ts'
 import { applyHands, handLayers, type HandLayer } from './hands.ts'
 import { ikBuild, playedIk } from './ikbuild.ts'
+import { layClips, type Layer } from './layers.ts'
+import { applyPosture, type Posture } from './posture.ts'
 import type { Rom } from './limits.ts'
 import { applyBoneKeys, applyLift, propTracks } from './keys.ts'
 import { fitRide, freezeClip } from './mount.ts'
@@ -45,7 +48,7 @@ export interface BakedSlot {
   /** Everything. */
   clip: THREE.AnimationClip
   /** Retargeted with slot.inPlace: speed 1, no hands, no adjustments (the clip source's own copy: read only); a slot
-   * built from pieces: their composite (the source its times are moments of). */
+   * built from pieces: their composite; with layers: those laid over it (the source its times are moments of). */
   raw: THREE.AnimationClip
   /** Before keys. */
   unkeyed: THREE.AnimationClip
@@ -106,7 +109,7 @@ async function bakeSlotNow (c: Character, slot: Slot, ctx: BakeContext, o: { mir
   const skip = new Set<string>(all ? ['speed', 'time', 'hands', 'keys', 'events'] : o.skip ?? [])
   const report: Record<string, unknown> = {}
 
-  const raw = await sourceOf(c, slot, ctx, { mirror: o.mirror, via: o.via })
+  const raw = await sourceOf(c, slot, ctx, { mirror: o.mirror, via: o.via, layers: !all && !skip.has('layer'), report })
   const timed = await timeSlot(c, slot, raw, ctx, { mirror: o.mirror, skip, report, via: o.via })
   let clip = timed.clip
   const map = timed.map
@@ -124,14 +127,18 @@ async function bakeSlotNow (c: Character, slot: Slot, ctx: BakeContext, o: { mir
     if (Object.keys(r.report).length > 0) report.hands = r.report
   }
 
+  // posture: the body turned from how the clip holds it, its windows in source time (through the map)
+  const postures = on.filter((a): a is Posture => a.kind === 'posture')
+  if (postures.length > 0) clip = applyPosture(clip, postures, ctx.rest, map, raw.duration, report)
+
   // the ground: the Hips (the bone carrying the body's moves) raised straight up
   const pelvis = pelvisName(ctx.rest)
   const hips = ctx.rest.bones.get(pelvis)
   const lifted = (x: THREE.AnimationClip, dy: number): THREE.AnimationClip =>
     hips === undefined ? x : applyLift(x, hips.node.name, dy, hips.localPosition, restUpOf(ctx.rest, pelvis))
   const ground = find(on, 'ground')
-  let lift = ground?.lift ?? 0
-  if (ground !== undefined) report[ground.id] = { kind: 'ground', lift: ground.lift }
+  let lift = (ground?.lift ?? 0) * (ground?.weight ?? 1)
+  if (ground !== undefined) report[ground.id] = { kind: 'ground', lift: ground.lift, ...(ground.weight !== undefined ? { weight: ground.weight } : {}) }
   const body = o.autoGround === true && hips !== undefined ? firstSkinned(ctx.posable) : null
   if (body !== null) {
     const fit = groundFit(ctx.posable, body, lifted(clip, lift), heightOf(c))
@@ -226,13 +233,24 @@ export async function timeSlot (c: Character, slot: Slot, raw: THREE.AnimationCl
 }
 
 /** A slot's source clip (src/engine/pieces.ts): its clip from the clip source, or its pieces composed, a slot piece
- * being that slot as it plays (baked here, its bone tracks only). */
-export async function sourceOf (c: Character, slot: Slot, ctx: BakeContext, o: { mirror?: boolean, via?: readonly string[] } = {}): Promise<THREE.AnimationClip> {
+ * being that slot as it plays (baked here, its bone tracks only); then its enabled layers laid over it
+ * (src/engine/layers.ts; `layers: false` leaves them out), a layer's content read as a piece's is. */
+export async function sourceOf (c: Character, slot: Slot, ctx: BakeContext,
+  o: { mirror?: boolean, via?: readonly string[], layers?: boolean, report?: Record<string, unknown> } = {}): Promise<THREE.AnimationClip> {
   const via = [...(o.via ?? []), slot.id]
-  return await sourceClip(c, slot, ctx, {
-    mirror: o.mirror, via: o.via,
-    bakeSlot: async other => (await bakeSlot(c, other, ctx, { mirror: o.mirror, gearNodes: false, via })).clip,
-  })
+  const bake = async (other: Slot): Promise<THREE.AnimationClip> => (await bakeSlot(c, other, ctx, { mirror: o.mirror, gearNodes: false, via })).clip
+  const raw = await sourceClip(c, slot, ctx, { mirror: o.mirror, via: o.via, bakeSlot: bake })
+  const layers = o.layers === false ? [] : slot.adjustments.filter((a): a is Layer => a.kind === 'layer' && a.enabled)
+  if (layers.length === 0) return raw
+  const contents = await Promise.all(layers.map(async layer => {
+    if (layer.play.kind === 'clip') return { layer, content: await ctx.clips.get(layer.play.clip, { inPlace: slot.inPlace, mirror: o.mirror, fps: ctx.fps }) }
+    const id = layer.play.slot
+    if (via.includes(id)) throw new Error(`clip ${slot.name} plays itself (through its layers)`)
+    const other = c.clips.find(x => x.id === id)
+    if (other === undefined) throw new Error(`clip ${slot.name}: no clip ${id} to play as a layer`)
+    return { layer, content: await bake(other) }
+  }))
+  return layClips(raw, contents, ctx.rest, o.report)
 }
 
 /** An adjustment with its windows as played. */

@@ -16,6 +16,7 @@ import { app } from './app.svelte.ts'
 import { animator, type NowPlaying } from './animator.svelte.ts'
 import { newId } from '../model/ids.ts'
 import { carriedBy, hitOf, slotById } from '../model/select.ts'
+import { bakeCycle } from '../model/pieces.ts'
 import {
   BLOW_EDGE, cycleAt, FIT, framesOf, freeWindows, handWindows, KEYS, PACE, rowsOf, snapPhase, timeAt, type Row, type RowKind,
 } from '../app/motion/rules.ts'
@@ -175,9 +176,18 @@ class Adjust {
   }
 
   /** A new adjustment of `kind` for `slot`, as it most likely starts; null (said why) when there is no room for it. */
-  private made (c: Character, slot: Slot, kind: 'handPose' | 'handleHold'): Adjustment | null {
+  private made (c: Character, slot: Slot, kind: 'handPose' | 'handleHold' | 'posture' | 'layer'): Adjustment | null {
     const id = newId()
     switch (kind) {
+      // (a gentle lean over the whole clip: the slider is where it is set)
+      case 'posture': return { id, kind, enabled: true, part: 'lean', amount: 10 }
+      case 'layer': {
+        // (another clip of the character's that wouldn't play this one, an attack first; else its own clip to swap)
+        const free = c.clips.filter(o => o.id !== slot.id && !wouldCycle(c, slot, o.id))
+        const other = free.find(o => /attack/i.test(o.name)) ?? free[0]
+        const play = other === undefined ? { kind: 'clip' as const, clip: { ...slot.clip } } : { kind: 'slot' as const, slot: other.id }
+        return { id, kind, enabled: true, play, mask: ['torso', 'head', 'leftArm', 'rightArm'] }
+      }
       case 'handPose': {
         for (const hand of ['Right', 'Left'] as Side[]) {
           const windows = freeWindows(handWindows(slot, hand))
@@ -298,6 +308,13 @@ class Adjust {
       this.busy = null
     }
   }
+}
+
+/** Whether `slot` playing `other` as a layer would make some clip play itself (src/model/pieces.ts bakeCycle). */
+export function wouldCycle (c: Character, slot: Slot, other: string): boolean {
+  if (other === slot.id) return true
+  const layer: Adjustment = { id: 'probe', kind: 'layer', enabled: true, play: { kind: 'slot', slot: other }, mask: ['torso'] }
+  return bakeCycle({ clips: c.clips.map(s => (s.id === slot.id ? { ...s, adjustments: [...s.adjustments, layer] } : s)) }) !== null
 }
 
 /** The pull handles of the character's ready gear, as a hold names them. */

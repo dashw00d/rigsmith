@@ -233,9 +233,10 @@ describe('the adjustments stack', () => {
   it('offers only what the slot can take one more of', () => {
     const slot = makeSlot({ id: 's', adjustments: [ground, hold] })
     // (keys always have their row: keying starts there)
-    expect(addableKinds(slot, { otherSlots: 0, pulls: 1 })).toEqual(['blowTiming', 'handPose'])
-    expect(addableKinds(slot, { otherSlots: 2, pulls: 2 })).toEqual(['blowTiming', 'pace', 'handPose', 'handleHold'])
-    expect(addableKinds({ ...slot, time: { fit: { enabled: true, at: 0.45 } } }, { otherSlots: 2, pulls: 2 })).toEqual(['pace', 'handPose', 'handleHold'])
+    // (layers and postures: as many as wanted; a layer can play a library clip, so it needs no other clip)
+    expect(addableKinds(slot, { otherSlots: 0, pulls: 1 })).toEqual(['layer', 'blowTiming', 'handPose', 'posture'])
+    expect(addableKinds(slot, { otherSlots: 2, pulls: 2 })).toEqual(['layer', 'blowTiming', 'pace', 'handPose', 'handleHold', 'posture'])
+    expect(addableKinds({ ...slot, time: { fit: { enabled: true, at: 0.45 } } }, { otherSlots: 2, pulls: 2 })).toEqual(['layer', 'pace', 'handPose', 'handleHold', 'posture'])
     expect(rowsOf({ ...slot, time: { fit: { enabled: false, at: 0.4 } }, events: [{ id: 'e', name: 'hit', u: 0.6 }] }).map(r => [r.id, r.kind])).toEqual([
       ['g', 'ground'], ['h', 'handleHold'], ['fit', 'blowTiming'], ['keys', 'keys'],
     ])

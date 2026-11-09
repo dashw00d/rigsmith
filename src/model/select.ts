@@ -100,6 +100,7 @@ export function freshSet (slots: Slot[], newId: () => string): Slot[] {
     for (const m of s.time?.markers ?? []) m.id = newId()
     if (s.time?.pace !== undefined) s.time.pace.like = ids.get(s.time.pace.like) ?? s.time.pace.like
     for (const p of s.pieces ?? []) if (p.kind === 'slot') p.slot = ids.get(p.slot) ?? p.slot
+    for (const a of s.adjustments) if (a.kind === 'layer' && a.play.kind === 'slot') a.play.slot = ids.get(a.play.slot) ?? a.play.slot
   }
   return copy
 }

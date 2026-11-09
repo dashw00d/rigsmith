@@ -357,7 +357,13 @@ export interface SlotTime {
 export interface BlowFit { enabled: boolean, at: number, late?: 'cut' | 'hold', window?: number, hand?: string }
 export interface RetimeMarker { id: string, u: SourceU, to: number }
 
-interface AdjustmentBase { id: string, enabled: boolean, note?: string }
+interface AdjustmentBase {
+  id: string
+  enabled: boolean
+  note?: string
+  /** How much of it plays, 0..1 (unset 1): only ground, posture and layer take one (docs/motion-plan.md §12). */
+  weight?: number
+}
 
 /** A setting a slot makes over its clip that stays a setting (the inspector's; the timeline shows the hands' as bars). */
 export type Adjustment = AdjustmentBase & (
@@ -369,7 +375,28 @@ export type Adjustment = AdjustmentBase & (
   | { kind: 'handPose', hand: Side, pose: HandPoseRef, windows?: Window[], gear?: string }
   /** A handle held in this slot during `windows` (a bowstring drawn). */
   | { kind: 'handleHold', gear: string, handle: string, windows: Window[] }
+  /** The body turned from how the clip holds it (src/engine/posture.ts): `amount` degrees of `part` over `windows`
+   * (unset: the whole clip), ramping in and out over `fade` seconds of the source at each window's ends. */
+  | { kind: 'posture', part: PosturePart, amount: number, windows?: Window[], fade?: number }
+  /** Another clip on some of the body (src/engine/layers.ts): `play`'s turns of the bones of `mask` laid over the
+   * source's over `windows` (unset: the whole clip), its content `offset` seconds in at each window's start (looping
+   * when `loop`, else holding its last pose), ramping in and out over `fade` source seconds. */
+  | { kind: 'layer', play: LayerSource, mask: BodyPart[], windows?: Window[], offset?: number, fade?: number, loop?: boolean }
 )
+
+/** What a posture adjustment turns (docs/motion-plan.md §12.1 has each one's bones and axis). + leans forward, leans
+ * right, twists left, nods down, turns the head left, tilts it right, opens the arms, swings them forward, raises the
+ * shoulders. */
+export const POSTURE_PARTS = ['lean', 'side', 'twist', 'nod', 'turnHead', 'tiltHead', 'armsOut', 'armsForward', 'shrug'] as const
+export type PosturePart = typeof POSTURE_PARTS[number]
+
+/** What a layer plays: a library clip (as the clip source retargets it), or another slot as it plays (its bake). */
+export type LayerSource = { kind: 'clip', clip: ClipRef } | { kind: 'slot', slot: string }
+
+/** The parts a layer's mask is made of: each bone belongs to the nearest of Hips, Spine, Neck, Left/RightShoulder,
+ * Left/RightUpLeg at or above it. */
+export const BODY_PARTS = ['hips', 'torso', 'head', 'leftArm', 'rightArm', 'leftLeg', 'rightLeg'] as const
+export type BodyPart = typeof BODY_PARTS[number]
 
 export type AdjustmentKind = Adjustment['kind']
 

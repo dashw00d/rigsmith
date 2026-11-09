@@ -62,6 +62,22 @@ export function footsteps (root: THREE.Object3D, clip: THREE.AnimationClip, loop
   return out.sort((a, b) => a.t - b.t)
 }
 
+/** Whether a clip's feet end where they began, as the hips carry them (within 3 % of `height`): a cycle that loops
+ * round (a library walk or run is one stride of each foot), so its falls repeat every `clip.duration`. */
+export function loopsRound (root: THREE.Object3D, clip: THREE.AnimationClip, height: number, feet = FEET): boolean {
+  const bones = feet.map(f => f.bones[0]).filter(n => root.getObjectByName(n) !== undefined)
+  if (bones.length === 0 || root.getObjectByName('Hips') === undefined || clip.duration <= 0) return false
+  const restore = saveBones(root)
+  const { at } = sample(root, clip, ['Hips', ...bones], 30)
+  restore()
+  const hips = at.get('Hips')!
+  const last = hips.length - 1
+  return bones.every(b => {
+    const p = at.get(b)!
+    return p[0].clone().sub(hips[0]).distanceTo(p[last].clone().sub(hips[last])) < 0.03 * height
+  })
+}
+
 /** The steps not already there: none within `near` (played) of an event of the same name. */
 export function newSteps (steps: Footstep[], have: Array<{ name: string, t: number }>, near: number): Footstep[] {
   return steps.filter(s => !have.some(e => e.name === s.name && Math.abs(e.t - s.t) < near))

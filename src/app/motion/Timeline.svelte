@@ -117,7 +117,7 @@
     }
     const bars = handsBars(p.character, slot, p.map)
     const handsOpen = !timeline.open.includes('hands-closed')
-    out.push({ kind: 'section', key: 'hands', label: 'Hands and pulls', tracks: [], open: handsOpen, count: bars.length })
+    out.push({ kind: 'section', key: 'hands', label: 'Hands, posture, layers', tracks: [], open: handsOpen, count: bars.length })
     if (handsOpen) for (const bar of bars) out.push({ kind: 'bar', key: bar.track, bar })
     return out
   })
@@ -793,6 +793,7 @@
   .bar { position: absolute; top: 2px; height: 11px; border-radius: 3px; background: rgb(142 162 255 / 45%); cursor: grab; }
   .bar.pull { background: rgb(240 190 90 / 50%); }
   .bar.ik { background: rgb(107 211 138 / 45%); }
+  .bar.body { background: rgb(214 130 220 / 45%); }
   .bar:hover, .bar.on { filter: brightness(1.35); box-shadow: 0 0 0 1px var(--text-2); }
   .grip { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; }
   .grip.start { left: -2px; }

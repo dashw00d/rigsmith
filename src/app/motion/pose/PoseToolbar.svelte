@@ -158,7 +158,7 @@
       onion = new OnionSkins(stage)
       onionStage = stage
     }
-    onion.show(cv, baked.clip, at * baked.clip.duration, { before: o.before, after: o.after, step: o.step, keys: o.atKeys ? keyTimes() : undefined, loop: view.slot.loop })
+    onion.show(cv, baked.clip, at * baked.clip.duration, { before: o.before, after: o.after, step: o.step, keys: o.atKeys ? keyTimes() : undefined, loop: view.slot.loop, color: o.color })
   })
 
   onDestroy(() => {
@@ -295,6 +295,11 @@
               <Segmented size="sm" label="Ghosts at" value={poseTools.onion.atKeys ? 'keys' : 'frames'}
                 options={[{ value: 'frames', label: 'Frames', hint: 'Every few frames round the playhead' }, { value: 'keys', label: 'Keys', hint: 'At the keys round the playhead (the selected bones\', else every key)' }]}
                 onchange={v => { poseTools.setOnion({ atKeys: v === 'keys', on: true }) }} />
+            </div>
+            <div class="row"><span class="lbl">Colour</span>
+              <Segmented size="sm" label="Ghost colours" value={poseTools.onion.color}
+                options={[{ value: 'time', label: 'Time', hint: 'Earlier ghosts warm, later ones cool' }, { value: 'speed', label: 'Speed', hint: 'Each joint by how fast it moves there: slow blue to fast red, so a pop or a jumpy seam shows hot' }]}
+                onchange={v => { poseTools.setOnion({ color: v === 'speed' ? 'speed' : 'time', on: true }) }} />
             </div>
             {#if !poseTools.onion.atKeys}
               <div class="row"><span class="lbl">Every</span><NumberField size="sm" width="56px" value={poseTools.onion.step} min={1} max={30} unit="fr" label="Frames between ghosts" onchange={v => { poseTools.setOnion({ step: Math.round(v), on: true }) }} /></div>
