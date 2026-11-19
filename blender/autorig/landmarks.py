@@ -151,11 +151,13 @@ def detect_arm(sil, side):
         return inner(previous) - inner(run) > jump
 
     path, armpit_row, armpit_run = _track_run(F, tip_row, start_run, +1, sil.row(sil.z_max) - 1, merged)
+    if armpit_row is None:
+        # No merge going up the rows: the arm is (nearly) level, so the tip row's run is already joined to the torso
+        # (and the other arm) and tracking rows only climbs the body. Follow the arm along its columns instead.
+        return _detect_level_arm(sil, side, tip, tip_col, tip_row)
     # Hands hanging below the tip row (fingers pointing down): extend downward too.
     down, _, _ = _track_run(F, tip_row, start_run, -1, 0, lambda row, run, prev: False)
     path = list(reversed(down[1:])) + path
-    if armpit_row is None:
-        return None
     rows = np.array([p[0] for p in path], dtype=np.float64)
     mids = np.array([0.5 * (p[1][0] + p[1][1] - 1) for p in path])
     widths = np.array([p[1][1] - p[1][0] for p in path], dtype=np.float64)
@@ -174,6 +176,67 @@ def detect_arm(sil, side):
     }
 
 
+def _detect_level_arm(sil, side, tip, tip_col, tip_row):
+    """detect_arm() for an arm held level (a T-pose with horizontal arms), tracked column by column from the tip.
+
+    Where an arm hangs or slopes, its row at the fingertip is its own run and the trace along the rows ends where the
+    arm joins the torso. A level arm is as tall as it is thick at every column, so its rows are one run with the torso
+    from the tip's row on; here the vertical run is followed inward instead, and the arm ends at the first column where
+    that run suddenly grows (the torso's top or its underside). The armpit is the arm's underside at that column.
+    """
+    F = sil.front
+    h = sil.height
+    window = 15
+    hand_cols = 0.12 * h / sil.pixel
+    min_growth = 0.025 * h / sil.pixel
+    toward_body = -side
+    col_runs = lambda col: runs(F[:, col])  # noqa: E731
+    start = [r for r in col_runs(tip_col) if r[0] <= tip_row < r[1]]
+    if not start:
+        return None
+    current = start[0]
+    path = [(tip_col, current)]
+    col = tip_col
+    armpit_col = None
+    while 0 < col < F.shape[1] - 1:
+        col += toward_body
+        candidates = [r for r in col_runs(col) if _overlap(r, current) > 0]
+        if not candidates:
+            break
+        best = max(candidates, key=lambda r: _overlap(r, current))
+        # (a shoulder and an armpit curve outward over many columns, so the run is compared with the arm a few columns
+        # back, not with its neighbour)
+        recent = path[-window:]
+        if abs(col - tip_col) < hand_cols:  # (a palm is much taller than the fingers before it, and is no torso)
+            path.append((col, best))
+            current = best
+            continue
+        thick = max(0.5 * float(np.median([r[1] - r[0] for _, r in recent])), min_growth)
+        if np.median([r[0] for _, r in recent]) - best[0] > thick or best[1] - np.median([r[1] for _, r in recent]) > thick:
+            armpit_col = col - toward_body  # the last column that was still the arm
+            break
+        path.append((col, best))
+        current = best
+    if armpit_col is None:
+        return None
+    cols = np.array([p[0] for p in path], dtype=np.float64)
+    mids = np.array([0.5 * (p[1][0] + p[1][1] - 1) for p in path])
+    widths = np.array([p[1][1] - p[1][0] for p in path], dtype=np.float64)
+    centerline = np.stack([sil.x(cols), sil.z(mids)], axis=1)
+    last_run = path[-1][1]
+    armpit = np.array([sil.x(armpit_col), 0.0, sil.z(last_run[0])])
+    return {
+        'tip': tip,
+        'centerline': centerline,
+        'level': True,
+        'ordered': True,  # hand first, the order they were followed in (heights say nothing about a level arm)
+        'widths': widths * sil.pixel,
+        'armpit': armpit,
+        'armpit_rel_z': (armpit[2] - sil.z_min) / h,
+        'armpit_inner_edge_x': sil.x(armpit_col),
+    }
+
+
 def _fit_line(points):
     center = points.mean(axis=0)
     _, _, vt = np.linalg.svd(points - center)
@@ -185,8 +248,8 @@ def arm_axis(arm):
     """Straight-line model of the arm in the front plane: origin near the armpit, unit dir toward the hand."""
     pts = arm['centerline']
     # Use the middle 15%..75% of the tracked length (skip the hand blob and the shoulder merge).
-    order = np.argsort(pts[:, 1])  # by z ascending: hand first
-    pts = pts[order]
+    if not arm.get('ordered'):
+        pts = pts[np.argsort(pts[:, 1], kind='stable')]  # by z ascending: hand first
     n = len(pts)
     core = pts[int(n * 0.25):int(n * 0.85)]
     center, direction = _fit_line(core)

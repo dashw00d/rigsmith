@@ -93,7 +93,9 @@ class ArmModel:
         armpit = np.array([arm['armpit'][0], arm['armpit'][2]])
         self.t_tip = float((tip - center) @ direction)
         t_armpit = float((armpit - center) @ direction)
-        t_shoulder = t_armpit - SHOULDER_ABOVE_ARMPIT * height
+        # (a sloping arm's shoulder joint is up the arm from its armpit; a level arm's armpit, under its joint at the
+        # torso's side, is already as far in as the joint)
+        t_shoulder = t_armpit if arm.get('level') else t_armpit - SHOULDER_ABOVE_ARMPIT * height
         length = self.t_tip - t_shoulder
         armpit_z = arm['armpit'][2]
         # Wide sleeves that merge with a robe stop the trace early (low armpit): fall back to proportions.
