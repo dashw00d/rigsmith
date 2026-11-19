@@ -172,7 +172,8 @@ npm start          # a production build, served the same way on 5181
 ```
 
 Then drop a character on the window (FBX, GLB, OBJ, DAE or a Tripo ZIP, any number at once) and follow the steps along the
-top. Everything you make lives in `workspace/` (gitignored, see [Workspace](#workspace)); set `RIGSMITH_WORKSPACE` to put
+top. To try it without a mesh of your own, drop `static/models/model-human.glb` (a T-pose mannequin): joint detection
+finds its joints and the Skeleton and Skin steps run on it as they are. Everything you make lives in `workspace/` (gitignored, see [Workspace](#workspace)); set `RIGSMITH_WORKSPACE` to put
 it elsewhere.
 
 Before the Motion step is useful, build the clip library (about 1.4 GB of Mixamo FBX from a pinned Hugging Face
@@ -184,9 +185,8 @@ npm run library:sync
 
 Tips from running it:
 
-- Joint detection needs an A- or T-pose character facing the camera. It failed on the bundled
-  `static/models/model-human.glb` mannequin (its arms are perfectly horizontal), but worked once the arms were lowered
-  to an A-pose; otherwise place the markers by hand on the Skeleton step.
+- Joint detection needs an A- or T-pose humanoid facing the camera (arms level or sloping down); for anything else,
+  place the markers by hand on the Skeleton step.
 - Without PyTorch in `.venv` the pose optimizer is skipped and the rig report says so (`npm run setup:python` sets it up).
 
 ## Requirements
