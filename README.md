@@ -13,7 +13,7 @@ It was built as the character pipeline for the Emberhold game's units, and its e
 
 *The Motion step on a real character: the Attack clip ("Standing Aim Overdraw") paused mid-draw with the bones shown, the
 unit's clip slots (Idle, Walk, Run, Attack, Die) on the right and the timeline below with a Release event on the
-Events row. The character list on the left holds 58 characters.*
+Events row.*
 
 ```bash
 npm install
